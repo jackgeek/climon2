@@ -2,13 +2,14 @@
 //! binary Input and Display, Acquire, Focus and Leave over revision 1,
 //! beside the private protocol and its attachments.
 use super::{
-    assert_closed, assert_final_then_closed, assert_rejected, command_final, counter, encoded,
-    exited, message, open, peer, raw_frame, request, send, write_in_pieces,
+    assert_closed, assert_final_then_closed, assert_killed, assert_rejected, command_final,
+    committed_kill, counter, encoded, exited, message, open, peer, raw_frame, request, send,
+    signalled, write_in_pieces,
 };
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
+    protocol::{self, ClientMessage},
     wire::{
         self, Acknowledge, Acquire, ActualGeometry, AuthorityIds, AuthorityResult, CommandResult,
         ControlRecord, ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry,
@@ -32,6 +33,8 @@ pub(super) struct Attached {
     pub(super) stream: UnixStream,
     /// The families its Open selected, sorted.
     pub(super) selected: Vec<String>,
+    /// The command result its Initial metadata reported, if any.
+    pub(super) initial_result: Option<CommandResult>,
     pub(super) period: u64,
     pub(super) restoration: u64,
     /// From its Control granted until its Control revoked.
@@ -78,6 +81,7 @@ impl Attached {
         Self {
             stream,
             selected: Vec::new(),
+            initial_result: None,
             period: 0,
             restoration: 0,
             controlling: false,
@@ -105,13 +109,13 @@ impl Attached {
         assert_eq!(request_id, counter(1));
         let mut selected = selected_capabilities.tokens().to_vec();
         selected.sort();
-        assert!(
-            matches!(message(&mut stream), ServerMessage::InitialMetadata(_)),
-            "no Initial metadata after the Open response"
-        );
+        let ServerMessage::InitialMetadata(metadata) = message(&mut stream) else {
+            panic!("no Initial metadata after the Open response");
+        };
         let mut attached = Self {
             stream,
             selected,
+            initial_result: metadata.command_result().cloned(),
             period: 0,
             restoration: 0,
             controlling: false,
@@ -560,6 +564,21 @@ pub(super) fn ready_attachment(session: &Session, optional: &[&str]) -> Attached
     attached.confirm_ready();
     attached.until_displayed(b"fixture-ready", 1);
     attached
+}
+
+/// Attaches and leaves, so the session has no attachment and outlives its
+/// initial-attachment deadline.
+pub(super) fn detached(session: &Session) {
+    ready_attachment(session, &[]).leave();
+}
+
+/// Ends `session` through a new ready attachment that types `input`, upon
+/// which the command ends with `result`.
+pub(super) fn end_through_attachment(session: &mut Session, input: &[u8], result: &CommandResult) {
+    let mut last = ready_attachment(session, &[]);
+    last.typed(input);
+    last.ended(result);
+    session.finish();
 }
 
 /// CTL-05 (Contract, and Fault through a raw peer injecting stale
@@ -1109,12 +1128,7 @@ fn requests_on_an_interactive_attachment_get_their_documented_results() {
         crate::advertised_state(&session),
         (Lifecycle::Detached, 0, false)
     );
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
-    crate::send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
-    let (_, end) = crate::until_terminal(&mut controlling);
-    assert_eq!(end, PrivateMessage::Exit { code: 42 });
-    session.finish();
+    end_through_attachment(&mut session, b"go\n", &exited(42));
     assert_eq!(
         fs::read_dir(session.directory.path().join("sessions"))
             .unwrap()
@@ -1138,7 +1152,7 @@ fn committed_termination_rejects_new_interactive_work_and_leave_still_works() {
     let mut controller = Attached::open(&session, geometry(91, 37), &optional, geometry(91, 37));
     other.revoked(RevocationReason::Takeover);
     controller.confirm_ready();
-    let mut killer = super::committed_kill(&session);
+    let mut killer = committed_kill(&session);
     let mut refused = peer(&session);
     request(
         &mut refused,
@@ -1182,77 +1196,7 @@ fn committed_termination_rejects_new_interactive_work_and_leave_still_works() {
         "{:?}",
         String::from_utf8_lossy(&controller.display[mark..])
     );
-    assert!(matches!(
-        crate::receive(&mut killer),
-        PrivateMessage::Terminated { .. }
-    ));
-    session.finish();
-}
-
-/// COM-01 (Contract, ordinary attach parity) and COM-03 (Contract, Acquire
-/// and Leave): takeover, hand-back and the leave policy match the private
-/// protocol, across both protocols. An attach or Acquire takes control at
-/// once and revokes the previous controller after its release; a departing
-/// controller, by Leave or by loss, hands control back to the most recently
-/// controlling remaining attachment (`hand_back`); a final deliberate Leave
-/// keeps the session running, detached, and a final unexpected departure
-/// ends it.
-#[test]
-fn takeover_hand_back_and_leave_policy_match_the_private_protocol() {
-    let mut session = Session::start("exit");
-    let mut first = ready_attachment(&session, &[]);
-    let mut private = crate::attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    first.revoked(RevocationReason::Takeover);
-    let (restoration, _) = crate::restoration(&mut private);
-    assert_eq!(restoration, 2, "the private protocol names restoration 2");
-    crate::send(
-        &mut private,
-        ClientMessage::Ready {
-            period: restoration,
-        },
-    );
-
-    first.acquire(geometry(91, 37));
-    assert_eq!((first.period, first.restoration), (3, 3));
-    let (released, revoked) = crate::until_terminal(&mut private);
-    assert_eq!(revoked, PrivateMessage::Revoked);
-    assert!(
-        released.ends_with(&crate::release_at(3, 14)),
-        "{released:?}"
-    );
-    first.confirm_ready();
-
-    let mut second = ready_attachment(&session, &[]);
-    first.revoked(RevocationReason::Takeover);
-    assert_eq!((second.period, second.restoration), (4, 4));
-    second.leave();
-    first.granted(GrantReason::HandBack, geometry(91, 37));
-    assert_eq!((first.period, first.restoration), (5, 5));
-    first.confirm_ready();
-    let third = ready_attachment(&session, &[]);
-    first.revoked(RevocationReason::Takeover);
-    drop(third);
-    first.granted(GrantReason::HandBack, geometry(91, 37));
-    assert_eq!((first.period, first.restoration), (7, 7));
-    first.confirm_ready();
-    assert_eq!(
-        crate::advertised_state(&session),
-        (Lifecycle::Attached, 2, true)
-    );
-    crate::send(&mut private, ClientMessage::Detach);
-    assert_eq!(
-        crate::until_terminal(&mut private).1,
-        PrivateMessage::Detached
-    );
-    first.leave();
-    assert_eq!(
-        crate::advertised_state(&session),
-        (Lifecycle::Detached, 0, false)
-    );
-
-    let last = ready_attachment(&session, &[]);
-    assert_eq!((last.period, last.restoration), (8, 8));
-    drop(last);
+    assert_killed(&mut killer, &signalled(9));
     session.finish();
 }
 

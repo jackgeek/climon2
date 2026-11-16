@@ -582,7 +582,13 @@ its queue bound while others, the command's output and control progress,
 one behind within the bound losing nothing, the connection cap, the loss
 after five seconds without progress, the Ready deadline, the most escaped
 title within a metadata record, and the last request ID, control period
-and restoration ID; the rest remains future.
+and restoration ID. The daemon's lifecycle evidence
+([#103](https://github.com/jackgeek/climon2/issues/103)) runs over this
+revision too: startup and the hello deadline, exits, the final drain, the
+hang-up grace after every
+unexpected departure, Kill in its harder cases, terminal sizes, restoration,
+retention, PTY write ordering, saturation and the headless lifetime, so the
+private-protocol tests that remain only repeat it. The rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent

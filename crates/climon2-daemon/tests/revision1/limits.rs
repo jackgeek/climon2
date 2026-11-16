@@ -3,16 +3,16 @@
 //! connections, its frame and text bounds, and the control period,
 //! restoration ID and request ID at the end of their range.
 use super::{
-    assert_closed, assert_fatal, assert_rejected, counter, frame,
-    interactive::{Attached, geometry, ready_attachment, rejected},
+    assert_closed, assert_fatal, assert_rejected, counter, end_by_kill, frame,
+    interactive::{Attached, detached, geometry, ready_attachment, rejected},
     leave, limit, message, monitor, open,
-    passive::{detached, end_script},
+    passive::end_script,
     peer, raw_frame, request, title_changed,
 };
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
+    protocol::{self, ClientMessage},
     wire::{
         self, Acquire, AuthorityIds, AuthorityResult, Available, ControlRecord, FatalCode,
         GrantReason, Leave, Mode, Outcome, Response, RevocationReason, ServerMessage, Success,
@@ -31,18 +31,18 @@ use std::{
 };
 
 /// The largest counter value; no counter follows it.
-const LAST: u64 = u64::MAX;
+pub(super) const LAST: u64 = u64::MAX;
 
 /// A `lines` session whose last issued control period and restoration ID
 /// are `period` and `restoration`, through the `CLIMON2_DAEMON_ISSUED`
 /// test hook.
-fn issued(period: u64, restoration: u64) -> Session {
+pub(super) fn issued(period: u64, restoration: u64) -> Session {
     Session::configured("lines", |command, _| {
         command.env("CLIMON2_DAEMON_ISSUED", format!("{period},{restoration}"));
     })
 }
 
-fn ids(period: u64, restoration: u64) -> AuthorityIds {
+pub(super) fn ids(period: u64, restoration: u64) -> AuthorityIds {
     AuthorityIds {
         period: counter(period),
         restoration_id: counter(restoration),
@@ -70,7 +70,7 @@ fn acquire_rejected(attached: &mut Attached, code: &str) {
 /// hook): the session issues the last control period and restoration ID,
 /// 18,446,744,073,709,551,615, and then refuses, with `resource_limit` and
 /// without effects, all work that needs a new one: an interactive Open,
-/// which ends its stream, a private attach, and an Acquire by a
+/// which ends its stream, and an Acquire by a
 /// non-controlling attachment or a registration, whose streams go on. The
 /// controller keeps its authority and its own Acquire stays a no-op. Its
 /// Leave hands control back to nobody: no attachment can control again, so
@@ -91,13 +91,6 @@ fn the_last_control_period_is_issued_then_new_control_is_refused_without_effects
     crate::wait_line(&session, "last 91x37");
 
     open_rejected(&session, "resource_limit");
-    let mut private = session.connect();
-    let size = TerminalSize { cols: 91, rows: 37 };
-    crate::send(&mut private, ClientMessage::Attach(size));
-    let refusal = PrivateMessage::Error {
-        message: "attach refused: resource_limit".into(),
-    };
-    assert_eq!(crate::receive(&mut private), refusal);
     acquire_rejected(&mut first, "resource_limit");
     acquire_rejected(&mut watching, "resource_limit");
     last.send(|request_id| Acquire { request_id }.to_frame());
@@ -126,7 +119,7 @@ fn the_last_control_period_is_issued_then_new_control_is_refused_without_effects
     };
     assert_eq!(watching.response(), Outcome::Ok(left));
     watching.closed();
-    crate::kill(session);
+    end_by_kill(session);
 }
 
 /// LIM-05 (Contract and Fault, through the `CLIMON2_DAEMON_ISSUED` test
@@ -154,7 +147,7 @@ fn the_last_restoration_id_is_issued_then_a_resize_needing_another_is_refused() 
     crate::wait_line(&session, "unchanged 100x30");
     open_rejected(&session, "resource_limit");
     watching.leave();
-    crate::kill(session);
+    end_by_kill(session);
 }
 
 /// LIM-05 (Contract, request correlation): a request may carry the last
@@ -192,7 +185,7 @@ fn the_last_request_id_is_served_and_no_request_follows_it() {
     assert_fatal(&mut stream, "invalid_request_id");
     let (mut stream, _) = monitor(&session, &[]);
     leave(&mut stream, 2);
-    crate::kill(session);
+    end_by_kill(session);
 }
 
 /// The title `long-titles` sets for `number`: `t-<number>-` padded with `x`
@@ -406,7 +399,7 @@ fn a_revision1_controller_withholding_ready_is_lost_at_the_restoration_deadline(
     withholding.lost();
     watching.confirm_ready();
     watching.leave();
-    crate::kill(session);
+    end_by_kill(session);
 }
 
 /// LIM-01 (Contract, derived release-constant bounds): the most escaped

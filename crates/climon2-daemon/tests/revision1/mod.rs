@@ -2,22 +2,26 @@
 //! the real daemon binary, the Contract layer of spec #73's Testing Decisions.
 //! Peers encode and decode with `climon2-core`'s codec, which has its own
 //! tests; expectations are written out by hand from the wire reference.
+mod coexistence;
+mod ending;
+mod headless;
 mod interactive;
 mod limits;
 mod passive;
 mod signals;
+mod startup;
 mod status;
 mod succession;
+mod terminal;
 mod termination;
 
 use super::Session;
 use climon2_core::{
     hello::Lifecycle,
-    protocol::ClientMessage,
     wire::{
-        self, Available, CommandFinal, CommandResult, ControlRecord, Counter, Families, FatalError,
-        Frame, FrameLimit, Kill, Leave, Mode, Open, Outcome, Requested, Response, ServerMessage,
-        Status, StatusChanged, StatusState, Success, Utc,
+        self, Available, Cleanup, CommandFinal, CommandResult, ControlRecord, Counter, Families,
+        FatalError, Frame, FrameLimit, Kill, Leave, Mode, Open, Outcome, Requested, Response,
+        ServerMessage, Status, StatusChanged, StatusState, Success, Utc,
     },
 };
 use std::{
@@ -318,16 +322,41 @@ fn write_in_pieces(session: &Session, stream: &mut UnixStream, bytes: &[u8]) {
     }
 }
 
-/// A private kill requester whose Kill the session has committed to: the
-/// hello `state` reports it terminating. Its Terminated arrives later.
+/// A standalone Kill whose termination the session has committed to: the
+/// hello `state` reports it terminating. Its Response arrives later.
 fn committed_kill(session: &Session) -> UnixStream {
-    let mut killer = session.connect();
-    killer
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    crate::send(&mut killer, ClientMessage::Kill);
+    let mut killer = peer(session);
+    request(&mut killer, &kill(1, 1, &[]));
     terminating(session);
     killer
+}
+
+/// The standalone Kill's success arrives once the session ended with
+/// `result`, then its stream ends.
+fn assert_killed(killer: &mut UnixStream, result: &CommandResult) {
+    assert_eq!(message(killer), termination::terminated(1, result));
+    assert_closed(killer);
+}
+
+/// Ends `session` with a standalone Kill, confirmed once the daemon cleaned
+/// up. The result is not checked: a command reading its terminal may end
+/// by the hang-up's SIGHUP or by its own handling of the failed read.
+fn end_by_kill(mut session: Session) {
+    let mut killer = peer(&session);
+    request(&mut killer, &kill(1, 1, &[]));
+    match message(&mut killer) {
+        ServerMessage::Response(Response {
+            request_id,
+            outcome:
+                Outcome::Ok(Success::Termination {
+                    cleanup: Cleanup::Complete,
+                    ..
+                }),
+        }) => assert_eq!(request_id, counter(1)),
+        other => panic!("expected the Kill to succeed, got {other:?}"),
+    }
+    assert_closed(&mut killer);
+    session.finish();
 }
 
 /// Waits until the hello `state` reports the session terminating.
