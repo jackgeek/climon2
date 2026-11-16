@@ -1,6 +1,6 @@
 //! Daemon-core activity and attention: the two state machines of the
 //! [session status mechanics](../../../docs/session-status.md) and their
-//! heuristic detector.
+//! detectors: heuristic, explicit and fallback.
 //!
 //! The detector is pure. Every event takes the clock reading it happens at,
 //! and the random source is injected, so tests drive it without a session.
@@ -9,27 +9,36 @@
 //! 1. Feed accepted user input with [`Detector::input`] and explicit
 //!    acknowledgement with [`Detector::acknowledge`], in acceptance order.
 //!    Input therefore comes before the timer and sample work of the turn.
-//! 2. Call [`Detector::poll`] once, after reading the command's output.
-//! 3. Report a confirmed command result once with [`Detector::finish`].
+//! 2. Feed each [`Signal`] of the command's output with
+//!    [`Detector::signal`], in stream order, as the output is read.
+//! 3. Call [`Detector::poll`] once, after reading the command's output.
+//! 4. Report a confirmed command result once with [`Detector::finish`].
 //!
 //! Each event runs to completion, its attention request included, before it
 //! reports the effective status, so no intermediate status is ever reported.
 //! An event returns the effective status only when it changed; only that
 //! change replaces the stored change time.
 //!
-//! Detection is heuristic only. #92 adds the explicit and fallback detection
-//! modes beside it, driven by OSC 7501 and OSC 133, and #98 the notification
-//! signals; both request attention through [`Detector::request_attention`].
+//! The detection mode selects the activity detector: heuristic sampling,
+//! explicit root OSC 7501 reports, or the fallback grace that measures quiet
+//! before heuristics resume; OSC 133 shell markers retire explicit scopes.
+//! #98 adds the notification signals, which request attention through
+//! [`Detector::request_attention`].
 mod clock;
+mod signals;
 
 use climon2_core::wire::{CommandResult, Counter, Status, StatusState, Utc};
 pub use clock::{Clock, SystemRandom, daemon_clock, first_episode};
+pub use signals::{Interpreted, Marker, QUERY_REPLY, Report, Signal, interpret};
 use std::time::Duration;
 
 /// The user-work window each qualifying input re-arms.
 pub const USER_WINDOW: Duration = Duration::from_millis(2_000);
 /// Agent inactivity before attention is requested; hardcoded, never a setting.
 pub const INACTIVITY: Duration = Duration::from_millis(10_000);
+/// Viewport quiet the fallback grace measures before heuristics resume;
+/// hardcoded, never a setting.
+pub const FALLBACK: Duration = Duration::from_millis(10_000);
 const FOCUS_IN: &[u8] = b"\x1b[I";
 const FOCUS_OUT: &[u8] = b"\x1b[O";
 
@@ -90,6 +99,8 @@ enum Activity {
     Agent {
         deadline: Duration,
     },
+    /// Agent work a root `working` report gave: it has no deadline.
+    Reported,
     /// User work, until its window ends.
     User {
         until: Duration,
@@ -106,6 +117,42 @@ impl Activity {
     }
 }
 
+/// The detection mode, which selects the activity detector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mode {
+    Heuristic,
+    /// An explicit scope, and whether its root record says `working`.
+    Explicit {
+        working: bool,
+    },
+    /// The fallback grace, until its quiet deadline.
+    Fallback {
+        deadline: Duration,
+    },
+}
+
+impl Mode {
+    /// The activity no deadline holds: the remembered root `working` of an
+    /// explicit scope, otherwise idle.
+    fn resting(self) -> Activity {
+        if self == (Self::Explicit { working: true }) {
+            Activity::Reported
+        } else {
+            Activity::Idle
+        }
+    }
+}
+
+/// Whether prompt rendering is excluded after `marker`: from `A` until `B`
+/// or `C`.
+fn excluded_after(marker: Marker, excluded: bool) -> bool {
+    match marker {
+        Marker::A => true,
+        Marker::B | Marker::C => false,
+        Marker::D => excluded,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Attention {
     Cleared,
@@ -118,6 +165,9 @@ enum Attention {
 struct Live {
     activity: Activity,
     attention: Attention,
+    mode: Mode,
+    /// Prompt rendering, between OSC 133 `A` and `B` or `C`.
+    excluded: bool,
     baseline: Sample,
     next_sample: Duration,
 }
@@ -141,19 +191,16 @@ impl Live {
         self.attention = Attention::Cleared;
     }
 
-    /// The user window's end, or a due sample; true when it requests
+    /// The user window's end, then a due sample; true when it requests
     /// attention.
     fn poll(
         &mut self,
         now: Duration,
-        sample: impl FnOnce() -> Sample,
+        sample: &impl Fn() -> Sample,
         random: &mut impl Random,
     ) -> bool {
         if self.window_ended(now) {
-            self.activity = Activity::Idle;
-            self.baseline = sample();
-            self.schedule(now, random);
-            return false;
+            self.end_window(now, sample, random);
         }
         if !self.sampling_due(now) {
             return false;
@@ -167,15 +214,64 @@ impl Live {
         matches!(self.activity, Activity::User { until } if now >= until)
     }
 
-    /// No sample is taken during the user window.
+    /// The window ends in the resting activity; heuristics then take a
+    /// fresh baseline.
+    fn end_window(
+        &mut self,
+        now: Duration,
+        sample: &impl Fn() -> Sample,
+        random: &mut impl Random,
+    ) {
+        self.activity = self.mode.resting();
+        if self.mode == Mode::Heuristic {
+            self.rebase(now, sample, random);
+        }
+    }
+
     fn sampling_due(&self, now: Duration) -> bool {
-        !matches!(self.activity, Activity::User { .. }) && now >= self.next_sample
+        now >= self.next_sample && self.observing()
+    }
+
+    /// Heuristics sample outside user work and prompt rendering; explicit
+    /// detection never samples; the grace measures quiet throughout.
+    fn observing(&self) -> bool {
+        match self.mode {
+            Mode::Heuristic => !self.excluded && !matches!(self.activity, Activity::User { .. }),
+            Mode::Explicit { .. } => false,
+            Mode::Fallback { .. } => true,
+        }
+    }
+
+    fn observe(&mut self, now: Duration, current: Sample) -> bool {
+        match self.mode {
+            Mode::Fallback { deadline } => {
+                self.quiet(now, current, deadline);
+                false
+            }
+            _ => self.infer(now, current),
+        }
+    }
+
+    /// During the grace, changed content or a resize restarts its quiet
+    /// deadline, never agent work; checked first, its expiry then resumes
+    /// heuristics with this sample as their baseline.
+    fn quiet(&mut self, now: Duration, current: Sample, deadline: Duration) {
+        let resized = current.screen.resized(&self.baseline.screen);
+        let changed = self.changed(&current, resized) || resized;
+        self.baseline = current;
+        if changed {
+            self.mode = Mode::Fallback {
+                deadline: now + FALLBACK,
+            };
+        } else if now >= deadline {
+            self.mode = Mode::Heuristic;
+        }
     }
 
     /// Changed content, or a resize during agent work, (re)starts the agent
     /// inactivity deadline; only then can it expire. The sample is the next
     /// baseline either way.
-    fn observe(&mut self, now: Duration, current: Sample) -> bool {
+    fn infer(&mut self, now: Duration, current: Sample) -> bool {
         let resized = current.screen.resized(&self.baseline.screen);
         let changed = self.changed(&current, resized);
         self.baseline = current;
@@ -204,15 +300,101 @@ impl Live {
         expired
     }
 
-    /// A fresh random delay, never beyond an armed agent deadline.
+    /// A fresh random delay, never beyond an armed agent or grace deadline.
     fn schedule(&mut self, now: Duration, random: &mut impl Random) {
         let drawn = SAMPLE_DELAY_MIN_MS + random.next() % SAMPLE_DELAY_CHOICES;
         let delay = Duration::from_millis(drawn);
-        let delay = match self.activity {
-            Activity::Agent { deadline } => delay.min(deadline.saturating_sub(now)),
-            _ => delay,
-        };
+        let delay = self
+            .deadline()
+            .map_or(delay, |deadline| delay.min(deadline.saturating_sub(now)));
         self.next_sample = now + delay;
+    }
+
+    fn deadline(&self) -> Option<Duration> {
+        match (self.activity, self.mode) {
+            (Activity::Agent { deadline }, _) | (_, Mode::Fallback { deadline }) => Some(deadline),
+            _ => None,
+        }
+    }
+
+    /// A fresh baseline, and a fresh sampling iteration from it.
+    fn rebase(&mut self, now: Duration, sample: &impl Fn() -> Sample, random: &mut impl Random) {
+        self.baseline = sample();
+        self.schedule(now, random);
+    }
+
+    /// A terminal signal; true when it requests attention.
+    fn signal(
+        &mut self,
+        now: Duration,
+        signal: Signal,
+        sample: &impl Fn() -> Sample,
+        random: &mut impl Random,
+    ) -> bool {
+        match signal {
+            Signal::Root(report) => return self.report(now, report, sample, random),
+            Signal::Shell(marker) => self.shell(now, marker, sample, random),
+            Signal::FullReset => self.reset(now, sample, random),
+        }
+        false
+    }
+
+    /// A root report replaces the previous root-driven decision from any
+    /// live activity, user work included. Every report but `working` and
+    /// `clear` requests attention.
+    fn report(
+        &mut self,
+        now: Duration,
+        report: Report,
+        sample: &impl Fn() -> Sample,
+        random: &mut impl Random,
+    ) -> bool {
+        match report {
+            Report::Working => self.explicit(true),
+            Report::Error | Report::Clear => self.grace(now, sample, random),
+            _ => self.explicit(false),
+        }
+        !matches!(report, Report::Working | Report::Clear)
+    }
+
+    fn explicit(&mut self, working: bool) {
+        self.mode = Mode::Explicit { working };
+        self.activity = self.mode.resting();
+    }
+
+    /// The fallback grace starts or restarts, idle, from a fresh baseline.
+    fn grace(&mut self, now: Duration, sample: &impl Fn() -> Sample, random: &mut impl Random) {
+        self.mode = Mode::Fallback {
+            deadline: now + FALLBACK,
+        };
+        self.activity = Activity::Idle;
+        self.rebase(now, sample, random);
+    }
+
+    /// `A`, `C` and `D` retire the scope to idle heuristics; `B` only takes
+    /// a fresh baseline. Each also updates the prompt-rendering exclusion.
+    fn shell(
+        &mut self,
+        now: Duration,
+        marker: Marker,
+        sample: &impl Fn() -> Sample,
+        random: &mut impl Random,
+    ) {
+        if marker != Marker::B {
+            self.mode = Mode::Heuristic;
+            self.activity = Activity::Idle;
+        }
+        self.excluded = excluded_after(marker, self.excluded);
+        self.rebase(now, sample, random);
+    }
+
+    /// A full reset refreshes heuristics' baseline; in explicit or grace
+    /// detection it behaves as root `clear`, without its attention rule.
+    fn reset(&mut self, now: Duration, sample: &impl Fn() -> Sample, random: &mut impl Random) {
+        match self.mode {
+            Mode::Heuristic => self.rebase(now, sample, random),
+            _ => self.grace(now, sample, random),
+        }
     }
 }
 
@@ -268,6 +450,8 @@ impl<R: Random> Detector<R> {
         let mut live = Live {
             activity: Activity::Idle,
             attention: Attention::Cleared,
+            mode: Mode::Heuristic,
+            excluded: false,
             baseline,
             next_sample: now.monotonic,
         };
@@ -302,11 +486,32 @@ impl<R: Random> Detector<R> {
 
     /// The turn's timer and sample work; `sample` is read only when a
     /// sample is due.
-    pub fn poll(&mut self, now: &Now, sample: impl FnOnce() -> Sample) -> Option<Status> {
+    pub fn poll(&mut self, now: &Now, sample: impl Fn() -> Sample) -> Option<Status> {
+        self.step(now, |live, random| {
+            live.poll(now.monotonic, &sample, random)
+        })
+    }
+
+    /// A terminal signal, at its place in the command's output; `sample`,
+    /// the terminal as of that place, is read only for a fresh baseline.
+    pub fn signal(
+        &mut self,
+        now: &Now,
+        signal: Signal,
+        sample: impl Fn() -> Sample,
+    ) -> Option<Status> {
+        self.step(now, |live, random| {
+            live.signal(now.monotonic, signal, &sample, random)
+        })
+    }
+
+    /// Runs `event` on the live machines, applies the attention request it
+    /// returns, and reports the result.
+    fn step(&mut self, now: &Now, event: impl FnOnce(&mut Live, &mut R) -> bool) -> Option<Status> {
         let Phase::Live(live) = &mut self.phase else {
             return None;
         };
-        if live.poll(now.monotonic, sample, &mut self.random) {
+        if event(live, &mut self.random) {
             self.request_attention();
         }
         self.settle(now)
@@ -387,7 +592,7 @@ impl<R: Random> Detector<R> {
 // random draws, against expectations written from the status mechanics.
 #[cfg(test)]
 mod tests {
-    use super::{Detector, Now, Random, Sample, Screen};
+    use super::{Detector, Marker, Now, Random, Report, Sample, Screen, Signal};
     use climon2_core::wire::{CommandResult, Counter, Status, StatusState, Utc};
     use std::{num::NonZeroU32, time::Duration};
 
@@ -476,7 +681,38 @@ mod tests {
     }
 
     fn poll(detector: &mut Detector<Draws>, ms: u64, sample: Sample) -> Option<Status> {
-        detector.poll(&at(ms), || sample)
+        detector.poll(&at(ms), move || sample.clone())
+    }
+
+    /// `signal` at `ms`, with `sample` showing on the terminal.
+    fn signalled(
+        detector: &mut Detector<Draws>,
+        ms: u64,
+        signal: Signal,
+        sample: Sample,
+    ) -> Option<Status> {
+        detector.signal(&at(ms), signal, move || sample.clone())
+    }
+
+    /// A root `report` at `ms`, which must not take a sample.
+    fn root(detector: &mut Detector<Draws>, ms: u64, report: Report) -> Option<Status> {
+        detector.signal(&at(ms), Signal::Root(report), || {
+            panic!("no sample is due at {ms}")
+        })
+    }
+
+    /// A root `report` at `ms`, with an empty screen showing.
+    fn root_on_empty(detector: &mut Detector<Draws>, ms: u64, report: Report) -> Option<Status> {
+        signalled(detector, ms, Signal::Root(report), screen(""))
+    }
+
+    fn shell(
+        detector: &mut Detector<Draws>,
+        ms: u64,
+        marker: Marker,
+        sample: Sample,
+    ) -> Option<Status> {
+        signalled(detector, ms, Signal::Shell(marker), sample)
     }
 
     /// A poll at `ms` that must not take a sample.
@@ -704,6 +940,10 @@ mod tests {
             assert_eq!(detector.input(&at(10_600)), None);
             assert_eq!(detector.acknowledge(&at(10_700)), None);
             detector.request_attention();
+            assert_eq!(root(&mut detector, 10_800, Report::Working), None);
+            assert_eq!(root_on_empty(&mut detector, 10_900, Report::Error), None);
+            let reset = signalled(&mut detector, 11_000, Signal::FullReset, screen(""));
+            assert_eq!(reset, None);
             assert_eq!(unsampled(&mut detector, 20_000), None);
             assert_eq!(detector.status(), last);
         }
@@ -754,5 +994,273 @@ mod tests {
         ] {
             assert!(super::user_originated(bytes), "{bytes:?}");
         }
+    }
+
+    /// STA-03 (pure, explicit working): a root `working` report is agent
+    /// work at once, and explicit detection infers nothing from the viewport
+    /// and has no inactivity deadline: it stays running, silently, for as
+    /// long as no other signal comes. A root `done` then requests attention,
+    /// which is no final state: accepted input still clears it.
+    #[test]
+    fn explicit_working_runs_silently_without_a_deadline() {
+        let mut detector = fresh();
+        assert_eq!(root(&mut detector, 100, Report::Working), running(100));
+        for ms in (500..=60_000).step_by(500) {
+            assert_eq!(unsampled(&mut detector, ms), None, "{ms}");
+        }
+        assert_eq!(detector.status(), status(StatusState::Running, 100, None));
+        assert_eq!(root(&mut detector, 60_000, Report::Done), needs(60_000, 1));
+        assert_eq!(detector.input(&at(60_100)), running(60_100));
+    }
+
+    /// STA-03 (pure, attention-bearing reports): every root `idle`, `done`,
+    /// `blocked` or `error` report requests attention, even while activity
+    /// is already idle; `working` and `clear` request none. Repeated
+    /// requests while attention is pending join its episode; `clear`
+    /// neither requests nor clears attention; after acknowledgement a
+    /// further report starts the next episode. None of them is a final
+    /// state.
+    #[test]
+    fn attention_bearing_root_reports_request_attention_and_coalesce() {
+        for (report, expected) in [
+            (Report::Idle, needs(100, 1)),
+            (Report::Done, needs(100, 1)),
+            (Report::Blocked, needs(100, 1)),
+            (Report::Error, needs(100, 1)),
+            (Report::Working, running(100)),
+            (Report::Clear, None),
+        ] {
+            let mut detector = fresh();
+            assert_eq!(
+                root_on_empty(&mut detector, 100, report),
+                expected,
+                "{report:?}"
+            );
+        }
+
+        let mut detector = fresh();
+        assert_eq!(root(&mut detector, 100, Report::Idle), needs(100, 1));
+        for (ms, report) in [
+            (200, Report::Done),
+            (300, Report::Blocked),
+            (400, Report::Idle),
+        ] {
+            assert_eq!(root(&mut detector, ms, report), None, "{report:?}");
+        }
+        assert_eq!(root_on_empty(&mut detector, 500, Report::Error), None);
+        assert_eq!(detector.acknowledge(&at(600)), acknowledged(600, 1));
+        assert_eq!(root_on_empty(&mut detector, 700, Report::Clear), None);
+        assert_eq!(root(&mut detector, 800, Report::Working), None);
+        assert_eq!(root(&mut detector, 900, Report::Blocked), needs(900, 2));
+        assert_eq!(detector.input(&at(1_000)), running(1_000));
+        assert_eq!(root(&mut detector, 1_100, Report::Done), needs(1_100, 3));
+    }
+
+    /// STA-03 and STA-05 (pure, remembered working): the user window's end
+    /// restores agent work while the current explicit scope's root record
+    /// says `working`, without the application repeating it. A shell
+    /// boundary retires that scope, so a later window ends idle. A root
+    /// report supersedes user work at once.
+    #[test]
+    fn user_window_expiry_restores_explicit_working_only_in_its_scope() {
+        let mut detector = fresh();
+        assert_eq!(root(&mut detector, 100, Report::Working), running(100));
+        assert_eq!(detector.input(&at(200)), None);
+        assert_eq!(unsampled(&mut detector, 2_199), None);
+        assert_eq!(unsampled(&mut detector, 2_200), None);
+        assert_eq!(unsampled(&mut detector, 30_000), None);
+        assert_eq!(
+            shell(&mut detector, 30_000, Marker::D, screen("")),
+            idle(30_000)
+        );
+        assert_eq!(detector.input(&at(30_100)), running(30_100));
+        assert_eq!(poll(&mut detector, 32_100, screen("")), idle(32_100));
+
+        assert_eq!(detector.input(&at(32_200)), running(32_200));
+        assert_eq!(
+            root_on_empty(&mut detector, 32_300, Report::Clear),
+            idle(32_300)
+        );
+        assert_eq!(root(&mut detector, 32_400, Report::Idle), needs(32_400, 1));
+        assert_eq!(detector.input(&at(32_500)), running(32_500));
+        assert_eq!(unsampled(&mut detector, 34_500), idle(34_500));
+    }
+
+    /// STA-04 (pure, fallback grace): root `clear` starts a separate ten
+    /// seconds of viewport quiet before heuristics resume. During it,
+    /// changed characters, a changed title and a resize each restart the
+    /// quiet deadline without becoming agent work; it ends at exactly ten
+    /// seconds of quiet, not a millisecond earlier, with no attention
+    /// request, and heuristic detection then sees the next change.
+    #[test]
+    fn clear_starts_a_ten_second_fallback_quiet_deadline() {
+        let mut detector = fresh();
+        assert_eq!(root(&mut detector, 100, Report::Working), running(100));
+        assert_eq!(
+            root_on_empty(&mut detector, 1_000, Report::Clear),
+            idle(1_000)
+        );
+        assert_eq!(poll(&mut detector, 10_999, screen("x")), None);
+        assert_eq!(poll(&mut detector, 20_998, titled("x", "t")), None);
+        let resized = |characters: &str| Sample {
+            title: Some("t".into()),
+            ..sized(100, 30, characters)
+        };
+        assert_eq!(poll(&mut detector, 30_997, resized("x")), None);
+        assert_eq!(poll(&mut detector, 40_996, resized("y")), None);
+        assert_eq!(poll(&mut detector, 50_995, resized("y")), None);
+        assert_eq!(unsampled(&mut detector, 50_995), None);
+        assert_eq!(poll(&mut detector, 50_996, resized("y")), None);
+        assert_eq!(poll(&mut detector, 51_496, resized("z")), running(51_496));
+    }
+
+    /// STA-03 and STA-04 (pure, error): root `error` requests attention and
+    /// starts the same grace; its expiry requests none, so acknowledged
+    /// attention stays acknowledged, and heuristics resume after it.
+    #[test]
+    fn error_requests_attention_and_its_grace_expiry_requests_none() {
+        let mut detector = fresh();
+        assert_eq!(
+            root_on_empty(&mut detector, 1_000, Report::Error),
+            needs(1_000, 1)
+        );
+        assert_eq!(detector.acknowledge(&at(1_100)), acknowledged(1_100, 1));
+        assert_eq!(poll(&mut detector, 10_999, screen("")), None);
+        assert_eq!(poll(&mut detector, 11_000, screen("")), None);
+        assert_eq!(detector.status(), acknowledged(1_100, 1).unwrap());
+        assert_eq!(detector.input(&at(11_100)), running(11_100));
+        assert_eq!(poll(&mut detector, 13_100, screen("")), idle(13_100));
+        assert_eq!(poll(&mut detector, 13_600, screen("x")), running(13_600));
+    }
+
+    /// STA-04 (pure, ending grace): a fresh root report ends the grace and
+    /// applies explicit detection, which samples nothing; a shell boundary
+    /// ends it and resumes heuristics at once. Accepted input neither
+    /// restarts nor ends it: quiet is still measured during user work, whose
+    /// changes are no agent work and never extend the two-second window.
+    #[test]
+    fn grace_ends_at_fresh_root_reports_and_shell_boundaries_not_at_input() {
+        let mut detector = fresh();
+        assert_eq!(root_on_empty(&mut detector, 1_000, Report::Clear), None);
+        assert_eq!(root(&mut detector, 2_000, Report::Done), needs(2_000, 1));
+        assert_eq!(unsampled(&mut detector, 12_000), None);
+
+        let mut detector = fresh();
+        assert_eq!(root_on_empty(&mut detector, 1_000, Report::Clear), None);
+        assert_eq!(shell(&mut detector, 2_000, Marker::D, screen("")), None);
+        assert_eq!(poll(&mut detector, 2_500, screen("x")), running(2_500));
+
+        let mut detector = fresh();
+        assert_eq!(root_on_empty(&mut detector, 1_000, Report::Clear), None);
+        assert_eq!(detector.input(&at(2_000)), running(2_000));
+        assert_eq!(poll(&mut detector, 2_500, screen("x")), None);
+        assert_eq!(poll(&mut detector, 3_999, screen("x")), None);
+        assert_eq!(poll(&mut detector, 4_000, screen("x")), idle(4_000));
+        assert_eq!(poll(&mut detector, 12_499, screen("x")), None);
+        assert_eq!(poll(&mut detector, 12_500, screen("x")), None);
+        assert_eq!(poll(&mut detector, 13_000, screen("y")), running(13_000));
+    }
+
+    /// STA-04 (pure, full reset): in heuristic detection a full reset only
+    /// refreshes the baseline, so the screen it cleared is no change and
+    /// running agent work keeps its deadline. In explicit detection it
+    /// behaves as root `clear`: idle, no attention, and the grace, which a
+    /// reset during grace restarts.
+    #[test]
+    fn a_full_reset_refreshes_heuristics_and_ends_explicit_detection_like_clear() {
+        let mut detector = working();
+        let reset = signalled(&mut detector, 1_000, Signal::FullReset, screen(""));
+        assert_eq!(reset, None);
+        assert_eq!(poll(&mut detector, 1_500, screen("")), None);
+        assert_eq!(poll(&mut detector, 10_000, screen("")), None);
+        assert_eq!(poll(&mut detector, 10_500, screen("")), needs(10_500, 1));
+
+        let mut detector = fresh();
+        assert_eq!(root(&mut detector, 100, Report::Working), running(100));
+        let reset = signalled(&mut detector, 200, Signal::FullReset, screen(""));
+        assert_eq!(reset, idle(200));
+        assert_eq!(poll(&mut detector, 10_199, screen("x")), None);
+        assert_eq!(poll(&mut detector, 20_199, screen("x")), None);
+        assert_eq!(poll(&mut detector, 20_699, screen("y")), running(20_699));
+
+        let mut detector = fresh();
+        assert_eq!(root_on_empty(&mut detector, 1_000, Report::Clear), None);
+        let reset = signalled(&mut detector, 5_000, Signal::FullReset, screen(""));
+        assert_eq!(reset, None);
+        assert_eq!(poll(&mut detector, 11_000, screen("")), None);
+        assert_eq!(poll(&mut detector, 11_500, screen("x")), None);
+    }
+
+    /// STA-05 (pure, shell boundaries): `A`, `C` and `D` retire the scope,
+    /// to idle, with no attention and no deadline left; repeating one is
+    /// harmless. Between `A` and `B` prompt rendering is no activity, even
+    /// across a `D`; `B` ends that exclusion with a fresh baseline, so the
+    /// rendered prompt is no change, and `C` ends it too.
+    #[test]
+    fn shell_boundaries_retire_the_scope_and_exclude_prompt_rendering() {
+        let mut detector = fresh();
+        assert_eq!(root(&mut detector, 100, Report::Working), running(100));
+        assert_eq!(shell(&mut detector, 200, Marker::A, screen("$")), idle(200));
+        assert_eq!(shell(&mut detector, 300, Marker::D, screen("$")), None);
+        assert_eq!(unsampled(&mut detector, 5_000), None);
+        assert_eq!(shell(&mut detector, 5_100, Marker::B, screen("$ ls")), None);
+        assert_eq!(poll(&mut detector, 5_600, screen("$ ls")), None);
+        assert_eq!(
+            poll(&mut detector, 6_100, screen("$ ls\nout")),
+            running(6_100)
+        );
+        let output = || screen("$ ls\nout");
+        assert_eq!(
+            shell(&mut detector, 6_200, Marker::C, output()),
+            idle(6_200)
+        );
+        assert_eq!(
+            poll(&mut detector, 6_700, screen("$ ls\nmore")),
+            running(6_700)
+        );
+        let output = || screen("$ ls\nmore");
+        assert_eq!(
+            shell(&mut detector, 7_000, Marker::D, output()),
+            idle(7_000)
+        );
+        assert_eq!(shell(&mut detector, 7_100, Marker::D, output()), None);
+        assert_eq!(poll(&mut detector, 7_600, output()), None);
+        assert_eq!(poll(&mut detector, 17_100, output()), None);
+        assert_eq!(detector.status(), status(StatusState::Idle, 7_000, None));
+
+        let mut detector = fresh();
+        assert_eq!(shell(&mut detector, 100, Marker::A, screen("$")), None);
+        assert_eq!(shell(&mut detector, 200, Marker::C, screen("$ x")), None);
+        assert_eq!(poll(&mut detector, 700, screen("$ x\ny")), running(700));
+    }
+
+    /// STA-05 (pure, what boundaries keep): during prompt rendering accepted
+    /// input and root reports still apply; a retained `done` does not pin
+    /// detection past the next boundary; `B` ends nothing else, neither an
+    /// agent deadline nor the grace.
+    #[test]
+    fn shell_boundaries_keep_input_reports_and_other_deadlines() {
+        let mut detector = fresh();
+        assert_eq!(shell(&mut detector, 100, Marker::A, screen("$")), None);
+        assert_eq!(detector.input(&at(200)), running(200));
+        assert_eq!(poll(&mut detector, 2_200, screen("$ x")), idle(2_200));
+        assert_eq!(root(&mut detector, 2_300, Report::Done), needs(2_300, 1));
+
+        let mut detector = fresh();
+        assert_eq!(root(&mut detector, 100, Report::Done), needs(100, 1));
+        assert_eq!(detector.input(&at(200)), running(200));
+        assert_eq!(shell(&mut detector, 300, Marker::D, screen("")), idle(300));
+        assert_eq!(poll(&mut detector, 800, screen("x")), running(800));
+
+        let mut detector = working();
+        assert_eq!(shell(&mut detector, 1_000, Marker::B, screen("a")), None);
+        assert_eq!(poll(&mut detector, 10_000, screen("a")), None);
+        assert_eq!(poll(&mut detector, 10_500, screen("a")), needs(10_500, 1));
+
+        let mut detector = fresh();
+        assert_eq!(root_on_empty(&mut detector, 1_000, Report::Clear), None);
+        assert_eq!(shell(&mut detector, 5_000, Marker::B, screen("")), None);
+        assert_eq!(poll(&mut detector, 11_000, screen("")), None);
+        assert_eq!(poll(&mut detector, 11_500, screen("x")), running(11_500));
     }
 }

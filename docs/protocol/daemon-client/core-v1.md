@@ -29,8 +29,10 @@ interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
 [Kill](../../../GLOSSARY.md#attachment-and-control)
 ([#88](https://github.com/jackgeek/climon2/issues/88)), monitors that
 acquire and inherit control
-([#89](https://github.com/jackgeek/climon2/issues/89)) and heuristic
-`status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)): the
+([#89](https://github.com/jackgeek/climon2/issues/89)) and
+`status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)), with
+output-driven status detection from [OSC](../TERMS.md#osc) 7501 program status and OSC 133
+shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
 Input, Resize, Ready, Set viewing, Acknowledge, Acquire, Focus, Kill,
@@ -47,10 +49,9 @@ with the private protocol's takeover,
 and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
 of monitor-mode connections. Until it serves them, it
 rejects the other
-requests without effects, as each request's page describes.
-Output-driven status detection (OSC 7501 and OSC 133,
-[#92](https://github.com/jackgeek/climon2/issues/92)), the notification and
-progress messages and bounded delivery remain unimplemented. The
+requests without effects, as each request's page describes. The
+notification and progress messages and bounded delivery remain
+unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93))
 and for control and display ([#94](https://github.com/jackgeek/climon2/issues/94));
@@ -404,7 +405,7 @@ Dedicated [Focus](request-focus.md) never clears or acknowledges attention.
 ## Source normalization
 
 Title/notification text is inert [Unicode](../TERMS.md#unicode-and-utf-8) JSON metadata, not
-[OSC](../TERMS.md#osc) or percent-encoded terminal presentation. Invalid UTF-8
+OSC or percent-encoded terminal presentation. Invalid UTF-8
 is replaced only at the text boundary; binary Input/Display bytes remain exact.
 No raw notification sequences are relayed for host interpretation.
 
