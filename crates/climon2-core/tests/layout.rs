@@ -184,3 +184,20 @@ fn issue84_executable_home_is_absolute_and_names_each_versions_client_library() 
     }
     assert!(ExecutableHome::new(&root.join("..")).is_err());
 }
+
+/// #155: a climon2 home an invocation already resolved and canonicalized is its
+/// own layout, whatever the user's home; a relative or empty root is refused.
+#[test]
+fn issue155_a_resolved_climon2_home_is_its_own_layout() {
+    let home = std::env::current_dir().unwrap().join("canonical home");
+    let layout = HomeLayout::at(&home).unwrap();
+    assert_eq!(layout.root(), home);
+    assert_eq!(layout.config(), home.join("config.jsonc"));
+    for bad in ["", "relative", "./home"] {
+        assert_eq!(
+            HomeLayout::at(Path::new(bad)).unwrap_err().to_string(),
+            "path must be nonempty and absolute",
+            "{bad:?}"
+        );
+    }
+}

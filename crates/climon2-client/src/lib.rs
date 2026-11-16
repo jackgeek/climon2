@@ -9,11 +9,13 @@ mod polling;
 
 use climon2_core::{
     config::ConfigSource,
+    exit::CLIMON2_ERROR,
     keys::ClientSettings,
+    metadata::SessionMetadata,
     startup_envelope::{ENVIRONMENT_VARIABLE, StartupEnvelope},
 };
-use climon2_core::{layout::HomeLayout, metadata::SessionMetadata};
 use climon2_platform::{
+    home,
     logging::{LogFile, Role},
     terminal,
 };
@@ -26,42 +28,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
-pub struct Error {
-    pub code: u32,
-    pub message: String,
-    pub logs: Option<PathBuf>,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(out, "{}", one_line(&self.message))?;
-        if let Some(logs) = &self.logs {
-            write!(out, " (logs: {})", one_line(&logs.to_string_lossy()))?;
-        }
-        Ok(())
-    }
-}
-
-fn one_line(text: &str) -> String {
-    text.chars()
-        .map(|character| {
-            if character.is_control() {
-                character.escape_default().to_string()
-            } else {
-                character.to_string()
-            }
-        })
-        .collect()
-}
-
-impl std::error::Error for Error {}
+/// How the client executable fails: the thin main prints it, after the
+/// terminal is restored, and exits with its code.
+pub use climon2_core::failure::Failure as Error;
 
 fn failure(error: impl fmt::Display, logs: Option<&Path>) -> Error {
     Error {
-        code: 125,
-        message: error.to_string(),
         logs: logs.map(Path::to_owned),
+        ..Error::new(CLIMON2_ERROR, error)
     }
 }
 
@@ -77,17 +51,6 @@ fn metadata_path(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Pa
             "usage: climon2-client attach --metadata <absolute path>",
         )),
     }
-}
-
-fn layout() -> io::Result<HomeLayout> {
-    let user_home = std::env::var_os("HOME").unwrap_or_default();
-    let override_value = std::env::var_os("CLIMON2_HOME");
-    HomeLayout::resolve(override_value.as_deref(), Path::new(&user_home)).map_err(io::Error::other)
-}
-
-fn home() -> io::Result<PathBuf> {
-    // The CLI already canonicalized this input; direct clients must supply it too.
-    Ok(layout()?.root().to_owned())
 }
 
 /// Arguments exclude argv[0]; all other configuration comes from environment.
@@ -121,7 +84,7 @@ fn startup_operation() -> io::Result<StartupEnvelope> {
 }
 
 fn config_settings() -> io::Result<ClientSettings> {
-    let source = ConfigSource::read(&layout()?).map_err(io::Error::other)?;
+    let source = ConfigSource::read(&home::named()?).map_err(io::Error::other)?;
     source
         .attach()
         .map(|config| config.client)
@@ -131,7 +94,14 @@ fn config_settings() -> io::Result<ClientSettings> {
 /// Before the log exists, failures carry no logs suffix.
 fn session_log(path: &Path) -> io::Result<(SessionMetadata, LogFile)> {
     let metadata = read_metadata(path)?;
-    let log = LogFile::session(&home()?, &metadata.session_id, Role::Client, None, None)?;
+    // The CLI already canonicalized this home; direct clients must supply it too.
+    let log = LogFile::session(
+        home::named()?.root(),
+        &metadata.session_id,
+        Role::Client,
+        None,
+        None,
+    )?;
     Ok((metadata, log))
 }
 
@@ -158,7 +128,7 @@ fn supervised(
 /// confirmed termination; a termination signal wins over any outcome.
 fn kill(metadata: &SessionMetadata, session: &embedded::Session) -> io::Result<u32> {
     let signals = terminal::Signals::client()?;
-    let result = kill::run(metadata, session, &home()?, &signals);
+    let result = kill::run(metadata, session, home::named()?.root(), &signals);
     if let Some(signal) = signals.termination_signal() {
         return Ok(128 + signal);
     }
@@ -199,7 +169,7 @@ fn connection(
 ) -> io::Result<bridge::Opened> {
     tracing::debug!("opening the attachment");
     let size = terminal::size(&state.input)?;
-    let attachment = attachment::Attachment::open(metadata, session, &home()?, size)?;
+    let attachment = attachment::Attachment::open(metadata, session, home::named()?.root(), size)?;
     let backlog = attachment.opened(&state.signals)?;
     tracing::debug!("client attached");
     Ok(bridge::Opened {

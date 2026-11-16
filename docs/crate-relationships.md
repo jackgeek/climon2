@@ -117,6 +117,11 @@ executable, for attach and kill (#100, #101), use it; the monitor does not yet. 
 loader fixtures consume the platform crate as dev-dependencies, and the
 client's tests consume `climon2-fixtures` for the client library stand-in.
 
+**Current (#155):** the CLI, the client executable and the monitor share
+their start-up and failure rules instead of copying them; no edge changes.
+They return `climon2-core`'s `failure::Failure` and find the climon2 home and
+their install layout through `climon2-platform`'s `home` module.
+
 **Current (#97):** `climon2-second-release` is the test-only
 [second-release fixture](../GLOSSARY.md#testing). Its library compiles
 `climon2-client`'s library source as a package of its own version, so it

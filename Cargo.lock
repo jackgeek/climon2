@@ -191,6 +191,7 @@ dependencies = [
 name = "climon2-daemon"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "climon2-core",
  "climon2-platform",
  "climon2-test-term",
