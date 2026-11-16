@@ -1,6 +1,5 @@
 //! Interactive attachments (#87): interactive Open, control and authority,
-//! binary Input and Display, Acquire, Focus and Leave over revision 1,
-//! beside the private protocol and its attachments.
+//! binary Input and Display, Acquire, Focus and Leave over revision 1.
 use super::{
     assert_closed, assert_final_then_closed, assert_killed, assert_rejected, command_final,
     committed_kill, counter, encoded, exited, message, open, peer, raw_frame, request, send,
@@ -9,7 +8,6 @@ use super::{
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{self, ClientMessage},
     wire::{
         self, Acknowledge, Acquire, ActualGeometry, AuthorityIds, AuthorityResult, CommandResult,
         ControlRecord, ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry,
@@ -210,8 +208,8 @@ impl Attached {
     }
 
     /// A Display reaches only the controller, carries its current authority,
-    /// and holds at least one byte and at most 65,535, the private
-    /// protocol's output chunk.
+    /// and holds at least one byte and at most 65,535, the daemon's
+    /// Display chunk.
     pub(super) fn displayed(&mut self, display: Display) {
         assert!(self.controlling, "Display after Control revoked");
         assert_eq!(
@@ -502,15 +500,13 @@ fn interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
-    let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
-    let mut bytes = Vec::new();
-    protocol::write_frame(&mut bytes, &hello).unwrap();
+    let mut bytes = crate::hello_bytes();
     let opening = open(1, &[], &[], Mode::Interactive(geometry(100, 30))).to_frame();
     let opening = encoded(&opening);
     let (first, rest) = opening.split_at(9);
     bytes.extend_from_slice(first);
     stream.write_all(&bytes).unwrap();
-    assert_eq!(protocol::read_frame(&mut stream).unwrap().type_code(), 0x01);
+    crate::receive_hello(&mut stream);
     write_in_pieces(&session, &mut stream, rest);
     let mut attached = Attached::opened(stream, geometry(100, 30));
     assert_eq!((attached.period, attached.restoration), (1, 1));

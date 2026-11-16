@@ -14,7 +14,7 @@ use climon2_core::{
     SessionId,
     hello::{Advertised, HelloExtensions},
     metadata::SessionMetadata,
-    protocol::{self, ClientMessage, HelloReply, PROTOCOL_VERSION, ServerMessage},
+    protocol::{self, HelloReply, HelloRequest, PROTOCOL_VERSION},
     wire::{Advertisement, Frame, FrameLimit},
 };
 use std::{
@@ -123,7 +123,7 @@ fn reach(expected: &Expected, deadline: Instant) -> Result<Link, Failed> {
 
 fn exchange(link: &mut Link, deadline: Instant) -> Result<Frame, Failed> {
     let mut hello = Vec::new();
-    let frame = ClientMessage::Hello {
+    let frame = HelloRequest {
         protocol: PROTOCOL_VERSION,
     }
     .to_frame()
@@ -142,12 +142,9 @@ fn peer(frame: &Frame, expected: &Expected, role: Role) -> Result<Peer, Failed> 
 
 /// The frozen reply: a hello frame with its required fields.
 fn reply(frame: &Frame) -> Result<HelloReply, Failed> {
-    let message = protocol::Frame::new(frame.code(), frame.body().to_vec())
-        .and_then(ServerMessage::from_frame);
-    match message {
-        Ok(ServerMessage::Hello(reply)) => Ok(reply),
-        _ => Err(BAD_HELLO),
-    }
+    protocol::Frame::new(frame.code(), frame.body().to_vec())
+        .and_then(|frame| HelloReply::from_frame(&frame))
+        .map_err(|_| BAD_HELLO)
 }
 
 /// This session, the frozen protocol and this release.

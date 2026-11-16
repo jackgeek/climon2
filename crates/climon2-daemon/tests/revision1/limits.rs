@@ -12,7 +12,6 @@ use super::{
 use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{self, ClientMessage},
     wire::{
         self, Acquire, AuthorityIds, AuthorityResult, Available, ControlRecord, FatalCode,
         GrantReason, Leave, Mode, Outcome, Response, RevocationReason, ServerMessage, Success,
@@ -330,10 +329,7 @@ fn served(session: &Session) -> bool {
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
-    let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
-    let mut bytes = Vec::new();
-    protocol::write_frame(&mut bytes, &hello).unwrap();
-    stream.write_all(&bytes).is_ok() && matches!(stream.read(&mut [0]), Ok(1))
+    stream.write_all(&crate::hello_bytes()).is_ok() && matches!(stream.read(&mut [0]), Ok(1))
 }
 
 /// LIM-01 (Contract, existing connection and no-progress bounds on

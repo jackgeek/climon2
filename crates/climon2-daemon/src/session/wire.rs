@@ -1,5 +1,5 @@
-//! Daemon wire revision 1 on the session loop, beside the private protocol:
-//! passive monitor connections, ordinary interactive attachments and
+//! Daemon wire revision 1 on the session loop, the only protocol after the
+//! frozen hello: passive monitor connections, ordinary interactive attachments and
 //! standalone Kills, their requests, their control and terminal records and
 //! their core metadata: the title and the effective status.
 use super::{Session, delivery::Delivery};
@@ -608,8 +608,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.opened.get_mut(&id)?.role.attachment_mut()
     }
 
-    /// The authority under which an interactive attachment receives
-    /// Display, or `None` for a private connection.
+    /// The authority under which an attachment receives Display, from its
+    /// grant until its revocation, or `None`.
     pub(super) fn display_authority(&self, id: u64) -> Option<Authority> {
         let attachment = self.opened.get(&id)?.role.attachment()?;
         attachment.held.map(|held| held.authority)
@@ -645,8 +645,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// Records the authority an interactive attachment now holds; false for
-    /// a private connection.
+    /// Records the authority an attachment now holds; false for a
+    /// connection that is no longer one.
     fn hold(&mut self, id: u64, authority: Authority, geometry: TerminalSize) -> bool {
         let Some(attachment) = self.attachment_mut(id) else {
             return false;

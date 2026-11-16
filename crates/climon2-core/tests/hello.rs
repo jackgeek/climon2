@@ -26,8 +26,8 @@ fn with(extra: Value) -> HelloExtensions {
     let bytes = serde_json::to_vec(&body).unwrap();
     let frame = Frame::new(1, bytes.clone()).unwrap();
     assert_eq!(
-        ServerMessage::from_frame(frame).unwrap(),
-        ServerMessage::Hello(reply()),
+        HelloReply::from_frame(&frame).unwrap(),
+        reply(),
         "optional data never changes the mandatory reply"
     );
     assert_eq!(
@@ -67,10 +67,7 @@ fn the_daemon_reply_leads_with_the_frozen_tokens_and_a_state_beside_the_mandator
     assert!(capabilities.supports_kill());
     assert!(capabilities.supports_state());
     assert_eq!(extensions.state, Advertised::Valid(snapshot));
-    assert_eq!(
-        ServerMessage::from_frame(frame).unwrap(),
-        ServerMessage::Hello(reply())
-    );
+    assert_eq!(HelloReply::from_frame(&frame).unwrap(), reply());
     assert_eq!(
         Capability::ADVERTISED.map(Capability::token),
         ["attach", "kill", "state-v1", "client-startup-v1"]
@@ -429,8 +426,5 @@ fn revision1_support_is_advertised_beside_the_frozen_tokens_and_state() {
     let extensions = HelloExtensions::from_body(frame.body());
     assert_eq!(extensions.daemon_wire_v1, Advertised::Valid(advertisement));
     assert_eq!(extensions.state, Advertised::Valid(snapshot));
-    assert_eq!(
-        ServerMessage::from_frame(frame).unwrap(),
-        ServerMessage::Hello(reply())
-    );
+    assert_eq!(HelloReply::from_frame(&frame).unwrap(), reply());
 }

@@ -11,19 +11,13 @@ mod writes;
 use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
-    control::{
-        Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, PrivateResult,
-        Restoration, SessionEnd,
-    },
+    control::{Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, SessionEnd},
     pty::Pty,
     status::{self, Clock, Detector, Interpreted, Now, Sample, Screen, SystemRandom},
 };
 use climon2_core::{
     hello::{SessionState, advertise_revision1},
-    protocol::{
-        ClientMessage, Frame, HANGUP_GRACE, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION,
-        PTY_DRAIN_CAP, ServerMessage, TerminalSize,
-    },
+    protocol::{Frame, HANGUP_GRACE, HelloReply, PROTOCOL_VERSION, PTY_DRAIN_CAP, TerminalSize},
     title::default_title,
     wire::{CommandResult, Counter, GrantReason, OperationalCode, RevocationReason},
 };
@@ -34,7 +28,7 @@ use climon2_platform::{
 };
 use climon2_vt::{Geometry, Signal, Vt, VtConfig};
 use command::{Command, Read, classify};
-use delivery::{Delivery, Out};
+use delivery::{DISPLAY_CHUNK, Delivery, Out};
 use paste::PasteTracker;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -44,13 +38,10 @@ use std::{
 use writes::PtyWrites;
 
 const OUTPUT_CHUNK: usize = 32 * 1024;
-/// The terminal bytes one Output or Display frame carries at most.
-const DISPLAY_CHUNK: usize = MAX_DATA_FRAME_LENGTH - 1;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPTS_PER_TICK: usize = 8;
 const INITIAL_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const TICK: Duration = Duration::from_millis(2);
-const FAILURE_MESSAGE: &str = "session failed; see daemon log";
 /// The kill requester standing for a termination signal; never a connection.
 const SIGNAL: ConnectionId = ConnectionId(u64::MAX);
 
@@ -307,30 +298,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn dispatch(&mut self, id: u64, received: Received) -> io::Result<()> {
         match received {
-            Received::Private(message) => self.message(id, message),
+            Received::Hello => self.hello(id),
             Received::Request(request) => self.request(id, request),
         }
-    }
-
-    fn message(&mut self, id: u64, message: ClientMessage) -> io::Result<()> {
-        match message {
-            ClientMessage::Hello { .. } => self.hello(id),
-            ClientMessage::Input(bytes) => {
-                self.input(id, &bytes);
-                Ok(())
-            }
-            other => self.control_message(ConnectionId(id), other),
-        }
-    }
-
-    fn control_message(&mut self, conn: ConnectionId, message: ClientMessage) -> io::Result<()> {
-        if let ClientMessage::Resize(size) = message {
-            // The private protocol answers no Resize; a refused size is not recorded.
-            let _refused = self.control.resize(conn, size);
-            return Ok(());
-        }
-        let effects = control_effects(&mut self.control, conn, message);
-        self.effects(effects)
     }
 
     fn hello(&mut self, id: u64) -> io::Result<()> {
@@ -348,15 +318,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             advertise_revision1(&reply, state, &wire::advertisement())?,
         );
         Ok(())
-    }
-
-    /// Input is admitted only from the ready controller of the current period.
-    fn input(&mut self, id: u64, bytes: &[u8]) {
-        if !self.control.admits_input(ConnectionId(id)) {
-            return;
-        }
-        self.pty_writes.input(id, bytes);
-        self.user_input(bytes);
     }
 
     fn protocol_failure(&mut self, id: u64, failure: Failure) -> io::Result<()> {
@@ -540,21 +501,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// The snapshot for a restoration, of a grant or a replacement. The
-    /// private protocol's `period` field carries the restoration ID.
+    /// The snapshot for a restoration, of a grant or a replacement.
     fn snapshot(&mut self, id: u64, authority: Authority, host: TerminalSize, now: Instant) {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
         let lead = delivery.restore(&mut self.vt, authority, host, now);
         self.controller = Some(id);
-        let restoration = authority.restoration.0;
-        self.reply(
-            id,
-            ServerMessage::Granted {
-                period: restoration,
-            },
-        );
         self.send_output(id, &lead);
     }
 
@@ -585,13 +538,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn restored(&mut self, id: u64, authority: Authority) {
-        let restoration = authority.restoration.0;
-        self.reply(
-            id,
-            ServerMessage::RestoreEnd {
-                period: restoration,
-            },
-        );
         self.report_restored(id, authority);
         self.control.restored(ConnectionId(id), authority);
     }
@@ -818,7 +764,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn departure_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::AcceptDetach { conn } => self.terminal(conn.0, ServerMessage::Detached),
+            Effect::AcceptDetach { conn } => self.terminal(conn.0),
             Effect::Disconnect { conn } => self.remove_connection(conn.0),
             other => self.result_effect(other),
         }
@@ -826,14 +772,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn result_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::DeliverExit { conn, code } => self.ending(conn.0, ServerMessage::Exit { code }),
-            Effect::DeliverError { conn } => self.ending(conn.0, failure_message()),
-            other => self.final_effect(other),
-        }
-    }
-
-    fn final_effect(&mut self, effect: Effect) {
-        match effect {
+            Effect::EndAttachment { conn } => self.ending(conn.0),
             Effect::ConfirmKill { conn, end } => self.confirm_kill(conn.0, &end),
             Effect::Finish => self.finish(),
             other => self.grant_effect(other),
@@ -933,22 +872,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn admit(&mut self, id: u64) {
         let delivery = Delivery::new(self.control.session_size());
         self.deliveries.insert(id, delivery);
-        self.reply(id, ServerMessage::Attached);
         self.admitted(id);
     }
 
     fn refuse(&mut self, id: u64, code: OperationalCode) {
         self.refused(id, code);
-        self.close_with_error(id, &format!("attach refused: {}", code.as_str()));
-    }
-
-    fn close_with_error(&mut self, id: u64, message: &str) {
-        self.terminal(
-            id,
-            ServerMessage::Error {
-                message: message.into(),
-            },
-        );
+        self.terminal(id);
     }
 
     fn enable_input(&mut self, id: u64) {
@@ -989,29 +918,26 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             self.send_output(id, &bytes);
         }
         self.forget_controller(id);
-        self.reply(id, ServerMessage::Revoked);
         self.report_revocation(id, RevocationReason::Takeover);
     }
 
-    /// A kill requester's answer: a standalone Kill's Response, or the
-    /// private protocol's confirmation.
+    /// A kill requester's answer: a standalone Kill's Response. A
+    /// termination signal, the other kill requester, needs none.
     fn confirm_kill(&mut self, id: u64, end: &SessionEnd) {
-        match self.kill_request(id) {
-            Some(request_id) => self.answer_kill(id, request_id, end),
-            None => self.terminal(id, private_confirmation(end)),
+        if let Some(request_id) = self.kill_request(id) {
+            self.answer_kill(id, request_id, end);
         }
     }
 
-    /// An attachment's result: control it still holds ends as the session
-    /// ends, then the connection's last message.
-    fn ending(&mut self, id: u64, message: ServerMessage) {
+    /// The session ended: control an attachment still holds ends with it,
+    /// then its stream.
+    fn ending(&mut self, id: u64) {
         self.report_revocation(id, RevocationReason::SessionEnding);
-        self.terminal(id, message);
+        self.terminal(id);
     }
 
-    /// Sends a connection's last message and stops its session output.
-    fn terminal(&mut self, id: u64, message: ServerMessage) {
-        self.reply(id, message);
+    /// Stops a connection's session output; its stream ends once flushed.
+    fn terminal(&mut self, id: u64) {
         if let Some(connection) = self.connections.get_mut(&id) {
             connection.close_after_flush();
         }
@@ -1020,28 +946,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     // Connection bookkeeping.
 
-    /// Session output in order: Display under an interactive attachment's
-    /// authority, private Output otherwise. Nothing is sent for no bytes.
+    /// Session output in order, as Display under the attachment's
+    /// authority. Nothing is sent for no bytes, or without an authority.
     fn send_output(&mut self, id: u64, bytes: &[u8]) {
-        let authority = self.display_authority(id);
-        for chunk in bytes.chunks(DISPLAY_CHUNK) {
-            match authority {
-                Some(authority) => self.display(id, authority, chunk),
-                None => self.reply(id, ServerMessage::Output(chunk.to_vec())),
-            }
-        }
-    }
-
-    /// A private message; a revision-1 connection never receives one.
-    fn reply(&mut self, id: u64, message: ServerMessage) {
-        if self.holds_role(id) {
-            return;
-        }
-        let Some(connection) = self.connections.get_mut(&id) else {
+        let Some(authority) = self.display_authority(id) else {
             return;
         };
-        let queued = connection.queue(message);
-        self.queued_or_lost(id, queued);
+        for chunk in bytes.chunks(DISPLAY_CHUNK) {
+            self.display(id, authority, chunk);
+        }
     }
 
     fn queue_frame(&mut self, id: u64, frame: Frame) {
@@ -1107,58 +1020,6 @@ fn accepted(result: io::Result<SocketStream>) -> io::Result<Option<SocketStream>
         );
         if refused { Ok(None) } else { Err(error) }
     })
-}
-
-fn control_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: ClientMessage,
-) -> Vec<Effect> {
-    match message {
-        ClientMessage::Attach(size) => control.attach(conn, size),
-        ClientMessage::Ready {
-            period: restoration,
-        } => control.ready(conn, Restoration(restoration)),
-        other => departure_effects(control, conn, other),
-    }
-}
-
-fn departure_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: ClientMessage,
-) -> Vec<Effect> {
-    match message {
-        ClientMessage::TakeControl => control.take_control(conn),
-        ClientMessage::Detach => control.detach(conn),
-        other => ending_effects(control, conn, &other),
-    }
-}
-
-/// `Kill`, or a client `Error`, which is an unexpected loss.
-fn ending_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: &ClientMessage,
-) -> Vec<Effect> {
-    if matches!(message, ClientMessage::Kill) {
-        return control.kill(conn);
-    }
-    control.lost(conn)
-}
-
-/// `Terminated` with the private protocol's status, or `Error`.
-fn private_confirmation(end: &SessionEnd) -> ServerMessage {
-    match end.private_result() {
-        PrivateResult::Status(code) => ServerMessage::Terminated { code },
-        PrivateResult::Error => failure_message(),
-    }
-}
-
-fn failure_message() -> ServerMessage {
-    ServerMessage::Error {
-        message: FAILURE_MESSAGE.into(),
-    }
 }
 
 /// An ending session finishes at its drain deadline, with output still queued for a client

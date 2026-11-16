@@ -1,5 +1,5 @@
 //! Command final and standalone Kill (#88): how the end of a session reaches
-//! revision-1 connections, beside the private protocol's results.
+//! revision-1 connections.
 use super::{
     assert_closed, assert_final_then_closed, assert_killed, assert_rejected,
     assert_rejected_knowing, command_final, counter, exited, frame,
@@ -8,7 +8,7 @@ use super::{
 };
 use crate::Session;
 use climon2_core::{
-    protocol::{ClientMessage, HANGUP_GRACE, ServerMessage as PrivateMessage},
+    protocol::HANGUP_GRACE,
     wire::{
         Acquire, AuthorityIds, Cleanup, CommandResult, Focus, GrantReason, Input, KnownResult,
         Leave, Mode, Outcome, PartialCleanup, PartialTermination, Ready, Resize, Response,
@@ -519,7 +519,7 @@ fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
         killing
             .set_read_timeout(Some(Duration::from_secs(20)))
             .unwrap();
-        crate::send(&mut killing, ClientMessage::Hello { protocol: 1 });
+        crate::send_hello(&mut killing);
         request(&mut killing, &kill(1, 1, &[]));
         killing
     });
@@ -530,10 +530,7 @@ fn a_kill_during_the_drain_lets_the_commands_last_output_through() {
     let before_final = attached.display.clone();
     attached.session_ended();
     assert_eq!(crate::count(&before_final, b"last line"), 1);
-    assert!(matches!(
-        crate::receive(&mut killing),
-        PrivateMessage::Hello(_)
-    ));
+    crate::receive_hello(&mut killing);
     assert_eq!(message(&mut killing), terminated(1, &result));
     assert_closed(&mut killing);
     session.finish();
@@ -587,17 +584,14 @@ fn opened_as_the_drain_ends(session: &Session) -> (UnixStream, UnixStream, Insta
         stream
             .set_read_timeout(Some(Duration::from_secs(20)))
             .unwrap();
-        crate::send(&mut stream, ClientMessage::Hello { protocol: 1 });
+        crate::send_hello(&mut stream);
         request(
             &mut stream,
             &open(1, &[], &[], Mode::Interactive(geometry(91, 37))),
         );
         (stream, Instant::now())
     });
-    assert!(matches!(
-        crate::receive(&mut stream),
-        PrivateMessage::Hello(_)
-    ));
+    crate::receive_hello(&mut stream);
     (watching, stream, resumed)
 }
 
