@@ -310,11 +310,11 @@ impl State {
     fn step(&self, version: &VersionName) -> Option<Step> {
         let lanes = self.context.lanes;
         match self.releases.get(version) {
-            None => (self.loading() < lanes.loads).then(|| Step::Load(version.clone())),
+            None => room(self.loading(), lanes.loads).then(|| Step::Load(version.clone())),
             Some(Release::Loading) => None,
             Some(Release::Refused(refusal)) => Some(Step::Refuse(refusal.message().to_owned())),
             Some(Release::Loaded(functions)) => {
-                (self.starting() < lanes.starts).then_some(Step::Start(functions))
+                room(self.starting(), lanes.starts).then_some(Step::Start(functions))
             }
         }
     }
@@ -560,6 +560,11 @@ impl State {
     }
 }
 
+/// Whether a lane of `bound` has room beside the `used` slots it holds.
+fn room(used: u32, bound: u32) -> bool {
+    used < bound
+}
+
 /// Waits one tick for any of `table`'s descriptors, or simply one tick.
 fn wait(table: &mut [libc::pollfd]) {
     if table.is_empty() {
@@ -612,11 +617,18 @@ mod tests {
         drain_fails: bool,
         /// Run ignores shutdown until the test lets it go.
         stalls: bool,
+        /// Run sends Open's success only once the test lets it go (or
+        /// shutdown asks), so the instance holds its start slot until then.
+        opens_late: bool,
+        /// Run ends at once, before Open's response, with terminal evidence
+        /// carrying this message.
+        ends_unopened: Option<&'static [u8]>,
     }
 
     /// What the observer saw of one session's instance.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Seen {
+        Created,
         Destroyed(u32),
         OwnerExited,
     }
@@ -797,10 +809,14 @@ mod tests {
                 attachment_detached: 0,
                 connection_closed: 1,
                 reserved: [0; 2],
-                error: no_error(),
+                error: Error {
+                    message: bytes_of(script.ends_unopened.unwrap_or_default()),
+                    ..no_error()
+                },
             },
         }));
         OWNER.with(|owner| *owner.borrow_mut() = Some(Exit(id)));
+        changed(&mut world(), |world| world.seen.push((id, Seen::Created)));
         // SAFETY: the supervisor passes an output struct.
         unsafe {
             let out = &mut *out;
@@ -841,17 +857,30 @@ mod tests {
             fake.state().over = true;
             return failure(native::INTERNAL_ERROR, b"internal_error", b"run failed");
         }
-        fake.push(Item::Delivery(opened()));
-        let mut world = world();
-        while !(fake.state().shutdown
-            && (!fake.script.stalls || world.unstalled.contains(&fake.id)))
-        {
-            world = CHANGED.wait(world).unwrap_or_else(PoisonError::into_inner);
+        if fake.script.ends_unopened.is_none() {
+            serve(fake);
         }
-        drop(world);
         fake.push(Item::Terminal);
         fake.state().over = true;
         success()
+    }
+
+    /// Run's opened life: Open's success, as late as the script says, then
+    /// shutdown, as late as the script says.
+    fn serve(fake: &Fake) {
+        let let_go = |world: &World| world.unstalled.contains(&fake.id);
+        let shutdown = || fake.state().shutdown;
+        wait_while(|world| fake.script.opens_late && !let_go(world) && !shutdown());
+        fake.push(Item::Delivery(opened()));
+        wait_while(|world| !(shutdown() && (!fake.script.stalls || let_go(world))));
+    }
+
+    /// Waits for each change of the world while `blocked` holds of it.
+    fn wait_while(mut blocked: impl FnMut(&World) -> bool) {
+        let mut guard = world();
+        while blocked(&guard) {
+            guard = CHANGED.wait(guard).unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     extern "C" fn destroy(instance: *mut Instance) -> Call {
@@ -994,18 +1023,48 @@ mod tests {
     }
 
     fn metadata(id: &SessionId, created: &str) -> SessionMetadata {
+        versioned(id, created, "0.1.0")
+    }
+
+    fn versioned(id: &SessionId, created: &str, version: &str) -> SessionMetadata {
         serde_json::from_value(serde_json::json!({
             "format_version": 1, "session_id": id.as_str(), "socket_path": "/tmp/s",
             "daemon_pid": 1, "daemon_start_time": 0, "command": "fake", "args": [],
-            "cwd": "/", "depth": 1, "created_at": created, "climon2_version": "0.1.0"
+            "cwd": "/", "depth": 1, "created_at": created, "climon2_version": version
         }))
         .unwrap()
     }
 
-    /// A supervisor over the fake library in its own climon2 home.
-    fn supervisor(starts: u32, shutdown_ms: u64, load: Load) -> (tempfile::TempDir, Supervisor) {
+    /// A supervisor in its own climon2 home, and the home.
+    struct Supervised {
+        directory: tempfile::TempDir,
+        supervisor: Supervisor,
+        log: std::path::PathBuf,
+    }
+
+    impl Supervised {
+        /// What the supervisor wrote to the monitor's general log.
+        fn log(&self) -> String {
+            std::fs::read_to_string(&self.log).unwrap()
+        }
+
+        /// Whether `id`'s private log directory exists: the supervisor makes
+        /// it when, and only when, it starts that session's client.
+        fn started(&self, id: &SessionId) -> bool {
+            self.directory
+                .path()
+                .join("logs")
+                .join(id.as_str())
+                .is_dir()
+        }
+    }
+
+    /// A supervisor over `load` in its own climon2 home, logging to that
+    /// home's monitor log.
+    fn supervisor(starts: u32, shutdown_ms: u64, load: Load) -> Supervised {
         let directory = tempfile::tempdir().unwrap();
         let home = HomeLayout::resolve(Some(directory.path().as_os_str()), Path::new("/")).unwrap();
+        let log = climon2_platform::logging::LogFile::monitor(directory.path()).unwrap();
         let context = Context {
             load,
             home,
@@ -1021,8 +1080,13 @@ mod tests {
             },
             shutdown: Duration::from_millis(shutdown_ms),
         };
-        let supervisor = Supervisor::start(context, tracing::Dispatch::none()).unwrap();
-        (directory, supervisor)
+        let dispatch = log.dispatch(Some("info")).unwrap();
+        let supervisor = Supervisor::start(context, dispatch).unwrap();
+        Supervised {
+            directory,
+            supervisor,
+            log: log.path().to_owned(),
+        }
     }
 
     fn fake_library() -> Load {
@@ -1047,18 +1111,19 @@ mod tests {
     /// With one start slot, `failing` (created first) fails as `script` says,
     /// then `healthy` starts and opens. The failed instance is destroyed
     /// successfully before exit, so its deliveries and both handles were
-    /// released, and the healthy one ends at exit.
+    /// released, and the healthy one ends at exit, confirmed in time.
     fn a_failure_ends_cleanly_and_frees_its_start_slot(test: u8, failing: Script) -> String {
         let (doomed, healthy) = (session(test, 1), session(test, 2));
         script(&doomed, failing);
-        let (_home, mut supervisor) = supervisor(1, 20_000, fake_library());
+        let mut supervised = supervisor(1, 20_000, fake_library());
+        let supervisor = &mut supervised.supervisor;
         supervisor.start_client(metadata(&doomed, "2026-11-13T10:00:02.000Z"));
         supervisor.start_client(metadata(&healthy, "2026-11-13T10:00:01.000Z"));
-        let (id, event) = next(&supervisor);
+        let (id, event) = next(supervisor);
         assert_eq!(id, doomed);
         let why = unavailable(&event).to_owned();
         assert_eq!(
-            next(&supervisor),
+            next(supervisor),
             (healthy.clone(), ClientEvent::Opened { status: false })
         );
         let destroyed = |id: &SessionId| {
@@ -1068,15 +1133,28 @@ mod tests {
         until(destroyed(&doomed));
         assert_eq!(
             seen(&guid(&doomed)),
-            [Seen::Destroyed(native::SUCCESS), Seen::OwnerExited]
+            [
+                Seen::Created,
+                Seen::Destroyed(native::SUCCESS),
+                Seen::OwnerExited
+            ]
         );
         supervisor.stop();
         assert_eq!(
             seen(&guid(&healthy)),
-            [Seen::Destroyed(native::SUCCESS), Seen::OwnerExited]
+            [
+                Seen::Created,
+                Seen::Destroyed(native::SUCCESS),
+                Seen::OwnerExited
+            ]
         );
         let rest: Vec<_> = supervisor.reports.try_iter().collect();
         assert_eq!(rest, [(healthy, ClientEvent::Ended)]);
+        assert!(
+            !supervised.log().contains(UNCONFIRMED),
+            "{}",
+            supervised.log()
+        );
         why
     }
 
@@ -1131,7 +1209,7 @@ mod tests {
     /// Client supervisor (Fault, #106; shutdown bound): an instance that ignores
     /// shutdown never holds exit past `deadlines.shutdown_ms`, and it is never
     /// destroyed while its handles are unreleased: its owner leaves it to process
-    /// exit (#118 owns the fail-stop).
+    /// exit (#118 owns the fail-stop), and the monitor log says so.
     #[test]
     fn exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles() {
         let stalled = session(3, 1);
@@ -1142,21 +1220,24 @@ mod tests {
                 ..Script::default()
             },
         );
-        let (_home, mut supervisor) = supervisor(1, 200, fake_library());
+        let mut supervised = supervisor(1, 200, fake_library());
+        let supervisor = &mut supervised.supervisor;
         supervisor.start_client(metadata(&stalled, "2026-11-13T10:00:00.000Z"));
         assert_eq!(
-            next(&supervisor),
+            next(supervisor),
             (stalled.clone(), ClientEvent::Opened { status: false })
         );
         let started = Instant::now();
         supervisor.stop();
         assert!(started.elapsed() < Duration::from_secs(10));
+        let log = supervised.log();
+        assert!(log.contains(&format!("{UNCONFIRMED} clients=1")), "{log}");
         let id = guid(&stalled);
         changed(&mut world(), |world| {
             world.unstalled.insert(id);
         });
         until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
-        assert_eq!(seen(&id), [Seen::OwnerExited]);
+        assert_eq!(seen(&id), [Seen::Created, Seen::OwnerExited]);
     }
 
     /// Client supervisor (Fault, #106; one shared load attempt per release): a
@@ -1170,7 +1251,11 @@ mod tests {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(Refusal::Library(Failure::MissingLibrary, "missing".into()))
         });
-        let (_home, mut supervisor) = supervisor(4, 20_000, refuse);
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(4, 20_000, refuse);
         let sessions = [session(4, 1), session(4, 2), session(4, 3)];
         for (second, id) in sessions.iter().enumerate() {
             supervisor.start_client(metadata(id, &format!("2026-11-13T10:00:0{second}.000Z")));
@@ -1184,5 +1269,122 @@ mod tests {
         assert_eq!(reported, expected);
         supervisor.stop();
         assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    const UNCONFIRMED: &str = "client shutdown unconfirmed at its deadline";
+
+    /// A loader that refuses release 0.0.1 and loads the fake library for
+    /// any other.
+    fn refusing_old() -> Load {
+        Box::new(|version| match version.as_str() {
+            "0.0.1" => Err(Refusal::Library(Failure::MissingLibrary, "old".into())),
+            _ => Ok(&FAKE),
+        })
+    }
+
+    /// Lets `id`'s scripted wait end.
+    fn let_go(id: &SessionId) {
+        let id = guid(id);
+        changed(&mut world(), |world| {
+            world.unstalled.insert(id);
+        });
+    }
+
+    /// Client supervisor (#106; `scheduling.starts` at its bound): with two
+    /// start slots, two sessions whose Open is unanswered both start, and a
+    /// third waits, holding no client and no log directory, until one of
+    /// them opens; then it starts and opens after it. A session of a refused
+    /// release, newer than none of the three, is reported once the waiting
+    /// session has been scheduled, so its report proves the third was held.
+    #[test]
+    fn client_starts_never_exceed_the_start_lane() {
+        let [first, second, third] = [session(6, 1), session(6, 2), session(6, 3)];
+        let [refused, marker] = [session(6, 4), session(6, 5)];
+        for id in [&first, &second] {
+            let opens_late = Script {
+                opens_late: true,
+                ..Script::default()
+            };
+            script(id, opens_late);
+        }
+        let mut supervised = supervisor(2, 20_000, refusing_old());
+        let supervisor = &mut supervised.supervisor;
+        let old = |id: &SessionId, created: &str| versioned(id, created, "0.0.1");
+        supervisor.start_client(old(&refused, "2026-11-13T10:00:01.000Z"));
+        let why = ClientEvent::Unavailable("old".into());
+        assert_eq!(next(supervisor), (refused, why.clone()));
+        supervisor.start_client(metadata(&first, "2026-11-13T10:00:09.000Z"));
+        supervisor.start_client(metadata(&second, "2026-11-13T10:00:08.000Z"));
+        let [one, two] = [&first, &second].map(guid);
+        until(|world| {
+            [one, two]
+                .iter()
+                .all(|id| world.seen.contains(&(*id, Seen::Created)))
+        });
+        supervisor.start_client(metadata(&third, "2026-11-13T10:00:05.000Z"));
+        supervisor.start_client(old(&marker, "2026-11-13T10:00:04.000Z"));
+        assert_eq!(next(supervisor), (marker, why));
+        assert!(!supervised.started(&third));
+        assert!(seen(&guid(&third)).is_empty());
+        let supervisor = &mut supervised.supervisor;
+        let_go(&first);
+        let opened = ClientEvent::Opened { status: false };
+        assert_eq!(next(supervisor), (first.clone(), opened.clone()));
+        assert_eq!(next(supervisor), (third.clone(), opened.clone()));
+        let_go(&second);
+        assert_eq!(next(supervisor), (second.clone(), opened));
+        supervisor.stop();
+        let mut rest: Vec<_> = supervisor.reports.try_iter().collect();
+        rest.sort_by(|a, b| a.0.cmp(&b.0));
+        let ended = [first, second, third].map(|id| (id, ClientEvent::Ended));
+        assert_eq!(rest, ended);
+    }
+
+    /// Client supervisor (#106): terminal evidence before Open's response
+    /// makes the row Unavailable with the evidence's message, or, when the
+    /// message is empty, with why it is unavailable. Each instance is then
+    /// released and destroyed.
+    #[test]
+    fn terminal_evidence_before_open_says_why_the_session_is_unavailable() {
+        let [named, silent] = [session(7, 1), session(7, 2)];
+        for (id, message) in [(&named, &b"daemon refused"[..]), (&silent, b"")] {
+            let ends = Script {
+                ends_unopened: Some(message),
+                ..Script::default()
+            };
+            script(id, ends);
+        }
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(2, 20_000, fake_library());
+        supervisor.start_client(metadata(&named, "2026-11-13T10:00:02.000Z"));
+        supervisor.start_client(metadata(&silent, "2026-11-13T10:00:01.000Z"));
+        let mut reported = vec![next(&supervisor), next(&supervisor)];
+        reported.sort_by(|a, b| a.0.cmp(&b.0));
+        let unavailable = |why: &str| ClientEvent::Unavailable(why.into());
+        assert_eq!(
+            reported,
+            [
+                (named.clone(), unavailable("daemon refused")),
+                (
+                    silent.clone(),
+                    unavailable("the client stopped before it opened")
+                ),
+            ]
+        );
+        for id in [&named, &silent].map(guid) {
+            until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
+        }
+        supervisor.stop();
+        for id in [&named, &silent].map(guid) {
+            let destroyed = [
+                Seen::Created,
+                Seen::Destroyed(native::SUCCESS),
+                Seen::OwnerExited,
+            ];
+            assert_eq!(seen(&id), destroyed);
+        }
     }
 }
