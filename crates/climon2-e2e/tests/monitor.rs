@@ -7,7 +7,9 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{AnsiColor, Color, InputTerminal, Modes, Terminal, Width, bin_path};
+use climon2_test_term::{
+    AnsiColor, Color, CursorShape, InputTerminal, Modes, Terminal, Underline, Width, bin_path,
+};
 use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
@@ -5233,6 +5235,367 @@ fn without_focus_support_sessions_stay_usable_and_nothing_is_shown() {
     support::assert_released(&package, &mut terminal, 0);
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
     drop(fake);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Has the [`watched`] session `title` write `bytes`, as [`set_modes`]
+/// does, without waiting for them to show; first it waits until the
+/// session has written, and removed, what it was given before, so the
+/// removal never takes these.
+fn emit(package: &Package, title: &str, bytes: &[u8]) {
+    let home = package.isolation.home();
+    let pending = home.join(format!("{title}.mode"));
+    let deadline = Instant::now() + TIMEOUT;
+    while pending.exists() {
+        assert!(Instant::now() < deadline, "{title} never wrote its bytes");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let staged = home.join(format!("{title}.mode.new"));
+    fs::write(&staged, bytes).unwrap();
+    fs::rename(&staged, home.join(format!("{title}.mode"))).unwrap();
+}
+
+/// `line<n>` for each `n` in `numbers`, two digits at least, each on a new
+/// line with the rest of that line erased.
+fn numbered(numbers: std::ops::RangeInclusive<u32>) -> Vec<u8> {
+    numbers
+        .flat_map(|number| format!("\r\nline{number:02}\x1b[K").into_bytes())
+        .collect()
+}
+
+/// Waits until a whole frame's top row is `top` and each host row in
+/// `rows` starts with its text.
+fn frame_rows(terminal: &Terminal, top: &str, rows: &[(usize, &str)]) {
+    whole_frame_shows(terminal, &format!("{top:?} over {rows:?}"), |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.first() == Some(&top)
+            && rows
+                .iter()
+                .all(|(row, text)| lines.get(*row).is_some_and(|line| line.starts_with(text)))
+    });
+}
+
+/// A wheel notch up (back) or down over the session's canvas.
+const WHEEL_UP: &str = "\x1b[<64;10;10M";
+const WHEEL_DOWN: &str = "\x1b[<65;10;10M";
+/// The glossary's truncation notice.
+const NOTICE: &str = "[climon2: older session scrollback was discarded]";
+
+/// TRM-05 (Monitor; owner decisions on #112) and FOC-01 (Monitor, history
+/// case): the wheel scrolls the selected session's normal history one row
+/// a notch while the application does not report the mouse, `History`
+/// shows in the control slot and the cursor, scrolled out of view, hides.
+/// Output keeps the view anchored on the rows it shows. Typing returns it
+/// live and reaches the application, which saw focus in once and no focus
+/// change from scrolling. Scrolled to the oldest row (`RAW`, history not
+/// truncated, so no notice), 210 more rows with 200 history rows kept
+/// evict it: the view moves to the truncation notice above the oldest row
+/// kept, and one notch down leaves the notice. On the alternate screen the
+/// wheel shows no history: it sends nothing, then cursor keys once the
+/// application turns alternate scroll on, in its cursor mode. Nothing
+/// reaches the host's native scrollback.
+#[test]
+fn the_wheel_scrolls_anchored_history_and_typing_returns_live() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"history": {"max_rows": 200}}));
+    headless(&package, &watched("Hist"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Hist", RUNNING, "29 120");
+    let native = terminal.history();
+    let live = session_top_row(
+        usize::from(COLS),
+        "Hist",
+        &[RUNNING, CONTROLLING, SESSIONS_HINT],
+    );
+    let history = session_top_row(
+        usize::from(COLS),
+        "Hist",
+        &[RUNNING, "History", SESSIONS_HINT],
+    );
+
+    emit(
+        &package,
+        "Hist",
+        &[&b"\x1b[?1004h"[..], &numbered(1..=60)].concat(),
+    );
+    received_by(&package, "Hist", b"\x1b[I");
+    frame_rows(&terminal, &live, &[(1, "line32"), (29, "line60")]);
+    terminal.send(WHEEL_UP.repeat(3)).unwrap();
+    frame_rows(
+        &terminal,
+        &history,
+        &[(1, "line29"), (3, "line31"), (4, "line32"), (29, "line57")],
+    );
+    assert!(!terminal.cursor().visible, "scrolled out of view");
+
+    emit(
+        &package,
+        "Hist",
+        &[&numbered(61..=65)[..], b"\x1b[1;1HMARKER\x1b[29;7H"].concat(),
+    );
+    frame_rows(
+        &terminal,
+        &history,
+        &[(1, "line29"), (8, "line36"), (9, "MARKER"), (29, "line57")],
+    );
+    terminal.send("k").unwrap();
+    received_by(&package, "Hist", b"\x1b[Ik");
+    frame_rows(&terminal, &live, &[(1, "MARKER"), (29, "line65")]);
+    cursor_at(&terminal, 29, 6);
+
+    terminal.send(WHEEL_UP.repeat(60)).unwrap();
+    frame_rows(&terminal, &history, &[(1, "RAW"), (2, "line01")]);
+    emit(&package, "Hist", &numbered(66..=275));
+    frame_rows(
+        &terminal,
+        &history,
+        &[(1, NOTICE), (2, "line47"), (29, "line74")],
+    );
+    terminal.send(WHEEL_DOWN).unwrap();
+    frame_rows(&terminal, &history, &[(1, "line47"), (29, "line75")]);
+
+    terminal.send("j").unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikj");
+    emit(&package, "Hist", b"\x1b[?1049h\x1b[HALT");
+    frame_rows(&terminal, &live, &[(1, "ALT"), (2, "")]);
+    terminal.send(format!("{WHEEL_UP}{WHEEL_DOWN}a")).unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikja");
+    frame_rows(&terminal, &live, &[(1, "ALT")]);
+    emit(&package, "Hist", b"\x1b[?1007h\x1b[2;1HSCROLL");
+    frame_rows(&terminal, &live, &[(2, "SCROLL")]);
+    terminal.send(format!("{WHEEL_UP}{WHEEL_DOWN}b")).unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikja\x1b[A\x1b[Bb");
+    emit(&package, "Hist", b"\x1b[?1h\x1b[3;1HCURSOR");
+    frame_rows(&terminal, &live, &[(3, "CURSOR")]);
+    terminal.send(format!("{WHEEL_UP}c")).unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikja\x1b[A\x1b[Bb\x1bOAc");
+    emit(&package, "Hist", b"\x1b[?1049l");
+    frame_rows(&terminal, &live, &[(29, "line275")]);
+
+    assert_eq!(terminal.history(), native, "no native scrollback");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The top row of the selected, controlled session whose label the host
+/// shows as `label` over `cells` cells (its row text has a wide
+/// character's covered cell as a blank, and no combining mark), in the 55
+/// cells a 120-cell top row leaves it, with `status`.
+fn labelled(label: &str, cells: usize, status: &str) -> String {
+    let slots = session_top_row(65, "", &[status, CONTROLLING, SESSIONS_HINT]);
+    format!("{label}{}{slots}", " ".repeat(55 - cells))
+}
+
+/// TRM-06 (Monitor; owner decision on #112: nothing marquees): the label
+/// is the latest nonempty title, literal. One that fits its 55 cells
+/// exactly is whole; one a cell longer is truncated statically to end
+/// with `…`. A wide character that would cross the limit leaves a blank
+/// cell instead, and combining marks stay with their base. An empty title
+/// keeps the latest nonempty one, and a status change moves neither the
+/// truncated label nor the slots.
+#[test]
+fn overflowing_titles_are_truncated_statically_with_an_ellipsis() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Title"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Title", RUNNING, "29 120");
+
+    let fits = "a".repeat(55);
+    retitle(&package, "Title", &fits);
+    top_row_is(&mut terminal, &labelled(&fits, 55, RUNNING));
+    retitle(&package, "Title", &"b".repeat(56));
+    let cut = format!("{}…", "b".repeat(54));
+    top_row_is(&mut terminal, &labelled(&cut, 55, RUNNING));
+    retitle(&package, "Title", &format!("c{}", "日".repeat(28)));
+    let wide = format!("c{}…", "日 ".repeat(26));
+    top_row_is(&mut terminal, &labelled(&wide, 54, RUNNING));
+    retitle(&package, "Title", &"e\u{301}".repeat(56));
+    let combining = format!("{}…", "e".repeat(54));
+    top_row_is(&mut terminal, &labelled(&combining, 55, RUNNING));
+    let marks = terminal.cells(0);
+    assert_eq!(marks[0].text, "e\u{301}");
+    assert_eq!(marks[53].text, "e\u{301}");
+    assert_eq!(marks[54].text, "…");
+    retitle(&package, "Title", "");
+    report_state(&package, "Title", "idle");
+    top_row_is(&mut terminal, &labelled(&combining, 55, "Needs attention"));
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// TRM-01 (Monitor; #108's note on #112): what an application draws
+/// reaches the host faithfully. Each underline style keeps its style;
+/// the cursor keeps its DECSCUSR shape and blink, and hides when the
+/// application hides it; the 1049 alternate screen replaces the normal
+/// one and leaving it restores the normal screen and cursor; a
+/// synchronized update that spans two writes shows whole once it ends.
+#[test]
+fn underline_styles_cursor_styles_screens_and_synchronized_updates_reach_the_host() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Fid"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Fid", RUNNING, "29 120");
+    let live = session_top_row(
+        usize::from(COLS),
+        "Fid",
+        &[RUNNING, CONTROLLING, SESSIONS_HINT],
+    );
+
+    emit(
+        &package,
+        "Fid",
+        b"\x1b[3;1H\x1b[4mS\x1b[4:2mD\x1b[4:3mC\x1b[4:4mO\x1b[4:5mA\x1b[0mN\x1b[5 q",
+    );
+    frame_rows(&terminal, &live, &[(3, "SDCOAN")]);
+    let styles: Vec<_> = terminal.cells(3)[..6]
+        .iter()
+        .map(|cell| cell.rendition.underline)
+        .collect();
+    assert_eq!(
+        styles,
+        [
+            Some(Underline::Single),
+            Some(Underline::Double),
+            Some(Underline::Curly),
+            Some(Underline::Dotted),
+            Some(Underline::Dashed),
+            None,
+        ]
+    );
+    cursor_at(&terminal, 3, 6);
+    let cursor = terminal.cursor();
+    assert_eq!((cursor.shape, cursor.blinking), (CursorShape::Bar, true));
+    emit(&package, "Fid", b"\x1b[4 q\x1b[3;8HU");
+    frame_rows(&terminal, &live, &[(3, "SDCOAN U")]);
+    cursor_at(&terminal, 3, 8);
+    let cursor = terminal.cursor();
+    assert_eq!(
+        (cursor.shape, cursor.blinking),
+        (CursorShape::Underline, false)
+    );
+    emit(&package, "Fid", b"\x1b[?25l\x1b[3;10HH");
+    frame_rows(&terminal, &live, &[(3, "SDCOAN U H")]);
+    assert!(!terminal.cursor().visible);
+
+    emit(&package, "Fid", b"\x1b[?25h\x1b[?1049h\x1b[2;2HALT");
+    frame_rows(&terminal, &live, &[(1, ""), (2, " ALT"), (3, "")]);
+    cursor_at(&terminal, 2, 4);
+    emit(&package, "Fid", b"\x1b[?1049l");
+    frame_rows(&terminal, &live, &[(3, "SDCOAN U H")]);
+    cursor_at(&terminal, 3, 10);
+
+    emit(&package, "Fid", b"\x1b[?2026h\x1b[5;1HHALF");
+    emit(&package, "Fid", b"DONE\x1b[?2026l");
+    frame_rows(&terminal, &live, &[(5, "HALFDONE")]);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Bash that titles its session `title`, then, until `$HOME/finish`
+/// exists, prints `tick <n>` lines every 20 ms and appends each new `stty
+/// size` of its terminal to `$HOME/<title>.sizes`.
+fn ticking(title: &str) -> String {
+    working(&format!(
+        "printf '\\033]2;{title}\\007'; p=; i=0; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; fi; \
+         i=$((i+1)); printf 'tick %d\\r\\n' \"$i\"; sleep 0.02; done"
+    ))
+}
+
+/// Resizes the host to `rows` by `cols`, then waits until a whole frame
+/// meets `done`, checking that every whole frame the monitor paints for
+/// the new size is coherent: `Terminal too small` alone, or the `Tick`
+/// session's top row over a canvas showing its output, never a blank or
+/// partial one. Until the monitor has painted one frame laid out for the
+/// new size (its top row too small, or the session's top row at the new
+/// width), the host shows its own reflow of earlier frames and whatever a
+/// frame painted for the old size makes of it, which is not judged.
+fn resized_coherently(
+    terminal: &mut Terminal,
+    (rows, cols): (u16, u16),
+    what: &str,
+    done: impl Fn(&str) -> bool,
+) {
+    let laid_out: Vec<_> = ["Acquiring", "Restoring", CONTROLLING]
+        .into_iter()
+        .map(|control| {
+            session_top_row(
+                usize::from(cols),
+                "Tick",
+                &[RUNNING, control, SESSIONS_HINT],
+            )
+        })
+        .collect();
+    let started = std::cell::Cell::new(false);
+    terminal.resize(rows, cols).unwrap();
+    whole_frame_shows(terminal, what, |screen| {
+        let mut lines = screen.lines();
+        let top = lines.next().unwrap_or_default();
+        let canvas: Vec<_> = lines.collect();
+        let small = top.starts_with("Terminal too small");
+        started.set(started.get() || small || laid_out.iter().any(|row| row == top));
+        if !started.get() {
+            return false;
+        }
+        let blank = canvas.iter().all(|row| row.trim().is_empty());
+        let painted = top.starts_with("Tick") && canvas.iter().any(|row| row.starts_with("tick "));
+        assert!(
+            (small && blank) || painted,
+            "an incoherent frame:\n{screen}"
+        );
+        done(screen)
+    });
+}
+
+/// TRM-04 (Monitor): while the session prints continuously, host resizes
+/// to a narrower host, to one too small and back each show only coherent
+/// frames: the last frame clipped or padded until the restoration at the
+/// new size is applied, `Terminal too small` alone while too small, and
+/// the session at its new size after; never a blank or partial canvas. The
+/// session is resized to each size the monitor sent, and never to one
+/// while too small.
+#[test]
+fn resizes_under_continuous_output_show_only_coherent_frames() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &ticking("Tick"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    let wide = controlled("Tick", RUNNING);
+    whole_frame_shows(&terminal, "the first ticks", |screen| {
+        screen.lines().next() == Some(wide.as_str()) && screen.contains("\ntick ")
+    });
+    let narrow = session_top_row(100, "Tick", &[RUNNING, CONTROLLING, SESSIONS_HINT]);
+    resized_coherently(&mut terminal, (ROWS, 100), "the narrower host", |screen| {
+        screen.lines().next() == Some(narrow.as_str())
+    });
+    sized_to(&package, "Tick", &["24 80", "29 120", "29 100"]);
+    resized_coherently(&mut terminal, (3, 100), "a host too small", |screen| {
+        screen.starts_with("Terminal too small")
+    });
+    resized_coherently(
+        &mut terminal,
+        (ROWS, COLS),
+        "the recovered host",
+        |screen| screen.lines().next() == Some(wide.as_str()),
+    );
+    sized_to(&package, "Tick", &["24 80", "29 120", "29 100", "29 120"]);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
     finish_sessions(&package, "finish");
     package.assert_clean();
 }

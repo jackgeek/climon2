@@ -431,6 +431,10 @@ earlier run would, so they open on the empty state.
 | INP-05 (application, chrome and selector), INP-04 (a modal mid-gesture) mouse events translated below the top row, each gesture kept by its owner or discarded through its release | `mouse_events_reach_the_application_translated_and_keep_their_gesture` |
 | FOC-01 (application focus) focus follows menus, host focus and switching, once per change | `application_focus_follows_selection_menus_and_host_focus_once_each` |
 | FOC-02 (owner decisions on #111) sessions stay usable on a host that never reports focus, and a session without `focus-v1` (the host's fake daemon) shows nothing about it | `without_focus_support_sessions_stay_usable_and_nothing_is_shown` |
+| TRM-05 (owner decisions on #112), FOC-01 (history case) the wheel scrolls anchored history a row a notch with `History` in the control slot and the cursor hidden out of view; typing returns live without a focus change; eviction moves the view to the truncation notice above the oldest kept row; on the alternate screen the wheel sends nothing, then cursor keys with alternate scroll in the cursor mode; nothing in native scrollback | `the_wheel_scrolls_anchored_history_and_typing_returns_live` |
+| TRM-06 (owner decision on #112) labels that fit exactly are whole, one cell longer truncated with `…`, wide and combining text cell-safe, an empty title keeping the latest, a status change moving nothing | `overflowing_titles_are_truncated_statically_with_an_ellipsis` |
+| TRM-01 (#108's note on #112) underline styles, cursor shape, blink and visibility, the 1049 alternate screen and a synchronized update spanning two writes reach the host | `underline_styles_cursor_styles_screens_and_synchronized_updates_reach_the_host` |
+| TRM-04 resizes to a narrower host, a too-small one and back under continuous output show only coherent frames, and the session gets every size sent and none while too small | `resizes_under_continuous_output_show_only_coherent_frames` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon
