@@ -14,7 +14,10 @@
 //! application is instead released to it at once ([`Router::release`]):
 //! applications do their own Escape timing, and the rest of a sequence that
 //! follows goes after it.
-use crate::keys::{Action, action};
+use crate::{
+    keys::{Action, action},
+    mouse::{self, Mouse},
+};
 use climon2_core::keys::ControlKey;
 use climon2_vt::view::Modes;
 
@@ -47,6 +50,44 @@ pub(crate) enum Routed {
     /// before the rest arrived: an application receives the key without its
     /// leading Escape, a modal nothing.
     Rest(Key),
+    /// Part of a bracketed paste, as one read brought it.
+    Paste(Pasted),
+    /// A mouse report.
+    Mouse(Mouse),
+    /// The host's focus report: true when it gained focus.
+    Focus(bool),
+}
+
+/// Part of a bracketed paste: data, never keys.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Pasted {
+    pub(crate) begin: Begin,
+    /// The pasted bytes, exactly; bytes that may begin the end marker wait
+    /// for the bytes after them.
+    pub(crate) bytes: Vec<u8>,
+    /// The end marker ends the paste here.
+    pub(crate) ends: bool,
+}
+
+/// Whether a paste begins with this part.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Begin {
+    /// It began in an earlier part.
+    Continued,
+    Started,
+    /// It began after a pending prefix, which it discarded: an application
+    /// receives that prefix once, a modal nothing.
+    Prefixed(u8),
+}
+
+impl Begin {
+    /// The prefix this paste discarded, if it did.
+    pub(crate) fn prefix(self) -> Option<u8> {
+        match self {
+            Self::Prefixed(prefix) => Some(prefix),
+            Self::Continued | Self::Started => None,
+        }
+    }
 }
 
 /// Classifies host input, however the host splits its reads.
@@ -58,8 +99,6 @@ pub(crate) struct Router {
     /// The Escape that began the current sequence already reached the
     /// application.
     released: bool,
-    /// The latest pasted bytes, to find the paste's end marker.
-    recent: [u8; MARKER],
 }
 
 /// Where the host's bytes stand.
@@ -75,8 +114,9 @@ enum Scan {
     /// An OSC, DCS, APC or PM string, which only a host reply sends; true just
     /// after an Escape inside it.
     Text(bool),
-    /// A bracketed paste, until its end marker.
-    Paste,
+    /// A bracketed paste, until its end marker: the pasted bytes that may
+    /// begin it.
+    Paste(Vec<u8>),
 }
 
 /// What the scan finds.
@@ -85,8 +125,9 @@ enum Token {
     Key(Key),
     /// A key whose Escape was released already.
     Rest(Key),
-    /// A bracketed paste began.
-    Paste,
+    Pasted(Pasted),
+    Mouse(Mouse),
+    Focus(bool),
 }
 
 const ESC: u8 = 0x1b;
@@ -95,8 +136,7 @@ const BEL: u8 = 0x07;
 /// final byte, never forwarded.
 const SEQUENCE_BYTES: usize = 64;
 const PASTE_START: &[u8] = b"200~";
-const PASTE_END: &[u8; MARKER] = b"\x1b[201~";
-const MARKER: usize = 6;
+pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
 /// The final bytes of the cursor keys that DECCKM changes.
 const CURSOR: &[u8] = b"ABCDHF";
 /// Each application keypad key's final byte, and what the key sends in
@@ -124,12 +164,12 @@ const KEYPAD: [(u8, u8); 18] = [
 /// Control sequences that are never keys, by their bytes after `ESC [`: SGR
 /// mouse reports and replies with a private marker, replies with an
 /// intermediate byte or a reply's final byte (device attributes, status and
-/// window reports), focus reports and a paste end without its start.
+/// window reports) and a paste end without its start.
 const BYPASS: [fn(&[u8]) -> bool; 4] = [
     |body| b"<=>?".contains(&body[0]),
     |body| body.iter().any(|byte| (0x20..=0x2f).contains(byte)),
     |body| body.last().is_some_and(|last| b"cnty".contains(last)),
-    |body| [&b"I"[..], b"O", b"201~"].contains(&body),
+    |body| body == b"201~",
 ];
 
 impl Router {
@@ -139,7 +179,6 @@ impl Router {
             pending: false,
             scan: Scan::Ground,
             released: false,
-            recent: [0; MARKER],
         }
     }
 
@@ -150,6 +189,12 @@ impl Router {
             self.scan(byte, &mut tokens);
         }
         self.route(tokens)
+    }
+
+    /// A target change (spec #73, "Target changes"): a pending prefix is
+    /// discarded.
+    pub(crate) fn retarget(&mut self) {
+        self.pending = false;
     }
 
     /// After a read whose keys go to an application: a lone Escape it ended
@@ -170,16 +215,24 @@ impl Router {
             .collect()
     }
 
-    /// A paste discards a pending prefix.
+    /// Reports never touch a pending prefix; a paste discards one.
     fn token(&mut self, token: Token) -> Option<Routed> {
         match token {
             Token::Key(key) => self.key(key),
             Token::Rest(key) => Some(Routed::Rest(key)),
-            Token::Paste => {
-                self.pending = false;
-                None
-            }
+            Token::Pasted(pasted) => Some(Routed::Paste(self.pasted_after(pasted))),
+            Token::Mouse(mouse) => Some(Routed::Mouse(mouse)),
+            Token::Focus(focused) => Some(Routed::Focus(focused)),
         }
+    }
+
+    /// A paste that begins after a pending prefix discards it: it is
+    /// [`Begin::Prefixed`], and no prefix is pending after it.
+    fn pasted_after(&mut self, mut pasted: Pasted) -> Pasted {
+        if std::mem::take(&mut self.pending) {
+            pasted.begin = Begin::Prefixed(self.prefix);
+        }
+        pasted
     }
 
     /// Applies the prefix.
@@ -220,16 +273,8 @@ impl Router {
             Scan::Ground => self.ground(byte, tokens),
             Scan::Escape => self.escaped(byte, tokens),
             Scan::Sequence(introducer, body) => self.sequence(introducer, body, byte, tokens),
-            data => self.data(data, byte, tokens),
-        }
-    }
-
-    /// A byte of a host reply's string or of a paste.
-    fn data(&mut self, data: Scan, byte: u8, tokens: &mut Vec<Token>) {
-        if let Scan::Text(escaped) = data {
-            self.text(escaped, byte, tokens);
-        } else {
-            self.pasted(byte);
+            Scan::Text(escaped) => self.text(escaped, byte, tokens),
+            Scan::Paste(held) => self.pasted(held, byte, tokens),
         }
     }
 
@@ -309,9 +354,8 @@ impl Router {
         } else {
             csi(body)
         };
-        if token == Some(Token::Paste) {
-            self.scan = Scan::Paste;
-            self.recent = [0; MARKER];
+        if matches!(token, Some(Token::Pasted(_))) {
+            self.scan = Scan::Paste(Vec::new());
         }
         let released = std::mem::take(&mut self.released);
         tokens.extend(token.map(|token| rest(token, released)));
@@ -327,21 +371,49 @@ impl Router {
         }
     }
 
-    /// Pasted bytes are data until the end marker.
-    fn pasted(&mut self, byte: u8) {
-        self.recent.rotate_left(1);
-        self.recent[MARKER - 1] = byte;
-        if self.recent != *PASTE_END {
-            self.scan = Scan::Paste;
+    /// Pasted bytes are data until the end marker. Those that may begin it
+    /// are held until the bytes after them decide; the rest join this
+    /// read's part of the paste.
+    fn pasted(&mut self, mut held: Vec<u8>, byte: u8, tokens: &mut Vec<Token>) {
+        held.push(byte);
+        if held == PASTE_END {
+            return joined(tokens, &[], true);
         }
+        let at = (0..held.len())
+            .find(|&at| PASTE_END.starts_with(&held[at..]))
+            .unwrap_or(held.len());
+        joined(tokens, &held[..at], false);
+        held.drain(..at);
+        self.scan = Scan::Paste(held);
     }
 }
 
-/// A complete `ESC [` sequence: a paste's start, nothing for a sequence
-/// that bypasses keys, a cursor key, or any other key as its bytes.
+/// Adds pasted `bytes`, and whether the paste `ends`, to this read's part
+/// of the paste under way: the last token, or a new part of a paste that
+/// began in an earlier read. Nothing to add adds no part.
+fn joined(tokens: &mut Vec<Token>, bytes: &[u8], ends: bool) {
+    if bytes.is_empty() && !ends {
+        return;
+    }
+    match tokens.last_mut() {
+        Some(Token::Pasted(part)) => {
+            part.bytes.extend_from_slice(bytes);
+            part.ends = ends;
+        }
+        _ => tokens.push(Token::Pasted(Pasted {
+            begin: Begin::Continued,
+            bytes: bytes.to_vec(),
+            ends,
+        })),
+    }
+}
+
+/// A complete `ESC [` sequence: a paste's start, a mouse or focus report,
+/// nothing for a sequence that bypasses keys, a cursor key, or any other
+/// key as its bytes.
 fn csi(body: &[u8]) -> Option<Token> {
-    if body == PASTE_START {
-        return Some(Token::Paste);
+    if let Some(report) = report(body) {
+        return Some(report);
     }
     if BYPASS.iter().any(|bypasses| bypasses(body)) {
         return None;
@@ -351,6 +423,20 @@ fn csi(body: &[u8]) -> Option<Token> {
         _ => Key::Bytes([&[ESC, b'['], body].concat()),
     };
     Some(Token::Key(key))
+}
+
+/// A paste's start, an SGR mouse report or a focus report.
+fn report(body: &[u8]) -> Option<Token> {
+    match body {
+        PASTE_START => Some(Token::Pasted(Pasted {
+            begin: Begin::Started,
+            bytes: Vec::new(),
+            ends: false,
+        })),
+        b"I" => Some(Token::Focus(true)),
+        b"O" => Some(Token::Focus(false)),
+        _ => mouse::sgr(body).map(Token::Mouse),
+    }
 }
 
 /// A complete `ESC O` key.
@@ -418,7 +504,7 @@ impl Routed {
     /// action.
     pub(crate) fn encode(&self, modes: &Modes, out: &mut Vec<u8>) {
         match self {
-            Self::Action(_) => {}
+            Self::Action(_) | Self::Paste(_) | Self::Mouse(_) | Self::Focus(_) => {}
             Self::Key(key) => key.encode(modes, out),
             Self::Unknown(prefix, key) => {
                 out.push(*prefix);
@@ -436,8 +522,8 @@ impl Routed {
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, Routed, Router};
-    use crate::keys::Action;
+    use super::{Begin, Key, Pasted, Routed, Router};
+    use crate::{keys::Action, mouse::Mouse};
     use climon2_core::keys::ControlKey;
     use climon2_vt::view::{Modes, MouseEncoding, MouseReporting};
 
@@ -485,6 +571,41 @@ mod tests {
         fn reads(&mut self, reads: &[&[u8]]) -> Vec<Routed> {
             reads.iter().flat_map(|read| self.read(read)).collect()
         }
+    }
+
+    fn pasted(begin: Begin, bytes: &[u8], ends: bool) -> Routed {
+        Routed::Paste(Pasted {
+            begin,
+            bytes: bytes.to_vec(),
+            ends,
+        })
+    }
+
+    fn mouse(code: u16, column: u16, row: u16, released: bool) -> Routed {
+        Routed::Mouse(Mouse {
+            code,
+            column,
+            row,
+            released,
+        })
+    }
+
+    /// `routed` with each paste's parts joined into one, as a whole read
+    /// would bring it.
+    fn joined(routed: Vec<Routed>) -> Vec<Routed> {
+        let mut joined: Vec<Routed> = Vec::new();
+        for routed in routed {
+            match (joined.last_mut(), routed) {
+                (Some(Routed::Paste(whole)), Routed::Paste(part))
+                    if part.begin == Begin::Continued =>
+                {
+                    whole.bytes.extend(part.bytes);
+                    whole.ends = part.ends;
+                }
+                (_, routed) => joined.push(routed),
+            }
+        }
+        joined
     }
 
     /// Every way to split `input` into two reads, and one read per byte.
@@ -577,6 +698,9 @@ mod tests {
                 bytes(b"\x1bOP"),
                 Routed::Key(Key::Keypad(b'p')),
                 bytes(b"\x03"),
+                mouse(0, 5, 5, false),
+                Routed::Focus(true),
+                pasted(Begin::Started, b"\x1dx", true),
                 ESCAPE,
                 ESCAPE,
                 bytes(b"x"),
@@ -586,7 +710,8 @@ mod tests {
             ]
         );
         for reads in splits(input) {
-            assert_eq!(router("Ctrl+]").reads(&reads), whole, "{reads:?}");
+            let routed = joined(router("Ctrl+]").reads(&reads));
+            assert_eq!(routed, whole, "{reads:?}");
         }
     }
 
@@ -656,7 +781,7 @@ mod tests {
         );
         assert_eq!(router.read(b"\x1b"), []);
         assert_eq!(router.release(), Some(ESCAPE));
-        assert_eq!(router.read(b"[<0;1;1M\x1b"), []);
+        assert_eq!(router.read(b"[<0;1;1M\x1b"), [mouse(0, 1, 1, false)]);
         assert_eq!(router.release(), Some(ESCAPE));
         assert_eq!(router.read(b"]0;t\x07\x1b"), []);
         assert_eq!(router.release(), Some(ESCAPE));
@@ -718,9 +843,9 @@ mod tests {
         );
     }
 
-    /// TRM-02 and INP-05 (pure input-router supplement): host replies
-    /// (device attributes, status, mode and window reports, OSC, DCS and APC
-    /// strings), SGR mouse reports, focus reports and a stray paste end never
+    /// TRM-02 (pure input-router supplement): host replies (device
+    /// attributes, status, mode and window reports, OSC, DCS and APC
+    /// strings), a malformed SGR mouse report and a stray paste end never
     /// reach shortcuts or applications, and never complete or clear a
     /// pending prefix.
     #[test]
@@ -736,10 +861,7 @@ mod tests {
             b"\x1b]10;?\x07",
             b"\x1bP1$r0m\x1b\\",
             b"\x1b_Gi=1;OK\x1b\\",
-            b"\x1b[<0;6;6M",
-            b"\x1b[<0;6;6m",
-            b"\x1b[I",
-            b"\x1b[O",
+            b"\x1b[<0;6M",
             b"\x1b[201~",
         ];
         for reply in bypassing {
@@ -750,18 +872,119 @@ mod tests {
         }
     }
 
-    /// INP-03 (pure input-router supplement): a paste is never keys; it
-    /// discards a pending prefix and leaves none pending, and only its end
-    /// marker ends it.
+    /// INP-05 and FOC-01 (pure input-router supplement): SGR mouse reports
+    /// and the host's focus reports are reports, never keys: they never
+    /// complete or clear a pending prefix.
+    #[test]
+    fn mouse_and_focus_reports_never_complete_or_clear_a_pending_prefix() {
+        let mut router = router("Ctrl+]");
+        for (report, routed) in [
+            (&b"\x1b[<0;6;7M"[..], mouse(0, 6, 7, false)),
+            (b"\x1b[<35;6;7m", mouse(35, 6, 7, true)),
+            (b"\x1b[I", Routed::Focus(true)),
+            (b"\x1b[O", Routed::Focus(false)),
+        ] {
+            assert_eq!(router.read(report), std::slice::from_ref(&routed));
+            assert_eq!(router.read(b"\x1d"), []);
+            assert_eq!(router.read(report), [routed]);
+            assert_eq!(router.read(b"x"), [EXIT], "{report:?}");
+        }
+    }
+
+    /// INP-03 (pure input-router supplement): a paste is data, never keys,
+    /// exactly as pasted, nested markers, prefixes, cursor keys and broken
+    /// end markers included; only its end marker ends it. It discards a
+    /// pending prefix, as [`Begin::Prefixed`], and leaves none pending.
     #[test]
     fn a_paste_discards_a_pending_prefix_and_leaves_none() {
         let mut router = router("Ctrl+]");
-        assert_eq!(router.read(b"\x1d\x1b[200~x\x1b[201~x"), typed(b"x"));
-        assert_eq!(router.read(b"\x1b[200~\x1d\x1b[201~x"), typed(b"x"));
+        assert_eq!(
+            router.read(b"\x1d\x1b[200~x\x1b[201~x"),
+            [pasted(Begin::Prefixed(0x1d), b"x", true), bytes(b"x")]
+        );
+        assert_eq!(
+            router.read(b"\x1b[200~\x1d\x1b[201~x"),
+            [pasted(Begin::Started, b"\x1d", true), bytes(b"x")]
+        );
         assert_eq!(
             router.read(b"\x1b[200~\x1b[200~\x1b[20\x1b]x\x1dx\x1b[A\r\x1b[201~y"),
-            typed(b"y")
+            [
+                pasted(Begin::Started, b"\x1b[200~\x1b[20\x1b]x\x1dx\x1b[A\r", true),
+                bytes(b"y")
+            ]
         );
+        let mut escape = self::router("Ctrl+[");
+        assert_eq!(
+            escape.read(b"\x1b\x1b[200~\x1b\x1b[201~\x1bx"),
+            [pasted(Begin::Prefixed(0x1b), b"\x1b", true), EXIT]
+        );
+    }
+
+    /// INP-03 (pure input-router supplement): each read brings its own part
+    /// of a paste, and bytes that may begin the end marker wait for the
+    /// bytes after them, so a part is exact whichever read the marker's
+    /// pieces arrive in; a read holding only such bytes brings no part.
+    #[test]
+    fn each_read_brings_its_part_of_a_paste() {
+        let mut router = router("Ctrl+]");
+        assert_eq!(
+            router.read(b"\x1b[200~ab\x1b[2"),
+            [pasted(Begin::Started, b"ab", false)]
+        );
+        assert_eq!(router.read(b"01"), []);
+        assert_eq!(
+            router.read(b"~c"),
+            [pasted(Begin::Continued, b"", true), bytes(b"c")]
+        );
+        assert_eq!(
+            router.read(b"\x1b[200~"),
+            [pasted(Begin::Started, b"", false)]
+        );
+        assert_eq!(
+            router.read(b"\x1b[20x\x1b"),
+            [pasted(Begin::Continued, b"\x1b[20x", false)]
+        );
+        assert_eq!(
+            router.read(b"\x1b[201~"),
+            [pasted(Begin::Continued, b"\x1b", true)]
+        );
+    }
+
+    /// INP-03 (pure input-router supplement): pasted bytes, binary and
+    /// broken end markers included, are exactly the same whichever way the
+    /// host splits its reads, down to one byte per read.
+    #[test]
+    fn pasted_bytes_are_exact_however_reads_split() {
+        let input: &[u8] = b"a\x1d\x1b[200~\x00\xff\x1b[201\x1b[20x\x1dx\x1b\x1b[201~b";
+        let whole = router("Ctrl+]").read(input);
+        assert_eq!(
+            whole,
+            [
+                bytes(b"a"),
+                pasted(
+                    Begin::Prefixed(0x1d),
+                    b"\x00\xff\x1b[201\x1b[20x\x1dx\x1b",
+                    true
+                ),
+                bytes(b"b")
+            ]
+        );
+        for reads in splits(input) {
+            let routed = joined(router("Ctrl+]").reads(&reads));
+            assert_eq!(routed, whole, "{reads:?}");
+        }
+    }
+
+    /// INP-04 (pure input-router supplement): a target change discards a
+    /// pending prefix, so the key after it is ordinary.
+    #[test]
+    fn a_target_change_discards_a_pending_prefix() {
+        let mut router = router("Ctrl+]");
+        assert_eq!(router.read(b"\x1d"), []);
+        router.retarget();
+        assert_eq!(router.read(b"x"), typed(b"x"));
+        assert_eq!(router.read(b"\x1d"), []);
+        assert_eq!(router.read(b"x"), [EXIT]);
     }
 
     /// INP-02 (pure input-router supplement): a sequence that a control

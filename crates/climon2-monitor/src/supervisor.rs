@@ -17,6 +17,7 @@
 //! failed client stays Unavailable.
 mod client;
 mod owner;
+mod stream;
 
 use crate::{
     registry::ClientEvent,
@@ -40,6 +41,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+use stream::Stream;
 
 /// How long one wait on the notification descriptors lasts before commands
 /// are read again.
@@ -228,6 +230,9 @@ struct Instance {
     pending: BTreeMap<u64, Request>,
     /// The next request ID; Open is 1.
     next: u64,
+    /// Its application input: chunks, pastes and what a truncated paste
+    /// owes.
+    stream: Stream,
     /// Tells the owner its handles are released, so it may destroy.
     released: Sender<()>,
     owner: JoinHandle<()>,
@@ -338,20 +343,17 @@ impl State {
         self.waiting.insert(key, metadata);
     }
 
-    /// Submits `request` through an open client, input in chunks of at most
-    /// `chunk_bytes`, in order. The first refusal is answered at once with
-    /// why, carrying every byte not submitted, and nothing after it is
-    /// submitted.
+    /// Submits `request` through an open client's input [`Stream`]: input
+    /// in chunks of at most `chunk_bytes`, in order, and a paste's parts
+    /// between the application's markers. The first refusal is answered at
+    /// once with why, carrying every byte not submitted, and nothing after
+    /// it is submitted.
     fn submit(&mut self, id: &SessionId, request: Request) {
         let chunk = self.context.limits.chunk_bytes as usize;
-        let mut unsent: Option<(Request, String)> = None;
-        for request in split(request, chunk) {
-            match unsent.as_mut() {
-                Some((refused, _)) => absorb(refused, request),
-                None => unsent = self.submit_one(id, request).err(),
-            }
-        }
-        if let Some((request, why)) = unsent {
+        let mut stream = self.stream(id);
+        let refused = stream.submit(request, chunk, &mut |request| self.submit_one(id, request));
+        self.restore(id, stream);
+        if let Some((request, why)) = refused {
             self.tell(
                 id,
                 ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
@@ -359,10 +361,34 @@ impl State {
         }
     }
 
+    /// After an answer the library may have room for what a truncated paste
+    /// owes its application.
+    fn settle(&mut self, id: &SessionId) {
+        let chunk = self.context.limits.chunk_bytes as usize;
+        let mut stream = self.stream(id);
+        let _ = stream.settle(chunk, &mut |request| self.submit_one(id, request));
+        self.restore(id, stream);
+    }
+
+    /// `id`'s input stream, taken from its instance while requests are
+    /// submitted through it.
+    fn stream(&mut self, id: &SessionId) -> Stream {
+        let instance = self.instances.get_mut(id);
+        instance.map_or_else(Stream::default, |instance| {
+            std::mem::take(&mut instance.stream)
+        })
+    }
+
+    fn restore(&mut self, id: &SessionId, stream: Stream) {
+        if let Some(instance) = self.instances.get_mut(id) {
+            instance.stream = stream;
+        }
+    }
+
     /// Submits one request and enters it in the pending ledger once the
     /// library accepts it. A request refused, here or by the library,
     /// consumes no request ID.
-    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), (Request, String)> {
+    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), String> {
         let capacity = self.ledger;
         let open = self
             .instances
@@ -372,16 +398,13 @@ impl State {
                 _ => None,
             });
         let Some((live, instance)) = open else {
-            return Err((request, "the session's client is not connected".to_owned()));
+            return Err("the session's client is not connected".to_owned());
         };
         if instance.pending.len() >= capacity {
-            let why = "too many requests are awaiting their answers".to_owned();
-            return Err((request, why));
+            return Err("too many requests are awaiting their answers".to_owned());
         }
         let request_id = instance.next;
-        if let Err(why) = live.client.submit(request_id, &request) {
-            return Err((request, why));
-        }
+        live.client.submit(request_id, &request)?;
         instance.next += 1;
         instance.pending.insert(request_id, request);
         Ok(())
@@ -398,6 +421,7 @@ impl State {
                 id,
                 ClientEvent::Presentation(Presentation::Answered(request, answer)),
             );
+            self.settle(id);
         }
     }
 
@@ -505,6 +529,7 @@ impl State {
                     phase,
                     pending: BTreeMap::new(),
                     next: client::OPEN_ID + 1,
+                    stream: Stream::default(),
                     released,
                     owner,
                 };
@@ -709,25 +734,6 @@ fn wait(table: &mut [libc::pollfd]) {
             TICK_MILLISECONDS,
         )
     };
-}
-
-/// The requests `request` is submitted as: input in chunks of at most
-/// `chunk` bytes (the library refuses larger ones), anything else whole.
-fn split(request: Request, chunk: usize) -> Vec<Request> {
-    match request {
-        Request::Input(authority, bytes) => bytes
-            .chunks(chunk)
-            .map(|bytes| Request::Input(authority, bytes.to_vec()))
-            .collect(),
-        request => vec![request],
-    }
-}
-
-/// Adds a later chunk's bytes to the refused input they follow.
-fn absorb(refused: &mut Request, request: Request) {
-    if let (Request::Input(_, unsent), Request::Input(_, more)) = (refused, request) {
-        unsent.extend(more);
-    }
 }
 
 #[cfg(test)]

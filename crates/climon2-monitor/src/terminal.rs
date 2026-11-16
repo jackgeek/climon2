@@ -29,6 +29,25 @@ pub(crate) enum Request {
     /// Application input for the ready controller, at most `chunk_bytes`
     /// once submitted. Refused, it carries the bytes that were not sent.
     Input(Authority, Vec<u8>),
+    /// Part of a paste for the ready controller, submitted as input; once
+    /// refused, the rest of its paste is discarded.
+    Paste(Authority, Paste),
+    /// The application's desired keyboard focus (`focus-v1`), under ready
+    /// authority: non-user, never input.
+    Focus(Authority, bool),
+}
+
+/// Part of a paste, as the application receives it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Paste {
+    /// The application's paste markers go around the paste: it had
+    /// bracketed paste on when the paste began.
+    pub(crate) bracketed: bool,
+    /// The paste begins with this part.
+    pub(crate) starts: bool,
+    pub(crate) bytes: Vec<u8>,
+    /// The paste ends with this part.
+    pub(crate) ends: bool,
 }
 
 /// What the session's client reported about control and display. The
@@ -47,21 +66,27 @@ pub(crate) enum Presentation {
     Final,
     /// A request was answered: accepted, or why not.
     Answered(Request, Result<(), String>),
+    /// The client opened with application focus (`focus-v1`) selected.
+    Focusable,
     /// The client's connection ended.
     Ended,
 }
 
 /// How a refusal of `request` is shown: refused input says how much was not
-/// sent, and that the input before it was accepted.
+/// sent, and that the input before it was accepted; a refused paste that
+/// it was cut short (owner decision on #111).
 fn refusal(request: &Request, error: String) -> String {
     match request {
         Request::Input(_, unsent) => format!(
             "Input not sent ({} bytes; earlier input was accepted): {error}",
             unsent.len()
         ),
+        Request::Paste(..) => PASTE_TRUNCATED.to_owned(),
         _ => error,
     }
 }
+
+const PASTE_TRUNCATED: &str = "Paste truncated";
 
 /// The control the monitor holds, as the top row names it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +172,11 @@ pub(crate) struct Terminal {
     finished: Option<bool>,
     /// The latest failure to show, until the next applied restoration.
     error: Option<String>,
+    /// The client opened with `focus-v1`, until it ends.
+    focusable: bool,
+    /// The application focus last submitted, with the authority it was
+    /// submitted under.
+    focused: Option<(Authority, bool)>,
 }
 
 impl Terminal {
@@ -158,6 +188,8 @@ impl Terminal {
             acquiring: false,
             finished: None,
             error: None,
+            focusable: false,
+            focused: None,
         }
     }
 
@@ -179,6 +211,7 @@ impl Terminal {
             Presentation::Complete => return self.complete(),
             Presentation::Display(bytes) => self.display(parser, &bytes),
             Presentation::Answered(request, answer) => self.answered(request, answer),
+            Presentation::Focusable => self.focusable = true,
             other => self.control_changed(other),
         }
         None
@@ -282,7 +315,9 @@ impl Terminal {
             Request::Acquire => true,
             Request::Ready(authority)
             | Request::Resize(authority, _)
-            | Request::Input(authority, _) => {
+            | Request::Input(authority, _)
+            | Request::Paste(authority, _)
+            | Request::Focus(authority, _) => {
                 self.held.is_some_and(|held| held.authority == authority)
             }
         }
@@ -319,6 +354,7 @@ impl Terminal {
         } else {
             self.held = None;
             self.acquiring = false;
+            self.focusable &= *presentation != Presentation::Ended;
         }
         if let Some(model) = self.model.as_mut() {
             model.discard();
@@ -368,6 +404,40 @@ impl Terminal {
             painted: true,
         };
         (held.phase == ready).then_some(held.authority)
+    }
+
+    /// The Focus to submit so the application's focus is `desired`: only
+    /// with `focus-v1`, under the authority of a ready restoration, once per
+    /// authority and desire. A newly ready restoration so submits the
+    /// current desire once, never an earlier one.
+    pub(crate) fn focus(&mut self, desired: bool) -> Option<Request> {
+        let held = self
+            .held
+            .filter(|_| self.focusable && self.finished.is_none())?;
+        let wanted = (held.authority, desired);
+        let ready = matches!(held.phase, Phase::Applied { ready: true, .. });
+        (ready && self.focused != Some(wanted)).then(|| {
+            self.focused = Some(wanted);
+            Request::Focus(held.authority, desired)
+        })
+    }
+
+    /// Whether the session's client opened with `focus-v1`; without it,
+    /// application focus is a visible limitation, never a reason to refuse
+    /// the session.
+    pub(crate) fn focusable(&self) -> bool {
+        self.focusable
+    }
+
+    /// The authority of the control period and restoration held, if any:
+    /// it changes with every grant, restoration, revocation and end.
+    pub(crate) fn authority(&self) -> Option<Authority> {
+        self.held.map(|held| held.authority)
+    }
+
+    /// The model's geometry, once it has one.
+    pub(crate) fn geometry(&self) -> Option<Geometry> {
+        self.model.as_ref().map(Model::geometry)
     }
 
     pub(crate) fn control(&self) -> Control {
@@ -888,6 +958,103 @@ mod tests {
                 "Input not sent (3 bytes; earlier input was accepted): full: the request does not fit"
             )
         );
+    }
+
+    /// INP-03 and COM-04 (pure supplement; owner decision on #111): a
+    /// refused part of a paste under the current authority shows that the
+    /// paste was truncated; one refused under a superseded authority is not
+    /// an error, and neither is an accepted one.
+    #[test]
+    fn a_refused_paste_shows_that_it_was_truncated() {
+        let mut parser = Parser::new();
+        let mut terminal = restored(b"x");
+        let part = Paste {
+            bracketed: true,
+            starts: false,
+            bytes: b"rest".to_vec(),
+            ends: true,
+        };
+        for (held, answer) in [
+            (authority(2, 2), Err("stale".to_owned())),
+            (authority(2, 3), Ok(())),
+        ] {
+            let refused = Request::Paste(held, part.clone());
+            terminal.present(&mut parser, Presentation::Answered(refused, answer));
+            assert_eq!(terminal.error(), None);
+        }
+        let refused = Request::Paste(authority(2, 3), part);
+        let answer = Err("full: the request does not fit".to_owned());
+        terminal.present(&mut parser, Presentation::Answered(refused, answer));
+        assert_eq!(terminal.error(), Some("Paste truncated"));
+    }
+
+    /// FOC-01 (pure supplement): with `focus-v1`, Focus is submitted under
+    /// the ready restoration's authority for each new desire, never twice
+    /// for the same one; a newly ready restoration submits the current
+    /// desire once. Nothing is submitted before Ready is accepted, without
+    /// control, once the command ended, or without `focus-v1`; a refusal
+    /// under the current authority is shown, one under a superseded
+    /// authority is not.
+    #[test]
+    fn focus_follows_each_new_desire_under_ready_authority_once() {
+        let mut parser = Parser::new();
+        let held = authority(2, 3);
+        let mut terminal = restored(b"x");
+        terminal.present(&mut parser, Presentation::Focusable);
+        assert_eq!(terminal.focus(true), None);
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Ok(())),
+        );
+        assert_eq!(terminal.focus(true), Some(Request::Focus(held, true)));
+        assert_eq!(terminal.focus(true), None);
+        assert_eq!(terminal.focus(false), Some(Request::Focus(held, false)));
+        assert_eq!(terminal.focus(false), None);
+        let refused = |request, error: &str| Presentation::Answered(request, Err(error.into()));
+        terminal.present(
+            &mut parser,
+            refused(Request::Focus(authority(2, 2), true), "stale"),
+        );
+        assert_eq!(terminal.error(), None);
+        terminal.present(&mut parser, refused(Request::Focus(held, false), "refused"));
+        assert_eq!(terminal.error(), Some("refused"));
+        let newer = authority(2, 4);
+        terminal.present(&mut parser, Presentation::Begin(newer, geometry(10, 3)));
+        assert_eq!(terminal.focus(false), None);
+        terminal.present(&mut parser, Presentation::Complete);
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(newer), Ok(())),
+        );
+        assert_eq!(terminal.focus(false), Some(Request::Focus(newer, false)));
+        assert_eq!(terminal.focus(false), None);
+        terminal.present(&mut parser, Presentation::Final);
+        assert_eq!(terminal.focus(true), None);
+        let mut unsupported = restored(b"x");
+        unsupported.present(
+            &mut parser,
+            Presentation::Answered(Request::Ready(held), Ok(())),
+        );
+        assert!(!unsupported.focusable());
+        assert_eq!(unsupported.focus(true), None);
+        unsupported.present(&mut parser, Presentation::Revoked);
+        assert!(!unsupported.focusable());
+    }
+
+    /// FOC-02 (pure supplement): `focus-v1` lasts while the client does:
+    /// revocation keeps it, and its end ends it.
+    #[test]
+    fn focus_support_lasts_until_the_client_ends() {
+        let mut parser = Parser::new();
+        let mut terminal = Terminal::new(LIMITS);
+        assert!(!terminal.focusable());
+        terminal.present(&mut parser, Presentation::Focusable);
+        assert!(terminal.focusable());
+        terminal.present(&mut parser, Presentation::Revoked);
+        assert!(terminal.focusable());
+        assert_eq!(terminal.focus(true), None);
+        terminal.present(&mut parser, Presentation::Ended);
+        assert!(!terminal.focusable());
     }
 
     /// The top row names each control as #108 shows it.
