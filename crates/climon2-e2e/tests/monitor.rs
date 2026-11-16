@@ -1568,15 +1568,40 @@ fn shows_row(terminal: &mut Terminal, text: &str) {
         .unwrap_or_else(|_| panic!("{text:?} never shown:\n{}", terminal.screen()));
 }
 
+/// Whether the packaged binaries are an exact release archive's, which has
+/// no test hooks.
+fn archive() -> bool {
+    env::var_os("CLIMON2_E2E_ARCHIVE").is_some()
+}
+
+/// The status a real session whose title or screen changed shows once it
+/// has settled. Hooked daemons read the status clock [`headless`] gives
+/// them, which nothing advances, so it stays Idle. A release archive's
+/// daemon has no such hook: its heuristic sees the change, and ten quiet
+/// seconds later requests attention, which stays without user input.
+fn settled() -> &'static str {
+    if archive() { "Needs attention" } else { "Idle" }
+}
+
+/// The start of a selector row showing `status` and `title`, its status
+/// column as wide as the widest of `status` and `others`.
+fn row(others: &[&str], status: &str, title: &str) -> String {
+    let width = others
+        .iter()
+        .fold(status.len(), |widest, other| widest.max(other.len()));
+    format!("║{status:width$} {title}")
+}
+
 /// DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor)
 /// and HDL-01 (Monitor rows): a monitor started on an empty home lists
 /// headless sessions as they are created, without being asked. Each gets one
 /// passive client, reused across later passes: one start and one library log
 /// in its own session log directory. Passive clients never attach or take
 /// control. A connected row shows the status its daemon reports through
-/// `status-v1`, Idle, never a fabricated one (#107); its title arrives
-/// through `title-v1`, and an untitled session shows its command and
-/// arguments. On
+/// `status-v1`, never a fabricated one (#107): Idle, or once a release
+/// archive's daemon has seen its title change, Needs attention
+/// ([`settled`]); its title arrives through `title-v1`, and an untitled
+/// session shows its command and arguments. On
 /// Linux the monitor maps exactly the session version's
 /// `libclimon2_client.so`.
 #[test]
@@ -1595,9 +1620,13 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
         ),
     );
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Idle Alpha");
+    shows_row(&mut terminal, &row(&[], settled(), "Alpha"));
+    // Its screen and title never change, so it stays Idle on any clock.
     let untitled = headless(&package, ": untitled", "finish");
-    shows_row(&mut terminal, "║Idle /bin/bash -c : untitled");
+    shows_row(
+        &mut terminal,
+        &row(&[settled()], "Idle", "/bin/bash -c : untitled"),
+    );
     for id in [&titled, &untitled] {
         let logs = library_logs(&package, id);
         assert_eq!(logs.len(), 1, "{logs:?}");
@@ -1946,15 +1975,12 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Idle        Live");
-    shows_row(
-        &mut terminal,
-        "║Unavailable fake 0d5c0000-0000-4000-8000-0000000000f2",
-    );
-    shows_row(
-        &mut terminal,
-        "║Unavailable fake 0d5c0000-0000-4000-8000-0000000000f3",
-    );
+    let live_row = row(&["Unavailable"], settled(), "Live");
+    shows_row(&mut terminal, &live_row);
+    for fake in ["f2", "f3"] {
+        let title = format!("fake 0d5c0000-0000-4000-8000-0000000000{fake}");
+        shows_row(&mut terminal, &row(&[settled()], "Unavailable", &title));
+    }
     assert!(
         !terminal.screen().contains("0000000000f1"),
         "{}",
@@ -1974,14 +2000,14 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         "Discovery incomplete: cannot list sessions: Permission denied (os error 13)",
     );
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Idle        Live");
+    shows_row(&mut terminal, &live_row);
     terminal.send("\x1b").unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Discovery incomplete"))
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Idle        Live");
+    shows_row(&mut terminal, &live_row);
     // A complete pass has reported every batch, the stale session's included.
     assert!(
         !terminal.screen().contains("0000000000f4"),
@@ -2182,14 +2208,19 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║This monitor /bin/bash -c c2 monitor ");
-    // The host's screen text follows each wide character with its covered cell.
-    shows_row(&mut terminal, "║Idle         Nested 日 本 ");
-    shows_row(&mut terminal, "║Idle         Elsewhere");
+    let shown = ["This monitor", settled()];
     shows_row(
         &mut terminal,
-        "║Idle         /bin/bash -c c2 exec --headless",
+        &row(&shown, "This monitor", "/bin/bash -c c2 monitor "),
     );
+    // The host's screen text follows each wide character with its covered cell.
+    for title in [
+        "Nested 日 本 ",
+        "Elsewhere",
+        "/bin/bash -c c2 exec --headless",
+    ] {
+        shows_row(&mut terminal, &row(&shown, settled(), title));
+    }
     // Wide labels, and the long one clipped to the list, keep the border
     // whole once the frame is painted: one snapshot may land mid-paint.
     terminal
@@ -2248,6 +2279,29 @@ fn with_selector(screen: &str, rows: &[(&str, &str)]) -> String {
     lines.join("\n")
 }
 
+/// The open selector's rows once each session titled one of `titles`
+/// shows its [`settled`] status. Hooked daemons' status clocks give
+/// `titles`' order, newest first. A release archive's daemons time their
+/// attention requests by the real clock after a random sampling delay, so
+/// there the rows take the order shown.
+fn settled_rows(
+    terminal: &mut Terminal,
+    titles: &[&'static str],
+) -> Vec<(&'static str, &'static str)> {
+    let mut titles = titles.to_vec();
+    if archive() {
+        let at = |screen: &str, title: &str| screen.find(&format!("║{} {title} ", settled()));
+        terminal
+            .wait_for_screen(TIMEOUT, |screen| {
+                titles.iter().all(|title| at(screen, title).is_some())
+            })
+            .unwrap_or_else(|_| panic!("{titles:?} never settled:\n{}", terminal.screen()));
+        let screen = terminal.screen();
+        titles.sort_by_key(|title| at(&screen, title));
+    }
+    titles.into_iter().map(|title| (settled(), title)).collect()
+}
+
 /// The rows of the open selector's list whose cells are reversed.
 fn highlighted_rows(terminal: &Terminal) -> Vec<usize> {
     (3..usize::from(ROWS) - 2)
@@ -2285,7 +2339,7 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    let open = with_selector(&body, &[("Idle", "C3"), ("Idle", "B2"), ("Idle", "A1")]);
+    let open = with_selector(&body, &settled_rows(&mut terminal, &["C3", "B2", "A1"]));
     shows(&mut terminal, &open);
     // Rows reorder as their statuses arrive, and the highlight keeps the row
     // that was first when the selector opened: reopen it on the settled list.
@@ -2401,9 +2455,14 @@ fn highlights(terminal: &Terminal, row: usize) {
 /// its terminal status time, and each stays once its session has ended. A
 /// hidden change (working under pending attention) moves nothing, even with
 /// its daemon's clock moved past a newer attention row's time. A status
-/// change that moves the highlighted row keeps the highlight on it.
+/// change that moves the highlighted row keeps the highlight on it. The
+/// daemons' status clock is a test hook, which release archives lack, so
+/// this returns early in archive mode.
 #[test]
 fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     let mut clocks = BTreeMap::new();

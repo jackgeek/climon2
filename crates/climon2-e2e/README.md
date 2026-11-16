@@ -62,6 +62,11 @@ fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
 renaming the same archive binary, never by rebuilding/substituting it.
+The archive's session daemon has no controllable status clock
+(`CLIMON2_DAEMON_CLOCK`), so the monitor's real-session status order case
+returns early in archive mode, and its other real-session cases expect the
+status the daemon's own heuristic settles on (a session whose title changed
+needs attention ten quiet seconds later) instead of the frozen clock's Idle.
 
 From release two, set `CLIMON2_E2E_PREVIOUS_ARCHIVE` to the actual published
 previous release archive for that platform as well. The compatibility gate starts its real
