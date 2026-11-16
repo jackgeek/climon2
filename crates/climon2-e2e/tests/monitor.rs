@@ -4914,6 +4914,43 @@ fn a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix() {
     package.assert_clean();
 }
 
+/// INP-04 (Monitor, Fault: disconnect): the selected session's daemon dies
+/// while a prefix is pending. The lost connection is a target change, so
+/// the prefix is discarded: the x read after it is no exit, the monitor
+/// still opens the selector, and the x never reaches the other session,
+/// which receives only what is typed once it is selected and ready.
+#[test]
+fn a_disconnect_discards_a_pending_prefix() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Other"), "finish");
+    let gone = headless(&package, &watched("Gone"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires Gone, the newest (#266).
+    ready_at(&mut terminal, "Gone", STATUS, "29 120");
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\x1d");
+    kill(Pid::from_raw(daemon_of(&package, &gone)), Signal::SIGKILL).unwrap();
+    whole_frame_shows(&terminal, "the lost connection", |screen| {
+        let top = screen.lines().next().unwrap_or_default();
+        top.starts_with("Gone") && top.contains("Disconnected")
+    });
+    read_alone(&mut terminal, monitor, b"x");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{STATUS:<12} Other"));
+    enter_on(&mut terminal, "Other");
+    ready_at(&mut terminal, "Other", STATUS, "29 120");
+    terminal.send("y").unwrap();
+    received_by(&package, "Other", b"y");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    // A real listing reclaims the killed daemon's stale metadata.
+    assert_eq!(package.list().len(), 1);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
 /// INP-05 (Monitor: application, chrome and selector cases) and INP-04
 /// (Monitor: a modal in the middle of a gesture): with button-event
 /// tracking in SGR form, a click below the top row reaches the application
