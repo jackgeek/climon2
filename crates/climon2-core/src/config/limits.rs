@@ -370,6 +370,17 @@ pub struct Lanes {
     pub shutdown_ms: u32,
 }
 
+/// The monitor's passive retry backoff (`retry`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Backoff {
+    /// `retry.initial_ms`: the first delay.
+    pub initial_ms: u32,
+    /// `retry.cap_ms`: no delay is longer.
+    pub cap_ms: u32,
+    /// `retry.jitter_percent`: each delay varies by up to this much.
+    pub jitter_percent: u32,
+}
+
 impl Limits {
     /// The effective `cm1_limits` of every library instance, each field from
     /// the setting the native contract names. The monitor reserves no model,
@@ -439,6 +450,20 @@ impl Limits {
         ModelLimits {
             bytes: self.0.memory.client_bytes,
             history_rows: self.0.history.max_rows,
+        }
+    }
+
+    pub fn retry(&self) -> Backoff {
+        let Retry {
+            initial_ms,
+            cap_ms,
+            jitter_percent,
+            ..
+        } = self.0.retry;
+        Backoff {
+            initial_ms,
+            cap_ms,
+            jitter_percent,
         }
     }
 
