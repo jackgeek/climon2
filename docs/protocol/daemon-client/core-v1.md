@@ -27,16 +27,19 @@ for [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
 ([#87](https://github.com/jackgeek/climon2/issues/87)), standalone
 [Kill](../../../GLOSSARY.md#attachment-and-control)
-([#88](https://github.com/jackgeek/climon2/issues/88)) and monitors that
+([#88](https://github.com/jackgeek/climon2/issues/88)), monitors that
 acquire and inherit control
-([#89](https://github.com/jackgeek/climon2/issues/89)): the
+([#89](https://github.com/jackgeek/climon2/issues/89)) and heuristic
+`status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
-Input, Resize, Ready, Acquire, Focus, Kill, Response,
-Fatal error, Initial metadata (the title and a known command result; status
-and progress reported unavailable), Title changed, Control granted and
-revoked, Restoration begin and complete, Display, Geometry and
-[Command final](event-command-final.md#implemented-behavior) without status,
+Input, Resize, Ready, Set viewing, Acknowledge, Acquire, Focus, Kill,
+Response, Fatal error, Initial metadata (the title, the status and a known
+command result; progress reported unavailable), Title changed, Status
+changed, Control granted and revoked, Restoration begin and complete,
+Display, Geometry and
+[Command final](event-command-final.md#implemented-behavior) with the final
+status,
 with the private protocol's takeover,
 [hand-back](../../../GLOSSARY.md#attachment-and-control) and
 [leave policy](../../../GLOSSARY.md#attachment-and-control), the
@@ -44,9 +47,10 @@ with the private protocol's takeover,
 and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
 of monitor-mode connections. Until it serves them, it
 rejects the other
-requests without effects, as each request's page describes. Set viewing,
-Acknowledge, the status, notification and progress messages and bounded
-delivery remain unimplemented. The
+requests without effects, as each request's page describes.
+Output-driven status detection (OSC 7501 and OSC 133,
+[#92](https://github.com/jackgeek/climon2/issues/92)), the notification and
+progress messages and bounded delivery remain unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93));
 no other [client](../../../GLOSSARY.md#sessions) does yet. The
@@ -167,10 +171,10 @@ number.
 
 | Token | Promise |
 |---|---|
-| `daemon-wire-v1` | Common revision, interactive control, [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts)/[viewing](../../../GLOSSARY.md#status-and-attention), leave, final results and kill. |
+| `daemon-wire-v1` | Common revision, interactive control, [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts), leave, final results and kill. |
 | `monitor-v1` | Passive monitor entry, successor registration and promotion. |
 | `title-v1` | Current title and ordered changes. |
-| `status-v1` | Effective status/time/episodes and explicit attention acknowledgement, distinct from application Focus. |
+| `status-v1` | Effective status/time/episodes, per-attachment [viewing](../../../GLOSSARY.md#status-and-attention) reports and explicit attention acknowledgement, distinct from application Focus (owner decision on [#86](https://github.com/jackgeek/climon2/issues/86)). |
 | `notification-v1` | Normalized notification events; requires `status-v1`. |
 | `progress-v1` | Retained normalized progress and changes. |
 | `focus-v1` | Optional non-user core [application Focus](request-focus.md), with truthful state/forwarding outcomes; #63 amendment. |
@@ -325,10 +329,13 @@ Command final still replays the screen in its restoration.
 ### Implemented authority checks
 
 The session daemon checks Input, [Resize](request-resize.md),
-[Ready](request-ready.md) and Focus in this order and rejects the first
+[Ready](request-ready.md), Focus, [Set viewing](request-viewing.md) and
+[Acknowledge](request-acknowledge.md) in this order and rejects the first
 unmet condition without effects; the stream goes on:
 
-1. Focus only: the connection's Open selected `focus-v1`, otherwise
+1. Focus only: the connection's Open selected `focus-v1`; Set viewing and
+   Acknowledge only: it selected `status-v1` (owner decision on
+   [#86](https://github.com/jackgeek/climon2/issues/86)). Otherwise
    `unsupported_capability`.
 2. The connection has a role, otherwise `invalid_state`.
 3. It is an attachment, otherwise `not_attached`: neither a passive monitor
@@ -341,9 +348,14 @@ unmet condition without effects; the stream goes on:
    `stale_period`.
 7. Its restoration ID is the current one of that period, otherwise
    `stale_restoration`: a replacement restoration supersedes the earlier one.
-8. The current restoration is far enough along: Resize needs nothing more,
-   Ready needs a complete restoration, whose Restoration complete was sent,
-   and Input and Focus need readiness. Otherwise `not_ready`.
+8. The current restoration is far enough along: Resize and Set viewing
+   false need nothing more, Ready needs a complete restoration, whose
+   Restoration complete was sent, and Input, Focus, Set viewing true and
+   Acknowledge need readiness. Otherwise `not_ready`.
+9. Acknowledge only: the latest viewing reported in the current control
+   period is true, otherwise `not_viewing`.
+10. Acknowledge only: no attention request has found the session's episode
+    identifiers exhausted, otherwise `resource_limit`.
 
 Each request then checks its own arguments. Periods and restoration IDs are
 session-wide and only increase: every grant starts a new period with its
@@ -506,7 +518,12 @@ succession (hand-back before the newest registration's promotion, leave
 policy only after it, in headless sessions too), Leave, a committed Kill and
 a registration's queue overflow racing a promotion, and canonical
 restorations at the effective geometry, with a Restoration begin after every
-geometry change; the rest remains future.
+geometry change. For `status-v1` they cover, on a controllable
+clock, the activity and attention transitions, the re-armed user window,
+both input-clearing paths, coalescing and re-armed episodes, atomic
+inactivity attention, sampling and clamped deadlines, effective-only change
+times, Set viewing and Acknowledge validation, the final status and episode
+exhaustion; the rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
