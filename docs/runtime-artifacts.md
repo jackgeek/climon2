@@ -36,8 +36,9 @@ flowchart TB
         cli -->|"monitor / mon: execs own version"| monitor
         monitor -->|"hello probes for discovery"| daemon
         monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
-        client -.->|"loads same-release library through the shared loader; versioned C interface planned"| library
-        library -->|"daemon wire revision 1: passive monitor connections"| daemon
+        client -->|"kill: loads its own version folder's library through the shared loader; C ABI; current"| library
+        client -.->|"attach: same library through the C ABI; planned"| library
+        library -->|"daemon wire revision 1: passive monitor connections and Kill"| daemon
         library -.->|"daemon wire revision 1: control and display; planned"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
@@ -131,8 +132,9 @@ unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
 release isolation; release checks enforce each rule. The monitor loads it
-(#106), and so does test tooling: the library host fixture and xtask's release
-checks; the client executable's loading remains planned. Cargo's ordinary
+(#106), the client executable loads it for kill mode (#100), and test tooling
+loads it: the library host fixture and xtask's release checks; the client
+executable's loading for ordinary attach remains planned. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`,
 `climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
 libraries; the CLI's and the monitor's hello probes for discovery come from
@@ -198,14 +200,23 @@ size, to check that its limits hold one session's model beside the parser
 (#167). It chooses no new executable/library or consumption arrow, and does
 not sandbox trusted native code.
 
-The client executable will also load its same-release library for ordinary
-operations.
+**Current (#100):** in kill mode the client executable loads the library in
+its own version folder, `<executable home>/<version>/`, through the shared
+loader, whatever `current`, the working directory or search paths name, and
+submits one Kill through the C ABI; the library sends it over daemon wire
+revision 1. The library instance writes its diagnostics to a log file of its
+own in the session-log directory, beside the client's,
+`<climon2 home>/logs/<session-id>/library-<UTC second>-<pid>.log`, since
+spec #73 places each instance's library log in its session's log. A missing,
+other-release or faulty library fails the kill before any connection. Ordinary attach still uses the private post-hello protocol
+and will load the same library for its operations.
 
 **Current (#84):** one validated loader for client libraries is part of
-`climon2-platform`, not a separate artifact; the monitor loads through it
-(#106), and the client executable will. The library host and xtask's release
-checks load the client library through it too, from a version folder of an
-executable home. The [client library stand-in](../GLOSSARY.md#testing),
+`climon2-platform`, not a separate artifact; the monitor (#106) and the client
+executable's kill mode (#100) load through it, and the client executable will
+for ordinary attach. The library host and xtask's release checks load the
+client library through it too, from a version folder of an executable home.
+The [client library stand-in](../GLOSSARY.md#testing),
 `crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests,
 through `climon2_fixtures::stand_in`, into a test-only library, exact or with
 one defect: xtask's release-check tests
@@ -222,7 +233,9 @@ main that serves only 0.0.97 and gives its session's command
 `CLIMON2_SECOND_RELEASE_DAEMON`. The mixed-release Library-layer tests package
 both with this build's other executables as a 0.0.97 release and install it
 with the real installer in a sibling version folder, so that folder's CLI
-starts 0.0.97 sessions served by the fixture's daemon. One library host loads
+starts 0.0.97 sessions served by the fixture's daemon, and its client
+executable, this build's, kills them through that folder's 0.0.97 library
+(#100). One library host loads
 both releases' libraries through the shared loader, and each release's
 instances open passive monitor connections to their own release's daemons.
 xtask's tests run the release checks on the library as 0.0.97's. Neither is
@@ -244,7 +257,7 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-The monitor's loading is current (#106); the client executable's is planned. Complete interface
+The monitor's loading is current (#106), as is the client executable's for kill mode (#100); its loading for ordinary attach is planned. Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication is

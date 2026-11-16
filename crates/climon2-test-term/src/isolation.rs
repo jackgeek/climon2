@@ -53,6 +53,22 @@ pub fn bin_path(name: &str) -> PathBuf {
     path
 }
 
+/// The workspace's client library, which Cargo leaves beside the test
+/// executables in `deps/` (it uplifts only binaries).
+pub fn client_library_path() -> PathBuf {
+    let executable = env::current_exe().expect("locate test executable");
+    let path = executable
+        .parent()
+        .expect("deps directory")
+        .join(climon2_core::layout::client_library_name());
+    assert!(
+        path.is_file(),
+        "missing workspace client library {}; run cargo test --workspace (no nested builds)",
+        path.display()
+    );
+    path
+}
+
 /// Copies an executable a test will run. `cp` writes the copy, so this process never holds
 /// it open: Linux refuses to execute a file any process holds open for writing (ETXTBSY),
 /// and a child forked by another test thread holds every descriptor it inherited until it
