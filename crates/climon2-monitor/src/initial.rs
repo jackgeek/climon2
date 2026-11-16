@@ -235,6 +235,32 @@ mod tests {
         assert_eq!(initial.choose(&registry, t0), None);
     }
 
+    /// Awaiting resources rows (#120): a first-pass client that is
+    /// resource-blocked is settled, ready in the progress, so collection
+    /// ends without waiting for its deadline and takes the eligible row;
+    /// one whose release loads slowly is still waited for.
+    #[test]
+    fn a_resource_blocked_row_is_settled_for_the_startup_wait() {
+        let (mut registry, mut initial) = (Registry::new(None), Initial::new(START));
+        let t0 = Instant::now();
+        let idle = found(&mut registry, &mut initial, 1, t0);
+        let blocked = found(&mut registry, &mut initial, 2, t0);
+        let slow = found(&mut registry, &mut initial, 3, t0);
+        reports(&mut registry, &idle, State::Idle, 50);
+        let now = SystemTime::UNIX_EPOCH;
+        let short = ClientEvent::AwaitingResources("not enough memory".into());
+        registry.client(&blocked, short, now);
+        registry.client(&slow, ClientEvent::LoadingSlowly, now);
+        initial.passed();
+        assert_eq!(
+            progress(&initial, &registry).as_deref(),
+            Some("Connecting to 3 sessions (2 ready)")
+        );
+        assert_eq!(initial.choose(&registry, t0), None);
+        registry.client(&slow, ClientEvent::Unavailable("refused".into()), now);
+        assert_eq!(initial.choose(&registry, t0), Some(idle));
+    }
+
     /// The owner's wording (2026-11-16, on #266): the startup progress says
     /// one session in the singular and any other count in the plural, at
     /// one and one past it.
