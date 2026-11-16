@@ -4029,9 +4029,17 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
     const WIDE: u16 = 250;
     let package = Package::new();
     without_introduction(&package);
+    // ab and cd stay unanswered while the daemon is stopped, and an
+    // operation past `deadlines.operation_ms` fails the connection: the
+    // deadline must outlast the test's steps until it resumes the daemon,
+    // even on a loaded host.
     limits_config(
         &package,
-        serde_json::json!({"transfer": {"chunk_bytes": 2}, "queues": {"operations": 2}}),
+        serde_json::json!({
+            "transfer": {"chunk_bytes": 2},
+            "queues": {"operations": 2},
+            "deadlines": {"operation_ms": 120_000},
+        }),
     );
     headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid;
@@ -4482,7 +4490,12 @@ fn status_keeps_updating_for_background_covered_and_revoked_rows() {
 /// 2026-11-16). Once Slow's
 /// Initial metadata reports its status, it is the first eligible row and
 /// becomes the one-time initial selection, acquired. Had the user selected
-/// a row meanwhile, even read-only, Slow would not be selected.
+/// a row meanwhile, even read-only, Slow would not be selected: here the
+/// user selects Slow itself while it still starts, and it stays not
+/// controlled once eligible. Slow's Open stays unanswered until the test
+/// releases it, so Slow is the late session whatever the host's speed;
+/// Held's client fails at its own start deadline soon after collection
+/// ends, and its row then shows that failure instead.
 #[test]
 fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible() {
     // Wide enough for the late note beside the held row's label.
@@ -4491,18 +4504,24 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
     for explicit in [false, true] {
         let package = Package::new();
         without_introduction(&package);
+        // Slow's client starts only once Held's fails at its own start
+        // deadline, about when collection ends, and then has one more
+        // deadline to receive Slow's Initial metadata: the test's steps
+        // between seeing the late note and releasing Slow must fit in it,
+        // even on a loaded host.
         limits_config(
             &package,
             serde_json::json!({
                 "scheduling": {"starts": 1},
-                "deadlines": {"start_ms": 4000, "operation_ms": 120_000},
+                "deadlines": {"start_ms": 10_000, "operation_ms": 120_000},
             }),
         );
         let go = package.isolation.home().join("slow.go");
         let ear = Ear::default();
+        let slow_id = fake_id(0xd2);
         let slow = serving(vec![
-            opened_with(true),
             Act::Await(go.clone()),
+            opened_with(true),
             initial_metadata("Slow", Some(wire_status("idle", &utc(1))), None),
         ]);
         let daemons = [
@@ -4513,13 +4532,7 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
                 Answer::Held(held),
                 &ear,
             ),
-            FakeDaemon::start(
-                &package,
-                fake_id(0xd2),
-                "2026-01-01T00:00:01.000Z",
-                slow,
-                &ear,
-            ),
+            FakeDaemon::start(&package, slow_id, "2026-01-01T00:00:01.000Z", slow, &ear),
         ];
         let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
         let hint = "Press Ctrl+] then x to exit.";
@@ -4534,9 +4547,11 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
         );
         if explicit {
             terminal.send("\x1ds").unwrap();
-            enter_on(&mut terminal, held);
+            // Once Held's client has failed the rows keep their order.
+            listed_with(&terminal, "Unavailable", &format!("fake {held}"));
+            enter_on(&mut terminal, slow_id);
             // With a row selected, the top row's error slot says it.
-            let noted = format!("fake {held} | {late} ");
+            let noted = format!("fake {slow_id} | {late} ");
             whole_frame_shows(&terminal, &noted, |screen| screen.starts_with(&noted));
         }
         fs::write(&go, b"").unwrap();
@@ -4545,10 +4560,13 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
             listed_with(&terminal, STATUS, "Slow");
             terminal.send(ESCAPE).unwrap();
             selector_closed(&terminal);
-            let plain = format!("fake {held} ");
-            whole_frame_shows(&terminal, "the held row, no longer late", |screen| {
-                screen.starts_with(&plain) && !screen.contains(late)
-            });
+            // Eligible now, but selected by the user: never acquired.
+            let top = session_top_row(
+                usize::from(WIDE),
+                "Slow",
+                &[STATUS, "Not controlling", SESSIONS_HINT],
+            );
+            top_row_is(&mut terminal, &top);
         } else {
             let top = session_top_row(
                 usize::from(WIDE),
