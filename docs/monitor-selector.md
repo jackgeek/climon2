@@ -44,7 +44,10 @@ Up/Down/PageUp/PageDown without wrapping, the highlight rules for edits and
 live updates, row clicks, the wheel, cancelling by a click outside the box
 (owner decision on #113), and the key-hint footer, which names only select,
 cancel and help (owner decision on #113). Nothing else this document
-specifies is implemented: no Delete, toasts or bell. Prefix+j, viewing,
+specifies is implemented: no Delete. Toasts, their four-row lane below the
+selector and the bell
+([#115](https://github.com/jackgeek/climon2/issues/115)) are implemented as
+[below](#toasts-and-bell). Prefix+j, viewing,
 acknowledgement and the host attention reports
 ([#114](https://github.com/jackgeek/climon2/issues/114)) are implemented as
 below. Initial selection
@@ -238,7 +241,10 @@ Highlighting, opening, dismissing a toast and host focus do not acknowledge
 attention. Closing or cancelling the selector back to the session does, once
 it is ready and unobstructed (Confirmed 2026-11-08; spec #73).
 
-A toast appears bottom-right outside selector hit targets, in a stable lane.
+A toast appears bottom-right outside selector hit targets, in a stable lane:
+the selector always leaves the host's bottom four rows to toasts, shrinking by
+them (owner decision on #115). Only needs-attention toasts carry the hint
+row.
 Its yellow border draws clockwise from the top-left across top/right/bottom/left;
 the title appears after the border completes. Main content is just the session
 label. Width is at most 40% of host width, with one-line display-cell-safe
@@ -251,6 +257,12 @@ then the border erases in the same clockwise order. Clicking starts dismissal
 without selection, acquisition or acknowledgement. During early dismissal,
 erase only the border already drawn. Distinct eligible episodes queue and
 repeated requests within a pending episode do not duplicate notifications.
+The queue holds three toasts, the one shown among them; when more arrive, one
+extra toast says `More events occurred. Check sessions list` in their place,
+without a hint, and nothing fails a connection (owner decision on #115).
+No toast announces a final outcome the monitor already knew at startup or at
+its first connection to the session: only one learned after the row was seen
+running (owner decision on #115).
 Animation never blocks session switching, selector input, resize or exit.
 
 Accepted prototype timings are 400 ms drawing, 2 seconds title hold,
@@ -260,7 +272,7 @@ final operational/rendering/queue budgets are specified in
 Too-small screens remain explicit, retain clients/control/models and global
 commands, and never send invalid application geometry or buffer input.
 
-Planned `monitor.bell` is boolean, default true. It controls one
+`monitor.bell` is boolean, default true. It controls one
 [host bell](protocol/monitor-host/bell.md) when each toast first begins drawing,
 including initial and queued presentations, not every frame, hint change,
 dismissal or coalesced request. Missing file/object/field uses the default.

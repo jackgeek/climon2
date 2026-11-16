@@ -256,13 +256,13 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   when the session starts; attaching never changes it. 0 disables retained
   history, but the screen is still restored.
 - `monitor.show_key_hints` (default true) hides the [monitor](#monitor)'s
-  implicit key hints when false, never a binding or application text. Today
-  the empty state's hint is the only one; the planned hints below follow it.
+  implicit key hints when false, never a binding or application text: in its
+  empty state, top row, placeholder, selector footer and toasts.
   False also keeps the key introduction from opening at startup; the escape
   prefix followed by `?` still opens it, and your **Don't show again** choice
   is kept apart and never changes this setting.
-- `monitor.bell` (default true) is validated; the toasts whose bell it
-  silences are planned.
+- `monitor.bell` (default true): false keeps toasts from ringing the host
+  bell, never hiding a toast or the host attention reports.
 - `monitor.limits` holds the [operational limits](docs/monitor-operational-limits.md),
   in bytes, milliseconds (`_ms`) or counts. The monitor validates and reports
   them; nothing enforces them yet. Its `history.max_rows` is the monitor's own
@@ -331,14 +331,14 @@ currently connected session needing attention, not necessarily a toast's session
 Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
 Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
 
-Needs-attention toasts will hint the actual configured prefix plus lowercase j
+Needs-attention toasts hint the actual configured prefix plus lowercase j
 and describe a dynamic most-recent jump, unless `monitor.show_key_hints` is false.
 
 Help opened over the selector will keep the selector's search and highlight
 and return to them when it closes, without acquiring or acknowledging
 anything.
 
-With toasts, `monitor.bell` false will suppress the explicit host bell, not
+`monitor.bell` false suppresses the explicit host bell, not
 toasts or OSC 7501 reports; host settings govern actual audibility.
 The [selector specification](docs/monitor-selector.md) records the accepted
 layout, read-only disconnected/final history selection and animated toasts.

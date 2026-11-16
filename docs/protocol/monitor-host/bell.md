@@ -1,6 +1,6 @@
 # Sound one host bell per presented toast
 
-**Agreed, unimplemented**, from [the selector decision](https://github.com/jackgeek/climon2/issues/60).
+**Agreed** from [the selector decision](https://github.com/jackgeek/climon2/issues/60), **implemented** by the monitor ([#115](https://github.com/jackgeek/climon2/issues/115)): it writes the byte right after painting the frame in which a toast begins drawing, once per toast, the queue's overflow toast included.
 The [monitor](../../../GLOSSARY.md#sessions) sends
 [BEL](../TERMS.md#bel) to its [host](../../../GLOSSARY.md#sessions)
 when a new eligible toast first begins drawing its border.
@@ -14,7 +14,7 @@ There are no fields or payload beyond the single byte:
 b"\x07"
 ```
 
-Planned startup boolean `monitor.bell` defaults to true. Validate one
+Startup boolean `monitor.bell` defaults to true. Validate one
 [climon2-home](../../../GLOSSARY.md#installation)
 [JSONC](../TERMS.md#jsonc) snapshot before terminal setup; missing file/object/field uses the default,
 wrong types/null and duplicate known fields fail, and there is no live reload.
