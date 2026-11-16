@@ -41,6 +41,9 @@ sleep "$seconds"
 if [ "$stage" = "$MUTATION_RUNNER_FAILURE" ]; then exit 1; fi
 "#;
 
+/// Where the mutator puts a worker overlay holding one private mutated source.
+const OVERLAY: &str = "target/mutation-workers/run-proof/worker-0";
+
 /// A scratch root with the warm build workers copy, a stand-in Cargo and its journal.
 struct Fixture {
     temp: tempfile::TempDir,
@@ -94,14 +97,9 @@ impl Fixture {
         fs::write(package.join("tests/terminal.rs"), "").unwrap();
     }
 
-    /// A worker overlay holding one mutated source, or the unmutated root workspace.
-    fn workspace(&self, overlay: bool) -> PathBuf {
-        let workspace = if overlay {
-            self.root()
-                .join("target/mutation-workers/run-proof/worker-0")
-        } else {
-            self.root().join("workspace")
-        };
+    /// A workspace holding one crate at `relative`, such as [`OVERLAY`].
+    fn workspace(&self, relative: &str) -> PathBuf {
+        let workspace = self.root().join(relative);
         self.add_crate(&workspace, "example");
         workspace
     }
@@ -136,7 +134,7 @@ impl Fixture {
     /// Runs a mutant's stages in `workspace` as the mutator does: in a process group of its
     /// own, which a stage timeout kills.
     fn run(&self, workspace: &Path) -> Run {
-        let overlay = if workspace.ends_with("worker-0") {
+        let overlay = if workspace.ends_with(OVERLAY) {
             "yes"
         } else {
             "no"
@@ -159,9 +157,7 @@ impl Fixture {
         let mut arguments = vec![
             self.root().to_str().unwrap(),
             cargo.to_str().unwrap(),
-            "--timeout-factor",
             factor,
-            "--stage-timeouts",
             timeouts.to_str().unwrap(),
         ];
         arguments.extend(sources);
@@ -261,7 +257,7 @@ fn killed_mutants_stop_without_running_unrelated_tests() {
         ("integration", vec!["unit", "integration"]),
     ] {
         let fixture = Fixture::new().with("MUTATION_RUNNER_FAILURE", failure);
-        let run = fixture.run(&fixture.workspace(true));
+        let run = fixture.run(&fixture.workspace(OVERLAY));
         assert_eq!(run.status.code(), Some(1), "{}", run.output);
         assert_eq!(run.stages(), stages);
     }
@@ -271,7 +267,7 @@ fn killed_mutants_stop_without_running_unrelated_tests() {
 fn surviving_fast_tests_always_reach_the_full_workspace() {
     for failure in ["", "full"] {
         let fixture = Fixture::new().with("MUTATION_RUNNER_FAILURE", failure);
-        let run = fixture.run(&fixture.workspace(true));
+        let run = fixture.run(&fixture.workspace(OVERLAY));
         assert_eq!(run.status.success(), failure.is_empty());
         assert_eq!(run.calls.len(), 3, "{:?}", run.calls);
         assert!(run.calls[0].starts_with("unit "));
@@ -291,12 +287,41 @@ fn the_unmutated_baseline_still_runs_the_full_workspace() {
     let fixture = Fixture::new()
         .with("MUTATION_RUNNER_FAILURE", "full")
         .timeouts(&[("--lib", 2.0), ("--test terminal", 2.0)]);
-    let run = fixture.run(&fixture.workspace(false));
+    let run = fixture.run(&fixture.workspace("workspace"));
     assert_eq!(run.status.code(), Some(1));
     assert_eq!(
         run.calls,
         ["full test --workspace --locked --target-dir target/mutation-tests"]
     );
+}
+
+/// Only a worker of a mutation run is an overlay; any other workspace, even a worker-named
+/// one elsewhere under the mutation workers, is unmutated and runs only the full workspace.
+#[test]
+fn only_a_mutation_runs_worker_is_a_mutant_overlay() {
+    for relative in [
+        "target/mutation-workers/other/worker-0",
+        "target/elsewhere/run-proof/worker-0",
+        "target/mutation-workers/run-proof/helper",
+    ] {
+        let fixture = Fixture::new();
+        let run = fixture.run(&fixture.workspace(relative));
+        assert!(run.status.success(), "{relative}: {}", run.output);
+        assert_eq!(run.stages(), ["full"], "{relative}");
+    }
+}
+
+/// A worker whose copy of the warm build fails stops before running any test, rather than
+/// judge the mutant on a partial build.
+#[test]
+fn a_failed_warm_build_copy_stops_the_worker() {
+    let fixture = Fixture::new();
+    let unreadable = fixture.root().join("target/mutation-tests/unreadable");
+    fs::write(&unreadable, "").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    let run = fixture.run(&fixture.workspace(OVERLAY));
+    assert!(!run.status.success(), "{}", run.output);
+    assert_eq!(run.calls, Vec::<String>::new());
 }
 
 /// Gate speed-up (#73, 2026-11-16): a test that hangs in an earlier stage kills the mutant at
@@ -315,7 +340,7 @@ fn a_hung_stage_is_killed_with_its_process_group_at_its_own_timeout() {
         let fixture = Fixture::new()
             .with("MUTATION_RUNNER_HANG", hung)
             .timeouts(&[("--lib", 2.0), ("--test terminal", 2.5)]);
-        let run = fixture.run(&fixture.workspace(true));
+        let run = fixture.run(&fixture.workspace(OVERLAY));
         assert!(!run.status.success(), "{hung}: {}", run.output);
         assert_eq!(run.stages(), stages, "{hung}");
         assert!(
@@ -346,7 +371,7 @@ fn slow_passing_stages_reach_the_full_workspace_which_keeps_the_mutators_timeout
         .with("MUTATION_RUNNER_SLEEP_integration", "1")
         .with("MUTATION_RUNNER_SLEEP_full", "3")
         .timeouts(&[("--lib", 2.0), ("--test terminal", 2.0)]);
-    let run = fixture.run(&fixture.workspace(true));
+    let run = fixture.run(&fixture.workspace(OVERLAY));
     assert!(run.status.success(), "{}", run.output);
     assert_eq!(
         run.stages(),
@@ -419,7 +444,7 @@ fn a_failed_stage_build_kills_the_mutant_without_running_tests() {
     let fixture = Fixture::new()
         .with("MUTATION_RUNNER_FAILURE", "build-unit")
         .timeouts(&[("--lib", 2.0)]);
-    let run = fixture.run(&fixture.workspace(true));
+    let run = fixture.run(&fixture.workspace(OVERLAY));
     assert_eq!(run.status.code(), Some(1), "{}", run.output);
     assert_eq!(run.stages(), ["build-unit"]);
 }

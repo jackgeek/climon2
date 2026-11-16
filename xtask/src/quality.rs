@@ -658,11 +658,7 @@ fn mutate(root: &Path, workers: &str, run_plan: RunPlan) -> io::Result<()> {
     // Unloaded and warm, before any mutation worker starts.
     let stage_timeouts = root.join(STAGE_TIMEOUTS);
     run(own_targets(&mut python_script(root, "test-mutation.py"))
-        .args([
-            "--timeout-factor",
-            MUTATION_TIMEOUT_FACTOR,
-            "--stage-timeouts",
-        ])
+        .arg(MUTATION_TIMEOUT_FACTOR)
         .arg(&stage_timeouts)
         .args(&paths))?;
     let mut mutation = mutation_command(root);
@@ -1508,11 +1504,10 @@ esac
                 run.events
             );
             assert_eq!(stages + 1, run.started("mutation-stage-timeouts").unwrap());
-            assert_eq!(
-                run.option("stages", "--timeout-factor"),
-                run.option("mutation", "--timeout-factor")
-            );
-            let file = run.option("stages", "--stage-timeouts");
+            // `stages TIMEOUT_FACTOR STAGE_TIMEOUTS SOURCE...`
+            let measured: Vec<_> = run.events[stages].split(' ').skip(1).collect();
+            assert_eq!(measured[0], run.option("mutation", "--timeout-factor"));
+            let file = measured[1];
             assert!(
                 file.ends_with("target/mutation-stage-timeouts.json"),
                 "{file}"
@@ -1521,15 +1516,12 @@ esac
                 run.events[stages + 1],
                 format!("mutation-stage-timeouts {file}")
             );
-            let targets = &run.events[stages];
             let mutation = &run.events[run.started("mutation").unwrap()];
-            let mutated = mutation
+            let mutated: Vec<_> = mutation
                 .split(' ')
-                .skip_while(|word| !word.starts_with("crates/"));
-            assert!(
-                targets.ends_with(&format!(" {}", mutated.collect::<Vec<_>>().join(" "))),
-                "{targets} / {mutation}"
-            );
+                .skip_while(|word| !word.starts_with("crates/"))
+                .collect();
+            assert_eq!(measured[2..], mutated[..], "{mutation}");
         }
         let run = run_gate(Gate {
             scope: "ticket",
