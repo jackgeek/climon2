@@ -393,6 +393,31 @@ mod tests {
         assert_eq!(limited().notification(at(0), parsed), None);
     }
 
+    /// LIM-01 (pure, release-constant text bounds in OSC 99): a title of
+    /// 4,096 UTF-8 bytes and a body of 8,192, each in the one chunk that
+    /// completes its notification, are kept whole; one byte more ignores
+    /// the notification instead of truncating it.
+    #[test]
+    fn osc_99_text_is_bounded_from_its_first_chunk() {
+        let euros = |bytes: usize| "\u{20ac}".repeat(bytes / 3) + &"e".repeat(bytes % 3);
+        let mut assembler = limited();
+        let mut fed = |part, text: &str| {
+            let parsed = chunk(Some("w"), true, part, text.as_bytes());
+            record(assembler.notification(at(0), parsed))
+        };
+        let (title, body) = (euros(4_096), euros(8_192));
+        assert_eq!(
+            fed(Part::Title, &title),
+            notification(Osc99, Some("w"), Some(&title), None)
+        );
+        assert_eq!(
+            fed(Part::Body, &body),
+            notification(Osc99, Some("w"), None, Some(&body))
+        );
+        assert_eq!(fed(Part::Title, &euros(4_097)), None);
+        assert_eq!(fed(Part::Body, &euros(8_193)), None);
+    }
+
     /// LIM-01 (pure, metadata record bound): a notification is kept only
     /// when its record, with the longest episode identifier, fits 16,384
     /// bytes, here a body whose escaped quotes fill it exactly; one more
