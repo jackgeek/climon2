@@ -456,7 +456,8 @@ fn shown<'a>(view: &vt::View<'a>) -> Vec<Shown<'a>> {
     };
     let history = history.map_or_else(Vec::new, |history| history.iter().collect());
     let scrolled = view.scrolled();
-    let cols = rows.iter().next().map_or(0, |row| row.cells().len());
+    let first = rows.iter().next().expect("every screen has a row");
+    let cols = first.cells().len();
     let notice = (scrolled > history.len()).then_some(Shown::Notice(cols));
     let back = history.len().saturating_sub(scrolled);
     notice
@@ -1017,6 +1018,9 @@ mod tests {
         let (buffer, cursor) = painted(&model, 6, 4);
         assert_eq!(below(&buffer), ["h2", "s0", "s1"]);
         assert_eq!(cursor, None, "one row past the canvas");
+        let (buffer, cursor) = painted(&model, 6, 6);
+        assert_eq!(below(&buffer), ["h2", "s0", "s1", "", ""], "blank margins");
+        assert_eq!(cursor, None, "one row past the canvas, above the margin");
         model.feed(&mut Parser::new(), b"\x1b[2;1H").unwrap();
         let (_, cursor) = painted(&model, 6, 4);
         assert_eq!(cursor.map(|cursor| cursor.row), Some(3), "its last row");
@@ -1117,10 +1121,17 @@ mod tests {
         let mut screen = Screen::new(TerminalSize { cols: 6, rows: 3 }, prefix, None, true);
         let mut model = model(6, 2, b"\x1b[4:3mold\x1b[0m");
         let mut parser = Parser::new();
+        let calls = std::cell::Cell::new(0);
         let view = |screen: &mut Screen, model: &Model, id: &SessionId, cols| {
             let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 3));
+            // Each frame's top row is its own.
+            calls.set(calls.get() + 1);
+            let top = format!("top{}", calls.get());
+            buffer.set_string(0, 0, &top, Style::new());
             let mut underlines = Underlines::new();
             let cursor = screen.view(id, &model.view(), &mut buffer, &mut underlines);
+            let drawn: String = (0..cols).map(|x| buffer[(x, 0)].symbol()).collect();
+            assert_eq!(drawn.trim_end(), top, "the top row stays");
             (
                 below(&buffer),
                 underlines,

@@ -352,9 +352,10 @@ impl Bounded {
 
     /// [`Bounded::apply`], returning the rows it pushed into the normal
     /// screen's history while its view is scrolled back, which alone needs
-    /// them; otherwise none are counted.
+    /// them; otherwise none are counted. The alternate screen has no
+    /// history, so a count there is none.
     fn counted(&mut self, parser: &mut Parser, kind: Kind, bytes: &[u8], repeats: usize) -> usize {
-        let counting = self.scrolled > 0 && self.region.at_top() && !self.core.alternate();
+        let counting = self.scrolled > 0 && self.region.at_top();
         if !counting {
             self.apply(parser, kind, bytes, repeats);
             return 0;

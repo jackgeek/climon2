@@ -231,8 +231,8 @@ impl Notch {
     }
 }
 
-/// The wheel's down notch; up is [`WHEEL`] itself.
-const WHEEL_DOWN: u16 = WHEEL | 1;
+/// The wheel's down notch; up is [`WHEEL`] itself, 64.
+const WHEEL_DOWN: u16 = 65;
 
 /// What `mouse` does as a wheel notch over an application in `modes`
 /// that does not report the mouse: on the normal screen it scrolls history

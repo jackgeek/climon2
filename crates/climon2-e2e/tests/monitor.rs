@@ -5288,7 +5288,7 @@ const NOTICE: &str = "[climon2: older session scrollback was discarded]";
 /// shows in the control slot and the cursor, scrolled out of view, hides.
 /// Output keeps the view anchored on the rows it shows. Typing returns it
 /// live and reaches the application, which saw focus in once and no focus
-/// change from scrolling. Scrolled to the oldest row (`RAW`, history not
+/// change from scrolling, and so does a paste. Scrolled to the oldest row (`RAW`, history not
 /// truncated, so no notice), 210 more rows with 200 history rows kept
 /// evict it: the view moves to the truncation notice above the oldest row
 /// kept, and one notch down leaves the notice. On the alternate screen the
@@ -5356,8 +5356,11 @@ fn the_wheel_scrolls_anchored_history_and_typing_returns_live() {
     terminal.send(WHEEL_DOWN).unwrap();
     frame_rows(&terminal, &history, &[(1, "line47"), (29, "line75")]);
 
-    terminal.send("j").unwrap();
+    // A paste returns the view live too; the application, without
+    // bracketed paste, receives its payload alone.
+    terminal.send("\x1b[200~j\x1b[201~").unwrap();
     received_by(&package, "Hist", b"\x1b[Ikj");
+    frame_rows(&terminal, &live, &[(1, "line247"), (29, "line275")]);
     emit(&package, "Hist", b"\x1b[?1049h\x1b[HALT");
     frame_rows(&terminal, &live, &[(1, "ALT"), (2, "")]);
     terminal.send(format!("{WHEEL_UP}{WHEEL_DOWN}a")).unwrap();

@@ -148,7 +148,8 @@ impl<L: EventListener> Core<L> {
     /// limit, and by every row a scroll region below the top row scrolls,
     /// so the caller counts only for a region that starts at the top row.
     /// The display is never shown: it starts one row back, since the engine
-    /// moves no display at the live screen, and needs a row of history.
+    /// moves no display at the live screen, and needs a row of history; what
+    /// it is left at between counts moves no cell.
     pub(crate) fn count_pushes(&mut self) {
         let grid = self.term.grid_mut();
         grid.scroll_display(Scroll::Bottom);
@@ -156,12 +157,9 @@ impl<L: EventListener> Core<L> {
     }
 
     /// The rows pushed since [`Core::count_pushes`], at most one less than
-    /// the history's limit; the display returns to the live screen.
-    pub(crate) fn pushed(&mut self) -> usize {
-        let grid = self.term.grid_mut();
-        let pushed = grid.display_offset().saturating_sub(1);
-        grid.scroll_display(Scroll::Bottom);
-        pushed
+    /// the history's limit.
+    pub(crate) fn pushed(&self) -> usize {
+        self.term.grid().display_offset().saturating_sub(1)
     }
 
     pub(crate) fn active(&self) -> &Grid<Cell> {
