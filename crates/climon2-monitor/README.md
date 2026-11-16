@@ -330,14 +330,46 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   two columns (blank if the right edge would cut it; the engine's width, never
   a re-measured symbol, decides what a cell covers, and the next cell is
   placed with CUP wherever the host may measure it otherwise), colours and
-  rendition (every underline style as a single underline until #112; SGR 58
+  rendition (each underline style with its own SGR 4 subparameter, `4:2`
+  double, `4:3` curly, `4:4` dotted, `4:5` dashed and plain `4` single,
+  carried beside the Ratatui frame, whose cells hold only whether they are
+  underlined; SGR 58
   only on an underlined cell with a colour of its own, in the T.416 colon
   form, since SGR 0 resets it and a host that does not know it skips the
   colon form whole). Its cursor is shown with its
   DECSCUSR shape and blink where the application left it, unless hidden, off
-  the host or covered by the selector or key introduction; never in the top
-  row. While its restoration is staged the last applied frame stays; before
-  any, the canvas is blank.
+  the host, scrolled out of view or covered by the selector or key
+  introduction; never in the top row. While its restoration is staged the
+  last applied frame stays; before any, the canvas is blank. While the
+  application's synchronized update (`CSI ? 2026 h`) is open, the canvas
+  painted before it stays, cursor included, for the same session at the
+  same host size, while the top row and overlays are drawn as ever; the
+  update shows whole once it ends, which the session daemon makes happen
+  within vte's 150 ms timeout.
+- **History** (#112). A vertical wheel notch over the selected
+  application taking input, when it does not report the mouse, scrolls
+  its normal screen's view one row into the model's history (up goes
+  back; one row a notch, owner decision 2026-11-16), as far as the oldest
+  row kept, or one row further once older rows were discarded: there the
+  glossary's truncation notice, `[climon2: older session scrollback was
+  discarded]`, sits above the oldest kept row (owner decision
+  2026-11-16). The canvas then shows that many history rows above the
+  screen's top rows, and the cursor moves down with them, hidden once
+  scrolled out of view. Output keeps the view anchored on the rows it
+  shows, counted per engine step
+  ([climon2-vt](../climon2-vt/README.md#read-only-views)); when they are
+  evicted it moves to the notice above the oldest row kept, never to
+  live. While scrolled back the top row's control slot says `History`
+  (owner decision 2026-11-16). Any application input (typed keys, mouse
+  reports, a paste) returns the view live and reaches the application;
+  scrolling alone changes neither application focus nor input. On the
+  alternate screen, which never shows normal history, the wheel is a
+  cursor key (up or down, in the application's cursor mode) only while
+  the application has alternate scroll (1007) on, and does nothing
+  otherwise; the normal view keeps its place until the application
+  returns. An applied restoration replaces the model whole, so its view
+  is live. The monitor draws only on its own alternate screen, so nothing
+  reaches the host's native scrollback.
 - **Top row** (owner decision, 2026-11-14). With a session selected,
   fixed-width slots at the right edge, each after ` | `, never move whatever
   their values: its status as the selector shows it (Unavailable until
@@ -480,7 +512,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   release is button 3), and nothing it cannot encode. The host keeps
   button-event tracking, so an application asking for any-motion tracking
   receives motion only while a button is held. The wheel over an application
-  that does not report the mouse scrolls nothing yet (#112).
+  that does not report the mouse scrolls its history or sends cursor keys
+  (History above, #112).
 - **Host focus.** The host's focus reports bypass keys and set whether the
   host has focus, assumed until it reports otherwise. A host that never
   reports focus cannot be detected: its focus is always assumed, and nothing
@@ -544,6 +577,9 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Selected without a connected client | `No terminal content is available.`, then the row status | `screen.rs` |
 | Row and top-row statuses (#107) | `Needs attention`, `Acknowledged`, `Running`, `Idle`, `Succeeded`, `Failed (exit <code>)`, `Failed (signal <number>)`, `Starting`, `Unavailable`, `Disconnected` | `registry.rs` |
 | Top-row control (#108) | `Acquiring`, `Restoring`, `Controlling`, `Not controlling`, `Ended` | `terminal.rs` |
+| Top-row control slot while the canvas is scrolled back into history (#112, owner decision 2026-11-16) | `History` | `screen.rs` |
+| Canvas, above the oldest history row kept once older rows were discarded (#112; the glossary's truncation notice, owner decision 2026-11-16) | `[climon2: older session scrollback was discarded]` | `screen.rs` |
+| Top-row label or selector row that overflows its cells (#112, owner decision 2026-11-16) | `<text, truncated>…` | `registry.rs` |
 | Top row's error slot: a paste the input queue refused partway (#111, owner decision 2026-11-16) | `Paste truncated` | `terminal.rs` |
 
 ## Specification mapping
@@ -623,6 +659,10 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | CTL-05 (pure supplement): Resize once per grant and desire, never without control; superseded refusals are not errors and a refused Resize is resent; Acquiring and errors | `resize_follows_every_grant_and_each_new_desire_only_while_controlling`, `work_refused_under_a_superseded_restoration_is_not_an_error_and_resize_is_resent`, `acquiring_ends_at_the_grant_or_the_answer_and_errors_are_shown`, `each_control_has_its_label` (`src/terminal.rs`) |
 | LIM-03 (pure supplement): a restoration over the model's limit is an error without Ready | `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`) |
 | TRM-01 (pure supplement): exact SGR for the 16 ANSI, palette, direct and default colours, underline colour (colon form, underlined cells only) and renditions; wide and combining text; each cell covers its given width; the cursor | `colours_and_renditions_are_painted_with_their_own_sgr`, `wide_and_combining_text_and_the_cursor_are_painted_in_place`, `each_cell_covers_the_width_it_was_given`, `each_row_starts_with_its_own_cursor_position` (`src/paint.rs`) |
+| TRM-01 (pure supplement; #108's note on #112): each underline style with its own SGR 4 subparameter, single as plain 4, none on a cell not underlined; each style reaches its cell from the model | `each_underline_style_is_painted_with_its_own_sgr` (`src/paint.rs`), `each_underline_style_reaches_its_cell` (`src/screen.rs`) |
+| TRM-01 (pure supplement, synchronized updates): while the session's update is open the canvas painted before it stays, cursor and underline styles included, never for another session or host size; the whole update shows once it ends | `an_open_synchronized_update_keeps_the_last_coherent_canvas` (`src/screen.rs`) |
+| TRM-05, TRM-01 (pure supplement, #112): a scrolled canvas shows history rows above the screen's top rows; the cursor moves down and hides once scrolled out of view (the canvas's last row and one past it); the alternate screen shows its own rows; an evicted view shows the truncation notice, clipped to the session, above the oldest kept row; `History` in the control slot while scrolled back | `a_scrolled_canvas_shows_history_and_hides_the_cursor_out_of_view`, `an_evicted_view_shows_the_notice_above_the_oldest_kept_row`, `while_scrolled_back_the_control_slot_says_history` (`src/screen.rs`) |
+| TRM-05 (pure supplement, #112): a vertical notch scrolls history a row without mouse reporting, whatever its modifiers; on the alternate screen a cursor key with alternate scroll, nothing without; horizontal notches, presses, releases, motion and any report under mouse reporting are the application's; input returns the view live | `the_wheel_scrolls_history_or_sends_cursor_keys_only_without_mouse_reporting` (`src/mouse.rs`), `the_view_scrolls_into_history_and_input_returns_it_live` (`src/terminal.rs`) |
 | TRM-03, TRM-04 (pure supplement): the desired area; 4 rows and 5 columns enough, one fewer of either too small | `the_application_area_is_the_host_less_its_top_row_unless_too_small` (`src/screen.rs`) |
 | Top row (owner decision 2026-11-14, pure supplement): fixed slots for status, control and hint whatever the control word; the error clipped first, never squeezing out the label | `status_and_control_keep_their_slots_whatever_the_control`, `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`) |
 | TRM-01 (pure supplement): the cursor only inside the host; a wide character the edge would cut left blank; each rendition reaches its cell; DECSCUSR for every shape | `the_cursor_shows_only_inside_the_host`, `a_wide_character_the_host_edge_would_cut_is_left_blank`, `each_rendition_reaches_its_cell`, `each_colour_reaches_its_cell_as_the_same_kind`, `each_cursor_shape_has_its_decscusr` (`src/screen.rs`) |
@@ -665,18 +705,16 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
 Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), selector clicks and
-the wheel in the selector, and paste into search (#113), the wheel over
-history and alternate scroll (#112), toasts and their gestures (INP-05's
+the wheel in the selector, and paste into search (#113), toasts and their gestures (INP-05's
 toast cases, #115), viewing and host focus's effect on it (#114), FOC-01's
-history and toast cases (#112, #115), any-motion mouse tracking without a
+toast cases (#115), any-motion mouse tracking without a
 button held (the host keeps button-event tracking), FOC-02's host-native
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
 else could receive the rest; #116 owns its recovery), global actions from the history screen (#116), HLP-02 over the selector (#113), selector
 search and footer (#113), Enter on disconnected and final rows and retained
 caches with their overlays (#116), Enter on Awaiting resources rows (#120),
-the label marquee and synchronized
-updates (#112), underline styles other than single, Awaiting resources
+Awaiting resources
 ending initial collection (#120), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), passive retry
 (#116), the fail-stop after an unconfirmed shutdown (#118), and the universal archive's runtime on both architectures, which

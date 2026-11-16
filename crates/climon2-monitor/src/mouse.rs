@@ -183,6 +183,73 @@ impl<T: PartialEq + Clone> Gestures<T> {
     }
 }
 
+/// What a wheel notch does over an application that does not report the
+/// mouse (spec #73, "History"; owner decision on #112: one row a notch).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Wheel {
+    /// Scroll the normal screen's view this many rows back into history,
+    /// forward when negative.
+    History(isize),
+    /// Send the cursor key with this final byte (`A` up, `B` down): the
+    /// alternate screen, with alternate scroll on.
+    Key(u8),
+    /// Nothing: the alternate screen, with alternate scroll off.
+    Nothing,
+}
+
+/// A vertical wheel notch.
+#[derive(Clone, Copy)]
+enum Notch {
+    Up,
+    Down,
+}
+
+impl Notch {
+    /// `mouse` as a vertical wheel notch, whatever modifiers it has.
+    fn of(mouse: Mouse) -> Option<Self> {
+        match (mouse.released, mouse.code & !MODIFIERS) {
+            (false, WHEEL) => Some(Self::Up),
+            (false, WHEEL_DOWN) => Some(Self::Down),
+            _ => None,
+        }
+    }
+
+    /// The rows it scrolls history: up goes back.
+    fn rows(self) -> isize {
+        match self {
+            Self::Up => 1,
+            Self::Down => -1,
+        }
+    }
+
+    /// The cursor key it sends with alternate scroll.
+    fn key(self) -> u8 {
+        match self {
+            Self::Up => b'A',
+            Self::Down => b'B',
+        }
+    }
+}
+
+/// The wheel's down notch; up is [`WHEEL`] itself.
+const WHEEL_DOWN: u16 = WHEEL | 1;
+
+/// What `mouse` does as a wheel notch over an application in `modes`
+/// that does not report the mouse: on the normal screen it scrolls history
+/// a row; on the `alternate` screen, which never shows history, it is a
+/// cursor key only while the application has alternate scroll on, and
+/// otherwise nothing. Anything else, or any report for an application that
+/// reports the mouse, is the application's to receive ([`encode`]).
+pub(crate) fn wheel(mouse: Mouse, modes: &Modes, alternate: bool) -> Option<Wheel> {
+    let notch = Notch::of(mouse).filter(|_| modes.mouse_reporting == MouseReporting::Off)?;
+    let wheel = match (alternate, modes.alternate_scroll) {
+        (false, _) => Wheel::History(notch.rows()),
+        (true, true) => Wheel::Key(notch.key()),
+        (true, false) => Wheel::Nothing,
+    };
+    Some(wheel)
+}
+
 /// Appends `mouse`, at the application's `cell`, as an application in
 /// `modes` expects it: nothing unless it asked for this kind of event, and
 /// nothing when its encoding cannot hold the values.
@@ -447,5 +514,51 @@ mod tests {
         );
         assert_eq!(sent(mouse(0, 9, 9, false), at(96, 2016), &utf8), b"");
         assert_eq!(sent(mouse(0, 9, 9, false), at(1, 2016), &utf8), b"");
+    }
+
+    /// TRM-05 (pure supplement; owner decision on #112): a vertical wheel
+    /// notch over an application that does not report the mouse scrolls the
+    /// normal screen's history one row, back for up and forward for down,
+    /// whatever modifiers it carries. On the alternate screen it is a
+    /// cursor key, up or down, only with alternate scroll on, and nothing
+    /// otherwise. A horizontal notch, a press, a release, motion, or any
+    /// report while the application reports the mouse is not the monitor's.
+    #[test]
+    fn the_wheel_scrolls_history_or_sends_cursor_keys_only_without_mouse_reporting() {
+        let off = modes(MouseReporting::Off, MouseEncoding::Default);
+        let up = mouse(64, 3, 3, false);
+        let down = mouse(65, 3, 3, false);
+        assert_eq!(wheel(up, &off, false), Some(Wheel::History(1)));
+        assert_eq!(wheel(down, &off, false), Some(Wheel::History(-1)));
+        assert_eq!(
+            wheel(mouse(64 | 4 | 8 | 16, 3, 3, false), &off, false),
+            Some(Wheel::History(1))
+        );
+        assert_eq!(wheel(down, &off, true), Some(Wheel::Nothing));
+        let scrolling = Modes {
+            alternate_scroll: true,
+            ..off
+        };
+        assert_eq!(wheel(up, &scrolling, true), Some(Wheel::Key(b'A')));
+        assert_eq!(wheel(down, &scrolling, true), Some(Wheel::Key(b'B')));
+        assert_eq!(wheel(up, &scrolling, false), Some(Wheel::History(1)));
+        for other in [
+            mouse(66, 3, 3, false),
+            mouse(67, 3, 3, false),
+            mouse(64, 3, 3, true),
+            press(3, 3),
+            release(3, 3),
+            drag(3, 3),
+        ] {
+            assert_eq!(wheel(other, &scrolling, true), None, "{other:?}");
+        }
+        for reporting in [
+            MouseReporting::Clicks,
+            MouseReporting::Drag,
+            MouseReporting::Motion,
+        ] {
+            let reported = modes(reporting, MouseEncoding::Sgr);
+            assert_eq!(wheel(up, &reported, false), None, "{reporting:?}");
+        }
     }
 }

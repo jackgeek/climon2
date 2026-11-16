@@ -74,7 +74,7 @@ fn scrolling_stays_within_history_and_live() {
     model.scroll(-1);
     assert_eq!(model.view().scrolled(), 0, "never past live");
     model.scroll(2);
-    model.to_live();
+    model.return_live();
     assert_eq!(model.view().scrolled(), 0);
 
     let mut empty = printed(100, 1);
@@ -144,7 +144,7 @@ fn eviction_moves_the_view_to_the_notice_above_the_oldest_row() {
 /// TRM-05 (crate case): clearing history (`CSI 3 J`) under a scrolled view
 /// leaves nothing to show but the live screen, and so does a full reset.
 #[test]
-fn clearing_history_returns_a_scrolled_view_to_live() {
+fn clearing_history_returns_a_scrolled_view_return_live() {
     for clear in ["\x1b[3J", "\x1bc"] {
         let mut model = printed(100, 6);
         model.scroll(3);

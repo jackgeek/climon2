@@ -7,7 +7,7 @@ use ratatui::{
     buffer::{Buffer, Cell, CellWidth},
     style::{Color, Modifier},
 };
-use std::fmt::Write;
+use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::UnicodeWidthStr;
 
 /// The host cursor a frame shows: where, and its DECSCUSR style.
@@ -19,6 +19,10 @@ pub(crate) struct HostCursor {
     pub(crate) style: u8,
 }
 
+/// SGR 4's subparameter for each cell underlined in a style other than
+/// single, by column and row.
+pub(crate) type Underlines = BTreeMap<(u16, u16), u8>;
+
 /// One frame as the host shows it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Frame {
@@ -28,6 +32,11 @@ pub(crate) struct Frame {
     /// taking input asked: the host sends its keypad keys as that
     /// application expects them.
     pub(crate) keypad: bool,
+    /// The underline style of each underlined cell, by column and row, as
+    /// SGR 4's subparameter, where it is not a single underline (2 double,
+    /// 3 curly, 4 dotted, 5 dashed): a Ratatui cell holds only whether it
+    /// is underlined.
+    pub(crate) underlines: Underlines,
 }
 
 /// The cursor is hidden while cells are written, every cell's rendition is
@@ -44,7 +53,7 @@ pub(crate) fn paint(frame: &Frame) -> Vec<u8> {
         if next != Some((x, y)) {
             let _ = write!(out, "\x1b[{};{}H", y + 1, x + 1);
         }
-        let sgr = sgr(cell);
+        let sgr = sgr(cell, frame.underlines.get(&(x, y)));
         if style.as_ref() != Some(&sgr) {
             out.push_str(&sgr);
             style = Some(sgr);
@@ -117,14 +126,18 @@ pub(crate) const ANSI: [Color; 16] = [
     Color::White,
 ];
 
-/// The whole rendition of `cell`, from SGR 0. SGR 0 also resets the
-/// underline colour, so SGR 58 is written only where it shows: on an
-/// underlined cell with a colour of its own.
-fn sgr(cell: &Cell) -> String {
+/// The whole rendition of `cell`, from SGR 0, with its underline in its
+/// own `style`, if not single. SGR 0 also resets the underline colour, so
+/// SGR 58 is written only where it shows: on an underlined cell with a
+/// colour of its own.
+fn sgr(cell: &Cell, style: Option<&u8>) -> String {
     let modifiers = MODIFIERS
         .iter()
         .filter(|(modifier, _)| cell.modifier.contains(*modifier))
-        .map(|(_, code)| (*code).to_owned());
+        .map(|(modifier, code)| match style {
+            Some(style) if *modifier == Modifier::UNDERLINED => format!("{code}:{style}"),
+            _ => (*code).to_owned(),
+        });
     let colours = [colour(cell.fg, 30), colour(cell.bg, 40)];
     let underlined = cell.modifier.contains(Modifier::UNDERLINED);
     let codes: Vec<_> = std::iter::once("0".to_owned())
@@ -179,8 +192,7 @@ mod tests {
     /// SGR in the foreground and background; palette, direct and default
     /// colours and every rendition are exact. SGR 0 resets the underline
     /// colour, so SGR 58 is written only on an underlined cell with a colour
-    /// of its own, in its colon form; non-single underline styles are
-    /// painted single until #112.
+    /// of its own, in its colon form.
     #[test]
     fn colours_and_renditions_are_painted_with_their_own_sgr() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 16, 2));
@@ -205,6 +217,7 @@ mod tests {
             buffer,
             cursor: None,
             keypad: false,
+            ..Frame::default()
         }));
         let expected = [
             "\x1b[?25l\x1b[1;1H",
@@ -236,6 +249,7 @@ mod tests {
                 style: 6,
             }),
             keypad: false,
+            ..Frame::default()
         }));
         assert_eq!(
             painted,
@@ -264,11 +278,42 @@ mod tests {
             buffer,
             cursor: None,
             keypad: false,
+            ..Frame::default()
         }));
         assert_eq!(
             painted,
             "\x1b[?25l\x1b[1;1H\x1b[0;39;49m\u{2764}\u{fe0f}\x1b[1;2Hxw\x1b[1;5H界\x1b[0m"
         );
+    }
+
+    /// TRM-01 (pure supplement; note from #108 on #112): each underline
+    /// style is painted with its own SGR 4 subparameter, double 4:2, curly
+    /// 4:3, dotted 4:4 and dashed 4:5, and a single underline as plain 4;
+    /// a style changes the cell's SGR like any rendition, and a cell that
+    /// is not underlined has none.
+    #[test]
+    fn each_underline_style_is_painted_with_its_own_sgr() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 7, 1));
+        let underlined = Style::new().add_modifier(Modifier::UNDERLINED);
+        for column in 0..6 {
+            buffer[(column, 0)].set_style(underlined);
+        }
+        let underlines = [(1, 2), (2, 3), (3, 4), (4, 5), (5, 5), (6, 3)];
+        let painted = text(paint(&Frame {
+            buffer,
+            underlines: underlines
+                .into_iter()
+                .map(|(column, style)| ((column, 0), style))
+                .collect(),
+            ..Frame::default()
+        }));
+        let expected = [
+            "\x1b[?25l\x1b[1;1H\x1b[0;4;39;49m \x1b[0;4:2;39;49m ",
+            "\x1b[0;4:3;39;49m \x1b[0;4:4;39;49m \x1b[0;4:5;39;49m  ",
+            "\x1b[0;39;49m \x1b[0m",
+        ]
+        .concat();
+        assert_eq!(painted, expected);
     }
 
     /// A position the previous cell did not end at is reached with CUP.
@@ -280,6 +325,7 @@ mod tests {
                 buffer,
                 cursor: None,
                 keypad: false,
+                ..Frame::default()
             })),
             "\x1b[?25l\x1b[1;1H\x1b[0;39;49m  \x1b[2;1H  \x1b[0m"
         );

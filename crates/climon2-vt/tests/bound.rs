@@ -991,7 +991,7 @@ fn live_output_discards_the_oldest_history_instead_of_being_rejected() {
 /// accepted with the page intact. The allocator never sees either limit
 /// exceeded.
 #[test]
-fn history_yields_its_oldest_chunk_to_live_output_one_byte_below_the_bound() {
+fn history_yields_its_oldest_chunk_return_live_output_one_byte_below_the_bound() {
     let at = geometry(200, 60);
     let rows = marked_rows(at, 0..2559);
     let before = format!("{}\r\n", rows.join("\r\n"));

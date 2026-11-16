@@ -435,6 +435,22 @@ impl Terminal {
         self.held.map(|held| held.authority)
     }
 
+    /// Scrolls the model's normal-screen view `rows` back into its history,
+    /// forward when negative (#112).
+    pub(crate) fn scroll(&mut self, rows: isize) {
+        if let Some(model) = self.model.as_mut() {
+            model.scroll(rows);
+        }
+    }
+
+    /// Returns the model's view to the live screen: application input
+    /// went to the session (#112).
+    pub(crate) fn return_live(&mut self) {
+        if let Some(model) = self.model.as_mut() {
+            model.return_live();
+        }
+    }
+
     /// The model's geometry, once it has one.
     pub(crate) fn geometry(&self) -> Option<Geometry> {
         self.model.as_ref().map(Model::geometry)
@@ -1110,5 +1126,26 @@ mod tests {
         );
         assert_eq!(terminal.present(&mut parser, Presentation::Complete), None);
         assert!(terminal.view().is_none());
+    }
+
+    /// TRM-05 (pure supplement): the wheel scrolls the model's history and
+    /// application input returns it live; a terminal with no model yet has
+    /// nothing to scroll.
+    #[test]
+    fn the_view_scrolls_into_history_and_input_returns_it_live() {
+        let mut terminal = restored(b"a\r\nb\r\nc\r\nd\r\ne");
+        let scrolled = |terminal: &Terminal| terminal.view().map(|view| view.scrolled());
+        assert_eq!(scrolled(&terminal), Some(0));
+        terminal.scroll(2);
+        assert_eq!(scrolled(&terminal), Some(2));
+        terminal.scroll(-1);
+        assert_eq!(scrolled(&terminal), Some(1));
+        terminal.return_live();
+        assert_eq!(scrolled(&terminal), Some(0));
+
+        let mut blank = Terminal::new(LIMITS);
+        blank.scroll(1);
+        blank.return_live();
+        assert_eq!(blank.geometry(), None);
     }
 }

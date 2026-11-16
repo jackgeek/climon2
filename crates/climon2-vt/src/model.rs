@@ -198,8 +198,8 @@ impl Model {
     }
 
     /// Return the current model's view to the live screen.
-    pub fn to_live(&mut self) {
-        self.current.to_live();
+    pub fn return_live(&mut self) {
+        self.current.return_live();
     }
 
     /// What the current model shows, for painting.

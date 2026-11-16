@@ -3,12 +3,12 @@
 use crate::{
     introduction::KeyIntroduction,
     keys::EXIT,
-    paint::{ANSI, Frame, HostCursor, paint},
+    paint::{ANSI, Frame, HostCursor, Underlines, paint},
     registry::{View, truncate},
     selector::Selector,
 };
-use climon2_core::{keys::ControlKey, protocol::TerminalSize};
-use climon2_vt::view::{self as vt, Content, CursorShape};
+use climon2_core::{SessionId, keys::ControlKey, protocol::TerminalSize};
+use climon2_vt::view::{self as vt, Content, CursorShape, Underline};
 use ratatui::{
     buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Rect},
@@ -48,9 +48,24 @@ const SEPARATOR: &str = " | ";
 const STATUS_SLOT: u16 = 18;
 /// The control slot's width: the longest control, "Not controlling".
 const CONTROL_SLOT: u16 = 15;
+/// The control slot while the canvas is scrolled back into the session's
+/// history (owner decision on #112, 2026-11-16).
+const HISTORY: &str = "History";
+/// The glossary's truncation notice, above the oldest history row kept
+/// once older rows were discarded (owner decision on #112, 2026-11-16).
+const NOTICE: &str = "[climon2: older session scrollback was discarded]";
+/// SGR 4's subparameter for each underline style but single, which is
+/// plain SGR 4.
+const UNDERLINES: [(Underline, u8); 4] = [
+    (Underline::Double, 2),
+    (Underline::Curly, 3),
+    (Underline::Dotted, 4),
+    (Underline::Dashed, 5),
+];
 
 /// The selected session as the top row and canvas show it.
 pub(crate) struct Session<'a> {
+    pub(crate) id: &'a SessionId,
     pub(crate) label: &'a str,
     pub(crate) status: &'a str,
     pub(crate) control: &'a str,
@@ -117,6 +132,19 @@ pub(crate) struct Screen {
     size: TerminalSize,
     /// The frame last painted.
     painted: Frame,
+    /// The selected session's canvas as last painted from a view with no
+    /// synchronized update open: it stays while one is.
+    coherent: Option<Coherent>,
+}
+
+/// A session's canvas as painted from a coherent view, at one host size.
+struct Coherent {
+    id: SessionId,
+    /// The whole frame's buffer; only the rows below the top row are the
+    /// canvas.
+    buffer: Buffer,
+    underlines: Underlines,
+    cursor: Option<HostCursor>,
 }
 
 impl Screen {
@@ -138,6 +166,7 @@ impl Screen {
                 .map(|key| format!("Press {key} to take control")),
             size,
             painted: Frame::default(),
+            coherent: None,
         }
     }
 
@@ -186,9 +215,10 @@ impl Screen {
     /// The permanent top row, and below it the selected session's canvas or
     /// the body, under the selector and then the key introduction while they
     /// are open. Too small a host shows only why, in the top row.
-    fn frame(&self, scene: &Scene<'_>) -> Frame {
+    fn frame(&mut self, scene: &Scene<'_>) -> Frame {
         let area = Rect::new(0, 0, self.size.cols, self.size.rows);
         let mut buffer = Buffer::empty(area);
+        let mut underlines = Underlines::new();
         let top = Rect {
             height: TOP_ROW.min(area.height),
             ..area
@@ -206,7 +236,8 @@ impl Screen {
             (Some(_), Some(session)) => {
                 let error = error(session.error, scene.late);
                 session_row(&mut buffer, top, session, error, self.top_hint.as_deref());
-                self.canvas(&session.canvas, &mut buffer, below)
+                let canvas = (&mut buffer, &mut underlines);
+                self.canvas(session.id, &session.canvas, canvas, below)
             }
             (Some(_), None) => {
                 top_row(&mut buffer, top, NO_SELECTION);
@@ -220,6 +251,7 @@ impl Screen {
             buffer,
             cursor: cursor.filter(|_| !scene.covered()),
             keypad: self.keypad(scene),
+            underlines,
         }
     }
 
@@ -251,9 +283,15 @@ impl Screen {
 
     /// The selected session's canvas below the top row; returns the
     /// cursor its view shows, if any.
-    fn canvas(&self, canvas: &Canvas<'_>, buffer: &mut Buffer, below: Rect) -> Option<HostCursor> {
+    fn canvas(
+        &mut self,
+        id: &SessionId,
+        canvas: &Canvas<'_>,
+        (buffer, underlines): (&mut Buffer, &mut Underlines),
+        below: Rect,
+    ) -> Option<HostCursor> {
         match canvas {
-            Canvas::View(view) => return painted(view, buffer),
+            Canvas::View(view) => return self.view(id, view, buffer, underlines),
             Canvas::Placeholder => {
                 let lines: Vec<_> = std::iter::once(VIEWED_ELSEWHERE)
                     .chain(self.takeover.as_deref())
@@ -264,6 +302,39 @@ impl Screen {
             Canvas::Nothing => {}
         }
         None
+    }
+}
+
+impl Screen {
+    /// The session's view below the top row, unless its application's
+    /// synchronized update is open: then the canvas last painted for it
+    /// at this host size stays, so a half-drawn screen never shows (the
+    /// daemon ends an update still open after 150 ms). The top row and
+    /// any overlay are drawn as ever.
+    fn view(
+        &mut self,
+        id: &SessionId,
+        view: &vt::View<'_>,
+        buffer: &mut Buffer,
+        underlines: &mut Underlines,
+    ) -> Option<HostCursor> {
+        let held = self.coherent.as_ref().filter(|held| {
+            view.synchronizing() && held.id == *id && held.buffer.area == buffer.area
+        });
+        if let Some(held) = held {
+            let canvas = usize::from(TOP_ROW * buffer.area.width)..;
+            buffer.content[canvas.clone()].clone_from_slice(&held.buffer.content[canvas]);
+            underlines.clone_from(&held.underlines);
+            return held.cursor;
+        }
+        let cursor = painted(view, buffer, underlines);
+        self.coherent = Some(Coherent {
+            id: id.clone(),
+            buffer: buffer.clone(),
+            underlines: underlines.clone(),
+            cursor,
+        });
+        cursor
     }
 }
 
@@ -335,7 +406,7 @@ fn session_row(
     let separator = SEPARATOR.width() as u16;
     let slots = [
         (session.status, STATUS_SLOT),
-        (session.control, CONTROL_SLOT),
+        (control(session), CONTROL_SLOT),
     ]
     .into_iter()
     .chain(hint.map(|hint| (hint, hint.width() as u16)));
@@ -356,19 +427,85 @@ fn session_row(
     }
 }
 
-/// The session's active screen directly below the top row, at the model's
+/// The control slot: `History` while the canvas is scrolled back into the
+/// session's history, otherwise the control held.
+fn control<'a>(session: &Session<'a>) -> &'a str {
+    let scrolled = session
+        .canvas
+        .view()
+        .is_some_and(|view| view.scrolled() > 0);
+    if scrolled { HISTORY } else { session.control }
+}
+
+/// A row the canvas shows.
+enum Shown<'a> {
+    Row(vt::Row<'a>),
+    /// The truncation notice, above the oldest history row kept, within
+    /// the session's columns.
+    Notice(usize),
+}
+
+/// The rows the canvas shows, top first, as many as the active screen
+/// has: the alternate screen's own, or the normal screen's scrolled back
+/// [`vt::View::scrolled`] rows into its history, with the truncation notice
+/// one row past the oldest kept row.
+fn shown<'a>(view: &vt::View<'a>) -> Vec<Shown<'a>> {
+    let (rows, history) = match view.screen() {
+        vt::Screen::Normal { rows, history } => (rows, Some(history.rows)),
+        vt::Screen::Alternate { rows } => (rows, None),
+    };
+    let history = history.map_or_else(Vec::new, |history| history.iter().collect());
+    let scrolled = view.scrolled();
+    let cols = rows.iter().next().map_or(0, |row| row.cells().len());
+    let notice = (scrolled > history.len()).then_some(Shown::Notice(cols));
+    let back = history.len().saturating_sub(scrolled);
+    notice
+        .into_iter()
+        .chain(history.into_iter().skip(back).map(Shown::Row))
+        .chain(rows.iter().map(Shown::Row))
+        .take(rows.len())
+        .collect()
+}
+
+/// The session's screen directly below the top row, at the model's
 /// geometry, clipped to the host; the cells it leaves stay blank margins.
 /// Returns its cursor if the host shows it.
-fn painted(view: &vt::View<'_>, buffer: &mut Buffer) -> Option<HostCursor> {
-    let (vt::Screen::Normal { rows, .. } | vt::Screen::Alternate { rows }) = view.screen();
-    let area = buffer.area;
-    for (y, row) in (TOP_ROW..area.height).zip(rows.iter()) {
-        for (x, cell) in (0..area.width).zip(row.cells()) {
-            let wide_fits = x + 1 < area.width;
-            paint_cell(&mut buffer[(x, y)], &cell, wide_fits);
+fn painted(
+    view: &vt::View<'_>,
+    buffer: &mut Buffer,
+    underlines: &mut Underlines,
+) -> Option<HostCursor> {
+    let rows = shown(view);
+    let height = buffer.area.height;
+    for (y, shown) in (TOP_ROW..height).zip(&rows) {
+        match shown {
+            Shown::Row(row) => paint_row(buffer, y, row, underlines),
+            Shown::Notice(cols) => {
+                buffer.set_stringn(0, y, NOTICE, *cols, Style::new());
+            }
         }
     }
-    cursor(view, area)
+    cursor(view, rows.len(), buffer.area)
+}
+
+/// One row of session cells on host row `y`.
+fn paint_row(buffer: &mut Buffer, y: u16, row: &vt::Row<'_>, underlines: &mut Underlines) {
+    let width = buffer.area.width;
+    for (x, cell) in (0..width).zip(row.cells()) {
+        paint_cell(&mut buffer[(x, y)], &cell, x + 1 < width);
+        if let Some(style) = underline(&cell) {
+            underlines.insert((x, y), style);
+        }
+    }
+}
+
+/// SGR 4's subparameter for `cell`'s underline style, unless it has none
+/// or a single one.
+fn underline(cell: &vt::Cell<'_>) -> Option<u8> {
+    UNDERLINES
+        .iter()
+        .find(|(style, _)| cell.rendition.underline == Some(*style))
+        .map(|(_, code)| *code)
 }
 
 /// One session cell: its glyph and combining marks, colours and rendition,
@@ -428,10 +565,13 @@ fn colour(colour: vt::Colour) -> Color {
 }
 
 /// The session's cursor on the host, below the top row, when the
-/// application shows it and the host has the cell; never in the top row.
-fn cursor(view: &vt::View<'_>, area: Rect) -> Option<HostCursor> {
+/// application shows it, the canvas's `rows` show its row (scrolling back
+/// moves it down, and out of view) and the host has the cell; never in the
+/// top row.
+fn cursor(view: &vt::View<'_>, rows: usize, area: Rect) -> Option<HostCursor> {
     let cursor = view.cursor();
-    let row = cursor.row.checked_add(TOP_ROW)?;
+    let below = usize::from(cursor.row) + view.scrolled();
+    let row = u16::try_from(below).ok().filter(|_| below < rows)? + TOP_ROW;
     let shown = cursor.visible && row < area.height && cursor.column < area.width;
     shown.then(|| HostCursor {
         column: cursor.column,
@@ -489,11 +629,17 @@ mod tests {
 
     const HINT: &str = "Ctrl+] then s: sessions";
 
+    fn id() -> SessionId {
+        "00000000-0000-4000-8000-000000000001".parse().unwrap()
+    }
+
     /// The top row of a selected session `width` cells wide, as text.
     fn top(width: u16, label: &str, control: &str, error: Option<&str>, hint: bool) -> String {
         let area = Rect::new(0, 0, width, 1);
         let mut buffer = Buffer::empty(area);
+        let id = id();
         let session = Session {
+            id: &id,
             label,
             status: "Unavailable",
             control,
@@ -604,9 +750,11 @@ mod tests {
         let takeover = takeover.map(|byte| ControlKey::from_byte(byte).unwrap());
         let size = TerminalSize { cols: 50, rows: 6 };
         let screen = Screen::new(size, prefix, takeover, hints);
+        let mut screen = screen;
         let mut buffer = Buffer::empty(Rect::new(0, 0, 50, 6));
         let below = Rect::new(0, 1, 50, 5);
-        assert_eq!(screen.canvas(canvas, &mut buffer, below), None);
+        let canvas_of = (&mut buffer, &mut Underlines::new());
+        assert_eq!(screen.canvas(&id(), canvas, canvas_of, below), None);
         (1..6)
             .map(|y| {
                 let row: String = (0..50).map(|x| buffer[(x, y)].symbol()).collect();
@@ -717,9 +865,29 @@ mod tests {
     /// `model`'s canvas on a host `cols` by `rows`: each row's symbols and
     /// the host cursor.
     fn painted(model: &Model, cols: u16, rows: u16) -> (Buffer, Option<HostCursor>) {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
-        let cursor = super::painted(&model.view(), &mut buffer);
+        let (buffer, _, cursor) = drawn(model, cols, rows);
         (buffer, cursor)
+    }
+
+    /// [`painted`], with the frame's underline styles.
+    fn drawn(model: &Model, cols: u16, rows: u16) -> (Buffer, Underlines, Option<HostCursor>) {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        let mut underlines = Underlines::new();
+        let cursor = super::painted(&model.view(), &mut buffer, &mut underlines);
+        (buffer, underlines, cursor)
+    }
+
+    /// The text of each host row below the top row, trailing blanks
+    /// trimmed.
+    fn below(buffer: &Buffer) -> Vec<String> {
+        (1..buffer.area.height)
+            .map(|y| {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                row.trim_end().to_owned()
+            })
+            .collect()
     }
 
     /// TRM-01 (pure supplement): the cursor shows on the host only where
@@ -832,5 +1000,159 @@ mod tests {
                 (blinking, steady)
             );
         }
+    }
+
+    /// TRM-05, TRM-01 (pure supplement; owner decision on #112): a canvas
+    /// scrolled back shows that many history rows above the screen's top
+    /// rows, as many rows as the screen has; the cursor moves down with the
+    /// screen and is hidden once scrolled out of view, at the canvas's last
+    /// row and one past it. The alternate screen shows its own rows.
+    #[test]
+    fn a_scrolled_canvas_shows_history_and_hides_the_cursor_out_of_view() {
+        let mut model = model(6, 3, b"h0\r\nh1\r\nh2\r\ns0\r\ns1\r\ns2");
+        let (buffer, cursor) = painted(&model, 6, 4);
+        assert_eq!(below(&buffer), ["s0", "s1", "s2"]);
+        assert_eq!(cursor.map(|cursor| cursor.row), Some(3));
+        model.scroll(1);
+        let (buffer, cursor) = painted(&model, 6, 4);
+        assert_eq!(below(&buffer), ["h2", "s0", "s1"]);
+        assert_eq!(cursor, None, "one row past the canvas");
+        model.feed(&mut Parser::new(), b"\x1b[2;1H").unwrap();
+        let (_, cursor) = painted(&model, 6, 4);
+        assert_eq!(cursor.map(|cursor| cursor.row), Some(3), "its last row");
+        model.scroll(2);
+        let (buffer, cursor) = painted(&model, 6, 4);
+        assert_eq!(below(&buffer), ["h0", "h1", "h2"]);
+        assert_eq!(cursor, None);
+        model.feed(&mut Parser::new(), b"\x1b[?1049halt").unwrap();
+        let (buffer, cursor) = painted(&model, 6, 4);
+        assert_eq!(below(&buffer), ["", "alt", ""]);
+        assert_eq!(cursor.map(|cursor| cursor.row), Some(2));
+    }
+
+    /// TRM-05 (pure supplement; owner decision on #112): once the rows a
+    /// scrolled canvas showed are evicted, it shows the glossary's
+    /// truncation notice, clipped to the session's columns, above the
+    /// oldest row kept.
+    #[test]
+    fn an_evicted_view_shows_the_notice_above_the_oldest_kept_row() {
+        let limits = Limits {
+            bytes: 64 << 20,
+            history_rows: 2,
+        };
+        let geometry = Geometry::for_host(60, 2).unwrap();
+        let mut model = Model::new(geometry, limits).unwrap();
+        let mut parser = Parser::new();
+        model.feed(&mut parser, b"h0\r\nh1\r\ns0\r\ns1").unwrap();
+        model.scroll(2);
+        model.feed(&mut parser, b"\r\ns2").unwrap();
+        let (buffer, _) = painted(&model, 70, 3);
+        assert_eq!(below(&buffer), [NOTICE, "h1"]);
+        let (buffer, _) = painted(&model, 30, 3);
+        assert_eq!(below(&buffer), ["[climon2: older session scroll", "h1"]);
+        let narrow = Geometry::for_host(9, 2).unwrap();
+        let mut model = Model::new(narrow, limits).unwrap();
+        model
+            .feed(&mut parser, b"h0\r\nh1\r\nh2\r\ns0\r\ns1")
+            .unwrap();
+        model.scroll(3);
+        let (buffer, _) = painted(&model, 70, 3);
+        assert_eq!(below(&buffer), ["[climon2:", "h1"]);
+    }
+
+    /// TRM-05 (pure supplement; owner decision on #112): while the canvas is
+    /// scrolled back into history the control slot says `History`; live, it
+    /// says the control held.
+    #[test]
+    fn while_scrolled_back_the_control_slot_says_history() {
+        let mut model = model(4, 1, b"a\r\nb");
+        let id = id();
+        let slot = |model: &Model| {
+            let view = model.view();
+            let session = Session {
+                id: &id,
+                label: "",
+                status: "",
+                control: "Controlling",
+                error: None,
+                canvas: Canvas::View(view),
+            };
+            control(&session).to_owned()
+        };
+        assert_eq!(slot(&model), "Controlling");
+        model.scroll(1);
+        assert_eq!(slot(&model), "History");
+    }
+
+    /// TRM-01 (pure supplement; note from #108 on #112): each underline
+    /// style reaches its cell: underlined, with SGR 4's subparameter for
+    /// double, curly, dotted and dashed, and none for single or none.
+    #[test]
+    fn each_underline_style_reaches_its_cell() {
+        let styled = model(
+            6,
+            1,
+            b"\x1b[4mA\x1b[4:2mB\x1b[4:3mC\x1b[4:4mD\x1b[4:5mE\x1b[0mF",
+        );
+        let (buffer, underlines, _) = drawn(&styled, 6, 2);
+        let underlined: Vec<_> = buffer.content()[6..]
+            .iter()
+            .map(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+            .collect();
+        assert_eq!(underlined, [true, true, true, true, true, false]);
+        let expected: Underlines = [((1, 1), 2), ((2, 1), 3), ((3, 1), 4), ((4, 1), 5)]
+            .into_iter()
+            .collect();
+        assert_eq!(underlines, expected);
+    }
+
+    /// TRM-01 (pure supplement): synchronized updates. While the session's
+    /// update is open the canvas painted before it stays, cursor and
+    /// underline styles included, and once it ends the whole update shows.
+    /// A canvas held for one session or host size is never shown for
+    /// another.
+    #[test]
+    fn an_open_synchronized_update_keeps_the_last_coherent_canvas() {
+        let prefix = ControlKey::from_byte(0x1d).unwrap();
+        let mut screen = Screen::new(TerminalSize { cols: 6, rows: 3 }, prefix, None, true);
+        let mut model = model(6, 2, b"\x1b[4:3mold\x1b[0m");
+        let mut parser = Parser::new();
+        let view = |screen: &mut Screen, model: &Model, id: &SessionId, cols| {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 3));
+            let mut underlines = Underlines::new();
+            let cursor = screen.view(id, &model.view(), &mut buffer, &mut underlines);
+            (
+                below(&buffer),
+                underlines,
+                cursor.map(|cursor| cursor.column),
+            )
+        };
+        let old = (
+            vec!["old".to_owned(), String::new()],
+            [((0, 1), 3), ((1, 1), 3), ((2, 1), 3)]
+                .into_iter()
+                .collect(),
+            Some(3),
+        );
+        assert_eq!(view(&mut screen, &model, &id(), 6), old);
+        model
+            .feed(&mut parser, b"\x1b[?2026h\x1b[2J\x1b[Hne")
+            .unwrap();
+        assert_eq!(view(&mut screen, &model, &id(), 6), old);
+        let other: SessionId = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+        let half = (
+            vec!["ne".to_owned(), String::new()],
+            Underlines::new(),
+            Some(2),
+        );
+        assert_eq!(view(&mut screen, &model, &other, 6), half);
+        assert_eq!(view(&mut screen, &model, &id(), 5).0, half.0);
+        model.feed(&mut parser, b"w\x1b[?2026l").unwrap();
+        let new = (
+            vec!["new".to_owned(), String::new()],
+            Underlines::new(),
+            Some(3),
+        );
+        assert_eq!(view(&mut screen, &model, &id(), 6), new);
     }
 }

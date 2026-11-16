@@ -398,7 +398,7 @@ impl Bounded {
         }
     }
 
-    pub(crate) fn to_live(&mut self) {
+    pub(crate) fn return_live(&mut self) {
         self.scrolled = 0;
     }
 
