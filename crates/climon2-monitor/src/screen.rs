@@ -4,7 +4,7 @@ use crate::{
     introduction::KeyIntroduction,
     keys::EXIT,
     paint::{ANSI, Frame, HostCursor, paint},
-    registry::View,
+    registry::{View, truncate},
     selector::Selector,
 };
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
@@ -319,7 +319,8 @@ fn top_row(buffer: &mut Buffer, top: Rect, text: &str) {
 /// The reversed top row of a selected session. Its status, control and
 /// any key hint have fixed-width slots at the right edge, separated by
 /// `|`, so none of them ever moves whatever the values. The label fills
-/// the cells they leave from the left, and any error follows it in what
+/// the cells they leave from the left, truncated with `…` when it
+/// overflows them (nothing marquees), and any error follows it in what
 /// the label leaves: the error is clipped first, and never squeezes out the
 /// label.
 fn session_row(
@@ -347,7 +348,8 @@ fn session_row(
         buffer.set_stringn(x + separator, top.y, text, usize::from(slot), style);
         x += separator + slot;
     }
-    let (end, _) = buffer.set_stringn(top.x, top.y, session.label, room.into(), style);
+    let label = truncate(session.label, room.into());
+    let (end, _) = buffer.set_stringn(top.x, top.y, label, room.into(), style);
     let left = usize::from(room - (end - top.x));
     if let Some(error) = error.filter(|_| left > SEPARATOR.width()) {
         buffer.set_stringn(end, top.y, format!("{SEPARATOR}{error}"), left, style);
@@ -505,14 +507,17 @@ mod tests {
             session.error,
             hint.then_some(HINT),
         );
-        assert!(
-            buffer
-                .content()
-                .iter()
-                .all(|cell| cell.modifier == Modifier::REVERSED),
-            "the whole top row is reversed"
-        );
-        buffer.content().iter().map(|cell| cell.symbol()).collect()
+        // The cell a wide character covers is never painted.
+        let mut covered = false;
+        let mut text = String::new();
+        for cell in buffer.content() {
+            if !covered {
+                assert_eq!(cell.modifier, Modifier::REVERSED, "{cell:?}");
+                text.push_str(cell.symbol());
+            }
+            covered = cell.symbol().width() > 1;
+        }
+        text
     }
 
     /// Top row (owner decision 2026-11-14): status, control and the key
@@ -546,7 +551,9 @@ mod tests {
     /// Top row (owner decision 2026-11-14): an error follows the label in
     /// what the label leaves and is clipped first; a long label is never
     /// squeezed out by it, and an error with no room for more than its
-    /// separator is not shown.
+    /// separator is not shown. TRM-06 (owner decision on #112): a label
+    /// that fits its room exactly is whole, and one a cell longer is
+    /// truncated statically with `…`, display-cell safe.
     #[test]
     fn an_error_is_clipped_first_and_never_squeezes_out_the_label() {
         let error = Some("connection refused by the daemon");
@@ -562,7 +569,19 @@ mod tests {
                 error,
                 false
             ),
-            "A very long session t | Unavailable        | Controlling    "
+            "A very long session … | Unavailable        | Controlling    "
+        );
+        assert_eq!(
+            top(60, "A long title 日本語 here", "Controlling", error, false),
+            "A long title 日本語 … | Unavailable        | Controlling    "
+        );
+        assert_eq!(
+            top(60, "Twenty-one columns!!!", "Controlling", error, false),
+            "Twenty-one columns!!! | Unavailable        | Controlling    "
+        );
+        assert_eq!(
+            top(60, "Twenty-two columns!!!!", "Controlling", error, false),
+            "Twenty-two columns!!… | Unavailable        | Controlling    "
         );
         assert_eq!(
             top(60, "seventeen columns", "Controlling", error, false),

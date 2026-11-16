@@ -250,7 +250,8 @@ If there is too little supported application space, show explicit
 `Terminal too small`, retain clients/control/models, set
 [viewing](../../GLOSSARY.md#status-and-attention) false, and send neither
 application input nor invalid resize. Global commands remain usable.
-Marquee applies only to overflowing chrome labels, never to the application canvas.
+Nothing marquees, neither chrome nor the application canvas
+([owner decision on #112](https://github.com/jackgeek/climon2/issues/112), 2026-11-16).
 
 During resize/restoration retain the last coherent frame clipped/padded to the
 current area; do not repeatedly blank or flash a restoring screen. Construct the
@@ -324,10 +325,11 @@ replayed. Numerical backoff/budgets are in
 
 ## Chrome, cursor, and host copy
 
-Only the title/fallback **label** text marquees on overflow.
-Status/control/error information stays stationary. Short labels remain static;
-label changes restart the marquee; offsets and clipping respect
+Nothing marquees ([owner decision on #112](https://github.com/jackgeek/climon2/issues/112), 2026-11-16).
+A title/fallback **label** that overflows its room is truncated statically:
+it ends with `…` at the available width, and truncation respects
 [display cells](TERMS.md#display-cell), including wide/combining characters.
+Status/control/error information stays stationary.
 Full details remain accessible in the selector. Session titles are inert labels,
 not host-title updates.
 

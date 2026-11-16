@@ -349,7 +349,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   request, or the model's limit, until the next applied restoration) follows
   it after ` | ` in what the label leaves, so the error is clipped first and
   never squeezes out the label. A host narrower than the slots shows them
-  from its left edge, clipped. #112 adds the label marquee. A request
+  from its left edge, clipped. A label that overflows its cells is
+  truncated statically to end with `…` within them, never splitting a
+  wide character, and so is a selector row: nothing marquees (owner
+  decision on #112, 2026-11-16). A request
   refused under a restoration since superseded is not an error; a Resize
   refused so is sent again under the current one.
 - **Geometry.** The selected controller is asked for the host width by its
@@ -593,7 +596,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
 | Stale rows (owner decision on #106): a session proven gone drops its row unless it was ever connected | `a_session_proven_gone_drops_its_row_unless_it_was_ever_connected` (`src/registry.rs`) |
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
-| TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; cell-safe clipping | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `clipping_is_display_cell_safe` (`src/registry.rs`) |
+| TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; static, cell-safe truncation with `…` at the limit and one past it, in the top row (beside its error) and the selector (owner decision on #112) | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `overflowing_text_is_truncated_display_cell_safe_with_an_ellipsis` (`src/registry.rs`), `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`), `the_selector_draws_a_captionless_double_border_with_two_columns` (`src/selector.rs`) |
 | SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes`, `opening_an_open_selector_keeps_its_highlight`, `the_highlight_spans_its_row_and_stays_in_view`, `the_selector_draws_only_where_its_border_fits` (`src/selector.rs`) |
 | CTL-05 (Monitor), TRM-01 (Monitor, basic cases), initial selection (#266): the one Idle session selected and acquired once collection ends; plain, ANSI-coloured, bold-on-blue, wide and combining text and the cursor painted as written, live; a later arrival never moves the selection; the open selector covers the canvas and the control still reads Controlling | `the_initial_selection_is_acquired_and_painted_live` (e2e) |
 | TRM-02 (Monitor): only the daemon answers session queries; no session byte or title reaches the host; the host is never queried | `only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host` (e2e) |

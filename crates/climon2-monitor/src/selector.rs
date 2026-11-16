@@ -5,7 +5,7 @@
 //! from the input router (#109). Opening it never resizes an application or
 //! acquires anything. Search, its separator and the footer arrive with #113.
 use crate::{
-    registry::{View, clip},
+    registry::{View, truncate},
     router::Key,
 };
 use climon2_core::SessionId;
@@ -87,7 +87,7 @@ impl Selector {
 
     /// Draws the open selector over `area`, one cell in from each edge: no
     /// caption, a status column as wide as its widest status, a space, then
-    /// each label clipped to the cells left. The highlighted row is reversed
+    /// each label truncated to the cells left. The highlighted row is reversed
     /// and kept in view.
     pub(crate) fn render(&self, rows: &[View], area: Rect, buffer: &mut Buffer) {
         let Some(outer) = self.frame(area) else {
@@ -126,7 +126,7 @@ impl Selector {
     }
 }
 
-/// One row of the list in `area`, clipped by display cell, reversed when
+/// One row of the list in `area`, truncated by display cell, reversed when
 /// highlighted.
 fn line_at(buffer: &mut Buffer, area: Rect, text: &str, highlighted: bool) {
     let style = if highlighted {
@@ -135,7 +135,8 @@ fn line_at(buffer: &mut Buffer, area: Rect, text: &str, highlighted: bool) {
         Style::new()
     };
     buffer.set_style(area, style);
-    buffer.set_string(area.x, area.y, clip(text, usize::from(area.width)), style);
+    let text = truncate(text, usize::from(area.width));
+    buffer.set_string(area.x, area.y, text, style);
 }
 
 /// The selector's move for `key`, if it has one: a bare Escape, the Up and
@@ -223,7 +224,8 @@ mod tests {
 
     /// SEL-01 basic cases (pure supplement): a captionless double border one
     /// cell in, the status column as wide as its widest status, literal
-    /// labels clipped by display cell, and the first row highlighted.
+    /// labels truncated by display cell with `…` (owner decision on #112),
+    /// and the first row highlighted.
     #[test]
     fn the_selector_draws_a_captionless_double_border_with_two_columns() {
         let rows = rows(&[("Starting", "Alpha"), ("Disconnected", "日本語ラベル")]);
@@ -237,7 +239,7 @@ mod tests {
                 "                        ",
                 " ╔════════════════════╗ ",
                 " ║Starting     Alpha  ║ ",
-                " ║Disconnected 日本語 ║ ",
+                " ║Disconnected 日本語…║ ",
                 " ╚════════════════════╝ ",
                 "                        ",
             ]
