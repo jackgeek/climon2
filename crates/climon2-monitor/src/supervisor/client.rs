@@ -1,6 +1,6 @@
 //! One instance's caller handles and what draining them reports: the only
 //! place the supervisor reads the client library's records.
-use crate::registry::{ClientEvent, Final, Outcome, State, Status};
+use crate::registry::{ClientEvent, Final, Outcome, Report, State, Status};
 use climon2_core::{
     SessionId,
     native::{self, Bytes, Call, Communication, Control, Drained},
@@ -59,7 +59,7 @@ const READERS: [(u32, Reader); 6] = [
     }),
     (native::STATUS, |_, record| {
         status(unsafe { record.data.status })
-            .map(ClientEvent::Status)
+            .map(|status| ClientEvent::Report(Report::Status(status)))
             .into_iter()
             .collect()
     }),
@@ -70,8 +70,7 @@ const READERS: [(u32, Reader); 6] = [
             .collect()
     }),
     (native::DIAGNOSTIC, |id, record| {
-        diagnostic(id, record);
-        Vec::new()
+        diagnostic(id, record).into_iter().collect()
     }),
 ];
 
@@ -148,15 +147,15 @@ fn read(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
 /// library has checked that a final status comes exactly with a result.
 fn initial(metadata: &native::Metadata) -> Vec<ClientEvent> {
     let result = metadata.command_result;
-    let progress = if result.present == 0 {
+    let standing = if result.present == 0 {
         available(metadata.status)
             .and_then(status)
-            .map(ClientEvent::Status)
+            .map(|status| ClientEvent::Report(Report::Status(status)))
     } else {
         finished(result.value, metadata.status)
     };
     std::iter::once(title(metadata.title))
-        .chain(progress)
+        .chain(standing)
         .collect()
 }
 
@@ -164,7 +163,7 @@ fn initial(metadata: &native::Metadata) -> Vec<ClientEvent> {
 /// `status-v1` reported one.
 fn finished(result: native::CommandResult, status: native::AvailableStatus) -> Option<ClientEvent> {
     let changed = available(status).and_then(|status| changed(status.changed_at));
-    outcome(result).map(|outcome| ClientEvent::Final(Final { outcome, changed }))
+    outcome(result).map(|outcome| ClientEvent::Report(Report::Final(Final { outcome, changed })))
 }
 
 fn available(status: native::AvailableStatus) -> Option<native::Status> {
@@ -231,13 +230,15 @@ fn opened(response: &native::Response) -> ClientEvent {
 }
 
 fn title(title: native::Title) -> ClientEvent {
-    ClientEvent::Title((title.state == native::VALUE).then(|| text(title.value)))
+    let value = (title.state == native::VALUE).then(|| text(title.value));
+    ClientEvent::Report(Report::Title(value))
 }
 
-fn diagnostic(id: &SessionId, record: &native::Record) {
+fn diagnostic(id: &SessionId, record: &native::Record) -> Option<ClientEvent> {
     // SAFETY: the tag names the active member.
     let error = unsafe { record.data.diagnostic };
     tracing::warn!(session = %id, code = %text(error.code), message = %text(error.message), "client diagnostic");
+    None
 }
 
 /// A call's success, or its code and message, copied before any other call.
@@ -390,7 +391,7 @@ mod tests {
     }
 
     fn final_event(outcome: Outcome, changed: Option<SystemTime>) -> ClientEvent {
-        ClientEvent::Final(Final { outcome, changed })
+        ClientEvent::Report(Report::Final(Final { outcome, changed }))
     }
 
     /// STA-07 and COM-06 (Monitor, pure supplement): the Initial metadata
@@ -400,16 +401,16 @@ mod tests {
     /// one; without status or result, nothing is fabricated.
     #[test]
     fn the_initial_metadata_reports_its_status_or_final_outcome() {
-        let untitled = ClientEvent::Title(None);
+        let untitled = ClientEvent::Report(Report::Title(None));
         let idle = native_status(native::IDLE, LATER);
         assert_eq!(
             read_one(&metadata(Some(idle), None)),
             [
                 untitled.clone(),
-                ClientEvent::Status(Status {
+                ClientEvent::Report(Report::Status(Status {
                     state: State::Idle,
                     changed: at(1_800_000_001_234),
-                })
+                }))
             ]
         );
         assert_eq!(
@@ -447,10 +448,10 @@ mod tests {
         ] {
             assert_eq!(
                 changed(state, T0),
-                [ClientEvent::Status(Status {
+                [ClientEvent::Report(Report::Status(Status {
                     state: expected,
                     changed: at(1_800_000_000_000),
-                })]
+                }))]
             );
         }
         for state in [0, native::COMPLETED, native::STATUS_FAILED, 7] {

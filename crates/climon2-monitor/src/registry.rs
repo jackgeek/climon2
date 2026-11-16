@@ -22,14 +22,20 @@ pub(crate) enum Found {
 pub(crate) enum ClientEvent {
     /// Monitor Open succeeded, selecting `status-v1` or not.
     Opened { status: bool },
-    /// The daemon title: `None` when unset or unsupported.
-    Title(Option<String>),
     /// The client cannot serve this session, with why.
     Unavailable(String),
     /// The connected client's connection ended.
     Ended,
-    /// The daemon's effective status changed, or the Initial metadata
-    /// reported it.
+    /// What the daemon reported about its session.
+    Report(Report),
+}
+
+/// What a daemon reports about its session over a connected client.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Report {
+    /// The daemon title: `None` when unset or unsupported.
+    Title(Option<String>),
+    /// The effective status changed, or the Initial metadata reported it.
     Status(Status),
     /// The command's final outcome is known.
     Final(Final),
@@ -206,6 +212,29 @@ impl Row {
         }
     }
 
+    fn apply(&mut self, event: ClientEvent, now: SystemTime) {
+        match event {
+            ClientEvent::Opened { status } => self.connect(Connection::Connected { status }, now),
+            ClientEvent::Unavailable(why) => self.connect(Connection::Unavailable(why), now),
+            ClientEvent::Ended => self.connect(Connection::Disconnected, now),
+            ClientEvent::Report(report) => self.learn(report, now),
+        }
+    }
+
+    /// Keeps the latest nonempty title and the latest status; keeps the
+    /// first final outcome, sorting by its terminal status time or else
+    /// `now`, when the monitor learned it.
+    fn learn(&mut self, report: Report, now: SystemTime) {
+        match report {
+            Report::Title(title) => self.retitle(title),
+            Report::Status(status) => self.status = Some(status),
+            Report::Final(known) => {
+                let at = known.changed.unwrap_or(now);
+                self.ended.get_or_insert((known.outcome, at));
+            }
+        }
+    }
+
     /// Keeps a nonempty title; an empty or unset one changes nothing.
     fn retitle(&mut self, title: Option<String>) {
         if let Some(title) = title.filter(|title| !title.is_empty()) {
@@ -277,19 +306,8 @@ impl Registry {
 
     /// Records what `id`'s client reported.
     pub(crate) fn client(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
-        let Some(row) = self.rows.get_mut(id) else {
-            return;
-        };
-        match event {
-            ClientEvent::Opened { status } => row.connect(Connection::Connected { status }, now),
-            ClientEvent::Title(title) => row.retitle(title),
-            ClientEvent::Unavailable(why) => row.connect(Connection::Unavailable(why), now),
-            ClientEvent::Ended => row.connect(Connection::Disconnected, now),
-            ClientEvent::Status(status) => row.status = Some(status),
-            ClientEvent::Final(known) => {
-                row.ended
-                    .get_or_insert((known.outcome, known.changed.unwrap_or(now)));
-            }
+        if let Some(row) = self.rows.get_mut(id) {
+            row.apply(event, now);
         }
     }
 
@@ -401,18 +419,22 @@ mod tests {
         key
     }
 
+    fn titled(title: Option<&str>) -> ClientEvent {
+        ClientEvent::Report(Report::Title(title.map(str::to_owned)))
+    }
+
     fn status(state: State, changed: u64) -> ClientEvent {
-        ClientEvent::Status(Status {
+        ClientEvent::Report(Report::Status(Status {
             state,
             changed: at(changed),
-        })
+        }))
     }
 
     fn ended(outcome: Outcome, changed: Option<u64>) -> ClientEvent {
-        ClientEvent::Final(Final {
+        ClientEvent::Report(Report::Final(Final {
             outcome,
             changed: changed.map(at),
-        })
+        }))
     }
 
     /// DSC-03 (pure supplement): live sessions need one client each, asked
@@ -682,7 +704,7 @@ mod tests {
             assert_eq!(registry.rows()[0].status, status);
             assert_eq!(registry.rows()[0].since, at(second));
         }
-        registry.client(&key, ClientEvent::Title(Some("t".into())), at(9));
+        registry.client(&key, titled(Some("t")), at(9));
         assert_eq!(registry.rows()[0].since, at(5));
     }
 
@@ -707,7 +729,7 @@ mod tests {
             (None, "Build 日本"),
             (Some("a\x07b"), "a\\u{7}b"),
         ] {
-            registry.client(&key, ClientEvent::Title(title.map(str::to_owned)), at(2));
+            registry.client(&key, titled(title), at(2));
             assert_eq!(registry.rows()[0].label, expected);
         }
         assert!(!registry.rows()[0].label.contains(key.as_str()));
