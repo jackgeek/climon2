@@ -2002,6 +2002,43 @@ fn log_filter_reaches_client_through_environment_without_cli_flags() {
     }
 }
 
+/// Ordinary attach gives the client library a log file of its own, as kill
+/// mode does: in the session-log directory beside the client's own log and
+/// named like it, `library-<UTC second>-<pid>.log`, under the client's
+/// `CLIMON2_LOG` filter: its info record of the instance's creation is
+/// there by default and filtered out under `warn`.
+#[test]
+fn attach_gives_the_library_its_own_log_beside_the_clients_session_log() {
+    for (filter, created) in [(None, true), (Some("warn"), false)] {
+        let (home, metadata, listener) = setup();
+        let mut pty = Pty::configured(home.path(), &metadata, None, filter);
+        let mut peer = Peer::accept(&listener);
+        peer.attach();
+        peer.begin();
+        peer.exit(0);
+        assert_eq!(pty.finish(0), (Vec::new(), String::new()));
+        let suffix = format!("-{}.log", pty.child.id());
+        let directory = home.path().join(format!("logs/{ID}"));
+        let names: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(&suffix))
+            .collect();
+        let named = |role: &str| {
+            let found: Vec<_> = names.iter().filter(|name| name.starts_with(role)).collect();
+            assert_eq!(found.len(), 1, "{role}: {names:?}");
+            fs::read_to_string(directory.join(found[0])).unwrap()
+        };
+        assert!(named("client-").contains("role=client"));
+        let library = named("library-");
+        assert_eq!(
+            library.contains("client instance created"),
+            created,
+            "{filter:?}: {library}"
+        );
+    }
+}
+
 /// The client logs in the session-log directory, keyed by file name.
 fn client_logs(home: &Path) -> Vec<(String, String)> {
     let directory = home.join(format!("logs/{ID}"));

@@ -572,6 +572,7 @@ packaged scenarios in `climon2-e2e`.
 | LIB-02 executable case, attach: a missing library fails before any connection | `a_missing_library_fails_attach_before_any_connection` |
 | Derived: the executable passes exactly the published `cm1_limits` table | `attach_passes_exactly_the_published_limits_table` |
 | #25 logs: environment-only filtering, one private log per client | `log_filter_reaches_client_through_environment_without_cli_flags`, `concurrent_clients_on_one_session_each_write_their_own_log` |
+| Attach gives the library its own `library-<second>-<pid>.log` beside the client's session log, under the client's `CLIMON2_LOG` filter (its creation record by default, none under `warn`) | `attach_gives_the_library_its_own_log_beside_the_clients_session_log` |
 
 `tests/termination.rs` covers kill mode through the library (#100). Each test
 installs the client executable and the workspace's hooked client library in a
