@@ -274,7 +274,7 @@ fn notification_titles_and_bodies_are_bounded_and_inert() {
     completed(session, &mut attached, &mut [], 0);
 }
 
-/// STA-06 (Contract, capability dependency): `notification-v1` needs
+/// COM-03 and STA-06 (Contract, capability dependency): `notification-v1` needs
 /// `status-v1`. Required without it, the Open is rejected with
 /// `unsupported_capability` and its stream ends; optional without it, it is
 /// not selected; with `status-v1` it is.

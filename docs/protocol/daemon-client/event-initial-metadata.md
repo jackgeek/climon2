@@ -71,7 +71,11 @@ the same values later [Status changed](event-status-changed.md) records
 build on: idle since the daemon's initialization until the first effective
 change, never the connection's own time; once the result is final, the
 final status that agrees with `command_result`. Without it, `status` is
-unavailable. `progress` is always unavailable for now. `command_result` is null until the command's
+unavailable. With `progress-v1` selected
+([#98](https://github.com/jackgeek/climon2/issues/98)), `progress` is
+available with the retained normalized progress (none until the program
+reports any; see [Progress changed](event-progress-changed.md#implemented-behavior));
+without it, `progress` is unavailable. `command_result` is null until the command's
 result is final, then that result, which the connections open at that
 moment received as [Command final](event-command-final.md#implemented-behavior);
 a connection that receives the result here receives no Command final.

@@ -95,10 +95,10 @@ until process exit, and the same pointer on every call:
 
 - `release`: the version folder name, compiled in (`CARGO_PKG_VERSION`). A copy
   placed in another version's folder still reports its own release.
-- `capabilities`: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`
-  and `focus-v1`, exactly the families the library relays (#93, #94 and
-  #95, `src/library/families.rs`). `notification-v1` and `progress-v1` join
-  with #98.
+- `capabilities`: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`,
+  `notification-v1`, `progress-v1` and `focus-v1`, exactly the families the
+  library relays (#93, #94, #95 and #98, `src/library/families.rs`): every
+  revision-1 family.
 - `requirements`: provisional bounded values until the measurement job (#121)
   records qualified ones. Each equals its default `monitor.limits` reservation
   where one exists, plus 1 MiB of instance-local allocation, so a
@@ -391,6 +391,24 @@ viewing's success must report the viewing it asked for and maps to
 `CM1_VIEWING_RESULT` (changed, value, zero bytes); Acknowledge's to
 `CM1_ACKNOWLEDGEMENT` (changed, zero for the explicit no-change success).
 Timeouts, losses and cancellation are as for the control requests.
+
+### Notifications and progress (#98)
+
+With `notification-v1` selected, each Notification after the Initial
+metadata is delivered as a `CM1_NOTIFICATION` record whatever the role holds
+(passive, background or revoked): its source code, its episode, present
+exactly when the daemon gave one, and its source identifier, title and body
+as optional text owned by the record and charged with it
+(`src/library/records.rs`). A title over `notification_title_bytes` or a
+body over `notification_body_bytes` fails the connection with library
+`resource_limit`, never truncated; a notification with neither title nor
+body fails it with transport `invalid_record`. With `progress-v1` selected,
+the Initial metadata's progress is available and each Progress changed is
+delivered as `CM1_PROGRESS`, its state code and its percentage, absent and
+zero when null, charged its record alone. A Notification or Progress changed
+before the Initial metadata or without its family selected, and an Initial
+metadata whose progress availability differs from the selection, fail the
+connection with transport `invalid_record` (`src/library/stream.rs`).
 
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
