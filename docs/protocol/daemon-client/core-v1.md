@@ -499,7 +499,7 @@ The session daemon applies its existing per-connection policy to
 revision-1 connections, as daemon policy rather than wire values
 ([#90](https://github.com/jackgeek/climon2/issues/90)):
 
-- It serves at most 64 connections at once, of either protocol, passive
+- It serves at most 64 connections at once, passive
   monitor connections included; a further connection is closed unanswered.
 - Each connection's output queue holds at most 16 MiB, charging each
   queued frame's allocation, four-byte prefix included, and its place in
@@ -577,7 +577,7 @@ and after an early exit, whether the initial-attachment deadline, a Kill or
 a later attachment's Ready ends the session, no final
 without evidence (an unconfirmed hang-up, or the end of the command's output
 while it runs), and standalone Kill: its answer after termination and
-cleanup, Kills of both protocols joining one
+cleanup, later Kills joining one
 [hang-up grace](../../../GLOSSARY.md#attachment-and-control), its success
 after a session failure, and its partial result after a failed cleanup or
 an unconfirmed termination. For monitors they cover Acquire by a

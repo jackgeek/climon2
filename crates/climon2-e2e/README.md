@@ -407,8 +407,8 @@ earlier run would, so they open on the empty state.
 | HLP-02 (empty monitor) a doubled prefix reaches the key introduction as one literal prefix: with Ctrl+M as the prefix, Enter Enter continues, the prefix and Space reach nothing, prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
-holds a packaged client between `Granted` and `Ready`; daemon
-`resize_before_ready_replaces_the_restoration_period`)
+holds a packaged client between Control granted and `Ready`; daemon
+`a_resize_before_ready_replaces_the_restoration_and_leaves_the_alternate_screen_once`)
 and the ambiguous selector (random GUIDs; CLI
 `a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
 client bridge (6.3) scenarios are mapped in those crates' test doc comments.
@@ -453,8 +453,8 @@ remain in those crates' READMEs and test doc comments. In particular:
   `issue19_readiness_uses_real_five_second_absolute_deadline` in platform
   `tests/daemon.rs`. There is no public packaged empty-readiness hook.
 - Actual stalled-producer/lossless 8 MiB backpressure:
-  `saturation_backpressures_pty_without_blocking_probes_or_losing_bytes` in
-  daemon `tests/lifecycle.rs`, and
+  `saturation_backpressures_the_pty_without_blocking_probes_or_losing_bytes` in
+  daemon `tests/revision1/terminal.rs`, and
   `bounded_output_backpressure_drains_every_byte_before_exit` /
   `input_backpressure_is_bounded_and_lossless` in client `tests/bridge.rs`.
   The public packaged PTY driver always drains, so this crate does not claim

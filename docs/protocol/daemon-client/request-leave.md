@@ -76,7 +76,7 @@ receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation) as
 [Display](event-display.md), then control is
 [handed back](../../../GLOSSARY.md#attachment-and-control) to the most recently
-controlling remaining attachment, of either protocol, with reason
+controlling remaining attachment, with reason
 `hand_back`; when no attachment remains, the newest passive monitor
 connection is promoted instead, with a [Control granted](event-control-granted.md)
 of reason `successor`. The success reports `attachment_detached:true`, and the

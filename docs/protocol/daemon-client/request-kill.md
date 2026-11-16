@@ -93,7 +93,7 @@ when the application ends it or its 150 ms latch expires. Once termination
 is committed, the restoration deadline for a missing
 [Ready](request-ready.md) no longer applies, so a restoration ends only when
 it completes or its reader is lost after 5 s without progress. A
-Kill of either protocol sent while termination is committed joins it without
+later Kill sent while termination is committed joins it without
 restarting the grace. Every Kill is answered once the session has ended, at
 once if it already had:
 

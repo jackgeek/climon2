@@ -384,10 +384,9 @@ meanwhile. A command already reaped first finishes its PTY drain, so the
 hang-up and its grace begin when the drain ends. Pending PTY writes and resizes are dropped after hang-up. When the
 grace ends, the daemon SIGKILLs every process still in the command's terminal
 session (all job-control process groups, per the #19/#27 owner decision) and
-reaps the command. Only after metadata and socket removal does each attachment
-get its release then `Exit` (or `Error` after a failure), and each kill
-requester `Terminated` (a standalone Kill its `termination` answer); a failed
-cleanup never confirms a kill. If the loop
+reaps the command. Only after metadata and socket removal does the controlling
+attachment get its release then Control revoked (`session_ending`), and each standalone
+Kill its `termination` answer; a failed cleanup never confirms a kill. If the loop
 itself fails, the same hang-up, grace and kill run without serving connections.
 
 Processes that started their own session are left alone. The PTY slave's
