@@ -161,7 +161,7 @@ fn end_on_eio(error: io::Error) -> io::Result<usize> {
 }
 
 /// The monitor owns the host output: nothing else writes to stdout.
-fn write_host(bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_host(bytes: &[u8]) -> io::Result<()> {
     let mut output = io::stdout().lock();
     output.write_all(bytes)?;
     output.flush()

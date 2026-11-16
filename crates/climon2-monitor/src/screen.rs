@@ -150,6 +150,8 @@ pub(crate) struct Scene<'a> {
     pub(crate) progress: Option<String>,
     /// Whether the initial collection ended with sessions still starting.
     pub(crate) late: bool,
+    /// Prefix+j's notice that no session needs attention, while it shows.
+    pub(crate) notice: Option<&'a str>,
     pub(crate) session: Option<Session<'a>>,
 }
 
@@ -230,6 +232,12 @@ impl Screen {
         })
     }
 
+    /// Where overlays are drawn: every row below the top row.
+    pub(crate) fn overlay(&self) -> Rect {
+        let top = TOP_ROW.min(self.size.rows);
+        Rect::new(0, top, self.size.cols, self.size.rows - top)
+    }
+
     /// Paints `scene` unless its frame is the one painted.
     pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
@@ -262,13 +270,9 @@ impl Screen {
         let area = Rect::new(0, 0, self.size.cols, self.size.rows);
         let mut buffer = Buffer::empty(area);
         let mut underlines = Underlines::new();
+        let below = self.overlay();
         let top = Rect {
-            height: TOP_ROW.min(area.height),
-            ..area
-        };
-        let below = Rect {
-            y: top.bottom(),
-            height: area.height - top.height,
+            height: below.y,
             ..area
         };
         let cursor = match (self.desire(), &scene.session) {
@@ -277,7 +281,7 @@ impl Screen {
                 None
             }
             (Some(_), Some(session)) => {
-                let error = error(session.error, scene.late);
+                let error = error(scene.notice, session.error, scene.late);
                 session_row(&mut buffer, top, session, error, self.top_hint.as_deref());
                 let canvas = (&mut buffer, &mut underlines);
                 self.canvas(session.id, &session.canvas, canvas, below)
@@ -288,12 +292,12 @@ impl Screen {
                 None
             }
         };
-        scene.selector.render(scene.rows, below, &mut buffer);
+        let search = scene.selector.render(scene.rows, below, &mut buffer);
         scene.introduction.render(below, &mut buffer);
         let modes = self.followed(scene);
         Frame {
             buffer,
-            cursor: cursor.filter(|_| !scene.covered()),
+            cursor: shown_cursor(scene, cursor, search),
             keypad: modes.is_some_and(|modes| modes.application_keypad),
             tracking: modes.and_then(|modes| tracking(modes.mouse_reporting)),
             underlines,
@@ -320,7 +324,8 @@ impl Screen {
     fn body(&self, scene: &Scene<'_>, buffer: &mut Buffer, below: Rect) {
         let note = self.hint.as_deref().or(scene.introduction.problem());
         let incomplete = incomplete(scene.incomplete, scene.late);
-        let lines: Vec<_> = std::iter::once(state(scene.progress.as_deref(), scene.rows))
+        let state = state(scene.notice, scene.progress.as_deref(), scene.rows);
+        let lines: Vec<_> = std::iter::once(state)
             .chain(note)
             .chain(incomplete.iter().map(String::as_str))
             .collect();
@@ -371,6 +376,21 @@ impl Screen {
     }
 }
 
+/// The host cursor: the search's while the selector is open, otherwise the
+/// selected session's; none while the key introduction covers them.
+fn shown_cursor(
+    scene: &Scene<'_>,
+    session: Option<HostCursor>,
+    search: Option<HostCursor>,
+) -> Option<HostCursor> {
+    let cursor = if scene.selector.is_open() {
+        search
+    } else {
+        session
+    };
+    cursor.filter(|_| !scene.introduction.is_open())
+}
+
 impl Screen {
     /// The session's view below the top row, unless its application's
     /// synchronized update is open: then the canvas last painted for it
@@ -404,19 +424,21 @@ impl Screen {
     }
 }
 
-/// The body's state with nothing selected: the startup progress while the
+/// The body's state with nothing selected: prefix+j's `notice` while it
+/// shows (owner decision on #114), otherwise the startup progress while the
 /// initial collection lasts, otherwise the empty state until a row exists,
 /// then that nothing is selected.
-fn state<'a>(progress: Option<&'a str>, rows: &[View]) -> &'a str {
+fn state<'a>(notice: Option<&'a str>, progress: Option<&'a str>, rows: &[View]) -> &'a str {
     let idle = [EMPTY, UNSELECTED][usize::from(!rows.is_empty())];
-    progress.unwrap_or(idle)
+    notice.or(progress).unwrap_or(idle)
 }
 
-/// The top row's error slot: the session's own error, otherwise, while the
-/// initial collection's late sessions still start, that discovery is
+/// The top row's error slot: prefix+j's `notice` while it shows (owner
+/// decision on #114), otherwise the session's own error, otherwise, while
+/// the initial collection's late sessions still start, that discovery is
 /// incomplete (owner decision, 2026-11-16).
-fn error(own: Option<&str>, late: bool) -> Option<&str> {
-    own.or(late.then_some(LATE_INCOMPLETE))
+fn error<'a>(notice: Option<&'a str>, own: Option<&'a str>, late: bool) -> Option<&'a str> {
+    notice.or(own).or(late.then_some(LATE_INCOMPLETE))
 }
 
 /// Why discovery is incomplete: the latest pass's reason, then whether the
@@ -1008,7 +1030,9 @@ mod tests {
     /// DSC-01 (initial-selection case, pure supplement) and the owner's
     /// wording of 2026-11-16: with nothing selected the body reads the
     /// startup progress while collecting, otherwise the empty state until a
-    /// row exists and then that nothing is selected; an incomplete pass and
+    /// row exists and then that nothing is selected; prefix+j's notice
+    /// replaces either while it shows (NOT-03, owner decision on #114); an
+    /// incomplete pass and
     /// a collection that ended with sessions still starting are each said
     /// as discovery incomplete, the pass first.
     #[test]
@@ -1020,10 +1044,14 @@ mod tests {
             since: std::time::SystemTime::UNIX_EPOCH,
         };
         let progress = "Connecting to 2 sessions (1 ready)";
-        assert_eq!(state(Some(progress), &[]), progress);
-        assert_eq!(state(Some(progress), std::slice::from_ref(&row)), progress);
-        assert_eq!(state(None, &[]), "No sessions to show.");
-        assert_eq!(state(None, &[row]), "No session selected.");
+        assert_eq!(state(None, Some(progress), &[]), progress);
+        let rows = std::slice::from_ref(&row);
+        assert_eq!(state(None, Some(progress), rows), progress);
+        assert_eq!(state(None, None, &[]), "No sessions to show.");
+        assert_eq!(state(None, None, rows), "No session selected.");
+        let notice = "No sessions need attention";
+        assert_eq!(state(Some(notice), Some(progress), rows), notice);
+        assert_eq!(state(Some(notice), None, &[]), notice);
         assert_eq!(incomplete(None, false), Vec::<String>::new());
         assert_eq!(
             incomplete(Some("the pass deadline passed"), true),
@@ -1042,13 +1070,18 @@ mod tests {
     /// the initial collection's late sessions still start, the top row's
     /// error slot says discovery is incomplete with a row selected too,
     /// unless the session has its own error, which it never hides.
+    /// Prefix+j's notice shows there first while it shows (NOT-03, owner
+    /// decision on #114).
     #[test]
     fn a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own() {
         let late = "Discovery incomplete: some sessions are still starting";
-        assert_eq!(error(None, false), None);
-        assert_eq!(error(None, true), Some(late));
-        assert_eq!(error(Some("timed out"), true), Some("timed out"));
-        assert_eq!(error(Some("timed out"), false), Some("timed out"));
+        assert_eq!(error(None, None, false), None);
+        assert_eq!(error(None, None, true), Some(late));
+        assert_eq!(error(None, Some("timed out"), true), Some("timed out"));
+        assert_eq!(error(None, Some("timed out"), false), Some("timed out"));
+        let notice = "No sessions need attention";
+        assert_eq!(error(Some(notice), Some("timed out"), true), Some(notice));
+        assert_eq!(error(Some(notice), None, false), Some(notice));
     }
 
     /// A model `cols` by `rows` that took `bytes`.

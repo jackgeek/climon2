@@ -1,6 +1,6 @@
 # Report pending monitor attention
 
-**Agreed, unimplemented**, from [the selector decision](https://github.com/jackgeek/climon2/issues/60).
+**Agreed** from [the selector decision](https://github.com/jackgeek/climon2/issues/60), **implemented** by the monitor ([#114](https://github.com/jackgeek/climon2/issues/114)).
 The [monitor](../../../GLOSSARY.md#sessions) sends this
 [OSC](../TERMS.md#osc) 7501 report to its
 [host](../../../GLOSSARY.md#sessions) when any currently connected

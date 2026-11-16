@@ -220,7 +220,10 @@ fn read(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
 fn native_request(request_id: u64, request: &Request, generation: u64) -> native::Request {
     let (tag, args) = match *request {
         Request::Acquire => (native::ACQUIRE, native::RequestArgs { generation }),
-        Request::Ready(held) | Request::Focus(held, _) => authorized(request, held),
+        Request::Ready(held)
+        | Request::Acknowledge(held)
+        | Request::Focus(held, _)
+        | Request::Viewing(held, _) => authorized(request, held),
         Request::Input(held, ref bytes) | Request::Paste(held, Paste { ref bytes, .. }) => (
             native::INPUT,
             native::RequestArgs {
@@ -254,23 +257,26 @@ fn native_request(request_id: u64, request: &Request, generation: u64) -> native
     }
 }
 
-/// Ready and Focus carry their authority, and Focus its desired value as
-/// a flag.
+/// Ready, Acknowledge, Focus and Set viewing carry their authority, and
+/// Focus and Set viewing their value as a flag.
 fn authorized(request: &Request, held: Authority) -> (u32, native::RequestArgs) {
     let authority = native_authority(held);
     match *request {
-        Request::Focus(_, focused) => (
-            native::FOCUS,
-            native::RequestArgs {
-                flag: native::Flag {
-                    authority,
-                    value: u8::from(focused),
-                    reserved: [0; 7],
-                },
-            },
-        ),
+        Request::Focus(_, focused) => flag(native::FOCUS, authority, focused),
+        Request::Viewing(_, viewing) => flag(native::VIEWING, authority, viewing),
+        Request::Acknowledge(_) => (native::ACKNOWLEDGE, native::RequestArgs { authority }),
         _ => (native::READY, native::RequestArgs { authority }),
     }
+}
+
+/// A request that sets `value` under `authority`.
+fn flag(tag: u32, authority: native::Authority, value: bool) -> (u32, native::RequestArgs) {
+    let flag = native::Flag {
+        authority,
+        value: u8::from(value),
+        reserved: [0; 7],
+    };
+    (tag, native::RequestArgs { flag })
 }
 
 fn native_authority(held: Authority) -> native::Authority {
@@ -377,9 +383,9 @@ fn response(response: &native::Response) -> Vec<ClientEvent> {
     vec![ClientEvent::Answer(response.request_id, answer)]
 }
 
-/// Open's success says whether `status-v1` was selected, after saying that
-/// `focus-v1` was, so the session's terminal knows it before the monitor
-/// can show the session opened without it.
+/// Open's success says whether `status-v1` was selected, after telling the
+/// session's terminal that `focus-v1` and `status-v1` were, so it knows
+/// before the monitor can show the session opened without them.
 fn opened(response: &native::Response) -> Vec<ClientEvent> {
     if (response.outcome, response.result_tag) != (native::OK, native::OPENED) {
         return vec![ClientEvent::Unavailable(text(response.error.message))];
@@ -393,11 +399,14 @@ fn opened(response: &native::Response) -> Vec<ClientEvent> {
         )
     };
     let selects = |family: &str| selected.iter().any(|token| text(*token) == family);
-    let focusable = selects(FOCUS).then_some(ClientEvent::Presentation(Presentation::Focusable));
-    let opened = ClientEvent::Opened {
-        status: selects(STATUS),
-    };
-    focusable.into_iter().chain([opened]).collect()
+    let focusable = selects(FOCUS).then_some(Presentation::Focusable);
+    let status = selects(STATUS);
+    let viewable = status.then_some(Presentation::Viewable);
+    let presented = focusable.into_iter().chain(viewable);
+    presented
+        .map(ClientEvent::Presentation)
+        .chain([ClientEvent::Opened { status }])
+        .collect()
 }
 
 fn title(title: native::Title) -> ClientEvent {
@@ -701,23 +710,62 @@ mod tests {
         read_one(&record(native::RESPONSE, native::RecordData { response }))
     }
 
-    /// FOC-01 and FOC-02 (Monitor, pure supplement): Open's success says
-    /// first that `focus-v1` was selected, when it was, then whether
+    /// FOC-01, FOC-02 and STA-08 (Monitor, pure supplement): Open's success
+    /// says first that `focus-v1` was selected, when it was, then that
+    /// `status-v1` was, so viewing can be reported (#114), then whether
     /// `status-v1` was; any other family changes nothing.
     #[test]
     fn opening_says_whether_focus_and_status_were_selected() {
         let focusable = ClientEvent::Presentation(Presentation::Focusable);
+        let viewable = ClientEvent::Presentation(Presentation::Viewable);
         let opened = |status| ClientEvent::Opened { status };
         let focus = bytes(b"focus-v1");
         let status = bytes(b"status-v1");
         let title = bytes(b"title-v1");
         assert_eq!(
             open_response(&[status, title, focus]),
-            [focusable.clone(), opened(true)]
+            [focusable.clone(), viewable.clone(), opened(true)]
         );
         assert_eq!(open_response(&[focus]), [focusable, opened(false)]);
-        assert_eq!(open_response(&[title, status]), [opened(true)]);
+        assert_eq!(open_response(&[title, status]), [viewable, opened(true)]);
         assert_eq!(open_response(&[]), [opened(false)]);
+    }
+
+    /// FOC-01 and STA-08 (pure supplement, the header's `CM1_VIEWING` and
+    /// `CM1_ACKNOWLEDGE`; #114): Set viewing goes as a flag under its
+    /// authority, 1 for viewing and 0 for not, with zero reserved bytes;
+    /// Acknowledge as its authority alone, as Ready does.
+    #[test]
+    fn viewing_and_acknowledge_become_their_native_requests() {
+        let held = Authority {
+            generation: 4,
+            period: 5,
+            restoration: 6,
+        };
+        let triple = |authority: native::Authority| {
+            (
+                authority.generation,
+                authority.period,
+                authority.restoration_id,
+            )
+        };
+        for (viewing, value) in [(true, 1), (false, 0)] {
+            let request = native_request(9, &Request::Viewing(held, viewing), 1);
+            assert_eq!((request.tag, request.request_id), (native::VIEWING, 9));
+            // SAFETY: the tag names the active member.
+            let flag = unsafe { request.args.flag };
+            assert_eq!(triple(flag.authority), (4, 5, 6));
+            assert_eq!((flag.value, flag.reserved), (value, [0; 7]));
+        }
+        for (request, tag) in [
+            (Request::Acknowledge(held), native::ACKNOWLEDGE),
+            (Request::Ready(held), native::READY),
+        ] {
+            let request = native_request(11, &request, 1);
+            assert_eq!((request.tag, request.request_id), (tag, 11));
+            // SAFETY: the tag names the active member.
+            assert_eq!(triple(unsafe { request.args.authority }), (4, 5, 6));
+        }
     }
 
     /// FOC-01 and INP-03 (pure supplement, the header's `CM1_FOCUS` and

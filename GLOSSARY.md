@@ -181,7 +181,7 @@ The screen a non-controlling client shows instead of session content, saying the
 _Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
 
 **Selector**:
-The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session.
+The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session; its always-focused search narrows the list to the rows that match.
 _Avoid_: Session picker, menu, switcher, session list window
 
 **Key introduction**:
@@ -209,6 +209,18 @@ _Avoid_: Lifecycle, connection status
 **Viewing**:
 A connected controller's unobstructed, ready presentation of its selected session to the user, distinct from retaining control in the background or under a menu.
 _Avoid_: Attachment, control ownership
+
+**Deferred acknowledgement**:
+An explicit user action's acknowledgement of a session's pending attention (selecting it, jumping to it, or closing the selector back to it), held until the monitor views that session and dropped if the user moves on first.
+_Avoid_: Auto-acknowledgement, acknowledgement on visibility
+
+**Attention jump**:
+Prefix+j: moving to the connected session whose pending attention changed most recently, decided when the key is pressed, never the session a notification named.
+_Avoid_: Next toast, notification target
+
+**Host attention**:
+Whether any connected session needs attention, which a monitor reports to its host as its own program status, never by forwarding a session's.
+_Avoid_: Forwarded status, aggregate session status
 
 **Connection status**:
 A monitor's record of whether its client is connected to a session daemon, distinct from the session's last reported status.

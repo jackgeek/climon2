@@ -110,6 +110,35 @@ impl Mouse {
     }
 }
 
+/// What a report means to the monitor's own overlays (#113): the selector
+/// takes left clicks and wheel notches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Gesture {
+    /// The left button went down.
+    Click,
+    WheelUp,
+    WheelDown,
+    /// Anything else: a release, motion or another button.
+    Other,
+}
+
+impl Mouse {
+    /// The gesture, whatever modifiers were held.
+    pub(crate) fn gesture(self) -> Gesture {
+        match (self.released, self.code & !MODIFIERS) {
+            (false, 0) => Gesture::Click,
+            (false, WHEEL) => Gesture::WheelUp,
+            (false, WHEEL_DOWN) => Gesture::WheelDown,
+            _ => Gesture::Other,
+        }
+    }
+
+    /// The host cell as a 0-based column and row.
+    pub(crate) fn host_cell(self) -> (u16, u16) {
+        (self.column.saturating_sub(1), self.row.saturating_sub(1))
+    }
+}
+
 /// The application's columns and rows that the host shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Area {
@@ -207,10 +236,10 @@ enum Notch {
 impl Notch {
     /// `mouse` as a vertical wheel notch, whatever modifiers it has.
     fn of(mouse: Mouse) -> Option<Self> {
-        match (mouse.released, mouse.code & !MODIFIERS) {
-            (false, WHEEL) => Some(Self::Up),
-            (false, WHEEL_DOWN) => Some(Self::Down),
-            _ => None,
+        match mouse.gesture() {
+            Gesture::WheelUp => Some(Self::Up),
+            Gesture::WheelDown => Some(Self::Down),
+            Gesture::Click | Gesture::Other => None,
         }
     }
 
@@ -560,5 +589,31 @@ mod tests {
             let reported = modes(reporting, MouseEncoding::Sgr);
             assert_eq!(wheel(up, &reported, false), None, "{reporting:?}");
         }
+    }
+
+    /// INP-05 (pure supplement, #113): a left press is a click and wheel
+    /// notches scroll, whatever modifiers are held; releases, motion and
+    /// other buttons are neither. The host cell counts from 0.
+    #[test]
+    fn left_presses_click_and_wheel_notches_scroll_with_any_modifiers() {
+        let gesture = |code, released| mouse(code, 1, 1, released).gesture();
+        for modifiers in [0, 4, 8, 16, 28] {
+            assert_eq!(gesture(modifiers, false), Gesture::Click);
+            assert_eq!(gesture(64 + modifiers, false), Gesture::WheelUp);
+            assert_eq!(gesture(65 + modifiers, false), Gesture::WheelDown);
+        }
+        for (code, released) in [
+            (0, true),
+            (1, false),
+            (2, false),
+            (32, false),
+            (35, false),
+            (64, true),
+            (66, false),
+        ] {
+            assert_eq!(gesture(code, released), Gesture::Other, "{code} {released}");
+        }
+        assert_eq!(mouse(0, 5, 7, false).host_cell(), (4, 6));
+        assert_eq!(mouse(0, 0, 0, false).host_cell(), (0, 0));
     }
 }
