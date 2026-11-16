@@ -4851,7 +4851,7 @@ fn pastes_reach_the_selected_session_exactly_with_markers_only_when_it_asks() {
     without_introduction(&package);
     headless(&package, &watched("Paste"), "finish");
     let mut terminal = outer(&package, "c2 monitor");
-    ready_at(&mut terminal, "Paste", STATUS, "29 120");
+    ready_at(&mut terminal, "Paste", RUNNING, "29 120");
     let monitor = monitor_process(&package).0;
     terminal
         .send(b"\x1b[200~\x00\xffp\x1dx\x1d\x1ds\x1b[200~\x1b[201\x1b[A\r\x1b[201~")
@@ -4907,7 +4907,7 @@ fn a_paste_refused_partway_is_truncated_and_its_application_gets_the_end_marker(
     headless(&package, &watched("Cut"), "finish");
     let daemon = package.metadata().daemon_pid as i32;
     let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
-    ready_on(&mut terminal, WIDE, ("Cut", STATUS), "29 250");
+    ready_on(&mut terminal, WIDE, ("Cut", RUNNING), "29 250");
     set_modes(&package, &terminal, "Cut", b"\x1b[?2004h", "B1");
     // Typed input is answered, and turns the session Running, before the
     // daemon stops: nothing earlier holds an operation.
@@ -4968,7 +4968,7 @@ fn a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix() {
     without_introduction(&package);
     let id = headless(&package, &watched("Moved"), "finish");
     let mut terminal = outer(&package, "c2 monitor");
-    ready_at(&mut terminal, "Moved", STATUS, "29 120");
+    ready_at(&mut terminal, "Moved", RUNNING, "29 120");
     set_modes(&package, &terminal, "Moved", b"\x1b[?2004h", "B1");
     let monitor = monitor_process(&package).0;
     read_alone(&mut terminal, monitor, b"\x1b[200~abc");
@@ -5019,11 +5019,13 @@ fn a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix() {
 fn a_disconnect_discards_a_pending_prefix() {
     let package = Package::new();
     without_introduction(&package);
-    headless(&package, &watched("Other"), "finish");
-    let gone = headless(&package, &watched("Gone"), "finish");
+    // After an empty start Gone, the first to appear, is the initial
+    // selection (#266); Other comes after it.
     let mut terminal = outer(&package, "c2 monitor");
-    // Initial selection acquires Gone, the newest (#266).
-    ready_at(&mut terminal, "Gone", STATUS, "29 120");
+    opened(&mut terminal);
+    let gone = headless(&package, &watched("Gone"), "finish");
+    ready_at(&mut terminal, "Gone", RUNNING, "29 120");
+    headless(&package, &watched("Other"), "finish");
     let monitor = monitor_process(&package).0;
     read_alone(&mut terminal, monitor, b"\x1d");
     kill(Pid::from_raw(daemon_of(&package, &gone)), Signal::SIGKILL).unwrap();
@@ -5033,9 +5035,9 @@ fn a_disconnect_discards_a_pending_prefix() {
     });
     read_alone(&mut terminal, monitor, b"x");
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, &format!("║{STATUS:<12} Other"));
+    shows_row(&mut terminal, &format!("║{RUNNING:<12} Other"));
     enter_on(&mut terminal, "Other");
-    ready_at(&mut terminal, "Other", STATUS, "29 120");
+    ready_at(&mut terminal, "Other", RUNNING, "29 120");
     terminal.send("y").unwrap();
     received_by(&package, "Other", b"y");
     terminal.send("\x1dx").unwrap();
@@ -5064,7 +5066,7 @@ fn mouse_events_reach_the_application_translated_and_keep_their_gesture() {
     without_introduction(&package);
     headless(&package, &watched("Mouse"), "finish");
     let mut terminal = outer(&package, "c2 monitor");
-    ready_at(&mut terminal, "Mouse", STATUS, "29 120");
+    ready_at(&mut terminal, "Mouse", RUNNING, "29 120");
     set_modes(
         &package,
         &terminal,
@@ -5136,10 +5138,13 @@ fn mouse_events_reach_the_application_translated_and_keep_their_gesture() {
 fn application_focus_follows_selection_menus_and_host_focus_once_each() {
     let package = Package::new();
     without_introduction(&package);
-    headless(&package, &watched("Beta"), "finish");
-    headless(&package, &watched("Alpha"), "finish");
+    // After an empty start Alpha, the first to appear, is the initial
+    // selection (#266); Beta comes after it.
     let mut terminal = outer(&package, "c2 monitor");
-    ready_at(&mut terminal, "Alpha", STATUS, "29 120");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    headless(&package, &watched("Beta"), "finish");
     set_modes(&package, &terminal, "Alpha", b"\x1b[?1004h", "F1");
     let mut alpha = b"\x1b[I".to_vec();
     received_by(&package, "Alpha", &alpha);
@@ -5153,7 +5158,7 @@ fn application_focus_follows_selection_menus_and_host_focus_once_each() {
     alpha.extend(b"\x1b[O");
     received_by(&package, "Alpha", &alpha);
     terminal.send("\x1b[O\x1ds").unwrap();
-    shows_row(&mut terminal, "║Idle Alpha");
+    shows_row(&mut terminal, "║Running Alpha");
     // Escape closes the selector; the host then reports focus in.
     terminal.send(ESCAPE).unwrap();
     alpha.extend(b"\x1b[I");
@@ -5162,8 +5167,9 @@ fn application_focus_follows_selection_menus_and_host_focus_once_each() {
     terminal.send("\x1ds").unwrap();
     alpha.extend(b"\x1b[O");
     received_by(&package, "Alpha", &alpha);
+    listed_with(&terminal, RUNNING, "Beta");
     enter_on(&mut terminal, "Beta");
-    ready_at(&mut terminal, "Beta", STATUS, "29 120");
+    ready_at(&mut terminal, "Beta", RUNNING, "29 120");
     set_modes(&package, &terminal, "Beta", b"\x1b[?1004h", "F2");
     let mut beta = b"\x1b[I".to_vec();
     received_by(&package, "Beta", &beta);
@@ -5182,13 +5188,13 @@ fn application_focus_follows_selection_menus_and_host_focus_once_each() {
     package.assert_clean();
 }
 
-/// FOC-02 (Monitor; owner decision on #111): a host that never reports
-/// focus (this test host) leaves sessions usable, focus assumed, and shows
-/// nothing about it: Real, served by a daemon with `focus-v1`, shows no
-/// limitation and takes typed input. A session whose daemon lacks
-/// `focus-v1` shows the limitation in its top row's error slot.
+/// FOC-02 (Monitor; owner decisions on #111): missing focus support is a
+/// documented limitation only, never shown. A host that never reports
+/// focus (this test host) leaves sessions usable with focus assumed: Real,
+/// served by a daemon with `focus-v1`, takes typed input. A session whose
+/// daemon lacks `focus-v1` shows nothing about it in its top row.
 #[test]
-fn without_focus_support_the_session_shows_the_limitation() {
+fn without_focus_support_sessions_stay_usable_and_nothing_is_shown() {
     let package = Package::new();
     without_introduction(&package);
     limits_config(
@@ -5215,17 +5221,13 @@ fn without_focus_support_the_session_shows_the_limitation() {
     });
     terminal.send("\x1ds").unwrap();
     enter_on(&mut terminal, "Real");
-    ready_at(&mut terminal, "Real", STATUS, "29 120");
+    ready_at(&mut terminal, "Real", RUNNING, "29 120");
     terminal.send("u").unwrap();
     received_by(&package, "Real", b"u");
     terminal.send("\x1ds").unwrap();
     enter_on(&mut terminal, "plain");
     let fields = ["Idle", "Acquiring", SESSIONS_HINT];
-    let top = session_top_row(
-        usize::from(COLS),
-        "plain | Application focus unsupported",
-        &fields,
-    );
+    let top = session_top_row(usize::from(COLS), "plain", &fields);
     top_row_is(&mut terminal, &top);
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);

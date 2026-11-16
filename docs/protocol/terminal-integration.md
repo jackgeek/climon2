@@ -107,9 +107,9 @@ the application's reporting mode and encoding; chrome and overlay events
 stay local, and each gesture keeps the target where it began. With
 `focus-v1`, [Focus](monitor-client/request-focus.md) follows selection,
 modal UI and host focus reports, once per change and once more for each
-newly ready restoration; without it the session's top row shows the
-limitation. A host that never reports focus is assumed focused, documented
-only (owner decision on #111). Selector clicks, wheel history and toasts
+newly ready restoration; without it no Focus is sent. Both that and a host
+that never reports focus (assumed focused) are documented limitations only,
+never shown on screen (owner decisions on #111). Selector clicks, wheel history and toasts
 remain unimplemented.
 
 Everything else in this document remains agreed and unimplemented, including

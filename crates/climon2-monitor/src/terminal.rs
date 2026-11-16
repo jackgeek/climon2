@@ -429,13 +429,6 @@ impl Terminal {
         })
     }
 
-    /// Whether the session's client opened with `focus-v1`; without it,
-    /// application focus is a visible limitation, never a reason to refuse
-    /// the session.
-    pub(crate) fn focusable(&self) -> bool {
-        self.focusable
-    }
-
     /// The authority of the control period and restoration held, if any:
     /// it changes with every grant, restoration, revocation and end.
     pub(crate) fn authority(&self) -> Option<Authority> {
@@ -1042,26 +1035,34 @@ mod tests {
             &mut parser,
             Presentation::Answered(Request::Ready(held), Ok(())),
         );
-        assert!(!unsupported.focusable());
         assert_eq!(unsupported.focus(true), None);
-        unsupported.present(&mut parser, Presentation::Revoked);
-        assert!(!unsupported.focusable());
+    }
+
+    /// Grants `held` with an applied restoration whose Ready was accepted.
+    fn ready_under(terminal: &mut Terminal, parser: &mut Parser, held: Authority) {
+        terminal.present(parser, Presentation::Granted(held, geometry(10, 3)));
+        terminal.present(parser, Presentation::Begin(held, geometry(10, 3)));
+        terminal.present(parser, Presentation::Complete);
+        terminal.present(parser, Presentation::Answered(Request::Ready(held), Ok(())));
     }
 
     /// FOC-02 (pure supplement): `focus-v1` lasts while the client does:
-    /// revocation keeps it, and its end ends it.
+    /// after revocation, the next grant's ready restoration is still sent
+    /// Focus; once the client ended, a later grant is not.
     #[test]
     fn focus_support_lasts_until_the_client_ends() {
         let mut parser = Parser::new();
         let mut terminal = Terminal::new(LIMITS);
-        assert!(!terminal.focusable());
         terminal.present(&mut parser, Presentation::Focusable);
-        assert!(terminal.focusable());
         terminal.present(&mut parser, Presentation::Revoked);
-        assert!(terminal.focusable());
         assert_eq!(terminal.focus(true), None);
+        let again = authority(3, 1);
+        ready_under(&mut terminal, &mut parser, again);
+        assert_eq!(terminal.focus(true), Some(Request::Focus(again, true)));
         terminal.present(&mut parser, Presentation::Ended);
-        assert!(!terminal.focusable());
+        let later = authority(4, 1);
+        ready_under(&mut terminal, &mut parser, later);
+        assert_eq!(terminal.focus(true), None);
     }
 
     /// The top row names each control as #108 shows it.

@@ -32,9 +32,6 @@ const UNSELECTED: &str = "No session selected.";
 /// starting (#266).
 const LATE_INCOMPLETE: &str = "Discovery incomplete: some sessions are still starting";
 const TOO_SMALL: &str = "Terminal too small";
-/// The visible limitation of a session whose client or daemon lacks
-/// `focus-v1` (spec #73, "Application focus").
-const FOCUS_UNSUPPORTED: &str = "Application focus unsupported";
 /// The non-controller placeholder, as the client executable words it.
 const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
 /// A selected session with no terminal content to show (spec #73,
@@ -58,8 +55,6 @@ pub(crate) struct Session<'a> {
     pub(crate) status: &'a str,
     pub(crate) control: &'a str,
     pub(crate) error: Option<&'a str>,
-    /// Its client opened without application focus (`focus-v1`).
-    pub(crate) unfocusable: bool,
     pub(crate) canvas: Canvas<'a>,
 }
 
@@ -209,7 +204,7 @@ impl Screen {
                 None
             }
             (Some(_), Some(session)) => {
-                let error = error(session.error, scene.late, session.unfocusable);
+                let error = error(session.error, scene.late);
                 session_row(&mut buffer, top, session, error, self.top_hint.as_deref());
                 self.canvas(&session.canvas, &mut buffer, below)
             }
@@ -282,11 +277,9 @@ fn state<'a>(progress: Option<&'a str>, rows: &[View]) -> &'a str {
 
 /// The top row's error slot: the session's own error, otherwise, while the
 /// initial collection's late sessions still start, that discovery is
-/// incomplete (owner decision, 2026-11-16), otherwise any limitation of the
-/// session's application focus.
-fn error(own: Option<&str>, late: bool, unfocusable: bool) -> Option<&str> {
+/// incomplete (owner decision, 2026-11-16).
+fn error(own: Option<&str>, late: bool) -> Option<&str> {
     own.or(late.then_some(LATE_INCOMPLETE))
-        .or(unfocusable.then_some(FOCUS_UNSUPPORTED))
 }
 
 /// Why discovery is incomplete: the latest pass's reason, then whether the
@@ -503,7 +496,6 @@ mod tests {
             status: "Unavailable",
             control,
             error,
-            unfocusable: false,
             canvas: Canvas::Nothing,
         };
         session_row(
@@ -682,20 +674,14 @@ mod tests {
     /// The owner's decision of 2026-11-16 on #266 (pure supplement): while
     /// the initial collection's late sessions still start, the top row's
     /// error slot says discovery is incomplete with a row selected too,
-    /// unless the session has its own error, which it never hides. FOC-02
-    /// (pure supplement): a session without application focus says so when
-    /// neither has anything to say.
+    /// unless the session has its own error, which it never hides.
     #[test]
     fn a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own() {
         let late = "Discovery incomplete: some sessions are still starting";
-        let unfocusable = "Application focus unsupported";
-        for limited in [false, true] {
-            assert_eq!(error(None, true, limited), Some(late));
-            assert_eq!(error(Some("timed out"), true, limited), Some("timed out"));
-            assert_eq!(error(Some("timed out"), false, limited), Some("timed out"));
-        }
-        assert_eq!(error(None, false, false), None);
-        assert_eq!(error(None, false, true), Some(unfocusable));
+        assert_eq!(error(None, false), None);
+        assert_eq!(error(None, true), Some(late));
+        assert_eq!(error(Some("timed out"), true), Some("timed out"));
+        assert_eq!(error(Some("timed out"), false), Some("timed out"));
     }
 
     /// A model `cols` by `rows` that took `bytes`.

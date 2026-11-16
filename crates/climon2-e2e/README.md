@@ -430,7 +430,7 @@ earlier run would, so they open on the empty state.
 | INP-04 (Fault: disconnect) the selected session's daemon killed with a prefix pending discards the prefix; the next key is no exit and reaches no other session | `a_disconnect_discards_a_pending_prefix` |
 | INP-05 (application, chrome and selector), INP-04 (a modal mid-gesture) mouse events translated below the top row, each gesture kept by its owner or discarded through its release | `mouse_events_reach_the_application_translated_and_keep_their_gesture` |
 | FOC-01 (application focus) focus follows menus, host focus and switching, once per change | `application_focus_follows_selection_menus_and_host_focus_once_each` |
-| FOC-02 (owner decision on #111) sessions stay usable on a host that never reports focus, nothing shown; a session without `focus-v1` (the host's fake daemon) shows the limitation | `without_focus_support_the_session_shows_the_limitation` |
+| FOC-02 (owner decisions on #111) sessions stay usable on a host that never reports focus, and a session without `focus-v1` (the host's fake daemon) shows nothing about it | `without_focus_support_sessions_stay_usable_and_nothing_is_shown` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon

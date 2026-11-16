@@ -742,16 +742,8 @@ fn selected<'a>(
         status: &row.status,
         control: control.label(),
         error: terminal.and_then(Terminal::error),
-        unfocusable: unfocusable(kind, terminal),
         canvas,
     }
-}
-
-/// Whether a selected row of `kind` is connected through a client that
-/// opened without application focus (`focus-v1`), a visible limitation
-/// (spec #73, "Application focus").
-fn unfocusable(kind: Kind, terminal: Option<&Terminal>) -> bool {
-    kind == Kind::Connected && !terminal.is_some_and(Terminal::focusable)
 }
 
 /// The control the monitor holds through `terminal`: a session it never
