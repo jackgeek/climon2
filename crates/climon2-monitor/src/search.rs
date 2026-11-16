@@ -43,11 +43,6 @@ impl Search {
         }
     }
 
-    /// Empties the search, as the selector opens.
-    pub(crate) fn clear(&mut self) {
-        *self = Self::new(self.limit);
-    }
-
     /// `ui.search_bytes`.
     pub(crate) fn limit(&self) -> usize {
         self.limit
@@ -58,9 +53,7 @@ impl Search {
     /// discarded.
     pub(crate) fn typed(&mut self, byte: u8) -> Edit {
         match self.typed.push(byte) {
-            Some(character) if !character.is_control() => {
-                self.insert(character.encode_utf8(&mut [0; 4]))
-            }
+            Some(character) if !character.is_control() => self.insert(&character.to_string()),
             _ => Edit::Unchanged,
         }
     }
@@ -345,8 +338,6 @@ mod tests {
         assert_eq!(search.shown(10), ("aé", 2));
         assert_eq!(search.backspace(), Edit::Changed);
         assert_eq!(search.shown(10), ("a", 1));
-        search.clear();
-        assert_eq!(search.shown(10), ("", 0));
     }
 
     /// SEL-02 (pure supplement): Tab and every other control character

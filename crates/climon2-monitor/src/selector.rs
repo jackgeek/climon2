@@ -92,12 +92,19 @@ impl Selector {
     /// A closed selector whose footer names `prefix`'s bindings while
     /// `hints` is on, and whose search holds at most `limit` bytes.
     pub(crate) fn new(prefix: ControlKey, hints: bool, limit: usize) -> Self {
+        Self::closed(Search::new(limit), hints.then(|| key_hints(prefix)))
+    }
+
+    /// A closed selector with `search` and the footer's `hints`, its list
+    /// scrolled to the start, nothing highlighted and no refusal shown:
+    /// how [`Selector::new`] makes it and [`Selector::open`] starts again.
+    fn closed(search: Search, hints: Option<String>) -> Self {
         Self {
             open: false,
-            search: Search::new(limit),
+            search,
             highlight: None,
             top: 0,
-            hints: hints.then(|| key_hints(prefix)),
+            hints,
             refused: false,
         }
     }
@@ -109,10 +116,11 @@ impl Selector {
         if self.open {
             return;
         }
-        self.open = true;
-        self.search.clear();
-        self.refused = false;
-        self.top = 0;
+        let search = Search::new(self.search.limit());
+        *self = Self {
+            open: true,
+            ..Self::closed(search, self.hints.take())
+        };
         let index = selected
             .and_then(|id| rows.iter().position(|row| &row.id == id))
             .unwrap_or(0);
@@ -217,11 +225,11 @@ impl Selector {
     }
 
     fn page_up(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
-        self.navigate(rows, area, back, visible(self.layout(area)))
+        self.navigate(rows, area, back, visible(&self.parts(area)))
     }
 
     fn page_down(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
-        self.navigate(rows, area, forth, visible(self.layout(area)))
+        self.navigate(rows, area, forth, visible(&self.parts(area)))
     }
 
     /// Moves the highlight `by` rows with `step`, stopping at either end,
@@ -289,7 +297,7 @@ impl Selector {
 
     /// Scrolls the list so that matching row `index` is in view.
     fn reveal(&mut self, index: usize, area: Rect) {
-        let visible = visible(self.layout(area));
+        let visible = visible(&self.parts(area));
         self.top = self.top.min(index).max((index + 1).saturating_sub(visible));
     }
 
@@ -320,18 +328,19 @@ impl Selector {
     /// Scrolls the list one row with `step`, as far as it goes.
     fn scroll(&mut self, rows: &[View], area: Rect, step: Step) {
         let count = self.matching(rows).len();
-        let visible = visible(self.layout(area));
+        let visible = visible(&self.parts(area));
         self.top = step(self.first(count, visible), 1, count.saturating_sub(visible));
     }
 
-    /// The open selector's parts in `area`, one cell in from each edge, when
-    /// its border fits: the search line, the separator, the list and the
-    /// footer, each while there is room for it.
+    /// The selector's parts in `area`, while it is open.
     fn layout(&self, area: Rect) -> Option<Layout> {
-        let fits = area.width >= 3 && area.height >= 3;
-        if !(self.open && fits) {
-            return None;
-        }
+        self.open.then(|| self.parts(area))
+    }
+
+    /// The selector's parts in `area`, one cell in from each edge: the
+    /// border, the search line, the separator, the list and the footer, each
+    /// empty where there is no room for it.
+    fn parts(&self, area: Rect) -> Layout {
         let outer = area.inner(Margin::new(1, 1));
         let inner = outer.inner(Margin::new(1, 1));
         let below = inner.height.saturating_sub(2);
@@ -341,7 +350,7 @@ impl Selector {
             height: below - footer,
             ..inner
         };
-        Some(Layout {
+        Layout {
             outer,
             search: Rect {
                 height: inner.height.min(1),
@@ -358,7 +367,7 @@ impl Selector {
                 height: footer,
                 ..inner
             },
-        })
+        }
     }
 
     /// The footer's text: why the latest search edit was refused, otherwise
@@ -445,8 +454,8 @@ fn forth(index: usize, by: usize, last: usize) -> usize {
 }
 
 /// How many list rows `layout` shows, counting at least one.
-fn visible(layout: Option<Layout>) -> usize {
-    layout.map_or(1, |layout| usize::from(layout.list.height).max(1))
+fn visible(layout: &Layout) -> usize {
+    usize::from(layout.list.height).max(1)
 }
 
 /// The footer's key hints with `prefix` (owner decision on #113: only
@@ -715,13 +724,13 @@ mod tests {
     /// SEL-02 (pure supplement, navigation): Up and Down move the highlight
     /// one row and PageUp and PageDown a list's height, never wrapping and
     /// stopping at either end; the list scrolls to keep the highlight in
-    /// view; keypad and other keys move nothing.
+    /// view; keypad keys, Shift+Tab and other keys move nothing.
     #[test]
     fn navigation_moves_without_wrapping_and_keeps_the_highlight_in_view() {
         let rows = letters(5);
         let mut selector = selector("Ctrl+]", false);
         selector.open(&rows, None, SMALL);
-        let steps: [(Key, [&str; 2], u16); 12] = [
+        let steps: [(Key, [&str; 2], u16); 13] = [
             (UP, ["a", "b"], 4),
             (DOWN, ["a", "b"], 5),
             (DOWN, ["b", "c"], 5),
@@ -730,6 +739,7 @@ mod tests {
             (DOWN, ["d", "e"], 5),
             (page_up(), ["c", "d"], 4),
             (Key::Keypad(b'x'), ["c", "d"], 4),
+            (bytes(b"\x1b[Z"), ["c", "d"], 4),
             (UP, ["b", "c"], 4),
             (DOWN, ["b", "c"], 5),
             (page_up(), ["a", "b"], 4),
