@@ -36,9 +36,12 @@ pub fn report(parameters: &[u8]) -> Option<Report> {
     Some(report).filter(|report| report.state != ProgressState::Normal || report.percent.is_some())
 }
 
-/// The state and percentage fields, each `None` when empty or missing, if
-/// there are no more.
-fn fields(parameters: &[u8]) -> Option<(Option<&[u8]>, Option<&[u8]>)> {
+/// A report's state and percentage fields, each `None` when empty or
+/// missing.
+type Fields<'a> = (Option<&'a [u8]>, Option<&'a [u8]>);
+
+/// The state and percentage fields, if there are no more.
+fn fields(parameters: &[u8]) -> Option<Fields<'_>> {
     let mut fields = parameters
         .split(|&byte| byte == b';')
         .map(|field| (!field.is_empty()).then_some(field));

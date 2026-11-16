@@ -65,10 +65,6 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
             lists(json!(REQUIRED), json!(["title-v1", "monitor-v1"])),
             invalid,
         ),
-        (
-            lists(json!(["monitor-v1", "progress-v1"]), json!([])),
-            unrelayed,
-        ),
         (lists(json!(["x-later-v9"]), json!([])), unrelayed),
         (
             json!({ "tag": "leave", "request_id": 7, "generation": 0 }),

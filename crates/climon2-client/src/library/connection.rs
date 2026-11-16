@@ -90,7 +90,7 @@ impl<'a> Driver<'a> {
         Self {
             shared,
             taken: Taken::new(shared),
-            stream: Stream::new(shared.limits().title_bytes),
+            stream: Stream::new(shared.limits().into()),
             connection: None,
             start: None,
             parked: VecDeque::new(),

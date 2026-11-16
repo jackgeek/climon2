@@ -120,6 +120,24 @@ impl Session {
         Self::running(package, root, &[], Some(clock))
     }
 
+    /// A clocked idle session (see [`Session::clocked`]) whose application
+    /// prints `text` once the `go` file exists (#98).
+    pub fn clocked_printing(
+        package: &Package,
+        root: &Path,
+        clock: &Path,
+        go: &Path,
+        text: &str,
+    ) -> Self {
+        let go = go.to_str().unwrap();
+        Self::running(
+            package,
+            root,
+            &["await-file", go, "print", text],
+            Some(clock),
+        )
+    }
+
     fn running(package: &Package, root: &Path, then: &[&str], clock: Option<&Path>) -> Self {
         let end = root.join("end");
         let mut command = package.command("climon2");

@@ -5,15 +5,16 @@
 //! is skipped or fabricated. Presentation records must name the authority
 //! the role holds (#94): an old period or restoration never reaches the
 //! caller as current. Status arrives only with `status-v1` selected, and
-//! never after the command's final result (#95).
+//! never after the command's final result (#95); notifications and
+//! progress only with their families selected (#98).
 
 use super::{
     failure::{Failed, Fault, Retry, require},
     families::{self, Selection},
     link::fatal,
     records::{
-        Answer, Changed, Command, Done, Event, Initial, Metadata, Outcome, Presentation, Response,
-        Screen, Status, Title,
+        Answer, Changed, Command, Done, Event, Initial, Metadata, Notification, Outcome,
+        Presentation, Report, Response, Screen, Status, Title,
     },
     request::{Act, Confirm, Held, Toggle},
 };
@@ -55,6 +56,14 @@ const UNCORRELATED: Fault = Fault::transport(
     "a response names no unanswered request",
 );
 const OVERSIZED: Fault = Fault::library("resource_limit", "a title exceeds title_bytes");
+const OVERSIZED_NOTIFICATION: Fault = Fault::library(
+    "resource_limit",
+    "a notification exceeds notification_title_bytes or notification_body_bytes",
+);
+const BLANK: Fault = Fault::transport(
+    "invalid_record",
+    "a notification has neither a title nor a body",
+);
 const UNFIT: Fault = Fault::library(
     "unsupported_limit",
     "a request frame exceeds the frame ceilings",
@@ -401,8 +410,26 @@ impl Effect {
     }
 }
 
+/// The text bounds of the caller's limits.
+#[derive(Clone, Copy)]
+pub(super) struct TextLimits {
+    pub(super) title: u64,
+    pub(super) notification_title: u64,
+    pub(super) notification_body: u64,
+}
+
+impl From<&native::Limits> for TextLimits {
+    fn from(limits: &native::Limits) -> Self {
+        Self {
+            title: limits.title_bytes.into(),
+            notification_title: limits.notification_title_bytes.into(),
+            notification_body: limits.notification_body_bytes.into(),
+        }
+    }
+}
+
 pub(super) struct Stream {
-    title_bytes: u64,
+    text: TextLimits,
     /// The last wire request ID sent; the next is one more.
     last: u64,
     pending: Vec<Pending>,
@@ -427,9 +454,9 @@ struct Holding {
 }
 
 impl Stream {
-    pub(super) fn new(title_bytes: u32) -> Self {
+    pub(super) fn new(text: TextLimits) -> Self {
         Self {
-            title_bytes: title_bytes.into(),
+            text,
             last: 0,
             pending: Vec::new(),
             selected: None,
@@ -588,15 +615,53 @@ impl Stream {
         }
     }
 
-    /// Initial metadata, then title and status changes and presentation
-    /// records.
+    /// Initial metadata, then title and status changes, notifications and
+    /// progress, and presentation records.
     fn report(&mut self, message: ServerMessage) -> Result<Event, Fault> {
         match message {
             ServerMessage::InitialMetadata(metadata) => self.initial(&metadata),
             ServerMessage::TitleChanged(changed) => self.changed(changed.title.as_deref()),
             ServerMessage::StatusChanged(changed) => self.status_changed(&changed),
+            message => self.notice(message),
+        }
+    }
+
+    /// A Notification or a Progress changed, after the Initial metadata
+    /// with its family selected; any other record, or one of these out of
+    /// place, is a presentation record's to judge.
+    fn notice(&mut self, message: ServerMessage) -> Result<Event, Fault> {
+        match message {
+            ServerMessage::Notification(notification) if self.reports(Family::NotificationV1) => {
+                self.notification(notification)
+            }
+            ServerMessage::ProgressChanged(changed) if self.reports(Family::ProgressV1) => Ok(
+                Event::Metadata(Metadata::Report(Report::Progress(changed.progress))),
+            ),
             message => self.presentation(message),
         }
+    }
+
+    /// Whether `family`'s changes may arrive now: after the Initial
+    /// metadata, with the family selected.
+    fn reports(&self, family: Family) -> bool {
+        self.synchronized && self.selects(family)
+    }
+
+    /// A notification with a title or a body, each within its bound;
+    /// never truncated.
+    fn notification(&self, notification: wire::Notification) -> Result<Event, Fault> {
+        let within = within(notification.title.as_deref(), self.text.notification_title)
+            && within(notification.body.as_deref(), self.text.notification_body);
+        require(within, OVERSIZED_NOTIFICATION)?;
+        let blank = |text: &Option<String>| text.as_deref().is_none_or(str::is_empty);
+        require(
+            !(blank(&notification.title) && blank(&notification.body)),
+            BLANK,
+        )?;
+        let notification = Notification::from(notification);
+        Ok(Event::Metadata(Metadata::Report(Report::Notification(
+            notification,
+        ))))
     }
 
     /// A presentation record, only after the Initial metadata.
@@ -798,20 +863,31 @@ impl Stream {
         )))
     }
 
-    /// Progress is never selected yet, so it must be unavailable; the title
-    /// and the status are available exactly when selected.
+    /// The title, the status and the progress are available exactly when
+    /// selected.
     fn metadata(&self, metadata: &wire::InitialMetadata) -> Result<Event, Fault> {
         let title = self.availability(metadata.title())?;
         let status = self.status(metadata)?;
-        require(
-            matches!(metadata.progress(), Available::Unavailable),
-            UNEXPECTED,
-        )?;
+        let progress = self.progress(metadata.progress())?;
         Ok(Event::Metadata(Metadata::Initial(Initial {
             title,
             status,
+            progress,
             command: metadata.command_result().map(Command::from),
         })))
+    }
+
+    /// The retained progress, available exactly when `progress-v1` is
+    /// selected.
+    fn progress(
+        &self,
+        progress: &Available<wire::Progress>,
+    ) -> Result<Option<wire::Progress>, Fault> {
+        match (self.selects(Family::ProgressV1), progress) {
+            (false, Available::Unavailable) => Ok(None),
+            (true, Available::Available(progress)) => Ok(Some(*progress)),
+            _ => Err(UNEXPECTED),
+        }
     }
 
     /// The status, available exactly when `status-v1` is selected, and
@@ -836,8 +912,8 @@ impl Stream {
             self.synchronized && self.selects(Family::StatusV1) && !self.known,
             UNEXPECTED,
         )?;
-        Ok(Event::Metadata(Metadata::Status(Status::from(
-            changed.status(),
+        Ok(Event::Metadata(Metadata::Report(Report::Status(
+            Status::from(changed.status()),
         ))))
     }
 
@@ -861,11 +937,16 @@ impl Stream {
     /// A title by value, never truncated.
     fn value(&self, title: Option<&str>) -> Result<Title, Fault> {
         title.map_or(Ok(Title::Unset), |title| {
-            (title.len() as u64 <= self.title_bytes)
+            within(Some(title), self.text.title)
                 .then(|| Title::Value(Box::from(title)))
                 .ok_or(OVERSIZED)
         })
     }
+}
+
+/// Whether `text`, if any, holds at most `bytes` UTF-8 bytes.
+fn within(text: Option<&str>, bytes: u64) -> bool {
+    text.is_none_or(|text| text.len() as u64 <= bytes)
 }
 
 /// A Leave's answer: its response when public, and its evidence.

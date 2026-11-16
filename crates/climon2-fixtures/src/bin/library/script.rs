@@ -21,7 +21,8 @@
 //!   an Acquire or Ready result), and `"$stale_period"` and
 //!   `"$stale_restoration"` the one before it (#94);
 //! - `run`, on the owner thread; `wait_run` for its report;
-//! - `drain`, `until` `{"records": n}`, `{"tag": t}`, `{"response": id}`,
+//! - `drain`, `until` `{"records": n}`, `{"tag": t}` (with `"count": n`,
+//!   `n` records of that tag), `{"response": id}`,
 //!   `{"display": hex}` (the Display bytes drained in this step contain
 //!   them), `{"all": [until, ...]}` or `"terminal"` (default: once),
 //!   releasing each delivery unless `keep`, and stopping at the first failed
@@ -302,7 +303,8 @@ fn wait_run(instance: &mut Instance) -> Value {
 }
 
 /// Whether the drains so far meet `until`: terminal evidence, `records`
-/// records, a record of `tag`, or, by default, one drain.
+/// records, `count` records (default one) of `tag`, or, by default, one
+/// drain.
 fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bool {
     if until == "terminal" {
         return terminal;
@@ -316,7 +318,9 @@ fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bo
         return records.len() as u64 >= count;
     }
     if let Some(tag) = until["tag"].as_u64() {
-        return records.iter().any(|record| record["tag"] == tag);
+        let count = until["count"].as_u64().unwrap_or(1);
+        let tagged = records.iter().filter(|record| record["tag"] == tag);
+        return tagged.count() as u64 >= count;
     }
     if let Some(id) = until["response"].as_u64() {
         return records

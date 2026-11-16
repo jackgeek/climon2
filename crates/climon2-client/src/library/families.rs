@@ -6,13 +6,16 @@
 use climon2_core::wire::{Advertisement, Families, Family, Mode, Requested};
 
 /// Core (roles, control, restoration and display), passive monitor entry,
-/// titles, application focus (#94) and status with viewing and
-/// acknowledgement (#95). `notification-v1` and `progress-v1` join with #98.
-pub(super) const RELAYED: [Family; 5] = [
+/// titles, application focus (#94), status with viewing and
+/// acknowledgement (#95), and notifications and progress (#98): every
+/// revision-1 family.
+pub(super) const RELAYED: [Family; 7] = [
     Family::DaemonWireV1,
     Family::MonitorV1,
     Family::TitleV1,
     Family::StatusV1,
+    Family::NotificationV1,
+    Family::ProgressV1,
     Family::FocusV1,
 ];
 

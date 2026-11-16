@@ -373,6 +373,35 @@ fn available_status(available: &native::AvailableStatus) -> Value {
     value
 }
 
+fn progress(progress: &native::Progress) -> Value {
+    json!({
+        "state": progress.state,
+        "percent_present": progress.percent_present,
+        "percent": progress.percent,
+        "reserved": progress.reserved,
+    })
+}
+
+/// An available progress's value, or availability alone.
+fn available_progress(available: &native::AvailableProgress) -> Value {
+    let mut value = json!({ "available": available.available, "reserved": available.reserved });
+    if available.available != 0 {
+        value["value"] = progress(&available.value);
+    }
+    value
+}
+
+fn notification(notification: &native::Notification) -> Value {
+    json!({
+        "source": notification.source,
+        "episode_present": notification.episode_present,
+        "episode_id": notification.episode_id,
+        "source_id": optional_text(notification.source_id),
+        "title": optional_text(notification.title),
+        "body": optional_text(notification.body),
+    })
+}
+
 fn finished(finished: &native::Final) -> Value {
     json!({
         "command_result": command(&finished.command_result),
@@ -384,10 +413,7 @@ fn metadata(metadata: &native::Metadata) -> Value {
     json!({
         "title": title(&metadata.title),
         "status": available_status(&metadata.status),
-        "progress": {
-            "available": metadata.progress.available,
-            "reserved": metadata.progress.reserved,
-        },
+        "progress": available_progress(&metadata.progress),
         "command_result": {
             "present": metadata.command_result.present,
             "reserved": metadata.command_result.reserved,
@@ -415,6 +441,10 @@ pub fn record(record: &Record) -> Value {
         native::INITIAL_METADATA => value["metadata"] = metadata(unsafe { &record.data.metadata }),
         native::TITLE => value["title"] = title(unsafe { &record.data.title }),
         native::STATUS => value["status"] = status(unsafe { &record.data.status }),
+        native::NOTIFICATION => {
+            value["notification"] = notification(unsafe { &record.data.notification });
+        }
+        native::PROGRESS => value["progress"] = progress(unsafe { &record.data.progress }),
         native::FINAL => value["final"] = finished(unsafe { &record.data.r#final }),
         _ => {
             if let Some(presented) = presentation(record) {
