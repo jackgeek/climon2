@@ -269,6 +269,7 @@ before it.
 | COM-03 Library and Fault, Command final (minimal, #94): `CM1_FINAL` exit or signal with its name, status unavailable, the close a clean stop with retry none (inside a frame still `truncated_frame`; meeting a Leave, indeterminate); second, after a known result (agreeing or contradicting), early or with a status `invalid_record` | `installed_library_relays_one_command_final_after_the_initial_metadata` (`control_faults.rs`) |
 | COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
 | COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
+| LIB-04 Fault, control and screen records: each charged its header twice and only a Display's bytes beside it; Control revoked (`session_ending`) delivered with its reserved field zero | `installed_library_charges_presentation_records_only_the_display_bytes_they_own` (`control_faults.rs`) |
 
 ### Library layer: mixed releases (`tests/mixed.rs`, #97)
 
