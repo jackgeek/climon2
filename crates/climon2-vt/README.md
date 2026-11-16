@@ -52,6 +52,11 @@ host Direct/Derived presentation below is unchanged.
   across reads.
 - `Vt::application_title()`: the application's current title, `None` while
   unset; the session daemon reports it as inert core metadata.
+- `Vt::viewport_characters()`: the active screen's characters, every cell of each line
+  (a cell's character, then its zero-width characters) with lines separated
+  by a line feed. Rendition, the cursor, history and which screen is active
+  are not part of it, so the session daemon's activity samples compare what
+  the screen says, not how it says it.
 - `Vt::sync_pending(now)` / `Vt::tick(now)`: the first-begin synchronized
   update latch (150 ms). Take no snapshot and derive nothing while pending;
   when `tick` returns true, commit `Presentation::end_sync()` for hosts that
@@ -209,7 +214,9 @@ only, so items a macro generates are not checked.
   `Clicks`, 1002 `Drag`, 1003 `Motion`), `MouseEncoding` (`Default`, 1005
   `Utf8`, 1006 `Sgr`), focus reporting (1004) and alternate scroll (1007). The
   latest mouse reporting mode set replaces the others, and so does the latest
-  encoding.
+  encoding. Alternate scroll starts off, as xterm starts, although Alacritty
+  starts with it on; `CSI ? 1007 h` turns it on, and `CSI ? 1007 l` and RIS
+  turn it off (#179).
 - `History { rows, truncated }` holds the newest rows scrolled off the normal
   screen, oldest first, at most `history_rows`: the rows `Model::history()`
   shows. `truncated` says older rows were discarded since the history was last
@@ -260,12 +267,14 @@ monitor's evidence.
 | LIM-03 Contract: the engine sees exactly what the live output policy forwards: text under a stripped hyperlink costs nothing, and a rewritten screen-mode list keeps the alternate screen the engine implements | `the_engine_sees_only_what_a_host_would_receive` |
 | LIM-03 Fault: the reserve covers brief holdings with no history: 4096 held controls released at once (as one token), the largest held bodies, resets, tinted templates | `a_cancelled_sequence_releasing_held_controls_stays_within_the_limit`, `the_reserve_covers_what_is_held_briefly`, `tests/tokenizer.rs`: `controls_held_by_an_abandoned_sequence_are_one_text_token` |
 | CTL-03 (crate case): application title changes are reported by value, in order and one per change; unset, empty and a value stay distinct; an oversized title is ignored | `tests/live.rs`: `application_title_changes_are_reported_in_order_by_value` |
+| STA-02 (crate case): the sampled viewport is the active screen's characters only; styles, cursor-only movement, identical redraws and a screen switch with identical characters leave it unchanged, while a changed character, a combining mark and a resize change it | `tests/viewport.rs`: `the_viewport_is_the_active_screens_characters_only` |
 | FOC-01 (crate case): the application's focus reporting mode (1004) is reported, and each feed says whether it newly enabled the mode, however its tokens were split across reads | `tests/live.rs`: `focus_reporting_reports_the_mode_and_each_feed_that_newly_enabled_it` |
 | TRM-03 and CTL-04 (crate case, canonical monitor-mode serialization): a canonical restoration rebuilds exactly the retained history, screen and cursor in a fresh terminal of the session geometry, with identical bytes whatever host the presentation described; no blank row is added and none lost, with a wrapped truncation notice, a gap notice during production, more rows than the screen, a soft-wrapped row and a one-row screen | `tests/restore.rs`: `a_canonical_restoration_is_the_session_at_its_geometry_for_a_fresh_terminal`, `a_canonical_restoration_scrolls_off_exactly_the_history_it_printed`, `a_canonical_restoration_counts_a_gap_notice_among_the_rows_it_scrolls_off` |
 | TRM-02 (crate case): a C0 control between `ESC` and an introducer never lets a filtered sequence reach the host; each token keeps the kind vte dispatches (#152) | `tests/live.rs`: `a_control_after_esc_reaches_the_host_without_the_filtered_sequence`; `tests/tokenizer.rs`: `vte_dispatches_each_token_as_its_kind` |
 | TRM-01 (crate case): wide and combining characters, a wide character wrapping at the right margin; colours (the 16 ANSI colours, palette, direct, underline colour, defaults) and rendition; a tab's cells blank, in the text views too | `tests/view.rs`: `wide_and_combining_characters_fill_the_cells_they_cover`, `cells_keep_the_colours_sgr_selected`, `sgr_selects_each_of_the_sixteen_ansi_colours`, `cells_keep_the_rendition_sgr_selected`, `a_tab_leaves_the_cells_it_passes_blank` |
 | TRM-01 (crate case): cursor position, visibility, shape (the host's default for no DECSCUSR, Ps 0 or RIS) and blink; the 1049 alternate screen, entered cleared and left with the normal screen and cursor restored | `tests/view.rs`: `the_cursor_is_where_the_application_moved_it`, `the_cursor_has_the_visibility_shape_and_blink_the_application_selected`, `the_alternate_screen_replaces_the_normal_screen_until_it_is_left` |
 | INP-02, INP-03, INP-05, FOC-01 (crate cases): cursor-key and keypad, bracketed-paste, mouse reporting and encoding, and focus-reporting modes, set and reset | `tests/view.rs`: `cursor_key_and_keypad_modes_follow_decckm_and_deckpam`, `bracketed_paste_follows_mode_2004`, `mouse_reporting_and_encoding_follow_their_modes`, `focus_reporting_follows_mode_1004` |
+| TRM-05 (crate case): alternate scroll off in a fresh model and the daemon's virtual terminal, as xterm starts; set by `CSI ? 1007 h`, reset by `CSI ? 1007 l` and RIS; restorations send it as the application left it, `CSI ? 1007 l` before the application set it (#179) | `tests/view.rs`: `alternate_scroll_follows_mode_1007`; `tests/restore.rs`: `a_restoration_sends_alternate_scroll_only_once_the_application_set_it` |
 | TRM-05 (crate case): normal history rows as cells; alternate scroll mode; no history over the alternate screen; cleared history starting again complete | `tests/view.rs`: `rows_scrolled_off_the_normal_screen_are_its_history`, `alternate_scroll_follows_mode_1007`, `the_alternate_screen_shows_no_history_until_it_is_left`, `cleared_history_starts_again_with_nothing_discarded` |
 | TRM-05, LIM-03 (crate cases): explicit history truncation at the row limit and one past it, when the allocation bound refuses growth (at the bound and one byte below), when shortening discards rows and not when it discards none, while the alternate screen is active, and replaced whole by an applied restoration, whose first scroll took room from that history (#166); none when output exactly fills the admitted chunks (SU, ED 2, line feeds); a history full at its limit reporting it once output could push a row out (owner decision) | `tests/view.rs`: `history_is_truncated_one_row_past_its_limit`, `history_the_bound_stops_growing_is_truncated`, `shortened_history_is_truncated_only_when_rows_are_discarded`, `the_alternate_screen_shows_no_history_until_it_is_left`, `a_restoration_replaces_a_truncated_history_whole`, `output_filling_the_admitted_history_exactly_discards_nothing`, `a_history_full_at_its_limit_reports_truncation_once_output_could_push_a_row_out` |
 | ADR 0007 (#83): no engine type in the public interface, the views included | `xtask/tests/vt_interface.rs`: `the_virtual_terminal_interface_names_no_engine_type` |
@@ -281,9 +290,7 @@ tracked allocation capacity, not resident memory, and its charges are upper
 bounds, so it can reject output before memory is strictly exhausted.
 
 The views show what the engine holds. It ignores blinking text (SGR 5 and 6),
-so no cell blinks. A fresh model has alternate scroll on, as Alacritty
-starts, and the daemon's restoration sets it on hosts too, until #179 starts
-the engine with it off. Once `history_rows` caps a history's growth (as at
+so no cell blinks. Once `history_rows` caps a history's growth (as at
 the monitor's default 10,000, ten whole chunks) or the bound refuses it, a
 full history loses its oldest row to each row pushed without the engine
 reporting it, so it reports truncation as soon as output that could push a

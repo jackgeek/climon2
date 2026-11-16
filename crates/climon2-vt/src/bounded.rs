@@ -466,7 +466,8 @@ impl Bounded {
     /// beyond the history it shows; drop them at once, so measuring sees
     /// every row that holds cell data. Then recount whether the normal
     /// screen's history is truncated, while it is the active screen, after a
-    /// token that may have `overrun` its admitted chunks.
+    /// token that may have `overrun` its admitted chunks. RIS also restarts
+    /// the engine's modes as xterm starts.
     fn settle(&mut self, policy: &Policy, overrun: bool) {
         let rows = usize::from(self.geometry.rows());
         if let Scrolling::Region { top, bottom } = policy.scrolling {
@@ -474,6 +475,7 @@ impl Bounded {
         }
         if policy.clear == Clear::Reset {
             self.region = Region::full(rows);
+            self.core.reset();
         }
         let cleared = policy.clear != Clear::Nothing;
         if cleared {

@@ -93,7 +93,8 @@ const READERS: [(u32, Reader); 11] = [
 impl Client {
     /// The borrowed notification descriptor.
     pub(super) fn notification(&self) -> Result<i32, String> {
-        let mut descriptor = -1;
+        // Output only: the library writes it on success.
+        let mut descriptor = Default::default();
         // SAFETY: a live communication handle and an output integer.
         checked(unsafe { (self.functions.notification)(self.communication, &mut descriptor) })
             .map(|()| descriptor)
@@ -264,8 +265,7 @@ fn response(response: &native::Response) -> ClientEvent {
 }
 
 fn opened(response: &native::Response) -> ClientEvent {
-    let succeeded = response.outcome == native::OK && response.result_tag == native::OPENED;
-    if !succeeded {
+    if (response.outcome, response.result_tag) != (native::OK, native::OPENED) {
         return ClientEvent::Unavailable(text(response.error.message));
     }
     // SAFETY: the result tag names the active member, and its tokens live
@@ -314,9 +314,10 @@ pub(super) fn warn(id: &SessionId, what: &str, result: Result<(), String>) {
 /// `count` items at `data`; none for a null pointer.
 ///
 /// # Safety
-/// `data` points at `count` initialized items that outlive the slice.
+/// `data` is null, or points at `count` initialized items that outlive the
+/// slice.
 unsafe fn slice<'a, T>(data: *const T, count: u64) -> &'a [T] {
-    if data.is_null() || count == 0 {
+    if data.is_null() {
         return &[];
     }
     // SAFETY: as the caller promises.
