@@ -206,9 +206,11 @@ its diagnostics to a log file of its own in the session-log directory,
 beside the client's,
 `<climon2 home>/logs/<session-id>/library-<UTC second>-<pid>.log`, since
 spec #73 places each instance's library log in its session's log. A missing,
-other-release or faulty library fails before any connection. The client
-executable no longer speaks the private post-hello protocol, which session
-daemons still serve until its deletion.
+other-release or faulty library fails before any connection. Session
+daemons speak only the frozen hello and daemon wire revision 1: the
+version-private post-hello protocol is retired
+([#104](https://github.com/jackgeek/climon2/issues/104)), so no artifact
+consumes it.
 
 **Current (#84):** one validated loader for client libraries is part of
 `climon2-platform`, not a separate artifact; the monitor and the client
@@ -271,9 +273,10 @@ interactive [attachments](../GLOSSARY.md#attachment-and-control) and
 standalone [Kill](../GLOSSARY.md#attachment-and-control) over it, with the
 command's final result, and passive monitor connections that acquire or
 inherit control with
-[canonical presentation](../GLOSSARY.md#restoration-and-presentation),
-beside the private protocol, but no climon2 executable or library consumes
-it yet, so no arrow changes.
+[canonical presentation](../GLOSSARY.md#restoration-and-presentation), and
+it is the only protocol they speak after hello. The client library consumes
+it, as the diagram shows; the monitor's consumption through that library
+remains planned.
 
 The planned wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over

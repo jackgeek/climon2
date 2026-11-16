@@ -263,8 +263,7 @@ agreed succession.
 [Headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
 clients even after later attachment loss, until completion or
 [Kill](../../GLOSSARY.md#attachment-and-control); that lifetime
-exception is implemented on the current private protocol and adds no
-native-crash isolation.
+exception is implemented and adds no native-crash isolation.
 
 ## Required automated evidence
 

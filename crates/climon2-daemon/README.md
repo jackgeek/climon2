@@ -93,18 +93,20 @@ that accepts none of its queued bytes for five seconds, is treated as lost. A
 controller that does not send `Ready` within 30 s plus one second per 4 MiB of
 restoration prefix is also lost. Probes remain serviceable throughout.
 
-### Daemon wire revision 1 beside the private protocol
+### The frozen hello, then daemon wire revision 1
 
-Hello advertises the frozen tokens and `state`, then `daemon-wire-v1`,
-`monitor-v1`, `title-v1`, `status-v1` and `focus-v1`, and `daemon_wire_v1` with
-1,048,576-byte request and server frame limits
-(`core::hello::advertise_revision1`). The first frame after hello selects
-the protocol by its type: a revision-1 type (`0x30`–`0x39` or
-`0x40`–`0x4d`, `core::wire::defines`) selects
-[daemon wire revision 1](../../docs/protocol/daemon-client/core-v1.md) for the
-rest of the connection; any other type continues the private protocol, which
-still serves attach and kill as before. That frame's length is checked
-under the frozen hello limit before its type is known. Every revision-1 frame
+A connection's first frame must be a valid frozen hello of protocol 1
+(`core::protocol::HelloRequest`) within two seconds of accept: a frame
+length outside 1 to 1,048,576 bytes, any other type (refused as soon as its
+type byte arrives), malformed JSON, another protocol or the deadline closes
+the connection without a byte. Hello advertises the frozen tokens and
+`state`, then `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1` and
+`focus-v1`, and `daemon_wire_v1` with 1,048,576-byte request and server
+frame limits (`core::hello::advertise_revision1`). Every frame after hello is
+[daemon wire revision 1](../../docs/protocol/daemon-client/core-v1.md), the
+only protocol after hello since the version-private one was retired (#104):
+a type revision 1 does not define, a second hello or a retired private type
+included, is `unknown_message_type`. Every revision-1 frame
 is read and written by core's `wire` codec: a frame its prefix declares
 oversized is refused before its body arrives, request IDs must strictly
 increase (a rejected request still consumes its ID), and a stream ending inside
@@ -162,16 +164,14 @@ restoration IDs never wrap: the last request ID,
 once the last period or restoration ID is issued (`control::Issued`, which
 hands out a `Fresh` pair only while both can advance), work that needs a
 new one is refused before its effects with `resource_limit`: an
-interactive Open, a private attach (`Error` "attach refused:
-resource_limit"), an Acquire by anyone but the controller and a Resize
+interactive Open, an Acquire by anyone but the controller and a Resize
 whose restoration would need a new ID. No registration is then promoted,
 and a departing controller hands back to nobody: each remaining attachment
 is explicitly failed (its connection closes), since the hello `state`
 cannot describe attachments without a controller.
 
-An interactive Open attaches an ordinary **interactive attachment**: the same
-attachment, control and leave policy as a private-protocol attach, which it
-can take control from and hand back to. Its success Response and Initial
+An interactive Open attaches an ordinary **interactive attachment**, under
+the attachment, control and leave policy every attachment shares. Its success Response and Initial
 metadata come first, then, in the same loop step, Control granted (`attach`)
 and Restoration begin; the restoration's Display chunks and Restoration
 complete follow as the connection drains, then live Display under the same
@@ -209,8 +209,8 @@ at once, of a starting or detached session too: any previous controller gets
 its release and Control revoked (`takeover`), then the registration gets
 Control granted (`acquire`) and Restoration begin before the changed success;
 the hello `state` then counts it, and it stays an attachment when another
-client takes over. **Succession:** when a controller departs, by Leave,
-private detach or any loss, control is handed back (`hand_back`) to the most
+client takes over. **Succession:** when a controller departs, by Leave or
+any loss, control is handed back (`hand_back`) to the most
 recently controlling remaining attachment; when none remains, the newest
 registration is promoted (`successor`): it becomes an attachment with a
 grant and a restoration. Only then does the leave policy apply, so a
@@ -235,8 +235,8 @@ Activity and attention (`src/status.rs`, #91 and #92) follow the
 detection modes: heuristic, explicit and fallback.
 A pure detector holds both state machines; every event takes the turn's
 clock reading, and its random source is injected. The loop reads the clock
-once at the start of each turn, so accepted input (revision-1 Input and
-private `Input` from the ready controller) comes before that turn's timer
+once at the start of each turn, so accepted input (Input from the ready
+controller) comes before that turn's timer
 and sample work. After reading the PTY the loop polls the detector: a due
 sample copies the active viewport's characters (`Vt::viewport_characters`), its size
 and the application title, never per output byte. The first baseline is
@@ -255,7 +255,7 @@ changes replace the stored UTC change time. Episodes count from 1, coalesce
 while pending, survive acknowledgement and are never wrapped: a request
 that needs one after the last counter starts no episode, is logged, and
 every later Acknowledge is `resource_limit`. Input holding only focus
-reports (`ESC [ I`, `ESC [ O`), which the private client forwards from its
+reports (`ESC [ I`, `ESC [ O`), which an ordinary client forwards from its
 terminal once the application turns focus reporting on, is not user input;
 query replies never arrive, since the daemon alone answers queries. The published result
 gives the final status, carried by Command final, and stops observation.
@@ -286,8 +286,7 @@ every OSC from host output. #98 adds notification signals through
 
 The daemon keeps the command's result as its wait status gives it
 (`core::wire::CommandResult`): a normal exit's raw status, or a signal's
-number, never folded together; only the private protocol's `Exit` and
-`Terminated` fold a signal into 128 plus its number. It publishes the result
+number, never folded together. It publishes the result
 once, when it is final, so that no more of the command's output follows
 Command final: for a command that exited by itself, when the PTY drain after
 the reap ends (end of output, `PTY_DRAIN_IDLE` 100 ms without output, or
@@ -314,12 +313,11 @@ before it, then its release and Control revoked (`session_ending`). Later Opens 
 then their one Command final as the session ends, however it ends (#259),
 and later first-role rejections carry it as
 `known_final`. A hang-up the daemon cannot confirm publishes the result
-only if the command was already reaped, and nothing otherwise; the private
-protocol then reports 125 as before.
+only if the command was already reaped, and nothing otherwise.
 
 A valid standalone Kill takes the Kill role (never an attachment) and
-commits termination through the same control as the private `Kill`, so
-kills of either protocol join one hang-up grace without restarting it. It is
+commits termination, and later kills join that one hang-up grace without
+restarting it. It is
 answered when the session ends: `termination` with the result and
 `cleanup: complete` once the result was confirmed and cleanup completed,
 even after an authoritative session failure; otherwise `failed` with
@@ -340,17 +338,15 @@ ends, its unwritten input is discarded and, if an application paste is open
 while mode 2004 is set, closing-marker cleanup bytes are queued. A PTY write
 failure is an authoritative session failure.
 
-Control is a pure state machine (`control.rs`): each attach, take-control,
+Control is a pure state machine (`control.rs`): each attach, Acquire,
 hand-back and promotion is granted at once under a new authority, a control
 period with its first restoration ID (attaches in one iteration are each
 granted and the last wins), the previous controller gets its release then
-`Revoked`, and a departing controller hands back to the most recently
+Control revoked, and a departing controller hands back to the most recently
 controlling attachment still present, otherwise promotes the newest passive
 registration, which it keeps in acceptance order. A host change before readiness replaces the restoration
 within its period under a new restoration ID, and Ready needs the complete
-current restoration. Both protocols share these counters; the private
-protocol names each restoration by its ID in `Granted`, `RestoreEnd` and
-`Ready`, which its client only echoes. Only the controller's size drives the
+current restoration. Only the controller's size drives the
 PTY and VT; the session geometry is its host size clamped to 2..=500 columns
 and 1..=200 rows, and a host larger than that gets Derived presentation.
 Resizes are coalesced to one per iteration.
@@ -366,8 +362,8 @@ at once unless an attachment is restoring. Final status comes
 exclusively from shared exact `waitpid`, never portable-pty waiting. After
 reaping, drain ends at EOF/EIO, 100 ms of actual PTY idle, or one second.
 Metadata and the socket are then removed while connections stay open, the
-controller gets its release bytes, every private attachment gets `Exit` (a
-revision-1 controller gets Control revoked), and final flushing is bounded
+controller gets its release bytes, every attachment's control ends with
+Control revoked (`session_ending`), and final flushing is bounded
 to one further second. A receiver that
 never reads cannot be guaranteed delivery after this bound.
 
@@ -414,9 +410,8 @@ cargo fmt -p climon2-daemon -- --check
 ```
 
 `tests/lifecycle.rs` holds the harness and the owned generic terminal
-fixtures that every daemon test shares, and two kinds of tests of its own.
-Startup and invocation tests that speak no post-hello protocol stay after the
-private protocol is retired:
+fixtures that every daemon test shares, and its own startup and invocation
+tests, which speak no post-hello protocol:
 
 - `malformed_daemon_invocation_is_own_failure_with_no_stdout`,
   `invalid_cwd_missing_command_and_unsafe_sessions_are_startup_failures`:
@@ -446,74 +441,65 @@ private protocol is retired:
   ends before anything attaches keeps an ordinary session for the five-second
   initial attach window, then it ends.
 
-The other tests in `tests/lifecycle.rs` speak the private post-hello
-protocol. [#104](https://github.com/jackgeek/climon2/issues/104) deletes them
-with it, together with `tests/revision1/coexistence.rs`, whose tests prove
-the two protocols sharing one session control. Every behaviour they prove is
-proven again through revision-1 peers, as the next table shows; no other
-daemon test speaks the private protocol.
+Every other daemon test speaks daemon wire revision 1, in
+`tests/revision1/`. The private-protocol tests, and the
+`tests/revision1/coexistence.rs` tests of both protocols sharing one session
+control, were deleted with that protocol
+([#104](https://github.com/jackgeek/climon2/issues/104)); every behaviour
+they proved is proven through revision-1 peers, as the next table shows.
 
 ### Daemon lifecycle over revision 1
 
 The lifecycle evidence of
 [#103](https://github.com/jackgeek/climon2/issues/103): each behaviour the
-private-protocol tests prove, with the revision-1 tests that prove it in
-`tests/revision1/` (`startup.rs`, `ending.rs`, `terminal.rs`, `headless.rs`
-and the scenario modules below), and the private test #104 deletes. A dash
-means the private test moved onto revision 1, because its subject was never
-the protocol.
+private-protocol tests proved before #104 deleted them, with the revision-1
+tests that prove it in `tests/revision1/` (`startup.rs`, `ending.rs`,
+`terminal.rs`, `headless.rs` and the scenario modules below).
 
-| Behaviour | Revision-1 tests | Private test #104 deletes |
-|---|---|---|
-| Startup readiness: PID, start time and release in private (0600) metadata, then exact final bytes and exit, Command final last, and cleanup | `readiness_publishes_session_metadata_and_command_final_is_last` | - |
-| Long home and executable paths and a 103-byte session socket | `long_paths_and_a_maximum_length_session_socket_serve_a_controller` | - |
-| Exact argv, cwd and environment, absent/empty/non-UTF-8 SHELL, logging filter and log privacy | `runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata` (test hooks) | - |
-| Startup failures and invalid invocations | none needed: they speak no post-hello protocol (above) | - |
-| The initial-attachment deadline | `an_unattached_session_ends_after_the_initial_deadline` (no post-hello protocol), `watching_does_not_stop_the_initial_attach_rule` | - |
-| HUP, INT and PIPE ignored by the daemon | `the_daemon_ignores_hup_int_and_pipe_and_its_controller_goes_on` | - |
-| Concurrent probes, the absolute two-second hello deadline and a second attach | `probes_and_an_unfinished_hello_never_hold_a_revision1_controller` | `concurrent_probes_absolute_hello_deadline_and_second_attach` |
-| Exact exit and signal delivery | `command_final_reports_each_exit_and_signal_once` | `exact_signal_exit_is_delivered` |
-| An early exit, delivered after restoration, the held result's Command final as the later attachment's Ready ends the session | `an_early_exit_reaches_a_later_attachment_through_its_restoration` | `early_exit_is_delivered_after_restore_readiness` |
-| An early exit held until the session ends: the held result's Command final, exactly once, to connections opened before and after the exit, whether the initial-attachment deadline, a Kill or a later attachment's Ready ends it ([#259](https://github.com/jackgeek/climon2/issues/259)) | `the_initial_deadline_publishes_a_held_result_to_every_monitor_once`, `a_kill_during_the_hold_publishes_the_held_result_to_every_monitor_once`, `an_attachment_confirming_ready_publishes_a_held_result_to_every_connection_once` | - |
-| The session's end waits for the controller's Ready | `the_session_ends_only_after_its_controller_confirms_ready` | `an_exit_waits_for_the_controllers_ready` |
-| The bounded final drain, leaving no descendants | `the_final_drain_is_bounded_and_leaves_no_descendants`; the unit test `an_ending_session_finishes_at_its_deadline_or_once_drained` in `src/session.rs` checks the drain decision without wall-clock bounds | - |
-| The hang-up grace after every unexpected departure (end of stream, connection-fatal error, repeated hello, SIGTERM, unread input), log privacy | `every_unexpected_departure_hangs_up_then_kills_after_the_real_grace` | `every_controlling_leave_hangs_up_then_kills_after_real_grace` |
-| Joined Kills during the grace, probes seeing `terminating`, attaches refused | `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `committed_termination_rejects_new_interactive_work_and_leave_still_works`, `a_known_result_reaches_later_opens_and_rejected_first_roles` | `the_hang_up_grace_keeps_serving_and_a_second_kill_joins_it`, `attach_during_termination_is_refused` |
-| Hanging up types nothing into the command's terminal (Linux GNU, ptrace) | `hanging_up_types_nothing_into_the_command_terminal` | - |
-| Kill with an open application paste | `a_kill_with_an_open_application_paste_still_terminates` | same name |
-| Kill after an unreported exit | `a_kill_after_the_command_exited_confirms_its_result` | `kill_after_an_unreported_exit_confirms_that_status` |
-| PTY write failure | `a_pty_write_failure_releases_then_ends_control_with_the_session`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed` | `a_pty_write_failure_releases_then_reports_error` |
-| Job-control cleanup on natural exit and on the controller's loss | `natural_exit_kills_jobs_left_in_the_command_session`, `losing_the_controller_kills_every_job_of_the_command_session_but_not_new_sessions` | - |
-| Malformed, unknown, oversized and out-of-state traffic | `traffic_instead_of_a_hello_closes_only_its_connection`, `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `malformed_binary_input_is_connection_fatal` | `malformed_unknown_oversized_and_out_of_state_messages_close_only_the_probe` |
-| The connection cap | `revision1_connections_share_the_cap_and_a_stalled_monitor_is_lost_after_five_seconds` | `a_connection_beyond_the_cap_is_closed_unanswered` |
-| Real PTY sizes: the zero-size fallback and resize | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` (zero dimensions cannot be written in revision 1) | `initial_fallback_and_resize_use_the_real_pty` |
-| Resize before Ready | `a_resize_before_ready_replaces_the_restoration_and_leaves_the_alternate_screen_once` | `resize_before_ready_replaces_the_restoration_period` |
-| A resize burst is one PTY resize | `a_resize_burst_is_one_pty_resize_to_the_last_size` | same name |
-| Byte transparency | `binary_input_and_display_pass_unchanged` | `raw_input_output_are_byte_transparent` |
-| An unfinished token still restores | `an_unfinished_token_still_restores_and_a_kill_confirms_the_result` | `an_unfinished_token_still_restores_and_kill_confirms_termination` |
-| Retention with an unfinished restoration, and eviction | `retention_with_an_unconfirmed_restoration_keeps_only_the_newest_rows`, `identical_rows_evict_and_cleared_history_has_no_stale_notice` | `retention_with_an_unfinished_prefix_keeps_only_the_newest_rows`, same name |
-| Derived presentation of an oversized host | `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance`, `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host` | `an_oversized_host_is_served_a_derived_presentation` |
-| A waiting alternate screen restored before input | `a_waiting_alternate_screen_is_restored_before_input_is_admitted` | `attached_client_restores_a_waiting_alternate_screen_before_input_is_ready` |
-| Detach (Leave) and reattachment | `leave_releases_then_reports_and_a_reattachment_resumes` | `detach_releases_then_confirms_and_a_reattachment_resumes` |
-| Takeover with release, taking control back | `takeover_releases_the_alternate_screen_and_the_exit_leaves_it` | `takeover_revokes_with_release_and_exit_leaves_the_alternate_screen` |
-| Controller-driven size, input outside the control period | `the_controller_drives_the_size_and_a_hand_back_restores_the_remaining_size`, `stale_and_superseded_authority_is_rejected_and_never_re_enables_input` | `the_controller_drives_the_size_and_input_outside_its_period_is_dropped` |
-| Revoked paste closure across one-byte writes | `a_revoked_paste_is_closed_whole_across_one_byte_writes`, `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends` | `a_revoked_paste_is_closed_before_the_next_controllers_input` |
-| A terminal reply never interleaves with input | `a_terminal_reply_never_interleaves_with_input_being_written` | same name |
-| Withheld Ready | `a_revision1_controller_withholding_ready_is_lost_at_the_restoration_deadline` | `withheld_ready_is_an_unexpected_departure_after_the_restore_deadline` |
-| Repeated synchronized-update begins, and an open update's latch | `repeated_sync_begins_do_not_hold_a_grant`, `an_open_synchronized_update_is_not_released_before_its_deadline` | same names |
-| Stalled readers | `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost`, `revision1_connections_share_the_cap_and_a_stalled_monitor_is_lost_after_five_seconds` | `a_stalled_reader_is_dropped_after_five_seconds_without_progress` |
-| Saturation | `saturation_backpressures_the_pty_without_blocking_probes_or_losing_bytes` | `saturation_backpressures_pty_without_blocking_probes_or_losing_bytes` |
-| The headless policy of #78 | the HDL-01 rows of [Monitor acceptance scenarios](#monitor-acceptance-scenarios) | - |
+| Behaviour | Revision-1 tests |
+|---|---|
+| Startup readiness: PID, start time and release in private (0600) metadata, then exact final bytes and exit, Command final last, and cleanup | `readiness_publishes_session_metadata_and_command_final_is_last` |
+| Long home and executable paths and a 103-byte session socket | `long_paths_and_a_maximum_length_session_socket_serve_a_controller` |
+| Exact argv, cwd and environment, absent/empty/non-UTF-8 SHELL, logging filter and log privacy | `runtime_argv_cwd_and_inherited_environment_are_exact_not_display_metadata` (test hooks) |
+| Startup failures and invalid invocations | none needed: they speak no post-hello protocol (above) |
+| The initial-attachment deadline | `an_unattached_session_ends_after_the_initial_deadline` (no post-hello protocol), `watching_does_not_stop_the_initial_attach_rule` |
+| HUP, INT and PIPE ignored by the daemon | `the_daemon_ignores_hup_int_and_pipe_and_its_controller_goes_on` |
+| Concurrent probes, the absolute two-second hello deadline and a second attach | `probes_and_an_unfinished_hello_never_hold_a_revision1_controller` |
+| Exact exit and signal delivery | `command_final_reports_each_exit_and_signal_once` |
+| An early exit, delivered after restoration, the held result's Command final as the later attachment's Ready ends the session | `an_early_exit_reaches_a_later_attachment_through_its_restoration` |
+| An early exit held until the session ends: the held result's Command final, exactly once, to connections opened before and after the exit, whether the initial-attachment deadline, a Kill or a later attachment's Ready ends it ([#259](https://github.com/jackgeek/climon2/issues/259)) | `the_initial_deadline_publishes_a_held_result_to_every_monitor_once`, `a_kill_during_the_hold_publishes_the_held_result_to_every_monitor_once`, `an_attachment_confirming_ready_publishes_a_held_result_to_every_connection_once` |
+| The session's end waits for the controller's Ready | `the_session_ends_only_after_its_controller_confirms_ready` |
+| The bounded final drain, leaving no descendants | `the_final_drain_is_bounded_and_leaves_no_descendants`; the unit test `an_ending_session_finishes_at_its_deadline_or_once_drained` in `src/session.rs` checks the drain decision without wall-clock bounds |
+| The hang-up grace after every unexpected departure (end of stream, connection-fatal error, repeated hello, SIGTERM, unread input), log privacy | `every_unexpected_departure_hangs_up_then_kills_after_the_real_grace` |
+| Joined Kills during the grace, probes seeing `terminating`, attaches refused | `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `committed_termination_rejects_new_interactive_work_and_leave_still_works`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
+| Hanging up types nothing into the command's terminal (Linux GNU, ptrace) | `hanging_up_types_nothing_into_the_command_terminal` |
+| Kill with an open application paste | `a_kill_with_an_open_application_paste_still_terminates` |
+| Kill after an unreported exit | `a_kill_after_the_command_exited_confirms_its_result` |
+| PTY write failure | `a_pty_write_failure_releases_then_ends_control_with_the_session`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed` |
+| Job-control cleanup on natural exit and on the controller's loss | `natural_exit_kills_jobs_left_in_the_command_session`, `losing_the_controller_kills_every_job_of_the_command_session_but_not_new_sessions` |
+| Malformed, unknown, oversized and out-of-state traffic | `traffic_instead_of_a_hello_closes_only_its_connection`, `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `malformed_binary_input_is_connection_fatal` |
+| The connection cap | `revision1_connections_share_the_cap_and_a_stalled_monitor_is_lost_after_five_seconds` |
+| Real PTY sizes: the zero-size fallback and resize | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` (zero dimensions cannot be written in revision 1) |
+| Resize before Ready | `a_resize_before_ready_replaces_the_restoration_and_leaves_the_alternate_screen_once` |
+| A resize burst is one PTY resize | `a_resize_burst_is_one_pty_resize_to_the_last_size` |
+| Byte transparency | `binary_input_and_display_pass_unchanged` |
+| An unfinished token still restores | `an_unfinished_token_still_restores_and_a_kill_confirms_the_result` |
+| Retention with an unfinished restoration, and eviction | `retention_with_an_unconfirmed_restoration_keeps_only_the_newest_rows`, `identical_rows_evict_and_cleared_history_has_no_stale_notice` |
+| Derived presentation of an oversized host | `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance`, `monitor_mode_restorations_are_canonical_at_the_effective_geometry_whatever_the_host` |
+| A waiting alternate screen restored before input | `a_waiting_alternate_screen_is_restored_before_input_is_admitted` |
+| Detach (Leave) and reattachment | `leave_releases_then_reports_and_a_reattachment_resumes` |
+| Takeover with release, taking control back | `takeover_releases_the_alternate_screen_and_the_exit_leaves_it` |
+| Controller-driven size, input outside the control period | `the_controller_drives_the_size_and_a_hand_back_restores_the_remaining_size`, `stale_and_superseded_authority_is_rejected_and_never_re_enables_input` |
+| Revoked paste closure across one-byte writes | `a_revoked_paste_is_closed_whole_across_one_byte_writes`, `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends` |
+| A terminal reply never interleaves with input | `a_terminal_reply_never_interleaves_with_input_being_written` |
+| Withheld Ready | `a_revision1_controller_withholding_ready_is_lost_at_the_restoration_deadline` |
+| Repeated synchronized-update begins, and an open update's latch | `repeated_sync_begins_do_not_hold_a_grant`, `an_open_synchronized_update_is_not_released_before_its_deadline` |
+| Stalled readers | `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost`, `revision1_connections_share_the_cap_and_a_stalled_monitor_is_lost_after_five_seconds` |
+| Saturation | `saturation_backpressures_the_pty_without_blocking_probes_or_losing_bytes` |
+| The headless policy of #78 | the HDL-01 rows of [Monitor acceptance scenarios](#monitor-acceptance-scenarios) |
 
 The fixture reports any pixel size with its size, so every size assertion
-also checks that none is reported. The `coexistence.rs` tests, which #104
-deletes:
-`takeover_hand_back_and_leave_policy_match_the_private_protocol` (takeover,
-hand-back and the leave policy across both protocols),
-`a_private_attach_is_refused_once_the_last_period_is_issued` and
-`a_private_kill_joins_a_revision1_termination_with_its_own_answer` (a
-private kill's `Terminated` 137 after SIGKILL, `Terminated` 125 under
-`end-hangup`, and `Error` under `cleanup` and `pty-write`).
+also checks that none is reported.
 
 A Kill of a fixture that reads its terminal is confirmed without checking
 its result: the hang-up may end it by SIGHUP or by its own handling of the
@@ -542,11 +528,12 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | Scenario | Named tests |
 |---|---|
 | COM-01 (Contract): hello advertises revision 1 beside the frozen tokens and `state`, exactly as the published complete reply does; Open selects only supported families; a peer that does not select an optional family receives nothing for it | `hello_advertises_revision1_beside_the_frozen_tokens_and_state`, `monitor_open_selects_supported_families_then_reports_initial_metadata`, `a_monitor_without_title_v1_receives_nothing_for_titles` |
-| COM-01 (Contract, interactive and parity cases): an interactive Open selects the supported families, `focus-v1` included; takeover, hand-back and the leave policy match the private protocol, across both protocols (`coexistence.rs`, deleted by #104) | `interactive_open_selects_supported_families_and_rejects_without_effects`, `takeover_hand_back_and_leave_policy_match_the_private_protocol` |
-| COM-02 (Contract): broken framing, non-strict JSON or UTF-8, malformed binary Input headers, server, private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame; out-of-state requests are rejected, never fatal | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `malformed_binary_input_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `requests_on_an_interactive_attachment_get_their_documented_results` |
+| COM-01 (Contract, interactive case): an interactive Open selects the supported families, `focus-v1` included | `interactive_open_selects_supported_families_and_rejects_without_effects` |
+| COM-01 (Contract after retirement): the daemon speaks only the frozen hello and revision 1. Traffic that never completes a valid hello of protocol 1 (a revision-1 or retired private type instead, malformed JSON, another protocol, a zero or oversized length, or the two-second deadline) is closed without a byte, and a hello at the 1,048,576-byte limit is answered; after hello every frame is revision 1, the first one too, so a retired private type or a second hello is `unknown_message_type` and an oversized or zero length is refused from its prefix | `traffic_instead_of_a_hello_closes_only_its_connection`, `probes_and_an_unfinished_hello_never_hold_a_revision1_controller`, `a_hello_at_the_frozen_limit_is_answered`, `revision1_traffic_that_breaks_the_rules_is_connection_fatal` |
+| COM-02 (Contract): broken framing, non-strict JSON or UTF-8, malformed binary Input headers, server, retired private and unknown types, non-increasing request IDs and truncation are connection-fatal with their exact codes; a frame at the 1,048,576-byte limit is served and one byte more refused from its prefix; fragmented and coalesced frames are each answered in order; a Fatal error replaces a stalled stream's unstarted backlog without splitting a frame; out-of-state requests are rejected, never fatal | `revision1_traffic_that_breaks_the_rules_is_connection_fatal`, `malformed_binary_input_is_connection_fatal`, `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `coalesced_and_fragmented_revision1_frames_are_each_answered_in_order`, `a_fatal_error_replaces_a_backlog_without_splitting_a_frame`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `requests_on_an_interactive_attachment_get_their_documented_results` |
 | COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination; a registration's Acquire converts it into an attachment that takes control, and is `session_terminating` during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `a_registration_takes_control_only_by_its_own_acquire`, `a_committed_kill_overrides_succession` |
-| COM-03 (Contract, interactive cases): interactive Open, Input, Resize, Ready, Acquire, Focus and Leave have their documented results and rejections, without effects when rejected; a terminating session rejects new interactive work with `session_terminating` while Leave still works | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `interactive_open_selects_supported_families_and_rejects_without_effects`, `requests_on_an_interactive_attachment_get_their_documented_results`, `committed_termination_rejects_new_interactive_work_and_leave_still_works`, `takeover_hand_back_and_leave_policy_match_the_private_protocol` |
-| COM-03 (Contract, Kill cases): a standalone Kill is answered only after the real hang-up grace, with its session metadata and socket removed and the command gone; a standalone Kill sent during the grace joins it without restarting it, as a private kill does with its own answer (`coexistence.rs`); a Kill's connection rejects a later Open or Kill, Leave and Acquire (`invalid_state`), Input, Resize and Ready (`not_attached`) and Focus (`unsupported_capability`); a Kill succeeds after a session failure once termination is confirmed, and fails with a partial result, keeping the result it knew, when its termination or cleanup did not complete | `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_session_ending_without_final_evidence_sends_no_command_final`, `a_failed_kill_keeps_the_result_the_daemon_knew`, `a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed`, `a_private_kill_joins_a_revision1_termination_with_its_own_answer` |
+| COM-03 (Contract, interactive cases): interactive Open, Input, Resize, Ready, Acquire, Focus and Leave have their documented results and rejections, without effects when rejected; a terminating session rejects new interactive work with `session_terminating` while Leave still works | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `interactive_open_selects_supported_families_and_rejects_without_effects`, `requests_on_an_interactive_attachment_get_their_documented_results`, `committed_termination_rejects_new_interactive_work_and_leave_still_works` |
+| COM-03 (Contract, Kill cases): a standalone Kill is answered only after the real hang-up grace, with its session metadata and socket removed and the command gone; a standalone Kill sent during the grace joins it without restarting it; a Kill's connection rejects a later Open or Kill, Leave and Acquire (`invalid_state`), Input, Resize and Ready (`not_attached`) and Focus (`unsupported_capability`); a Kill succeeds after a session failure once termination is confirmed, and fails with a partial result, keeping the result it knew, when its termination or cleanup did not complete | `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_session_ending_without_final_evidence_sends_no_command_final`, `a_failed_kill_keeps_the_result_the_daemon_knew`, `a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed` |
 | COM-04 (Contract): binary Input and Display carry `00 ff 41`, NUL and invalid UTF-8 unchanged, across Input requests and Display chunks | `binary_input_and_display_pass_unchanged` |
 | COM-05 (Contract, Initial metadata case): Initial metadata is captured atomically and title changes follow it gap-free, including around a burst; it carries a command result already known, and that connection's one Command final follows only as the session ends (#259) | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
 | COM-05 (Contract, interactive order): Response, Initial metadata, grant, Restoration begin, matching Display chunks and Restoration complete arrive in order under fragmented and coalesced I/O; a large restoration is produced as it drains, and completes before Command final when the command's output drained during it, as does the restoration of a monitor promoted after the drain; Geometry follows a Resize's acceptance | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `a_restoration_in_progress_when_the_drain_ends_completes_before_command_final`, `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost`, `ready_needs_the_complete_current_restoration`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` |
@@ -585,7 +572,7 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | LIM-01 (Contract, queue bound): a monitor reading far slower than about 20 MB of titles arrive, though it makes progress throughout, is failed at its 16 MiB queue bound: its stream ends after a gap-free prefix, while another monitor receives every title, the fixture's output is read and a probe is answered; one behind by about 12 MB, within the bound, receives every title; unit cases: the queue holds exactly 16 MiB of frames and their per-frame overhead (524,288 empty frames) and refuses one byte more, and written or replaced frames release their charge | `a_monitor_falling_behind_beyond_its_queue_bound_is_failed_alone`, `a_monitor_behind_within_its_queue_bound_receives_every_title`, `connection::tests::the_output_queue_holds_sixteen_mebibytes_of_frames_and_their_overhead`, `connection::tests::written_and_replaced_frames_release_their_charge` (unit) |
 | LIM-01 (Contract, existing bounds on revision 1): 64 revision-1 connections are served and a 65th is closed unanswered; a stalled monitor frees its slot only after five seconds without progress; a revision-1 controller withholding Ready is lost at the 30 s restoration deadline and promotes the registered monitor (the size-scaled part is the unit test `session::delivery::tests::the_deadline_allows_a_second_per_four_mebibytes_of_prefix`); a stalled restoration reader is lost after five seconds | `revision1_connections_share_the_cap_and_a_stalled_monitor_is_lost_after_five_seconds`, `a_revision1_controller_withholding_ready_is_lost_at_the_restoration_deadline`, `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost` |
 | LIM-01 (Contract and Fault, frame and text bounds): a request at 1,048,576 bytes is served and one byte more refused; a 1,048,576-byte server frame is queued and one byte more never sent; a title of 4,096 bytes arrives whole and one past it is ignored, never truncated; the most escaped title fits a 16,384-byte metadata record as Title changed and Initial metadata | `a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal`, `connection::tests::a_server_frame_over_the_limit_is_never_queued` (unit), `an_oversized_title_is_ignored_never_truncated`, `the_most_escaped_title_fits_a_metadata_record` |
-| LIM-05 (Contract and Fault, `CLIMON2_DAEMON_ISSUED` hook): the last control period and restoration ID are issued, then an interactive Open (its stream ends), a private attach (`coexistence.rs`) and an Acquire by a non-controlling attachment or a registration are refused with `resource_limit` without effects, while the controller's own Acquire is a no-op; its Leave hands back to nobody, so the other attachment's stream ends and the registration is not promoted; a monitor-mode Resize takes the last restoration ID and the next one needing a new ID is `resource_limit`, as is an interactive Open with periods left; the last request ID is served and nothing follows it, one past it is `invalid_request_id`; pure decisions for each refusal, hand-back and promotion | `the_last_control_period_is_issued_then_new_control_is_refused_without_effects`, `a_private_attach_is_refused_once_the_last_period_is_issued`, `the_last_restoration_id_is_issued_then_a_resize_needing_another_is_refused`, `the_last_request_id_is_served_and_no_request_follows_it`, `control::tests::the_last_counters_are_issued_then_an_attach_is_refused_without_effects` and the other `control::tests` exhaustion cases (unit) |
+| LIM-05 (Contract and Fault, `CLIMON2_DAEMON_ISSUED` hook): the last control period and restoration ID are issued, then an interactive Open (its stream ends) and an Acquire by a non-controlling attachment or a registration are refused with `resource_limit` without effects, while the controller's own Acquire is a no-op; its Leave hands back to nobody, so the other attachment's stream ends and the registration is not promoted; a monitor-mode Resize takes the last restoration ID and the next one needing a new ID is `resource_limit`, as is an interactive Open with periods left; the last request ID is served and nothing follows it, one past it is `invalid_request_id`; pure decisions for each refusal, hand-back and promotion | `the_last_control_period_is_issued_then_new_control_is_refused_without_effects`, `the_last_restoration_id_is_issued_then_a_resize_needing_another_is_refused`, `the_last_request_id_is_served_and_no_request_follows_it`, `control::tests::the_last_counters_are_issued_then_an_attach_is_refused_without_effects` and the other `control::tests` exhaustion cases (unit) |
 | FOC-01 (Contract): Focus emits no duplicates, newly enabled reporting receives the current state, and new readiness synchronizes the latest intent without replay; a focus report follows the Input accepted before it, however the requests were read | `focus_reaches_the_application_once_per_change_and_resynchronizes_on_new_readiness`, `focus_reports_follow_the_input_accepted_before_them` |
 
 Every wait for a daemon is bounded: `Session::finish`, its drop and
@@ -618,8 +605,7 @@ With `test-hooks` only, `CLIMON2_DAEMON_FAULT=panic|never-ready` injects named
 pre-command startup faults. Their test checks capped panic capture, real
 five-second startup timeout and absence of spawned command/files.
 `CLIMON2_DAEMON_FAULT=pty-write` makes every PTY write fail, an authoritative
-session failure: a private controller receives its release bytes, then
-`Error`; a revision-1 controller receives the hung-up command's Command
+session failure: the controller receives the hung-up command's Command
 final, its release bytes, then Control revoked (`session_ending`).
 `CLIMON2_DAEMON_FAULT=pty-write-partial` makes every PTY write take at most one
 byte after a 5 ms pause, forcing the partial writes the ordering tests need.
@@ -639,7 +625,7 @@ the daemon cannot confirm: no Command final unless the command was reaped
 before, and a failed standalone Kill. `CLIMON2_DAEMON_FAULT=cleanup` makes the
 in-loop removal of the session metadata and socket fail (the daemon's final
 cleanup still removes them): a failed standalone Kill that keeps its
-confirmed result, and `Error` for private kill requesters.
+confirmed result.
 `CLIMON2_DAEMON_FAULT=monitor-overflow` makes every rejection Response to a
 passive monitor connection overflow its output queue, so the connection is
 lost inside the pass that read its request. `CLIMON2_DAEMON_HOLD=<path>` makes

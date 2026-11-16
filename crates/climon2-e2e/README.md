@@ -175,11 +175,12 @@ the actual exit statuses and ends with `assert_clean()`. Ordering uses
 acknowledgement files and observable completion, never sleeps.
 
 Since #101 the installed client executable attaches through its own release's
-client library over daemon wire revision 1, not the private post-hello
-protocol. These continuity scenarios and the packaged attach, kill,
-leave-policy and termination scenarios run unchanged on it: together they are
-the COM-01 Monitor parity case, the evidence that gates deleting the private
-protocol.
+client library over daemon wire revision 1, the only protocol session daemons
+speak after hello since #104 retired the version-private one. These
+continuity scenarios and the packaged attach, kill, leave-policy and
+termination scenarios run unchanged on it: together they are the COM-01
+Monitor parity case and, after the retirement, the COM-01 Contract after
+retirement case for `list`, `attach` and `kill`.
 
 ## Specification mapping
 
@@ -200,7 +201,7 @@ sessions in `tests/headless.rs`.
 | #19/#25/#26 owned daemon SIGKILL, lost-connection/log suffix, real list stale cleanup | `killed_installed_daemon_reports_logs_and_list_reclaims_stale_session` |
 | #19/#21.7 named pre-command panic/never-ready, real five-second startup deadline | `debug_hook_startup_panic_and_never_ready_report_and_clean_up` |
 | #25/#28 headers, general/session linking, CLI/client PID continuity, daemon parent PID, TRACE/WARN propagation | `installed_log_headers_links_and_filters_survive_exec_handoffs` |
-| #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
+| #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list; COM-01 (Contract after retirement): the peer that never sends a hello is closed at its deadline without a byte | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
 | ADR 0001/#19/#25 missing version-matched client after Ready, version/log diagnostic, startup owner cleanup | `missing_installed_client_after_ready_is_diagnostic_and_cleans_command` |
 | #21.17–20 crash mid-install/recovery while real client remains usable | `debug_hook_mid_install_crash_recovers_without_stranding_live_client` |
 | ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff; each wrapper execs a real client kept as `climon2-client` in a folder of its session's release beside that release's library, the second-release fixture's 0.0.97 for the new version (#101) | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
