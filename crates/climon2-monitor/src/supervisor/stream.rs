@@ -61,7 +61,10 @@ impl Stream {
         })
     }
 
-    /// One part of a paste: the first begins a paste afresh.
+    /// One part of a paste: the first begins a paste afresh. A later part
+    /// of a truncated paste is discarded, and what that paste owes now goes
+    /// under this part's authority: the session's current one, for the
+    /// part that closes a paste cut short (owner decision on #111).
     fn paste(
         &mut self,
         authority: Authority,
@@ -77,6 +80,7 @@ impl Stream {
             };
         }
         if self.truncated {
+            self.owed = self.owed.take().map(|(_, owed)| (authority, owed));
             return None;
         }
         let refused = self
@@ -338,6 +342,44 @@ mod tests {
             library.bytes(),
             b"\x1b[200~abcd\x1b[201~z\x1b[200~q\x1b[201~"
         );
+    }
+
+    /// INP-04 (Fault; owner decisions on #111): a paste cut short by a
+    /// target change is closed by its end marker alone, under the
+    /// session's current authority. When the paste was already truncated,
+    /// what it owes goes under that current authority instead, once.
+    #[test]
+    fn a_closing_part_ends_a_cut_paste_under_the_current_authority() {
+        let newer = Authority {
+            restoration: 4,
+            ..HELD
+        };
+        let closing = Request::Paste(newer, Paste::end());
+        // The end marker in its two chunks, under the current authority.
+        let ended = [
+            Request::Input(newer, b"\x1b[20".to_vec()),
+            Request::Input(newer, b"1~".to_vec()),
+        ];
+        let mut stream = Stream::default();
+        let mut library = Library::new(usize::MAX);
+        assert_eq!(
+            send(&mut stream, &mut library, part(true, true, b"ab", false)),
+            None
+        );
+        assert_eq!(send(&mut stream, &mut library, closing.clone()), None);
+        assert_eq!(library.bytes(), b"\x1b[200~ab\x1b[201~");
+        assert_eq!(library.accepted[library.accepted.len() - 2..], ended);
+
+        let mut stream = Stream::default();
+        let mut library = Library::new(2);
+        assert!(send(&mut stream, &mut library, part(true, true, b"abcd", false)).is_some());
+        assert_eq!(send(&mut stream, &mut library, closing), None);
+        library.room = usize::MAX;
+        assert_eq!(settle(&mut stream, &mut library), Ok(()));
+        assert_eq!(library.bytes(), b"\x1b[200~\x1b[201~");
+        assert_eq!(library.accepted[library.accepted.len() - 2..], ended);
+        assert_eq!(settle(&mut stream, &mut library), Ok(()));
+        assert_eq!(library.bytes(), b"\x1b[200~\x1b[201~");
     }
 
     /// INP-03 (Fault): an application that received only the first byte of

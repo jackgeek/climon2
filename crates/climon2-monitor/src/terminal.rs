@@ -50,6 +50,27 @@ pub(crate) struct Paste {
     pub(crate) ends: bool,
 }
 
+impl Paste {
+    /// The part that closes a bracketed paste cut short: its end marker
+    /// alone.
+    pub(crate) fn end() -> Self {
+        Self {
+            bracketed: true,
+            starts: false,
+            bytes: Vec::new(),
+            ends: true,
+        }
+    }
+}
+
+impl Authority {
+    /// Whether `other` belongs to the same control period: its
+    /// restoration may differ.
+    fn same_period(self, other: Self) -> bool {
+        (self.generation, self.period) == (other.generation, other.period)
+    }
+}
+
 /// What the session's client reported about control and display. The
 /// client library checks that every record names the authority the role
 /// holds, so only grants and beginnings carry theirs.
@@ -177,6 +198,9 @@ pub(crate) struct Terminal {
     /// The application focus last submitted, with the authority it was
     /// submitted under.
     focused: Option<(Authority, bool)>,
+    /// A bracketed paste cut short under this authority: its application is
+    /// owed the end marker.
+    cut: Option<Authority>,
 }
 
 impl Terminal {
@@ -190,6 +214,7 @@ impl Terminal {
             error: None,
             focusable: false,
             focused: None,
+            cut: None,
         }
     }
 
@@ -427,6 +452,26 @@ impl Terminal {
             self.focused = Some(wanted);
             Request::Focus(held.authority, desired)
         })
+    }
+
+    /// A bracketed paste sent under `authority` was cut short by a target
+    /// change: its application is owed the end marker (owner decision on
+    /// #111).
+    pub(crate) fn cut_paste(&mut self, authority: Authority) {
+        self.cut = Some(authority);
+    }
+
+    /// The end marker a cut paste owes, submitted once under the current
+    /// authority as soon as its restoration is ready, while the control
+    /// period that received the paste lasts. Once that period ends nothing
+    /// is owed: the daemon ends an open paste when admission ends.
+    pub(crate) fn paste_end(&mut self) -> Option<Request> {
+        let cut = self.cut?;
+        let held = self.held.filter(|held| held.authority.same_period(cut));
+        self.cut = held.and(self.cut);
+        let held = held.filter(|held| matches!(held.phase, Phase::Applied { ready: true, .. }))?;
+        self.cut = None;
+        Some(Request::Paste(held.authority, Paste::end()))
     }
 
     /// The authority of the control period and restoration held, if any:
@@ -1036,6 +1081,40 @@ mod tests {
             Presentation::Answered(Request::Ready(held), Ok(())),
         );
         assert_eq!(unsupported.focus(true), None);
+    }
+
+    /// INP-04 (pure supplement; owner decision on #111): a bracketed paste
+    /// cut short by a target change that keeps admission owes its
+    /// application the end marker, once: at once while its restoration is
+    /// still ready; after a new restoration of the same control period,
+    /// under that restoration once it is ready; never once the period
+    /// ended, revoked, even if control comes back.
+    #[test]
+    fn a_cut_paste_owes_its_end_marker_under_the_current_authority() {
+        let mut parser = Parser::new();
+        let end = |held| Some(Request::Paste(held, Paste::end()));
+        let held = authority(2, 3);
+        let mut terminal = restored(b"x");
+        let ready = |held| Presentation::Answered(Request::Ready(held), Ok(()));
+        terminal.present(&mut parser, ready(held));
+        assert_eq!(terminal.paste_end(), None);
+        terminal.cut_paste(held);
+        assert_eq!(terminal.paste_end(), end(held));
+        assert_eq!(terminal.paste_end(), None);
+        terminal.cut_paste(held);
+        let newer = authority(2, 4);
+        terminal.present(&mut parser, Presentation::Begin(newer, geometry(10, 3)));
+        assert_eq!(terminal.paste_end(), None);
+        terminal.present(&mut parser, Presentation::Complete);
+        assert_eq!(terminal.paste_end(), None);
+        terminal.present(&mut parser, ready(newer));
+        assert_eq!(terminal.paste_end(), end(newer));
+        assert_eq!(terminal.paste_end(), None);
+        terminal.cut_paste(newer);
+        terminal.present(&mut parser, Presentation::Revoked);
+        assert_eq!(terminal.paste_end(), None);
+        ready_under(&mut terminal, &mut parser, authority(3, 1));
+        assert_eq!(terminal.paste_end(), None);
     }
 
     /// Grants `held` with an applied restoration whose Ready was accepted.
