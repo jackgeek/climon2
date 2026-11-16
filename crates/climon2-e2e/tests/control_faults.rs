@@ -31,8 +31,9 @@ fn commands(id: u64) -> [(&'static str, Value); 5] {
 /// generation zero, Focus of 2 or with a reserved
 /// byte set); Input of `chunk_bytes` whose charge exceeds `request_bytes`
 /// by one is `queue_full`, while Input charging exactly `request_bytes` is
-/// accepted. The accepted requests are then
-/// cancelled by shutdown, and nothing reaches the daemon.
+/// accepted. The accepted request is then cancelled by shutdown itself,
+/// before it returns and before `run`: the request queue is empty at once
+/// and the cancellation is the only record. Nothing reaches the daemon.
 #[test]
 fn installed_library_rejects_malformed_control_requests_locally() {
     let package = Package::new();
@@ -72,6 +73,7 @@ fn installed_library_rejects_malformed_control_requests_locally() {
             "bytes": { "hex": "41424344" } }, "as": "at" }),
         json!({ "do": "snapshot", "as": "queued" }),
         json!({ "do": "shutdown" }),
+        json!({ "do": "snapshot", "as": "cancelled" }),
         json!({ "do": "run" }),
         json!({ "do": "finish", "as": "finished" }),
     ]);
@@ -88,6 +90,11 @@ fn installed_library_rejects_malformed_control_requests_locally() {
     let queued = &labelled(&report, &steps, "queued")["output"];
     assert_eq!(queued["request_records"], 1, "{queued:#}");
     assert_eq!(queued["request_bytes"], REQUEST + 4, "{queued:#}");
+    let cancelled = &labelled(&report, &steps, "cancelled")["output"];
+    assert_eq!(cancelled["request_records"], 0, "{cancelled:#}");
+    assert_eq!(cancelled["request_bytes"], 0, "{cancelled:#}");
+    assert_eq!(cancelled["operations"], 0, "{cancelled:#}");
+    assert_eq!(cancelled["event_records"], 1, "{cancelled:#}");
     let (records, terminal) = finished(labelled(&report, &steps, "finished"));
     assert_eq!(records.len(), 1, "{records:#?}");
     assert_rejected(&records[0], 1, 1, ORIGIN_LIBRARY, "cancelled");

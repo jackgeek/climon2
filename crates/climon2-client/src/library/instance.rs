@@ -630,10 +630,15 @@ impl Shared {
         self.lock().stop.shutdown
     }
 
-    /// Records the intent before anything that can fail, so even a failed
-    /// call ends the stream with no retry.
+    /// Records the intent and rejects every queued request before anything
+    /// that can fail, so even a failed call ends the stream with no retry,
+    /// and every rejection precedes whatever the daemon sends after it.
     pub(super) fn shutdown(&self) -> Result<(), Failure> {
-        self.lock().stop.shutdown = true;
+        self.scope(|| {
+            let mut state = self.lock();
+            state.stop.shutdown = true;
+            self.cancel(&mut state);
+        });
         self.changed.notify_all();
         self.waker.raise();
         self.guard("shutdown", || {
@@ -747,7 +752,8 @@ impl Shared {
     }
 
     /// What the connection does next: stop after a failure elsewhere, react
-    /// to shutdown once, or take the oldest request when it can execute.
+    /// to shutdown once (which left no request queued), or take the oldest
+    /// request when it can execute.
     fn next(&self, shutdown_seen: bool, ready: bool) -> Next {
         let mut state = self.lock();
         self.waker.clear();
@@ -755,7 +761,6 @@ impl Shared {
             return Next::Stop;
         }
         if state.stop.shutdown && !shutdown_seen {
-            self.cancel(&mut state);
             return Next::Shutdown;
         }
         take(&mut state, ready).map_or(Next::Wait, Next::Request)
