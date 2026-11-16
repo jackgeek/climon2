@@ -380,3 +380,160 @@ pub fn tags(records: &[Value]) -> Vec<u64> {
         .map(|record| record["tag"].as_u64().unwrap())
         .collect()
 }
+
+// The fake daemon's attach, shared by the control (#94) and limits (#99)
+// fault suites.
+
+/// What the fake daemon advertises: the real one's families, focus too.
+pub const ADVERTISED: [&str; 8] = [
+    "attach",
+    "kill",
+    "state-v1",
+    "client-startup-v1",
+    "daemon-wire-v1",
+    "monitor-v1",
+    "title-v1",
+    "focus-v1",
+];
+/// What an interactive Open of `interactive` selects from it.
+pub const ATTACHED: [&str; 3] = ["daemon-wire-v1", "title-v1", "focus-v1"];
+pub const PERIOD: u64 = 2;
+
+pub fn counter(value: u64) -> String {
+    value.to_string()
+}
+
+pub fn granted(period: u64, restoration: u64, reason: &str) -> Value {
+    send(
+        0x46,
+        json!({
+            "period": counter(period),
+            "restoration_id": counter(restoration),
+            "geometry": { "cols": 80, "rows": 24 },
+            "reason": reason,
+        }),
+    )
+}
+
+pub fn begin(period: u64, restoration: u64) -> Value {
+    send(
+        0x48,
+        json!({
+            "period": counter(period),
+            "restoration_id": counter(restoration),
+            "geometry": { "cols": 80, "rows": 24 },
+        }),
+    )
+}
+
+pub fn complete(period: u64, restoration: u64) -> Value {
+    send(
+        0x4a,
+        json!({ "period": counter(period), "restoration_id": counter(restoration) }),
+    )
+}
+
+pub fn revoked(period: u64, restoration: u64, reason: &str) -> Value {
+    send(
+        0x47,
+        json!({
+            "period": counter(period),
+            "restoration_id": counter(restoration),
+            "reason": reason,
+        }),
+    )
+}
+
+pub fn geometry(period: u64, cols: u64, rows: u64) -> Value {
+    send(
+        0x4b,
+        json!({ "period": counter(period), "geometry": { "cols": cols, "rows": rows } }),
+    )
+}
+
+/// A binary Display: two big-endian counters, then the bytes `hex`.
+pub fn shown(period: u64, restoration: u64, hex: &str) -> Value {
+    json!({ "send": { "type": 0x49, "hex": format!("{period:016x}{restoration:016x}{hex}") } })
+}
+
+/// The fake daemon's Response to the latest request of `kind`.
+pub fn answered(kind: &str, outcome: &str, result: Value, error: Value) -> Value {
+    response(&format!("${kind}"), outcome, result, error)
+}
+
+/// An attach as a real daemon sends it: Response, Initial metadata, then the
+/// grant of period 2, restoration 2 at 80x24, its restoration with the
+/// Display `41`, and the complete.
+pub fn attach_records(selected: &[&str]) -> Vec<Value> {
+    vec![
+        opened(selected),
+        initial(json!("t")),
+        granted(PERIOD, 2, "attach"),
+        begin(PERIOD, 2),
+        shown(PERIOD, 2, "41"),
+        complete(PERIOD, 2),
+    ]
+}
+
+/// A fake daemon that attaches with `ATTACHED`, answers a Leave detaching,
+/// and does `then` after each request of the kinds it names.
+pub fn attached_peer(then: Value) -> Value {
+    let mut peer = json!({
+        "hello": { "json": { "capabilities": ADVERTISED } },
+        "open": attach_records(&ATTACHED),
+        "leave": [leave_answer("ok", true, Value::Null)],
+    });
+    for (kind, actions) in then.as_object().unwrap() {
+        peer[kind] = actions.clone();
+    }
+    peer
+}
+
+/// One instance's steps: create against `peer` with `startup`, Open
+/// interactively, run, and drain through the attach's Restoration complete
+/// (labelled `attached-<name>`), then `then`.
+pub fn attached(name: &str, peer: Value, startup: Value, then: &[Value]) -> Vec<Value> {
+    let mut steps = vec![
+        json!({ "do": "create", "peer": peer, "startup": startup }),
+        json!({ "do": "submit", "request": interactive(1, 80, 24) }),
+        json!({ "do": "run" }),
+        json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE },
+                "as": format!("attached-{name}") }),
+    ];
+    steps.extend(then.iter().cloned());
+    steps
+        .into_iter()
+        .map(|mut step| {
+            step["instance"] = json!(name);
+            step
+        })
+        .collect()
+}
+
+/// Where each instance's `finish` step is, by name, as steps are added.
+#[derive(Default)]
+pub struct Plan {
+    pub steps: Vec<Value>,
+    pub finishes: Vec<(String, usize)>,
+}
+
+impl Plan {
+    pub fn new() -> Self {
+        Self {
+            steps: Vec::new(),
+            finishes: Vec::new(),
+        }
+    }
+
+    /// Adds an instance's steps, then its `finish`.
+    pub fn add(&mut self, name: &str, steps: Vec<Value>) {
+        self.steps.extend(steps);
+        self.finishes.push((name.to_owned(), self.steps.len()));
+        self.steps.push(json!({ "do": "finish", "instance": name }));
+    }
+
+    pub fn run(self, package: &Package) -> (Value, Vec<(String, usize)>) {
+        let root = root(package);
+        (script(package, &root, json!(self.steps)), self.finishes)
+    }
+}

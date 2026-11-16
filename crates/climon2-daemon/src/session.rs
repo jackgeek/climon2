@@ -11,10 +11,7 @@ mod writes;
 use crate::{
     args::Options,
     connection::{Connection, Failure, Received},
-    control::{
-        Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, PrivateResult,
-        Restoration, SessionEnd,
-    },
+    control::{Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, SessionEnd},
     pty::Pty,
     status::{
         self, Assembler, Clock, Detector, Interpreted, Now, Sample, Screen, SystemRandom, Tracker,
@@ -22,10 +19,7 @@ use crate::{
 };
 use climon2_core::{
     hello::{SessionState, advertise_revision1},
-    protocol::{
-        ClientMessage, Frame, HANGUP_GRACE, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION,
-        PTY_DRAIN_CAP, ServerMessage, TerminalSize,
-    },
+    protocol::{Frame, HANGUP_GRACE, HelloReply, PROTOCOL_VERSION, PTY_DRAIN_CAP, TerminalSize},
     title::default_title,
     wire::{CommandResult, Counter, GrantReason, Notification, Progress, RevocationReason, Status},
 };
@@ -36,7 +30,7 @@ use climon2_platform::{
 };
 use climon2_vt::{Geometry, Signal, Vt, VtConfig};
 use command::{Command, Read, classify};
-use delivery::{Delivery, Out};
+use delivery::{DISPLAY_CHUNK, Delivery, Out};
 use paste::PasteTracker;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -46,13 +40,10 @@ use std::{
 use writes::PtyWrites;
 
 const OUTPUT_CHUNK: usize = 32 * 1024;
-/// The terminal bytes one Output or Display frame carries at most.
-const DISPLAY_CHUNK: usize = MAX_DATA_FRAME_LENGTH - 1;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPTS_PER_TICK: usize = 8;
 const INITIAL_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const TICK: Duration = Duration::from_millis(2);
-const FAILURE_MESSAGE: &str = "session failed; see daemon log";
 /// The kill requester standing for a termination signal; never a connection.
 const SIGNAL: ConnectionId = ConnectionId(u64::MAX);
 
@@ -119,7 +110,7 @@ pub(crate) fn serve(
         opened: BTreeMap::new(),
         kills: BTreeMap::new(),
         command_result: None,
-        control: Control::new(options.size, options.lifetime),
+        control: issued(Control::new(options.size, options.lifetime)),
         vt,
         next_id: Default::default(),
         controller: None,
@@ -139,6 +130,13 @@ pub(crate) fn serve(
     }
     .run();
     end_pty(pty, result)
+}
+
+/// The `CLIMON2_DAEMON_ISSUED` test hook brings the counters near exhaustion.
+fn issued(control: Control) -> Control {
+    #[cfg(feature = "test-hooks")]
+    let control = crate::startup::issued(control);
+    control
 }
 
 fn session_vt(options: &Options) -> io::Result<Vt> {
@@ -347,29 +345,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn dispatch(&mut self, id: u64, received: Received) -> io::Result<()> {
         match received {
-            Received::Private(message) => self.message(id, message),
+            Received::Hello => self.hello(id),
             Received::Request(request) => self.request(id, request),
         }
-    }
-
-    fn message(&mut self, id: u64, message: ClientMessage) -> io::Result<()> {
-        match message {
-            ClientMessage::Hello { .. } => self.hello(id),
-            ClientMessage::Input(bytes) => {
-                self.input(id, &bytes);
-                Ok(())
-            }
-            other => self.control_message(ConnectionId(id), other),
-        }
-    }
-
-    fn control_message(&mut self, conn: ConnectionId, message: ClientMessage) -> io::Result<()> {
-        if let ClientMessage::Resize(size) = message {
-            self.control.resize(conn, size);
-            return Ok(());
-        }
-        let effects = control_effects(&mut self.control, conn, message);
-        self.effects(effects)
     }
 
     fn hello(&mut self, id: u64) -> io::Result<()> {
@@ -387,15 +365,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             advertise_revision1(&reply, state, &wire::advertisement())?,
         );
         Ok(())
-    }
-
-    /// Input is admitted only from the ready controller of the current period.
-    fn input(&mut self, id: u64, bytes: &[u8]) {
-        if !self.control.admits_input(ConnectionId(id)) {
-            return;
-        }
-        self.pty_writes.input(id, bytes);
-        self.user_input(bytes);
     }
 
     fn protocol_failure(&mut self, id: u64, failure: Failure) -> io::Result<()> {
@@ -444,11 +413,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Nothing more of the command's output is read once it ended, so a
-    /// known result is final.
+    /// known result is final. A result held while the session went on
+    /// reaches, as the session ends, the connections that opened after it.
     fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
         if let Some(result) = command.known() {
             self.publish(result);
         }
+        self.publish_held();
         self.command = Command::Ended;
         self.react(|control| control.command_exited(command))
     }
@@ -590,21 +561,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// The snapshot for a restoration, of a grant or a replacement. The
-    /// private protocol's `period` field carries the restoration ID.
+    /// The snapshot for a restoration, of a grant or a replacement.
     fn snapshot(&mut self, id: u64, authority: Authority, host: TerminalSize, now: Instant) {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
         let lead = delivery.restore(&mut self.vt, authority, host, now);
         self.controller = Some(id);
-        let restoration = authority.restoration.0;
-        self.reply(
-            id,
-            ServerMessage::Granted {
-                period: restoration,
-            },
-        );
         self.send_output(id, &lead);
     }
 
@@ -635,13 +598,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn restored(&mut self, id: u64, authority: Authority) {
-        let restoration = authority.restoration.0;
-        self.reply(
-            id,
-            ServerMessage::RestoreEnd {
-                period: restoration,
-            },
-        );
         self.report_restored(id, authority);
         self.control.restored(ConnectionId(id), authority);
     }
@@ -836,7 +792,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn attachment_effect(&mut self, effect: Effect) {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
-            Effect::Refuse { conn } => self.refuse(conn.0),
             Effect::Convert { conn } => self.convert(conn.0),
             other => self.input_effect(other),
         }
@@ -868,21 +823,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn departure_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::AcceptDetach { conn } => self.terminal(conn.0, ServerMessage::Detached),
             Effect::Disconnect { conn } => self.remove_connection(conn.0),
+            Effect::EndAttachment { conn } => {
+                self.report_revocation(conn.0, RevocationReason::SessionEnding);
+            }
             other => self.result_effect(other),
         }
     }
 
     fn result_effect(&mut self, effect: Effect) {
-        match effect {
-            Effect::DeliverExit { conn, code } => self.ending(conn.0, ServerMessage::Exit { code }),
-            Effect::DeliverError { conn } => self.ending(conn.0, failure_message()),
-            other => self.final_effect(other),
-        }
-    }
-
-    fn final_effect(&mut self, effect: Effect) {
         match effect {
             Effect::ConfirmKill { conn, end } => self.confirm_kill(conn.0, &end),
             Effect::Finish => self.finish(),
@@ -977,28 +926,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn finish(&mut self) {
         self.finish_deadline
-            .get_or_insert_with(|| Instant::now() + PTY_DRAIN_CAP);
+            .get_or_insert_with(|| flush_deadline(Instant::now()));
     }
 
     fn admit(&mut self, id: u64) {
         let delivery = Delivery::new(self.control.session_size());
         self.deliveries.insert(id, delivery);
-        self.reply(id, ServerMessage::Attached);
         self.admitted(id);
-    }
-
-    fn refuse(&mut self, id: u64) {
-        self.refused(id);
-        self.close_with_error(id, "session is terminating");
-    }
-
-    fn close_with_error(&mut self, id: u64, message: &str) {
-        self.terminal(
-            id,
-            ServerMessage::Error {
-                message: message.into(),
-            },
-        );
     }
 
     fn enable_input(&mut self, id: u64) {
@@ -1039,59 +973,28 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             self.send_output(id, &bytes);
         }
         self.forget_controller(id);
-        self.reply(id, ServerMessage::Revoked);
         self.report_revocation(id, RevocationReason::Takeover);
     }
 
-    /// A kill requester's answer: a standalone Kill's Response, or the
-    /// private protocol's confirmation.
+    /// A kill requester's answer: a standalone Kill's Response. A
+    /// termination signal, the other kill requester, needs none.
     fn confirm_kill(&mut self, id: u64, end: &SessionEnd) {
-        match self.kill_request(id) {
-            Some(request_id) => self.answer_kill(id, request_id, end),
-            None => self.terminal(id, private_confirmation(end)),
+        if let Some(request_id) = self.kill_request(id) {
+            self.answer_kill(id, request_id, end);
         }
-    }
-
-    /// An attachment's result: control it still holds ends as the session
-    /// ends, then the connection's last message.
-    fn ending(&mut self, id: u64, message: ServerMessage) {
-        self.report_revocation(id, RevocationReason::SessionEnding);
-        self.terminal(id, message);
-    }
-
-    /// Sends a connection's last message and stops its session output.
-    fn terminal(&mut self, id: u64, message: ServerMessage) {
-        self.reply(id, message);
-        if let Some(connection) = self.connections.get_mut(&id) {
-            connection.close_after_flush();
-        }
-        self.remove_delivery(id);
     }
 
     // Connection bookkeeping.
 
-    /// Session output in order: Display under an interactive attachment's
-    /// authority, private Output otherwise. Nothing is sent for no bytes.
+    /// Session output in order, as Display under the attachment's
+    /// authority. Nothing is sent for no bytes, or without an authority.
     fn send_output(&mut self, id: u64, bytes: &[u8]) {
-        let authority = self.display_authority(id);
-        for chunk in bytes.chunks(DISPLAY_CHUNK) {
-            match authority {
-                Some(authority) => self.display(id, authority, chunk),
-                None => self.reply(id, ServerMessage::Output(chunk.to_vec())),
-            }
-        }
-    }
-
-    /// A private message; a revision-1 connection never receives one.
-    fn reply(&mut self, id: u64, message: ServerMessage) {
-        if self.holds_role(id) {
-            return;
-        }
-        let Some(connection) = self.connections.get_mut(&id) else {
+        let Some(authority) = self.display_authority(id) else {
             return;
         };
-        let queued = connection.queue(message);
-        self.queued_or_lost(id, queued);
+        for chunk in bytes.chunks(DISPLAY_CHUNK) {
+            self.display(id, authority, chunk);
+        }
     }
 
     fn queue_frame(&mut self, id: u64, frame: Frame) {
@@ -1159,62 +1062,16 @@ fn accepted(result: io::Result<SocketStream>) -> io::Result<Option<SocketStream>
     })
 }
 
-fn control_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: ClientMessage,
-) -> Vec<Effect> {
-    match message {
-        ClientMessage::Attach(size) => control.attach(conn, size),
-        ClientMessage::Ready {
-            period: restoration,
-        } => control.ready(conn, Restoration(restoration)),
-        other => departure_effects(control, conn, other),
-    }
-}
-
-fn departure_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: ClientMessage,
-) -> Vec<Effect> {
-    match message {
-        ClientMessage::TakeControl => control.take_control(conn),
-        ClientMessage::Detach => control.detach(conn),
-        other => ending_effects(control, conn, &other),
-    }
-}
-
-/// `Kill`, or a client `Error`, which is an unexpected loss.
-fn ending_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: &ClientMessage,
-) -> Vec<Effect> {
-    if matches!(message, ClientMessage::Kill) {
-        return control.kill(conn);
-    }
-    control.lost(conn)
-}
-
-/// `Terminated` with the private protocol's status, or `Error`.
-fn private_confirmation(end: &SessionEnd) -> ServerMessage {
-    match end.private_result() {
-        PrivateResult::Status(code) => ServerMessage::Terminated { code },
-        PrivateResult::Error => failure_message(),
-    }
-}
-
-fn failure_message() -> ServerMessage {
-    ServerMessage::Error {
-        message: FAILURE_MESSAGE.into(),
-    }
-}
-
 /// An ending session finishes at its drain deadline, with output still queued for a client
 /// that stopped reading, or sooner once every connection has drained.
 fn finished_at(deadline: Option<Instant>, now: Instant, drained: impl FnOnce() -> bool) -> bool {
     deadline.is_some_and(|deadline| super::passed(deadline, now) || drained())
+}
+
+/// Final flushing after the session finishes at `finishing` is bounded to one
+/// further second.
+fn flush_deadline(finishing: Instant) -> Instant {
+    finishing + PTY_DRAIN_CAP
 }
 
 /// Only a session still awaiting its initial attachment keeps an early command exit for
@@ -1226,7 +1083,7 @@ fn holds_exit(lifecycle: Lifecycle, initial_deadline: Instant, now: Instant) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{finished_at, holds_exit};
+    use super::{finished_at, flush_deadline, holds_exit};
     use crate::control::Control;
     use climon2_core::{lifetime::Lifetime, protocol::TerminalSize};
     use std::time::{Duration, Instant};
@@ -1262,5 +1119,18 @@ mod tests {
         assert!(!finished_at(Some(later), now, || false), "draining");
         assert!(finished_at(Some(later), now, || true), "drained early");
         assert!(finished_at(Some(now), now, || false), "deadline reached");
+    }
+
+    /// Final flushing is bounded to one further second after the session
+    /// finishes: a connection that has not drained keeps it up until then,
+    /// and no longer.
+    #[test]
+    fn final_flushing_lasts_one_further_second() {
+        let finishing = Instant::now();
+        let deadline = Some(flush_deadline(finishing));
+        let almost = finishing + Duration::from_millis(999);
+        assert!(!finished_at(deadline, almost, || false), "still flushing");
+        let second = finishing + Duration::from_secs(1);
+        assert!(finished_at(deadline, second, || false), "bound reached");
     }
 }
