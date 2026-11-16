@@ -4,7 +4,53 @@
 //! together exceed their budgets. History is given up a chunk at a time,
 //! oldest first, never the chunk holding a cache's newest page (the model
 //! keeps it), and every shortened cache shows its truncation.
-use std::time::Instant;
+use crate::terminal::Terminal;
+use std::{collections::BTreeMap, time::Instant};
+
+/// The budgets history is kept within, in bytes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Budgets {
+    /// `memory.history_bytes_per_session`.
+    pub(crate) per_session: usize,
+    /// `memory.history_bytes_total`.
+    pub(crate) histories: usize,
+    /// `memory.total_bytes`, which `fixed` and every model share.
+    pub(crate) total: usize,
+}
+
+/// Whether `used` bytes exceed `budget`.
+fn exceeds(used: usize, budget: usize) -> bool {
+    budget.checked_sub(used).is_none()
+}
+
+/// Keeps `terminals`' histories within `budgets`: each one's within the
+/// per-session budget, shortening its own; then, while all histories
+/// together exceed theirs or `fixed` bytes and every model exceed the
+/// total, `caches` yield in the pressure [`order`], each until the pressure
+/// is gone or only its newest page is left.
+pub(crate) fn relieve<K: Clone + Ord>(
+    terminals: &mut BTreeMap<K, Terminal>,
+    caches: &[Cache<K>],
+    fixed: usize,
+    budgets: Budgets,
+) {
+    for terminal in terminals.values_mut() {
+        while exceeds(terminal.history_bytes(), budgets.per_session) && terminal.shorten() {}
+    }
+    for key in order(caches) {
+        while pressed(terminals, fixed, budgets)
+            && terminals.get_mut(&key).is_some_and(Terminal::shorten)
+        {}
+    }
+}
+
+/// Whether the histories together, or `fixed` bytes and every model,
+/// exceed their budgets.
+fn pressed<K>(terminals: &BTreeMap<K, Terminal>, fixed: usize, budgets: Budgets) -> bool {
+    let histories = terminals.values().map(Terminal::history_bytes).sum();
+    let models: usize = terminals.values().map(Terminal::footprint).sum();
+    exceeds(histories, budgets.histories) || exceeds(fixed + models, budgets.total)
+}
 
 /// One session's cache as the pressure policy sees it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,5 +110,122 @@ mod tests {
         ];
         assert_eq!(order(&caches), ['e', 'f', 'd', 'a', 'c']);
         assert_eq!(order::<char>(&[]), Vec::<char>::new());
+    }
+
+    /// A terminal whose model, at 10x3 with up to 3,000 history rows,
+    /// holds 2,500 lines: three history chunks.
+    fn deep() -> Terminal {
+        use crate::terminal::{Authority, Presentation};
+        use climon2_vt::{Geometry, Limits, Parser};
+        let mut parser = Parser::new();
+        let mut terminal = Terminal::new(Limits {
+            bytes: 64 << 20,
+            history_rows: 3000,
+        });
+        let held = Authority {
+            generation: 1,
+            period: 1,
+            restoration: 1,
+        };
+        let geometry = Geometry::for_host(10, 3).unwrap();
+        let lines: String = (1..=2500).map(|line| format!("{line}\r\n")).collect();
+        for presentation in [
+            Presentation::Granted(held, geometry),
+            Presentation::Begin(held, geometry),
+            Presentation::Display(lines.into()),
+            Presentation::Complete,
+        ] {
+            terminal.present(&mut parser, presentation);
+        }
+        terminal
+    }
+
+    /// The history bytes of a [`deep`] terminal, shortened `chunks` times.
+    fn shortened(chunks: usize) -> usize {
+        let mut terminal = deep();
+        for _ in 0..chunks {
+            assert!(terminal.shorten());
+        }
+        terminal.history_bytes()
+    }
+
+    /// LIM-03 (pure supplement): a budget is exceeded one byte past it,
+    /// not at it.
+    #[test]
+    fn a_budget_is_exceeded_only_past_it() {
+        assert!(!exceeds(10, 10));
+        assert!(exceeds(11, 10));
+        assert!(!exceeds(0, 0));
+    }
+
+    /// LIM-03 (pure supplement, bounded history): at the per-session budget
+    /// a history keeps its chunks, one byte under it gives one up; with
+    /// histories together one byte over their budget, the unselected cache
+    /// never inspected yields first, one chunk, and the connected one
+    /// nothing; and with the total one byte short of `fixed` and every
+    /// model, the next cache in order yields. No cache gives up its newest
+    /// page however far over the budgets go.
+    #[test]
+    fn caches_yield_in_order_until_the_budgets_hold() {
+        let (full, less, least) = (shortened(0), shortened(1), shortened(2));
+        assert!(full > less && less > least, "{full} {less} {least}");
+        let roomy = Budgets {
+            per_session: usize::MAX,
+            histories: usize::MAX,
+            total: usize::MAX,
+        };
+        let caches = [
+            cache('a', true, false, Some(1)),
+            cache('b', true, false, None),
+            cache('c', false, false, None),
+        ];
+        let three = || BTreeMap::from([('a', deep()), ('b', deep()), ('c', deep())]);
+        let held = |terminals: &BTreeMap<char, Terminal>| {
+            terminals
+                .values()
+                .map(Terminal::history_bytes)
+                .collect::<Vec<_>>()
+        };
+
+        let mut terminals = three();
+        let per_session = Budgets {
+            per_session: full,
+            ..roomy
+        };
+        relieve(&mut terminals, &caches, 0, per_session);
+        assert_eq!(held(&terminals), [full, full, full]);
+        let per_session = Budgets {
+            per_session: full - 1,
+            ..roomy
+        };
+        relieve(&mut terminals, &caches, 0, per_session);
+        assert_eq!(held(&terminals), [less, less, less]);
+
+        let mut terminals = three();
+        let histories = Budgets {
+            histories: 3 * full - 1,
+            ..roomy
+        };
+        relieve(&mut terminals, &caches, 0, histories);
+        assert_eq!(held(&terminals), [full, less, full]);
+        relieve(
+            &mut terminals,
+            &caches,
+            0,
+            Budgets {
+                histories: 0,
+                ..roomy
+            },
+        );
+        assert_eq!(held(&terminals), [least, least, full]);
+
+        let mut terminals = three();
+        let models: usize = terminals.values().map(Terminal::footprint).sum();
+        let total = Budgets {
+            total: 5 + models - 1,
+            ..roomy
+        };
+        relieve(&mut terminals, &caches, 5, total);
+        assert_eq!(held(&terminals), [full, less, full]);
     }
 }

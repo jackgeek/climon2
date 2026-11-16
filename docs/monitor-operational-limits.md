@@ -19,8 +19,19 @@ connections it also enforces its request and event queues, outstanding
 operations and their outcome reserves, deliveries, drain ceilings,
 `wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
 `leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)), and
-`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)); nothing
-else enforces the limits yet.** This resolves
+`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)).
+The monitor ([#119](https://github.com/jackgeek/climon2/issues/119)) splits
+`memory.client_bytes` between each library instance and its model; drops,
+read-only and passively retried, a session whose model refuses an update;
+charges reports in flight to each client's `queues.event_bytes`, failing a
+client congested past `deadlines.delivery_stall_ms`; keeps history within
+`history_bytes_per_session`, `history_bytes_total` and `total_bytes` by the
+pressure order below; paints output at most `ui.fps` frames a second;
+rotates client work within the `ui` quanta; and never wraps connection
+generations or request IDs (see the
+[monitor README](../crates/climon2-monitor/README.md#memory-accounting-bounded-history-and-cadence-119)
+for what it does not yet charge or enforce); nothing else enforces the
+limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.
 
@@ -283,9 +294,13 @@ or released under pressure, and, as the owner decided, a full history that
 output could have overrun once growth was capped or refused, because the
 engine does not report the rows it discards there
 ([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#read-only-views-for-painting)).
-The monitor does not yet keep models or use the shared parser
-([#108](https://github.com/jackgeek/climon2/issues/108)), and its own budgets
-and pressure policies above remain unimplemented.
+The monitor keeps a model per session through the shared parser
+([#108](https://github.com/jackgeek/climon2/issues/108)) and, since #119,
+shortens history by the pressure policy above: a session's own history
+within its budget, then caches of sessions not connected, unselected ones
+least recently inspected first, the selected one last. It does not yet
+refuse a live model's growth for aggregate pressure before allocation, or
+charge renderer, search, toast and identity state to the total.
 
 ## Queues and transfers
 

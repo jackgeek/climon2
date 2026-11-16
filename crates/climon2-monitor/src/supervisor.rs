@@ -803,7 +803,7 @@ impl State {
     fn congestion(&mut self, id: &SessionId, now: Instant) {
         let since = *self.congested.entry(id.clone()).or_insert(now);
         let stall = Duration::from_millis(self.context.limits.delivery_stall_ms.into());
-        if now.saturating_duration_since(since) >= stall {
+        if now.checked_duration_since(since + stall).is_some() {
             self.congested.remove(id);
             let why = format!("delivery congestion lasted past {} ms", stall.as_millis());
             self.fail(id, why);
@@ -3127,6 +3127,8 @@ mod tests {
     /// `event_bytes` one byte more than a report, and with the UI
     /// processing each report as it arrives, the client keeps being
     /// drained: its whole presentation arrives and it is never failed.
+    /// Exit drains a congested client regardless, so it ends well within
+    /// the shutdown deadline.
     #[test]
     fn reports_the_ui_processes_leave_room_to_drain_the_client() {
         for (test, processes, room) in [(29, false, 1), (30, true, 0)] {
@@ -3138,7 +3140,7 @@ mod tests {
             script(&id, presents);
             let mut limits = climon2_core::config::Limits::default().library();
             limits.event_bytes = one_report(&id) + room;
-            limits.delivery_stall_ms = 200;
+            limits.delivery_stall_ms = 600_000;
             let mut supervised = limited(1, 20_000, fake_library(), limits);
             let supervisor = &mut supervised.supervisor;
             supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
@@ -3156,7 +3158,9 @@ mod tests {
                     .any(|event| matches!(event, ClientEvent::Unavailable(_))),
                 "{seen:?}"
             );
+            let stopping = Instant::now();
             supervisor.stop();
+            assert!(stopping.elapsed() < Duration::from_secs(10));
         }
     }
 

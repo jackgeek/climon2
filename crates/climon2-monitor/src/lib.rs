@@ -650,28 +650,15 @@ impl Monitor {
     /// pressure order ([`pressure::order`]). No cache ever gives up the
     /// chunk holding its newest page.
     fn relieve(&mut self) {
-        let per_session = within(self.memory.history_bytes_per_session);
-        for terminal in self.terminals.values_mut() {
-            while terminal.history_bytes() > per_session && terminal.shorten() {}
-        }
-        for id in pressure::order(&self.caches()) {
-            while self.pressed() && self.terminals.get_mut(&id).is_some_and(Terminal::shorten) {}
-        }
-    }
-
-    /// Whether the histories together, or everything tracked, exceed their
-    /// budgets.
-    fn pressed(&self) -> bool {
-        let histories: usize = self.terminals.values().map(Terminal::history_bytes).sum();
-        histories > within(self.memory.history_bytes_total)
-            || self.tracked() > within(self.memory.total_bytes)
-    }
-
-    /// What the monitor tracks: its one parser, every terminal model with
-    /// its staging, and every report not yet processed.
-    fn tracked(&self) -> usize {
-        let models: usize = self.terminals.values().map(Terminal::footprint).sum();
-        Parser::BYTES + models + self.supervisor.backlog()
+        let budgets = pressure::Budgets {
+            per_session: within(self.memory.history_bytes_per_session),
+            histories: within(self.memory.history_bytes_total),
+            total: within(self.memory.total_bytes),
+        };
+        // Beside the models: the one parser and every unapplied report.
+        let fixed = Parser::BYTES + self.supervisor.backlog();
+        let caches = self.caches();
+        pressure::relieve(&mut self.terminals, &caches, fixed, budgets);
     }
 
     /// Every terminal's cache as the pressure policy sees it.

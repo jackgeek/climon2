@@ -15,8 +15,9 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), toasts and the bell (#115), and disconnection, read-only history
-and passive recovery (#116). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), toasts and the bell (#115), disconnection, read-only history
+and passive recovery (#116), and memory accounting, bounded history and the
+render and work cadence (#119). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -749,6 +750,62 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   frame, redraw or coalesced announcement. With it off only the BEL is
   skipped.
 
+## Memory accounting, bounded history and cadence (#119)
+
+- **The client budget split.** `memory.client_bytes` is one budget per
+  session: the client library's `client_bytes` is its request and event
+  queues, one wire frame and its 1048576-byte instance allocation, and the
+  session's terminal model may hold the rest (owner decision on #119; the
+  split rule is an open owner question). The startup check counts the
+  library's share beside the largest session's model and page.
+- **Rejected updates.** See the recovery section above: a session whose
+  model refuses an update is Unavailable, its last safe cache read-only,
+  and its client is retried passively; a connection is dropped once, and
+  what it still delivers drops nothing more.
+- **Reports in flight** (`supervisor/backlog.rs`). The supervisor copies
+  each delivery into reports and releases it at once; each report is then
+  charged to its client, by the allocation it holds (capacity, not
+  length), until the UI has applied it. A reporting client whose
+  unapplied reports fill `queues.event_bytes` is not drained: its records
+  wait in the library and nothing is dropped. Once that congestion lasts
+  `deadlines.delivery_stall_ms` the client is failed explicitly with
+  `delivery congestion lasted past <N> ms` and retried passively. Exit
+  drains every client regardless.
+- **Work quanta** (`cadence.rs`). The UI applies client reports in fair
+  turns: each client for at most `ui.client_quantum_ms`, all of them for at
+  most `ui.background_quantum_ms` a turn, the next turn starting after the
+  client served last. A report is one bounded step (a display chunk is at
+  most `transfer.chunk_bytes`); what is left waits, still charged.
+- **Render cadence** (`cadence.rs`). Output alone paints at most `ui.fps`
+  frames a second: a frame not due is skipped, never queued, and a later
+  step paints the scene as it is then, so obsolete animation frames are
+  dropped. A host read paints at once, as do a revealed canvas and a
+  resize, so input, the selector and exit never wait for the cadence; every
+  frame counts toward it.
+- **Bounded history** (`pressure.rs`, `lib.rs`). After each turn, each
+  session's history (what its model holds beyond its current model) is
+  kept within `memory.history_bytes_per_session` by shortening its own,
+  oldest chunk first; then, while all histories exceed
+  `memory.history_bytes_total` or what the monitor tracks (its parser,
+  every model with its staging, every unapplied report) exceeds
+  `memory.total_bytes`, caches of sessions not connected yield a chunk at a
+  time, unselected ones least recently inspected first and the selected
+  one last. A connected session's history is bounded only by its own
+  budgets. No cache gives up the chunk holding its newest page, and a
+  shortened history shows the truncation notice above its oldest row.
+- **Identifiers.** Connection generations start at 1 and strictly increase
+  per session; once a session's are exhausted it is never attempted again
+  (`connection generations are exhausted`, rejected for good). Request IDs
+  start after Open's and are refused, consuming nothing, once exhausted.
+  Neither wraps. With `test-hooks` only, `CLIMON2_MONITOR_FIRST_GENERATION`
+  and `CLIMON2_MONITOR_FIRST_REQUEST` start them near exhaustion.
+- **Not yet:** the aggregate pressure order is proven over real terminal
+  models in unit tests, not yet in the packaged monitor; live models are not refused growth for aggregate
+  pressure before allocation (only their own limit and the per-session
+  history budget bound them); renderer, search, toast and identity state
+  are not yet charged to `memory.total_bytes`; and library `snapshot`
+  measurements and total process memory are not yet reported.
+
 ## Exit
 
 Prefix+x exits 0; catchable SIGINT, SIGTERM and SIGHUP take the same path with
@@ -808,6 +865,7 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Over the same once recovery is permanently rejected (#116) | `Not reconnecting: <diagnostic>` | `screen.rs` |
 | Over the same, and in the top row's error slot, once discovery proved the session's daemon gone (#116, owner decision 2026-11-16) | `Session no longer exists` | `screen.rs` |
 | Top row's error slot: a lost or failed client's diagnostic (#116, owner decision 2026-11-16) | the library's or loader's own message, or the monitor's: `cannot poll the client: <error>`, `cannot drain the client: <error>`, `the client stopped without terminal evidence`, `the client stopped before it opened`, `cannot confirm the client's cleanup: <error>` | `supervisor.rs` |
+| Top row's error slot: a client failed after its delivery congestion outlasted `deadlines.delivery_stall_ms` (#119) | `delivery congestion lasted past <N> ms` | `supervisor.rs` |
 | Top row's error slot: an update the session's model refused, its client dropped and retried (#119) | `terminal model over its limit: <needed> bytes needed, <limit> allowed` | `terminal.rs` |
 | Top row's error slot, and `Not reconnecting: <why>` over the retained cache: a session whose connection generations are exhausted (#119) | `connection generations are exhausted` | `supervisor.rs` |
 | Top row's error slot: a request after the client's last request ID (#119) | `the client's request IDs are exhausted` (after `Input not sent (<N> bytes; earlier input was accepted): ` for input) | `supervisor.rs`, `terminal.rs` |
@@ -900,6 +958,12 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | LIM-03 (pure supplement): a restoration over the model's limit is an error without Ready | `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`) |
 | LIM-03 (Monitor, Fault: rejected updates), LIM-01 (Monitor: the budget split), REC-01, REC-02 (#119): a session over its model's share is dropped Unavailable, its cache read-only, retried passively; others go on | `a_session_over_its_memory_limit_becomes_unavailable_read_only_and_is_retried` (e2e, Fault peers) |
 | LIM-03 (pure supplement, #119): refused output or restoration drops the client once with the error shown, keeping the last safe cache; a dropped client is reported Unavailable and retried passively in a fresh generation once destroyed | `refused_output_drops_the_client_once_and_keeps_the_last_safe_cache`, `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`), `a_client_dropped_at_its_memory_limit_is_retried_passively` (`src/supervisor.rs`) |
+| LIM-03 (Monitor: history bounded by bytes, explicit truncation, the newest page; #119) | `history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice` (e2e) |
+| LIM-06 (Monitor: render cadence, input, selector and exit respond; #119) | `rendering_keeps_to_its_frame_rate_while_input_the_selector_and_exit_respond` (e2e) |
+| LIM-06 (Monitor: notification work), NOT-02 (#119): a storm of 200 episodes from eight sessions stays within the toast bound while the selector and exit respond | `a_notification_storm_stays_within_the_toast_bound_while_input_responds` (e2e, Fault peers) |
+| LIM-02 (pure supplement over the fake library, #119): reports charged by capacity per client; a client is drained while its unapplied reports are under `queues.event_bytes` (at the allowance and one past) and failed after `deadlines.delivery_stall_ms` of congestion | `each_report_is_charged_by_the_capacity_it_holds`, `reports_are_held_per_session_until_processed` (`src/supervisor/backlog.rs`), `a_client_whose_reports_stay_unprocessed_is_failed_after_its_delivery_stall`, `reports_the_ui_processes_leave_room_to_drain_the_client` (`src/supervisor.rs`) |
+| LIM-06 (pure supplement, #119): frames at most once per interval at 1, 30 and 120 fps; fair turns within both quanta at their boundaries | `frames_are_due_at_most_once_per_frame_interval`, `an_earlier_instant_is_never_due`, `clients_take_fair_turns_within_both_quanta`, `a_lone_client_is_bounded_by_the_background_quantum` (`src/cadence.rs`) |
+| LIM-03 (pure supplement over real terminal models, #119): the pressure order; the per-session, history-total and total budgets at the limit and one past, caches yielding in order down to their newest page and connected ones never; a history shortened a chunk at a time down to its newest page; a connection's end ends its errors | `unselected_retained_caches_yield_first_least_recently_inspected_first`, `a_budget_is_exceeded_only_past_it`, `caches_yield_in_order_until_the_budgets_hold` (`src/pressure.rs`), `history_is_shortened_a_chunk_at_a_time_down_to_its_newest_page`, `the_end_of_the_connection_ends_its_errors` (`src/terminal.rs`) |
 | LIM-05 (Monitor, Fault: generation exhaustion; hooked only), REC-02 (#119): the protected cache survives and no attempt follows the last generation | `a_session_whose_generations_are_exhausted_keeps_its_cache_and_stops` (e2e, Fault peers) |
 | LIM-05 (pure supplement over the fake library, #119): generations u64::MAX - 1 and u64::MAX, then rejected for good; request IDs u64::MAX - 1 and u64::MAX, then refused without submitting | `a_session_whose_generations_are_exhausted_is_never_attempted_again`, `requests_after_the_last_request_id_are_refused` (`src/supervisor.rs`) |
 | TRM-01 (pure supplement): exact SGR for the 16 ANSI, palette, direct and default colours, underline colour (colon form, underlined cells only) and renditions; wide and combining text; each cell covers its given width; the cursor | `colours_and_renditions_are_painted_with_their_own_sgr`, `wide_and_combining_text_and_the_cursor_are_painted_in_place`, `each_cell_covers_the_width_it_was_given`, `each_row_starts_with_its_own_cursor_position` (`src/paint.rs`) |
