@@ -163,7 +163,7 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     "bell": true,                  // false: no host bell as a toast first draws
     "limits": {
       "memory": {
-        "total_bytes": 536870912,
+        "total_bytes": 603979776,
         "client_bytes": 67108864,
         "history_bytes_per_session": 16777216,
         "history_bytes_total": 268435456,
@@ -292,12 +292,14 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     `retry.initial_ms` fits `retry.cap_ms`.
 - The monitor also refuses limits too small for one session's terminal model
   at the largest session size, 500x200 (`exec` does not check this):
-  `memory.total_bytes` and `memory.client_bytes` must each hold its current
-  model and the history holding its recent page, 19063239 bytes together, and
+  `memory.client_bytes` must hold its current model and the history holding
+  its recent page, 16966087 bytes together, `memory.total_bytes` those and
+  the monitor's one shared parser, 19063239 bytes, and
   `memory.history_bytes_total` and `history_bytes_per_session` that history,
   12115200 bytes. The refusal names the first limit to raise. Limits that
   only just pass admit such a session, but restoring it beside its current
-  model needs at least 38126478 bytes, and the monitor will restore it
+  model needs at least 33932174 bytes in a client's budget (36029326 in the
+  total, with the parser), and the monitor will restore it
   whenever the session's size changes.
 
 `exec` validates the whole file before starting the session. `attach`

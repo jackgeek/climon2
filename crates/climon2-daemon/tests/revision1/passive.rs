@@ -26,6 +26,13 @@ const UNSET_TITLE: &str = concat!(
     r#""status":{"available":false,"value":null},"#,
     r#""progress":{"available":false,"value":null},"command_result":null}"#
 );
+/// The same with `status-v1` selected too, at the controllable clock's
+/// start: idle since the daemon's initialization, with no episode.
+const UNSET_TITLE_IDLE: &str = concat!(
+    r#"{"title":{"available":true,"value":null},"#,
+    r#""status":{"available":true,"value":{"state":"idle","changed_at":"2027-01-15T08:00:00.000Z","episode_id":null}},"#,
+    r#""progress":{"available":false,"value":null},"command_result":null}"#
+);
 const NO_TITLE: &str = concat!(
     r#"{"title":{"available":false,"value":null},"#,
     r#""status":{"available":false,"value":null},"#,
@@ -102,7 +109,7 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
         concat!(
             r#"{{"session_id":"{}","climon2_version":"0.1.0","protocol":1,"#,
             r#""capabilities":["attach","kill","state-v1","client-startup-v1","#,
-            r#""daemon-wire-v1","monitor-v1","title-v1","focus-v1"],"#,
+            r#""daemon-wire-v1","monitor-v1","title-v1","status-v1","focus-v1"],"#,
             r#""state":{{"lifecycle":"starting","attachments":0,"controlled":false}},"#,
             r#""daemon_wire_v1":{{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}}}"#
         ),
@@ -112,15 +119,20 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
     end_through_attachment(session);
 }
 
-/// COM-01 and COM-03 (Contract case, passive Open): a monitor Open selects
-/// the requested families this daemon supports and drops unknown and
-/// unsupported optional ones, under a fresh connection ID. Its success
-/// Response comes first, then one Initial metadata record: the title by
-/// value when `title-v1` is selected and unavailable otherwise, status and
-/// progress explicitly unavailable, and no command result.
+/// COM-01 and COM-03 (Contract case, passive Open), with STA-07 (Contract,
+/// initial status): a monitor Open selects the requested families this
+/// daemon supports and drops unknown and unsupported optional ones, under a
+/// fresh connection ID. Its success Response comes first, then one Initial
+/// metadata record: the title by value when `title-v1` is selected and
+/// unavailable otherwise, the effective status, idle and cleared since the
+/// daemon's initialization on its controllable clock, when `status-v1` is
+/// selected and unavailable otherwise, progress explicitly unavailable, and
+/// no command result.
 #[test]
 fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
-    let (session, controlling) = controlled();
+    let session = super::clocked("exit");
+    let mut controlling = session.attach();
+    session.wait_marker(&mut controlling);
     let mut first = peer(&session);
     let optional = ["monitor-v1", "status-v1", "focus-v1", "future-v9"];
     request(
@@ -129,8 +141,11 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     );
     let (first_id, mut selected) = opened(&frame(&mut first), "1");
     selected.sort();
-    assert_eq!(selected, ["focus-v1", "monitor-v1", "title-v1"]);
-    assert_eq!(body(&frame(&mut first), 0x41), UNSET_TITLE);
+    assert_eq!(
+        selected,
+        ["focus-v1", "monitor-v1", "status-v1", "title-v1"]
+    );
+    assert_eq!(body(&frame(&mut first), 0x41), UNSET_TITLE_IDLE);
 
     let mut second = peer(&session);
     request(&mut second, &open(7, &[], &["progress-v1"], Mode::Monitor));
@@ -304,7 +319,7 @@ fn passive_requests_get_their_documented_outcomes() {
     let roles = [
         (later_revision.to_frame(), "unsupported_revision"),
         (
-            open(1, &["status-v1"], &[], Mode::Monitor).to_frame(),
+            open(1, &["progress-v1"], &[], Mode::Monitor).to_frame(),
             "unsupported_capability",
         ),
         (
@@ -636,34 +651,35 @@ fn needing_an_attachment(id: u64) -> [Frame; 6] {
 /// cases): Input, Resize, Ready, Set viewing, Acknowledge and Focus need an
 /// attachment, so on a connection without one each is identifiable but
 /// impermissible: rejected without effects, never connection-fatal, and
-/// consuming its request ID. Focus needs `focus-v1`, which is checked first:
-/// a connection that did not select it gets `unsupported_capability`.
+/// consuming its request ID. Focus needs `focus-v1`, and Set viewing and
+/// Acknowledge `status-v1`, which is checked first: a connection that did
+/// not select it gets `unsupported_capability`.
 /// Otherwise, as the first frame after hello a request finds no role
 /// (`invalid_state`), so a monitor Open still registers; on a passive
 /// monitor connection, which is not an attachment, Input, Resize, Ready and
 /// Focus are `not_attached` and the registration stays until Leave reports
-/// it. Set viewing and Acknowledge stay `invalid_state` until #91 serves
-/// them. No byte reaches the command, its terminal keeps the controller's
-/// size, and the hello `state` is unchanged.
+/// it, as are Focus, Set viewing and Acknowledge once their family is
+/// selected. No byte reaches the command, its terminal keeps the
+/// controller's size, and the hello `state` is unchanged.
 #[test]
 fn requests_that_need_an_attachment_are_refused_and_the_stream_goes_on() {
-    let mut session = Session::start("lines");
+    let mut session = super::clocked("lines");
     let mut controlling = session.attach();
     session.wait_marker(&mut controlling);
     let without_role = [
         "invalid_state",
         "invalid_state",
         "invalid_state",
-        "invalid_state",
-        "invalid_state",
+        "unsupported_capability",
+        "unsupported_capability",
         "unsupported_capability",
     ];
     let passive = [
         "not_attached",
         "not_attached",
         "not_attached",
-        "invalid_state",
-        "invalid_state",
+        "unsupported_capability",
+        "unsupported_capability",
         "unsupported_capability",
     ];
     let cases = needing_an_attachment(1)
@@ -684,11 +700,17 @@ fn requests_that_need_an_attachment_are_refused_and_the_stream_goes_on() {
         assert_rejected(&mut stream, 2, registered_code);
         leave(&mut stream, 3);
     }
-    let (mut focusing, _) = monitor(&session, &["focus-v1"]);
-    let [.., focus] = needing_an_attachment(2);
-    send(&mut focusing, &focus);
-    assert_rejected(&mut focusing, 2, "not_attached");
-    leave(&mut focusing, 3);
+    let [.., viewing, acknowledge, focus] = needing_an_attachment(2);
+    for (family, request) in [
+        ("focus-v1", focus),
+        ("status-v1", viewing),
+        ("status-v1", acknowledge),
+    ] {
+        let (mut selecting, _) = monitor(&session, &[family]);
+        send(&mut selecting, &request);
+        assert_rejected(&mut selecting, 2, "not_attached");
+        leave(&mut selecting, 3);
+    }
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Attached, 1, true)
