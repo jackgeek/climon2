@@ -94,20 +94,26 @@ impl Initial {
     /// The row to select and acquire now, if any: the first eligible row
     /// once collection has ended, then never again.
     pub(crate) fn choose(&mut self, registry: &Registry, now: Instant) -> Option<SessionId> {
-        if let Phase::Collecting { passed, deadlines } = &self.phase {
-            let holding =
-                |(id, deadline): (&SessionId, &Instant)| now < *deadline && registry.starting(id);
-            if !passed || deadlines.iter().any(holding) {
-                return None;
-            }
+        self.collect(registry, now);
+        let waiting = matches!(self.phase, Phase::Waiting);
+        let chosen = waiting.then(|| registry.eligible()).flatten()?;
+        self.selected();
+        Some(chosen)
+    }
+
+    /// Ends collection once the first pass has ended and no client started
+    /// for it is still starting before its deadline, keeping those that
+    /// were still starting at it.
+    fn collect(&mut self, registry: &Registry, now: Instant) {
+        let Phase::Collecting { passed, deadlines } = &self.phase else {
+            return;
+        };
+        let holding =
+            |(id, deadline): (&SessionId, &Instant)| now < *deadline && registry.starting(id);
+        if *passed && !deadlines.iter().any(holding) {
             self.late = starting(deadlines.keys(), registry);
             self.phase = Phase::Waiting;
         }
-        let chosen = registry
-            .eligible()
-            .filter(|_| matches!(self.phase, Phase::Waiting))?;
-        self.selected();
-        Some(chosen)
     }
 
     /// The startup progress while collecting.
@@ -275,7 +281,7 @@ mod tests {
     /// DSC-01 (bounded collection; uncertainty explicit), with the
     /// `deadlines.start_ms` boundary: a client still starting holds
     /// collection until just before its deadline, and at the deadline
-    /// collection ends without it. While such a late client is still
+    /// collection ends without it, but never before the first pass ends. While such a late client is still
     /// starting, collection is reported late; once it is ready it is not.
     #[test]
     fn a_client_past_its_start_deadline_no_longer_holds_collection_and_is_reported_late() {
@@ -283,9 +289,10 @@ mod tests {
         let t0 = Instant::now();
         let ready = found(&mut registry, &mut initial, 1, t0);
         let slow = found(&mut registry, &mut initial, 2, t0 + Duration::from_secs(1));
-        initial.passed();
         reports(&mut registry, &ready, State::Running, 5);
         let deadline = t0 + Duration::from_secs(1) + START;
+        assert_eq!(initial.choose(&registry, deadline + START), None);
+        initial.passed();
         assert_eq!(
             initial.choose(&registry, deadline - Duration::from_nanos(1)),
             None

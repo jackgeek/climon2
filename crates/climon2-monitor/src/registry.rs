@@ -233,13 +233,16 @@ impl Row {
         }
     }
 
+    /// A report changes what the row shows, a connection event its
+    /// connection; control, display and answers are never row state.
     fn apply(&mut self, event: ClientEvent, now: SystemTime) {
         match event {
-            ClientEvent::Opened { status } => self.connect(Connection::Connected { status }, now),
-            ClientEvent::Unavailable(why) => self.connect(Connection::Unavailable(why), now),
-            ClientEvent::Ended => self.connect(Connection::Disconnected, now),
             ClientEvent::Report(report) => self.learn(report, now),
-            ClientEvent::Presentation(_) | ClientEvent::Answer(..) => {}
+            event => {
+                if let Some(connection) = connection(event) {
+                    self.connect(connection, now);
+                }
+            }
         }
     }
 
@@ -401,6 +404,16 @@ impl Registry {
         rows.into_iter()
             .map(|((group, _), view)| (group, view))
             .collect()
+    }
+}
+
+/// The connection a client event moves its row to, if any.
+fn connection(event: ClientEvent) -> Option<Connection> {
+    match event {
+        ClientEvent::Opened { status } => Some(Connection::Connected { status }),
+        ClientEvent::Unavailable(why) => Some(Connection::Unavailable(why)),
+        ClientEvent::Ended => Some(Connection::Disconnected),
+        _ => None,
     }
 }
 
