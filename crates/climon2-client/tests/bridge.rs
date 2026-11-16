@@ -947,6 +947,86 @@ fn input_typed_before_restore_end_is_drained_and_never_replayed() {
     assert_eq!(pty.finish(0), (Vec::new(), String::new()));
 }
 
+/// COM-01 Monitor parity case: Ready waits until typed-ahead keys are
+/// drained, not only until the restoration is written. Keys typed while the
+/// written restoration waits for the terminal, more than one read takes,
+/// are all drained and dropped before Ready; only later keys are input.
+#[test]
+fn ready_waits_until_typed_ahead_keys_are_drained() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut peer = Peer::accept(&listener);
+    peer.attach();
+    pty.wait_raw();
+    fill_output_queue(&pty.slave);
+    peer.grant(FIRST, "attach");
+    peer.display(FIRST, b"restored-screen");
+    peer.complete(FIRST);
+    wait_received(&peer.stream);
+    pty.while_stopped(|pty| {
+        fill_input_queue(&pty.master);
+        assert_eq!(
+            unsafe { libc::tcflow(pty.slave.as_raw_fd(), libc::TCOON) },
+            0
+        );
+    });
+
+    assert!(
+        pty.read_until(b"restored-screen")
+            .ends_with(b"restored-screen")
+    );
+    peer.ready(FIRST);
+    pty.master.write_all(b"live").unwrap();
+    let input = peer.input();
+    assert!(
+        input == b"live",
+        "{} typed-ahead bytes became input",
+        input.len()
+    );
+    peer.exit(0);
+    assert_eq!(pty.finish(0), (Vec::new(), String::new()));
+}
+
+/// Types into the terminal until it takes no more keys.
+fn fill_input_queue(mut master: &File) {
+    loop {
+        match master.write(&[b'x'; 4096]) {
+            Ok(0) => panic!("terminal input made no progress"),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+            Err(error) => panic!("{error}"),
+        }
+    }
+}
+
+/// Waits until the client's library has read everything sent to it, so a
+/// stopped client resumes with those frames on its side.
+#[cfg(target_os = "linux")]
+fn wait_received(stream: &UnixStream) {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let mut unread: libc::c_int = 0;
+        // SIOCOUTQ, which Linux defines as TIOCOUTQ: bytes sent and not yet read.
+        assert_eq!(
+            unsafe { libc::ioctl(stream.as_raw_fd(), libc::TIOCOUTQ, &mut unread) },
+            0
+        );
+        if unread == 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the library never read its frames"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// macOS reports no unread count for a Unix socket; the frames are read
+/// once the client resumes.
+#[cfg(target_os = "macos")]
+fn wait_received(_: &UnixStream) {}
+
 const PLACEHOLDER: &[u8] =
     b"\x1b[H\x1b[2JThis session is being viewed elsewhere.\r\nPress Ctrl+T to take control";
 
