@@ -16,7 +16,7 @@ use crate::{
 };
 use candidate::{Candidate, Session, User};
 use climon2_platform::library::Loader;
-use climon2_test_term::{HostSignal, Options, Terminal};
+use climon2_test_term::{HostSignal, Mouse, MouseButton, Options, Terminal};
 use sampler::{Baseline, Sampler, Streaks, Watched};
 use serde_json::{Value, json};
 use std::{
@@ -855,7 +855,11 @@ fn shows(screen: &str, title: &str, silent: bool) -> bool {
         && (!silent || screen.contains(&format!("started {title}")))
 }
 
-/// Selects `title` through the selector's search: Enter until it is shown.
+/// Selects `title` through the selector's search, a click on its row and
+/// Enter. Searching alone cannot single the row out: the search is fuzzy and
+/// keeps the highlight on a selected row that still matches, such as a
+/// stalled session whose label is its command line (`... --title n001`
+/// matches `s001`), so Enter would select that row again and again.
 fn switch(
     terminal: &mut Terminal,
     title: &str,
@@ -865,8 +869,17 @@ fn switch(
     probes.record(Probe::Selector, open_selector(terminal));
     terminal.send(title).ok()?;
     terminal
-        .wait_for_screen(PROBE, |screen| screen.contains(&format!(" {title}")))
+        .wait_for_screen(PROBE, |screen| {
+            screen.contains(&format!("║{title} ")) && listed(screen, title).is_some()
+        })
         .ok()?;
+    let (row, column) = listed(&terminal.screen(), title)?;
+    for action in [
+        Mouse::Press(MouseButton::Left),
+        Mouse::Release(MouseButton::Left),
+    ] {
+        terminal.mouse(action, row, column).ok()?;
+    }
     let start = Instant::now();
     terminal.send("\r").ok()?;
     terminal
@@ -875,6 +888,17 @@ fn switch(
         })
         .ok()?;
     Some(start.elapsed())
+}
+
+/// The host cell (row, column) of the selector's list row whose label is
+/// `title`, to click: its first cell inside the border.
+fn listed(screen: &str, title: &str) -> Option<(usize, usize)> {
+    screen.split('\n').enumerate().find_map(|(row, line)| {
+        let (margin, rest) = line.split_once('║')?;
+        let (inside, _) = rest.rsplit_once('║')?;
+        let (_, label) = inside.trim_end().rsplit_once(' ')?;
+        (label == title).then(|| (row, margin.chars().count() + 1))
+    })
 }
 
 fn select(terminal: &mut Terminal, title: &str, silent: bool) -> io::Result<()> {
@@ -1186,4 +1210,32 @@ fn write(out: &Path, report: &Report) -> io::Result<()> {
         serde_json::to_string_pretty(&report.to_json()).map_err(io::Error::other)?,
     )?;
     fs::write(out.join("report.md"), report.to_markdown())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The selector of a stalled-newer-starts run in which the stalled
+    /// session n001 is selected: its label is its command line, which
+    /// fuzzily matches the search `s001` too, so the search keeps n001
+    /// highlighted. Only s001's own row (host row 5) is where to click.
+    #[test]
+    fn the_row_to_click_is_the_one_labelled_with_the_title() {
+        let screen = [
+            "/home/u/dev… | Unavailable        | Not controlling | Ctrl+] then s: sessions",
+            "",
+            " ╔══════════════════════════════════════════╗ ",
+            " ║s001                                      ║ ",
+            " ╟──────────────────────────────────────────╢ ",
+            " ║Running     s001                          ║ ",
+            " ║Unavailable /home/u/climon2-measure worklo…║ ",
+            " ║Enter: select  Esc: cancel                ║ ",
+            " ╚══════════════════════════════════════════╝ ",
+        ]
+        .join("\n");
+        assert_eq!(listed(&screen, "s001"), Some((5, 2)));
+        assert_eq!(listed(&screen, "s00"), None);
+        assert_eq!(listed(&screen, "s002"), None);
+    }
 }
