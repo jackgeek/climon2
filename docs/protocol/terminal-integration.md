@@ -120,6 +120,18 @@ Keyboard-protocol negotiation, [OSC](TERMS.md#osc) clipboard and hyperlinks
 remain filtered, not newly supported by choosing a renderer. Invalid
 [UTF-8](TERMS.md#unicode-and-utf-8) application bytes alone are not a protocol error.
 
+**Implemented ([#179](https://github.com/jackgeek/climon2/issues/179)):** the
+session's virtual terminal starts with alternate scroll (mode 1007) off, as
+xterm starts, although the Alacritty engine on its own starts with it on. The
+application turns it on with `ESC [ ? 1007 h`; `ESC [ ? 1007 l` and a full
+reset (`ESC c`) turn it off again. Every restoration sends the mode as the
+application left it, so a restoration before the application set it sends
+`ESC [ ? 1007 l`, and one after sends `ESC [ ? 1007 h`. **Decided (owner,
+2026-11-13):** for ordinary attaches this is the one intended change to the
+restoration bytes, which used to send `ESC [ ? 1007 h` although no application
+asked for it. A monitor's model starts the same way, so its views report
+alternate scroll only once the application enables it.
+
 ## Canonical monitor presentation: amendment to daemon wire revision 1
 
 For connections opened in monitor mode, **all daemon display/restoration bytes
