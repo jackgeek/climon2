@@ -1634,7 +1634,7 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
 }
 
 /// How a fake daemon answers each connection.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Answer {
     /// The hello as `id`, advertising `daemon-wire-v1` and `monitor-v1`;
     /// then, if the peer goes on to send anything (a client's Open, never a
@@ -1642,6 +1642,23 @@ enum Answer {
     Hello(&'static str),
     /// Read the hello and never answer, until the prober hangs up.
     Silent,
+    /// The hello as its own session, advertising `title-v1` and `status-v1`
+    /// too; then, after a client's Open, these acts in turn, then a
+    /// successful answer to its Leave.
+    Serve(std::sync::Arc<Vec<Act>>),
+}
+
+/// What a serving fake daemon does after a client's Open, as the daemon
+/// wire reference specifies its frames.
+#[derive(Clone)]
+enum Act {
+    /// A frame of `code` with a JSON body, in which the string `"$open"` is
+    /// the Open's request ID.
+    Send(u8, Value),
+    /// Wait until this file exists, for at most [`TIMEOUT`].
+    Await(PathBuf),
+    /// Hang up.
+    Close,
 }
 
 /// What a fake daemon heard, in the order its threads recorded it.
@@ -1727,7 +1744,8 @@ impl FakeDaemon {
                 hear(&ear, id, Heard::Connected);
                 connection.set_nonblocking(false).unwrap();
                 let ear = ear.clone();
-                thread::spawn(move || answer_once(&mut connection, id, answer, &ear));
+                let answer = answer.clone();
+                thread::spawn(move || answer_once(&mut connection, id, &answer, &ear));
             }
         });
         Self {
@@ -1742,35 +1760,22 @@ impl FakeDaemon {
 fn answer_once(
     connection: &mut std::os::unix::net::UnixStream,
     id: &'static str,
-    answer: Answer,
+    answer: &Answer,
     ear: &Ear,
 ) {
-    use climon2_core::{
-        hello::{Lifecycle, SessionState, advertise_revision1},
-        protocol::{HelloReply, read_frame, write_frame},
-        wire::{Advertisement, Family, FrameLimit, FrameLimits},
-    };
+    use climon2_core::{protocol::read_frame, wire::Family};
     use std::io::Read;
     let _ = connection.set_read_timeout(Some(TIMEOUT));
     let _ = read_frame(connection);
     match answer {
+        Answer::Serve(acts) => {
+            let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
+            if hello(connection, id, families) {
+                serve(connection, acts);
+            }
+        }
         Answer::Hello(answered) => {
-            let reply = HelloReply {
-                session_id: answered.parse().unwrap(),
-                climon2_version: VERSION.parse().unwrap(),
-                protocol: 1,
-            };
-            let limit = FrameLimit::new(1_048_576).unwrap();
-            let revision1 = Advertisement::new(
-                [Family::DaemonWireV1, Family::MonitorV1],
-                FrameLimits {
-                    max_request_frame_bytes: limit,
-                    max_server_frame_bytes: limit,
-                },
-            );
-            let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
-            let hello = advertise_revision1(&reply, state, &revision1).unwrap();
-            let _ = write_frame(connection, &hello);
+            let _ = hello(connection, answered, [Family::MonitorV1]);
             if connection.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
                 hear(ear, id, Heard::Client);
                 hear(ear, id, Heard::HangingUp);
@@ -1782,6 +1787,85 @@ fn answer_once(
         }
     }
 }
+
+/// Answers the hello as session `id`, advertising `daemon-wire-v1` and
+/// `families`; whether the answer was written.
+fn hello(
+    connection: &mut std::os::unix::net::UnixStream,
+    id: &str,
+    families: impl IntoIterator<Item = climon2_core::wire::Family>,
+) -> bool {
+    use climon2_core::{
+        hello::{Lifecycle, SessionState, advertise_revision1},
+        protocol::{HelloReply, write_frame},
+        wire::{Advertisement, FrameLimit, FrameLimits},
+    };
+    let reply = HelloReply {
+        session_id: id.parse().unwrap(),
+        climon2_version: VERSION.parse().unwrap(),
+        protocol: 1,
+    };
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let limits = FrameLimits {
+        max_request_frame_bytes: limit,
+        max_server_frame_bytes: limit,
+    };
+    let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
+    let hello = advertise_revision1(&reply, state, &Advertisement::new(families, limits)).unwrap();
+    write_frame(connection, &hello).is_ok()
+}
+
+/// Serves one client: reads its Open, performs `acts`, then answers its
+/// Leave and hangs up.
+fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
+    use climon2_core::wire::{Frame, FrameLimit, read_frame, write_frame};
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let Ok(Some(open)) = read_frame(connection, limit) else {
+        return;
+    };
+    // The client stays until it leaves or the monitor exits.
+    let _ = connection.set_read_timeout(None);
+    let open: Value = serde_json::from_slice(open.body()).unwrap();
+    let request = open["request_id"].to_string();
+    let send = |connection: &mut std::os::unix::net::UnixStream, code: u8, body: &Value| {
+        let body = body.to_string().replace("\"$open\"", &request);
+        write_frame(connection, &Frame::new(code, body.into_bytes()), limit).is_ok()
+    };
+    for act in acts {
+        let sent = match act {
+            Act::Send(code, body) => send(connection, *code, body),
+            Act::Await(path) => {
+                let deadline = Instant::now() + TIMEOUT;
+                while !path.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                true
+            }
+            Act::Close => false,
+        };
+        if !sent {
+            return;
+        }
+    }
+    while let Ok(Some(frame)) = read_frame(connection, limit) {
+        if frame.code() == LEAVE {
+            let leave: Value = serde_json::from_slice(frame.body()).unwrap();
+            let left = json!({
+                "request_id": leave["request_id"], "outcome": "ok",
+                "result": {"kind": "left", "attachment_detached": false}, "error": null,
+            });
+            send(connection, RESPONSE, &left);
+            return;
+        }
+    }
+}
+
+/// Daemon wire revision 1 frame types, from the daemon wire reference.
+const LEAVE: u8 = 0x37;
+const RESPONSE: u8 = 0x40;
+const INITIAL_METADATA: u8 = 0x41;
+const STATUS_CHANGED: u8 = 0x43;
+const COMMAND_FINAL: u8 = 0x4c;
 
 impl Drop for FakeDaemon {
     fn drop(&mut self) {
@@ -2202,6 +2286,12 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
     terminal.send("\x1ds").unwrap();
     let open = with_selector(&body, &[("Idle", "C3"), ("Idle", "B2"), ("Idle", "A1")]);
     shows(&mut terminal, &open);
+    // Rows reorder as their statuses arrive, and the highlight keeps the row
+    // that was first when the selector opened: reopen it on the settled list.
+    terminal.send("\x1b").unwrap();
+    shows(&mut terminal, &body);
+    terminal.send("\x1ds").unwrap();
+    shows(&mut terminal, &open);
     assert_eq!(highlighted_rows(&terminal), [3]);
     // Each step's keys end on a row that differs from where the step
     // started, and that no wrapping, dropped or reopening step could reach:
@@ -2383,6 +2473,10 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
     rows[0] = ("Needs attention", "attention 2");
     lists(&mut terminal, &rows);
 
+    // The selector opened on whichever row was first then; Up without
+    // wrapping brings the highlight to the top.
+    terminal.send("\x1b[A".repeat(rows.len())).unwrap();
+    highlights(&terminal, 3);
     terminal.send("\x1b[B\x1b[B").unwrap();
     highlights(&terminal, 5);
     step(&package, "running", 2);
@@ -2397,5 +2491,342 @@ fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// A wire UTC time `seconds` into 2027-01-15T08:00.
+fn utc(seconds: u32) -> String {
+    format!("2027-01-15T08:00:{seconds:02}.000Z")
+}
+
+/// A wire Status of `state` changed at `changed_at`, with the attention
+/// episode exactly when the state carries one.
+fn wire_status(state: &str, changed_at: &str) -> Value {
+    let episode = matches!(state, "needs_attention" | "acknowledged").then_some("1");
+    json!({"state": state, "changed_at": changed_at, "episode_id": episode})
+}
+
+/// A wire normal exit with `code`.
+fn exited(code: u32) -> Value {
+    json!({"kind": "exit", "code": code})
+}
+
+/// The Open's success, selecting `title-v1` and, with `status`,
+/// `status-v1`.
+fn opened_with(status: bool) -> Act {
+    let mut selected = vec!["daemon-wire-v1", "monitor-v1", "title-v1"];
+    selected.extend(status.then_some("status-v1"));
+    Act::Send(
+        RESPONSE,
+        json!({
+            "request_id": "$open", "outcome": "ok", "error": null,
+            "result": {
+                "kind": "opened",
+                "connection_id": "00112233-4455-4677-8899-aabbccddeeff",
+                "selected_capabilities": selected,
+            },
+        }),
+    )
+}
+
+/// Initial metadata titled `title`, with `status` exactly when `status-v1`
+/// is selected, and the command's `result` once it is known.
+fn initial_metadata(title: &str, status: Option<Value>, result: Option<Value>) -> Act {
+    Act::Send(
+        INITIAL_METADATA,
+        json!({
+            "title": {"available": true, "value": title},
+            "status": {"available": status.is_some(), "value": status},
+            "progress": {"available": false, "value": null},
+            "command_result": result,
+        }),
+    )
+}
+
+/// A fake daemon serving `acts` after a client's Open.
+fn serving(acts: Vec<Act>) -> Answer {
+    Answer::Serve(std::sync::Arc::new(acts))
+}
+
+/// A fake daemon whose Open selects `status-v1` and whose Initial metadata
+/// reports `title`, `status` and `result`, then `after`.
+fn with_status(title: &str, status: Value, result: Option<Value>, after: Vec<Act>) -> Answer {
+    let mut acts = vec![
+        opened_with(true),
+        initial_metadata(title, Some(status), result),
+    ];
+    acts.extend(after);
+    serving(acts)
+}
+
+/// `00..ff` as the last byte of a fake session ID.
+fn fake_id(suffix: u8) -> &'static str {
+    format!("0d5c0000-0000-4000-8000-0000000000{suffix:02x}").leak()
+}
+
+/// DSC-01 (Monitor, status order) and DSC-05 (Monitor, reorder case), with
+/// fake daemons reporting exact statuses and times: rows order by group,
+/// then by the daemon's change time, newest first, then by ascending full
+/// session ID on a tie, never by creation (each fake was created the later,
+/// the lower it should sort) or by when the monitor heard it. A client
+/// whose Initial metadata is delayed shows Starting in the not-connected
+/// group until it arrives. The highlighted row keeps the highlight while a
+/// delayed row moves in above it and while its own status change moves it.
+#[test]
+fn rows_order_by_status_group_daemon_change_time_and_full_session_id() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"start_ms": 120_000}}),
+    );
+    let home = package.isolation.home().to_owned();
+    let (idle_go, delayed_go) = (home.join("idle.go"), home.join("delayed.go"));
+    let fakes = [
+        (
+            0xa9,
+            with_status(
+                "attention new",
+                wire_status("needs_attention", &utc(2)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa8,
+            with_status(
+                "attention old",
+                wire_status("needs_attention", &utc(1)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa7,
+            with_status(
+                "acknowledged",
+                wire_status("acknowledged", &utc(1)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa5,
+            with_status("running low", wire_status("running", &utc(5)), None, vec![]),
+        ),
+        (
+            0xa6,
+            with_status(
+                "running high",
+                wire_status("running", &utc(5)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa4,
+            with_status(
+                "idle",
+                wire_status("idle", &utc(9)),
+                None,
+                vec![
+                    Act::Await(idle_go.clone()),
+                    Act::Send(
+                        STATUS_CHANGED,
+                        json!({"status": wire_status("running", &utc(10))}),
+                    ),
+                ],
+            ),
+        ),
+        (
+            0xa3,
+            with_status(
+                "failed",
+                wire_status("failed", &utc(3)),
+                Some(exited(3)),
+                vec![],
+            ),
+        ),
+        (
+            0xa2,
+            with_status(
+                "succeeded",
+                wire_status("completed", &utc(8)),
+                Some(exited(0)),
+                vec![],
+            ),
+        ),
+        (
+            0xa1,
+            serving(vec![
+                opened_with(true),
+                Act::Await(delayed_go.clone()),
+                initial_metadata("delayed", Some(wire_status("running", &utc(6))), None),
+            ]),
+        ),
+    ];
+    let ear = Ear::default();
+    let daemons: Vec<_> = (1..)
+        .zip(fakes)
+        .map(|(second, (suffix, answer))| {
+            let created = format!("2026-01-01T00:00:{second:02}.000Z");
+            FakeDaemon::start(&package, fake_id(suffix), &created, answer, &ear)
+        })
+        .collect();
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    let mut rows = vec![
+        ("Needs attention", "attention new"),
+        ("Needs attention", "attention old"),
+        ("Acknowledged", "acknowledged"),
+        ("Running", "running low"),
+        ("Running", "running high"),
+        ("Idle", "idle"),
+        ("Failed (exit 3)", "failed"),
+        ("Succeeded", "succeeded"),
+        // Until its Initial metadata, nothing reported its title either.
+        ("Starting", "fake 0d5c0000-0000-4000-8000-0000000000a1"),
+    ];
+    lists(&mut terminal, &rows);
+    // The selector opened on whichever row was first then; Up without
+    // wrapping brings the highlight to the top.
+    terminal.send("\x1b[A".repeat(rows.len())).unwrap();
+    highlights(&terminal, 3);
+    terminal.send("\x1b[B".repeat(5)).unwrap();
+    highlights(&terminal, 8);
+
+    fs::write(&delayed_go, b"").unwrap();
+    rows.pop();
+    rows.insert(3, ("Running", "delayed"));
+    lists(&mut terminal, &rows);
+    highlights(&terminal, 9);
+
+    fs::write(&idle_go, b"").unwrap();
+    rows.remove(6);
+    rows.insert(3, ("Running", "idle"));
+    lists(&mut terminal, &rows);
+    highlights(&terminal, 6);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(daemons);
+    package.assert_clean();
+}
+
+/// Not-connected rows (confirmed 2026-11-08), final rows (derived) and
+/// STA-07 (Monitor, disconnection case), with fake daemons: rows with no
+/// current status and no final outcome (This monitor, Unavailable without
+/// `status-v1` or uncertain, Disconnected) sort after every status and
+/// final row, newest condition first. A connection lost without final
+/// evidence shows Disconnected there, by when it was lost, never its stale
+/// Running nor a fabricated outcome. Final rows without a status time (no
+/// `status-v1`), from the Initial metadata or a later Command final, sort
+/// by when the monitor learned them, between finals whose daemon times are
+/// newer and older.
+#[test]
+fn not_connected_rows_and_untimed_finals_sort_by_when_the_monitor_recorded_them() {
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home().to_owned();
+    let (lost_go, late_go) = (home.join("lost.go"), home.join("late.go"));
+    let ear = Ear::default();
+    let created = "2026-01-01T00:00:00.000Z";
+    let own = fake_id(0xc0);
+    let start = |suffix: u8, answer: Answer| {
+        FakeDaemon::start(&package, fake_id(suffix), created, answer, &ear)
+    };
+    let mut daemons = vec![start(0xc0, Answer::Hello(own))];
+    let mut terminal = outer(&package, &format!("CLIMON2_SESSION_ID={own} c2 monitor"));
+    terminal
+        .wait_for_text("No session selected.", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1ds").unwrap();
+    let own_row = format!("fake {own}");
+    lists(&mut terminal, &[("This monitor", &own_row)]);
+
+    let without = vec![opened_with(false), initial_metadata("without", None, None)];
+    daemons.extend([
+        start(
+            0xc1,
+            with_status("idle", wire_status("idle", &utc(1)), None, vec![]),
+        ),
+        start(
+            0xc2,
+            with_status(
+                "lost",
+                wire_status("running", &utc(7)),
+                None,
+                vec![Act::Await(lost_go.clone()), Act::Close],
+            ),
+        ),
+        start(
+            0xc3,
+            with_status(
+                "fail new",
+                wire_status("failed", &utc(4)),
+                Some(exited(6)),
+                vec![],
+            ),
+        ),
+        start(
+            0xc4,
+            with_status(
+                "fail old",
+                wire_status("failed", "2001-01-01T00:00:00.000Z"),
+                Some(exited(4)),
+                vec![],
+            ),
+        ),
+        start(0xc5, serving(without)),
+    ]);
+    let mut rows = vec![
+        ("Running", "lost"),
+        ("Idle", "idle"),
+        ("Failed (exit 6)", "fail new"),
+        ("Failed (exit 4)", "fail old"),
+        ("Unavailable", "without"),
+        ("This monitor", own_row.as_str()),
+    ];
+    lists(&mut terminal, &rows);
+
+    daemons.push(start(0xc6, Answer::Silent));
+    let silent = format!("fake {}", fake_id(0xc6));
+    rows.insert(4, ("Unavailable", &silent));
+    lists(&mut terminal, &rows);
+
+    fs::write(&lost_go, b"").unwrap();
+    rows.remove(0);
+    rows.insert(3, ("Disconnected", "lost"));
+    lists(&mut terminal, &rows);
+
+    let late = vec![
+        opened_with(false),
+        initial_metadata("late metadata", None, Some(exited(5))),
+    ];
+    daemons.push(start(0xc7, serving(late)));
+    rows.insert(2, ("Failed (exit 5)", "late metadata"));
+    lists(&mut terminal, &rows);
+
+    let command = vec![
+        opened_with(false),
+        initial_metadata("late command", None, None),
+        Act::Await(late_go.clone()),
+        Act::Send(
+            COMMAND_FINAL,
+            json!({"command_result": {"kind": "signal", "number": 9, "name": "SIGKILL"}, "status": null}),
+        ),
+    ];
+    daemons.push(start(0xc8, serving(command)));
+    rows.insert(4, ("Unavailable", "late command"));
+    lists(&mut terminal, &rows);
+    fs::write(&late_go, b"").unwrap();
+    rows.remove(4);
+    rows.insert(2, ("Failed (signal 9)", "late command"));
+    lists(&mut terminal, &rows);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(daemons);
     package.assert_clean();
 }
