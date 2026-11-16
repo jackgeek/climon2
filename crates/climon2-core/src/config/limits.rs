@@ -372,6 +372,9 @@ pub struct Lanes {
     pub starts: u32,
     /// `deadlines.shutdown_ms`: how long clients may take to shut down.
     pub shutdown_ms: u32,
+    /// `deadlines.final_host_ms`: how long the final host restoration and
+    /// diagnostics may take after it.
+    pub final_host_ms: u32,
 }
 
 /// The monitor's passive retry backoff (`retry`).
@@ -476,6 +479,7 @@ impl Limits {
             loads: self.0.scheduling.loads,
             starts: self.0.scheduling.starts,
             shutdown_ms: self.0.deadlines.shutdown_ms,
+            final_host_ms: self.0.deadlines.final_host_ms,
         }
     }
 }

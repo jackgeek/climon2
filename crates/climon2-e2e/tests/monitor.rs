@@ -8,7 +8,8 @@
 mod support;
 
 use climon2_test_term::{
-    AnsiColor, Color, CursorShape, InputTerminal, Modes, Terminal, Underline, Width, bin_path,
+    AnsiColor, Color, CursorShape, HostSignal, InputTerminal, Modes, Terminal, Underline, Width,
+    bin_path,
 };
 use nix::{
     sys::signal::{Signal, kill},
@@ -64,24 +65,49 @@ fn outer_sized(package: &Package, command: &str, cols: u16) -> Terminal {
 
 /// After `command` returned `status`: the host released as
 /// [`support::assert_released`] checks, with the outer title untouched, no OSC
-/// output beyond the outer shell's own title, and the host's earlier content.
+/// output beyond the outer shell's own title and the monitor's root clear,
+/// which came once, after the monitor left its alternate screen (EXT-03,
+/// #118), and the host's earlier content.
 fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
     support::assert_released(package, terminal, status);
     assert_title_untouched(terminal);
+    assert_cleared(terminal);
     assert!(terminal.screen().contains("BEFORE-MONITOR"));
 }
 
-/// The outer shell titled the host once; nothing else ever sent an OSC.
+/// The root OSC 7501 clear (docs/protocol/monitor-host/report-clear.md).
+const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
+
+/// The outer shell titled the host once; nothing else but the monitor's
+/// root clear ever sent an OSC.
 fn assert_title_untouched(terminal: &Terminal) {
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
     let received = terminal.received();
-    assert_eq!(
+    let count = |needle: &[u8]| {
         received
-            .windows(2)
-            .filter(|window| window == b"\x1b]")
-            .count(),
-        1
-    );
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
+    };
+    assert_eq!(count(b"\x1b]") - count(CLEAR), 1);
+}
+
+/// EXT-03 (Monitor, #118): a monitor that entered the host left it with
+/// one OSC 7501 report, the root clear, after leaving its alternate screen
+/// for the last time; one refused before that sent none.
+fn assert_cleared(terminal: &Terminal) {
+    let received = terminal.received();
+    let entered = contains(&received, b"\x1b[?1049h");
+    let clear = HostSignal::Osc7501(CLEAR.to_vec());
+    let expected: Vec<_> = entered.then_some(clear).into_iter().collect();
+    assert_eq!(terminal.host_signals(), expected);
+    if entered {
+        let left = received
+            .windows(8)
+            .rposition(|window| window == b"\x1b[?1049l")
+            .unwrap();
+        assert!(left < position(&received, CLEAR));
+    }
 }
 
 /// Everything `command` wrote to the host, between the outer shell's markers.
@@ -3419,10 +3445,14 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
 
 /// Spec #73 exit (owner decision on #109): input accepted before prefix+x
 /// holds shutdown only until it is answered or `deadlines.operation_ms`
-/// passes. With the session's daemon stopped, a key read with prefix+x is
-/// never answered, and the monitor still exits with status 0 within the
-/// one-second operation deadline plus the two-second shutdown deadline
-/// (and a few seconds' margin for the host's release).
+/// passes, inside the two-second `deadlines.shutdown_ms` (owner decision
+/// on #118). EXT-02 and EXT-04 (Monitor, Fault; #118): with the session's
+/// daemon stopped, a key read with prefix+x is never answered, so its
+/// operation deadline fails the client's connection during shutdown, with
+/// no Leave confirmed: the monitor releases the host and clears it within
+/// the deadlines (and a few seconds' margin for the host's release), then
+/// exits with the climon2 error code and one diagnostic naming the session
+/// and why, never status 0.
 #[test]
 fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let package = Package::new();
@@ -3431,7 +3461,7 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
         &package,
         serde_json::json!({"deadlines": {"operation_ms": 1000, "shutdown_ms": 2000}}),
     );
-    headless(&package, &recorder("Keys"), "finish");
+    let id = headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid as i32;
     let mut terminal = outer(&package, "c2 monitor");
     record(&mut terminal, "Keys", COLS);
@@ -3443,7 +3473,14 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let took = started.elapsed();
     kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
     assert!(took < Duration::from_secs(6), "{took:?}");
-    assert_released(&package, &mut terminal, 0);
+    assert_diagnosed_after_release(
+        &mut terminal,
+        &format!(
+            "climon2: error: monitor shutdown unconfirmed: session {id}: client failed: \
+             timeout: the session daemon did not answer in time (logs: "
+        ),
+    );
+    assert_released(&package, &mut terminal, 125);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }

@@ -23,3 +23,11 @@ pub(crate) fn poll_table(table: *mut libc::pollfd) -> *mut libc::pollfd {
     }
     table
 }
+
+/// Stalls the selected point for good: a thread that never finishes, for
+/// the fail-stop (#118).
+pub(crate) fn stall(point: &str) {
+    while selected(point) {
+        std::thread::park();
+    }
+}

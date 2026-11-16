@@ -15,6 +15,9 @@ use std::{
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1004h";
 /// Leaves the alternate screen, restoring the shell's cursor.
 const LEAVE: &[u8] = b"\x1b[?1049l";
+/// The root OSC 7501 clear (docs/protocol/monitor-host/report-clear.md),
+/// after the host is restored and before any diagnostic.
+const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
 /// How long one wait for host input lasts before signals are checked again.
 const TICK_MILLISECONDS: i32 = 20;
 const READ_BYTES: usize = 4096;
@@ -80,13 +83,17 @@ impl Host {
         })
     }
 
-    /// Returns the host to the documented normal-shell baseline, then restores
-    /// termios once the bytes are out. The baseline resets margins and origin
-    /// mode, which home the cursor, so it is applied on the monitor's alternate
-    /// screen and leaving that screen last restores the shell's cursor.
+    /// Returns the host to the documented normal-shell baseline, sends the
+    /// root clear, then restores termios once the bytes are out. The
+    /// baseline resets margins and origin mode, which home the cursor, so it
+    /// is applied on the monitor's alternate screen and leaving that screen
+    /// restores the shell's cursor.
     pub(crate) fn release(mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        crate::hooks::stall("release");
         let mut bytes = self.baseline.release();
         bytes.extend_from_slice(LEAVE);
+        bytes.extend_from_slice(CLEAR);
         write_host(&bytes)
     }
 

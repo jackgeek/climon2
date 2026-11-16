@@ -1115,7 +1115,8 @@ fn native_fields(limits: &climon2_core::native::Limits) -> [u64; 27] {
 /// contract, "Startup, limits and resources"), its own discovery the
 /// `scheduling.probes` and `discovery` bounds, and its start lanes
 /// `scheduling.loads` and `scheduling.starts`, bounded at exit by
-/// `deadlines.shutdown_ms`, and each session's terminal model
+/// `deadlines.shutdown_ms` and then `deadlines.final_host_ms` (#118), and
+/// each session's terminal model
 /// `memory.client_bytes` and `history.max_rows` (#108). Expected values are the
 /// documented defaults with one setting of each kind changed.
 #[test]
@@ -1131,6 +1132,7 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         ("scheduling.loads", json!(4)),
         ("scheduling.starts", json!(6)),
         ("deadlines.shutdown_ms", json!(7000)),
+        ("deadlines.final_host_ms", json!(1234)),
         ("discovery.pass_ms", json!(1500)),
         ("discovery.batch_records", json!(7)),
         ("discovery.batch_bytes", json!(65_536)),
@@ -1165,7 +1167,15 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         (3, 1500, 7, 65_536, 4096, 9)
     );
     let lanes = limits.lanes();
-    assert_eq!((lanes.loads, lanes.starts, lanes.shutdown_ms), (4, 6, 7000));
+    assert_eq!(
+        (
+            lanes.loads,
+            lanes.starts,
+            lanes.shutdown_ms,
+            lanes.final_host_ms
+        ),
+        (4, 6, 7000, 1234)
+    );
     let model = limits.model();
     assert_eq!((model.bytes, model.history_rows), (33_554_432, 250));
     let retry = limits.retry();

@@ -233,6 +233,24 @@ impl Screen {
     /// Paints `scene` unless its frame is the one painted.
     pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
+        self.present(frame)
+    }
+
+    /// The exit screen while shutdown waits for `waiting` sessions (owner
+    /// decision on #118), alone in the middle of the host: nothing else is
+    /// shown or takes input any more.
+    pub(crate) fn exiting(&mut self, waiting: usize) -> io::Result<()> {
+        let area = Rect::new(0, 0, self.size.cols, self.size.rows);
+        let mut buffer = Buffer::empty(area);
+        centred(&[&exiting(waiting)], &mut buffer, area);
+        self.present(Frame {
+            buffer,
+            ..Frame::default()
+        })
+    }
+
+    /// Paints `frame` unless it is the one painted.
+    fn present(&mut self, frame: Frame) -> io::Result<()> {
         if frame == self.painted {
             return Ok(());
         }
@@ -402,6 +420,13 @@ impl Screen {
         });
         cursor
     }
+}
+
+/// What the exit screen says while shutdown waits for `waiting` sessions
+/// (owner decision on #118), one session in the singular.
+fn exiting(waiting: usize) -> String {
+    let sessions = ["sessions", "session"][usize::from(waiting == 1)];
+    format!("Exiting: waiting for {waiting} {sessions}")
 }
 
 /// The body's state with nothing selected: the startup progress while the
@@ -1003,6 +1028,15 @@ mod tests {
         let label = "Lost | transport io_error: reset";
         let expected = format!("{label:<51} | {:<18} | {:<15}", "Disconnected", "History");
         assert_eq!(top, expected);
+    }
+
+    /// Owner decision on #118 (pure supplement): the exit screen counts the
+    /// sessions shutdown still waits for, one in the singular.
+    #[test]
+    fn the_exit_screen_counts_the_sessions_it_waits_for() {
+        assert_eq!(exiting(0), "Exiting: waiting for 0 sessions");
+        assert_eq!(exiting(1), "Exiting: waiting for 1 session");
+        assert_eq!(exiting(2), "Exiting: waiting for 2 sessions");
     }
 
     /// DSC-01 (initial-selection case, pure supplement) and the owner's
