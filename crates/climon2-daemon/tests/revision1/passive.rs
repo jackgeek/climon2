@@ -410,8 +410,8 @@ fn padded_open(bytes: usize) -> Vec<u8> {
 /// the documented connection-fatal code, then the connection closes. Every
 /// frame after hello is revision 1, the first one too: its length is judged
 /// under the revision-1 frame limit, and a retired private type (Attach
-/// `0x10`, Kill `0x16`) or a second hello is `unknown_message_type`
-/// whenever it is sent. A stream ending inside a frame is
+/// `0x10`, Kill `0x16`, a type-only Detach `0x12`, the smallest frame) or a
+/// second hello is `unknown_message_type` whenever it is sent. A stream ending inside a frame is
 /// `truncated_frame`; one ending between frames just closes. Other
 /// connections and the session go on.
 #[test]
@@ -420,7 +420,7 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     let valid =
         r#""revision":1,"required_capabilities":[],"optional_capabilities":[],"mode":"monitor""#;
     let hello = raw_frame(0x01, br#"{"protocol":1}"#);
-    let first_frames: [(Vec<u8>, &str); 13] = [
+    let first_frames: [(Vec<u8>, &str); 14] = [
         (raw_frame(0x30, b"{"), "invalid_json"),
         (
             raw_frame(0x30, b"{\"request_id\":\"1\xff\"}"),
@@ -461,6 +461,7 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
             "unknown_message_type",
         ),
         (raw_frame(0x16, b"{}"), "unknown_message_type"),
+        (raw_frame(0x12, b""), "unknown_message_type"),
         (hello.clone(), "unknown_message_type"),
     ];
     for (bytes, code) in first_frames {
@@ -530,8 +531,8 @@ fn a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal() {
 
 /// COM-02 (Contract, fragmented and coalesced I/O): partial reads and writes
 /// never define messages. Hello, Open and Leave written at once, then the
-/// peer's half-close, are each answered in order, the first frame after hello
-/// selecting revision 1; the stream ends after the Leave response, so a frame
+/// peer's half-close, are each answered in order, every frame after hello
+/// being revision 1; the stream ends after the Leave response, so a frame
 /// sent after Leave is not served. An Open written in pieces, each consumed
 /// before the next is sent, is answered once whole.
 #[test]
