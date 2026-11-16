@@ -3,7 +3,7 @@
 //! with the time the monitor observed them; it decides which sessions need a
 //! client and what each row shows. Rows are keyed by full session ID, which
 //! is never shown.
-use climon2_core::{SessionId, Timestamp, metadata::SessionMetadata};
+use climon2_core::{SessionId, metadata::SessionMetadata};
 use std::{cmp::Reverse, collections::BTreeMap, time::SystemTime};
 use unicode_width::UnicodeWidthChar;
 
@@ -28,6 +28,77 @@ pub(crate) enum ClientEvent {
     Unavailable(String),
     /// The connected client's connection ended.
     Ended,
+    /// The daemon's effective status changed, or the Initial metadata
+    /// reported it.
+    Status(Status),
+    /// The command's final outcome is known.
+    Final(Final),
+}
+
+/// A session's effective status that is not final, as its daemon reports
+/// it through `status-v1`, in ordering-group order.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum State {
+    NeedsAttention,
+    Acknowledged,
+    Running,
+    Idle,
+}
+
+impl State {
+    fn label(self) -> &'static str {
+        match self {
+            Self::NeedsAttention => "Needs attention",
+            Self::Acknowledged => "Acknowledged",
+            Self::Running => "Running",
+            Self::Idle => "Idle",
+        }
+    }
+}
+
+/// The daemon's effective status, with the daemon's stored time of its last
+/// effective change: never the time the monitor heard it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Status {
+    pub(crate) state: State,
+    pub(crate) changed: SystemTime,
+}
+
+/// The command's authoritative result: exit 143 is not signal 15.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Outcome {
+    Exit(u32),
+    Signal(u32),
+}
+
+impl Outcome {
+    /// Its ordering group and display status: Succeeded for exit zero
+    /// (`completed`), otherwise Failed with the exact code or signal.
+    fn shown(self) -> (Group, String) {
+        match self {
+            Self::Exit(0) => (Group::Completed, "Succeeded".to_owned()),
+            Self::Exit(code) => (Group::Failed, format!("Failed (exit {code})")),
+            Self::Signal(number) => (Group::Failed, format!("Failed (signal {number})")),
+        }
+    }
+}
+
+/// A definitive final outcome, with the daemon's terminal status change time
+/// when it reported one (only with `status-v1`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Final {
+    pub(crate) outcome: Outcome,
+    pub(crate) changed: Option<SystemTime>,
+}
+
+/// The ordering groups, in order (spec #73, Session registry, Ordering).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Group {
+    Status(State),
+    Failed,
+    Completed,
+    /// Not connected, or connected with no current status.
+    Disconnected,
 }
 
 /// Whether the row has a client, and how far it got.
@@ -46,24 +117,15 @@ enum Connection {
 }
 
 impl Connection {
-    /// The status column. A connected row shows no effective status yet
-    /// (#107), except Unavailable when its daemon lacks `status-v1`.
+    /// The not-connected label of a row with no current status and no final
+    /// outcome. A client opened with `status-v1` is still Starting until its
+    /// Initial metadata reports the status; one without it is Unavailable.
     fn label(&self) -> &'static str {
         match self {
             Self::Own => "This monitor",
-            Self::Starting => "Starting",
+            Self::Starting | Self::Connected { status: true } => "Starting",
             Self::Disconnected => "Disconnected",
-            other => other.reachable(),
-        }
-    }
-
-    /// Connected with `status-v1`: its effective status arrives with #107;
-    /// otherwise not reachable for a status.
-    fn reachable(&self) -> &'static str {
-        if *self == (Self::Connected { status: true }) {
-            ""
-        } else {
-            "Unavailable"
+            Self::None | Self::Connected { status: false } | Self::Unavailable(_) => "Unavailable",
         }
     }
 }
@@ -79,6 +141,13 @@ struct Row {
     connected: bool,
     /// The latest nonempty daemon title.
     title: Option<String>,
+    /// The latest daemon status: current while connected, otherwise stale
+    /// detail that neither labels nor sorts the row.
+    status: Option<Status>,
+    /// The final outcome and the time it sorts by: the daemon's terminal
+    /// status change time, otherwise when the monitor learned it. It
+    /// survives disconnection.
+    ended: Option<(Outcome, SystemTime)>,
 }
 
 impl Row {
@@ -89,6 +158,32 @@ impl Row {
             since: now,
             connected: false,
             title: None,
+            status: None,
+            ended: None,
+        }
+    }
+
+    /// The row's ordering group, the time it sorts by within it, and its
+    /// display status: a final outcome first, then a connected row's
+    /// current status, otherwise its not-connected condition since the
+    /// monitor recorded entering it.
+    fn standing(&self) -> (Group, SystemTime, String) {
+        let connected = matches!(self.connection, Connection::Connected { .. });
+        match (self.ended, self.status.filter(|_| connected)) {
+            (Some((outcome, at)), _) => {
+                let (group, label) = outcome.shown();
+                (group, at, label)
+            }
+            (None, Some(status)) => (
+                Group::Status(status.state),
+                status.changed,
+                status.state.label().to_owned(),
+            ),
+            (None, None) => (
+                Group::Disconnected,
+                self.since,
+                self.connection.label().to_owned(),
+            ),
         }
     }
 
@@ -124,7 +219,7 @@ impl Row {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct View {
     pub(crate) id: SessionId,
-    pub(crate) status: &'static str,
+    pub(crate) status: String,
     /// Literal: control characters escaped, never interpreted.
     pub(crate) label: String,
     /// When the monitor recorded the row's current connection status.
@@ -190,6 +285,11 @@ impl Registry {
             ClientEvent::Title(title) => row.retitle(title),
             ClientEvent::Unavailable(why) => row.connect(Connection::Unavailable(why), now),
             ClientEvent::Ended => row.connect(Connection::Disconnected, now),
+            ClientEvent::Status(status) => row.status = Some(status),
+            ClientEvent::Final(known) => {
+                row.ended
+                    .get_or_insert((known.outcome, known.changed.unwrap_or(now)));
+            }
         }
     }
 
@@ -202,29 +302,26 @@ impl Registry {
         self.incomplete.as_deref()
     }
 
-    /// Every row, newest created first, then ascending full session ID. The
-    /// status order arrives with #107.
+    /// Every row by ordering group, then newest time first, then ascending
+    /// full session ID.
     pub(crate) fn rows(&self) -> Vec<View> {
-        let mut rows: Vec<_> = self.rows.values().collect();
-        rows.sort_by_key(|row| order(&row.metadata.created_at, &row.metadata.session_id));
-        rows.into_iter()
-            .map(|row| View {
-                id: row.metadata.session_id.clone(),
-                status: row.connection.label(),
-                label: row.label(),
-                since: row.since,
+        let mut rows: Vec<_> = self
+            .rows
+            .values()
+            .map(|row| {
+                let (group, at, status) = row.standing();
+                let view = View {
+                    id: row.metadata.session_id.clone(),
+                    status,
+                    label: row.label(),
+                    since: row.since,
+                };
+                ((group, Reverse(at)), view)
             })
-            .collect()
+            .collect();
+        rows.sort_by(|(left, a), (right, b)| (left, &a.id).cmp(&(right, &b.id)));
+        rows.into_iter().map(|(_, view)| view).collect()
     }
-}
-
-/// Newest created first, then ascending full session ID: the order of rows
-/// and of client starts.
-pub(crate) fn order<'a>(
-    created: &'a Timestamp,
-    id: &'a SessionId,
-) -> (Reverse<&'a Timestamp>, &'a SessionId) {
-    (Reverse(created), id)
 }
 
 /// Session text shown literally: control characters are escaped, so the
@@ -280,19 +377,50 @@ mod tests {
         SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
     }
 
-    fn shown(registry: &Registry) -> Vec<(&'static str, String)> {
+    /// Each row as `status|label`, in order.
+    fn shown(registry: &Registry) -> Vec<String> {
         registry
             .rows()
             .into_iter()
-            .map(|row| (row.status, row.label))
+            .map(|row| format!("{}|{}", row.status, row.label))
             .collect()
     }
 
-    /// DSC-01 (start order, pure supplement) and DSC-03: live sessions need
-    /// one client each, asked once however often they are found again; rows
-    /// list newest created first with ascending full session ID ties.
+    /// Finds `suffix`'s live session, with `command` as its label, at
+    /// `second`, when its client also opens, with `status-v1` or without it.
+    fn opened(
+        registry: &mut Registry,
+        (suffix, command): (u8, &str),
+        status: bool,
+        second: u64,
+    ) -> SessionId {
+        let session = metadata(&id(suffix), "2026-11-13T10:00:00.000Z", command, &[]);
+        let key = session.session_id.clone();
+        registry.discovered(session, Found::Live, at(second));
+        registry.client(&key, ClientEvent::Opened { status }, at(second));
+        key
+    }
+
+    fn status(state: State, changed: u64) -> ClientEvent {
+        ClientEvent::Status(Status {
+            state,
+            changed: at(changed),
+        })
+    }
+
+    fn ended(outcome: Outcome, changed: Option<u64>) -> ClientEvent {
+        ClientEvent::Final(Final {
+            outcome,
+            changed: changed.map(at),
+        })
+    }
+
+    /// DSC-03 (pure supplement): live sessions need one client each, asked
+    /// once however often they are found again. Rows waiting together for
+    /// their clients tie on the time they started, so ascending full session
+    /// ID orders them, whatever their creation times.
     #[test]
-    fn live_sessions_need_one_client_each_and_list_newest_first() {
+    fn live_sessions_need_one_client_each() {
         let mut registry = Registry::new(None);
         let tied = "2026-11-13T10:00:00.000Z";
         let found = [
@@ -311,12 +439,138 @@ mod tests {
                 None
             );
         }
-        let ids: Vec<_> = registry.rows().into_iter().map(|row| row.id).collect();
-        let expected: Vec<SessionId> = [9, 2, 3, 1]
-            .map(|suffix| id(suffix).parse().unwrap())
-            .to_vec();
-        assert_eq!(ids, expected);
-        assert!(registry.rows().iter().all(|row| row.status == "Starting"));
+        assert_eq!(
+            shown(&registry),
+            ["Starting|old", "Starting|b", "Starting|c", "Starting|new"]
+        );
+    }
+
+    /// DSC-01 (status order, pure supplement) and STA-07 (Monitor, pure
+    /// supplement): rows order by group (needs attention, acknowledged,
+    /// running, idle, failed, completed, then not connected), within a group
+    /// by the daemon's change time, newest first, never the time the monitor
+    /// heard it or the creation time, then by ascending full session ID on a
+    /// tie. Only a new effective change time moves a row; a disconnected row
+    /// keeps its last status as stale detail, sorting and labelled by its
+    /// disconnection instead.
+    #[test]
+    fn rows_order_by_group_then_newest_daemon_change_then_session_id() {
+        let mut registry = Registry::new(None);
+        let events = [
+            (9, "attention older", status(State::NeedsAttention, 100)),
+            (8, "attention newer", status(State::NeedsAttention, 200)),
+            (7, "acknowledged", status(State::Acknowledged, 50)),
+            (5, "running tied low", status(State::Running, 300)),
+            (6, "running tied high", status(State::Running, 300)),
+            (4, "idle", status(State::Idle, 400)),
+            (3, "failed", ended(Outcome::Exit(3), Some(10))),
+            (2, "succeeded", ended(Outcome::Exit(0), Some(500))),
+            (1, "disconnected", status(State::Running, 700)),
+        ];
+        let mut keys = BTreeMap::new();
+        for (suffix, command, event) in events {
+            let key = opened(&mut registry, (suffix, command), true, 1);
+            registry.client(&key, event, at(900 - u64::from(suffix)));
+            keys.insert(command, key);
+        }
+        registry.client(&keys["disconnected"], ClientEvent::Ended, at(600));
+        let starting = metadata(&id(10), "2026-11-13T12:00:00.000Z", "starting", &[]);
+        registry.discovered(starting, Found::Live, at(2));
+        assert_eq!(
+            shown(&registry),
+            [
+                "Needs attention|attention newer",
+                "Needs attention|attention older",
+                "Acknowledged|acknowledged",
+                "Running|running tied low",
+                "Running|running tied high",
+                "Idle|idle",
+                "Failed (exit 3)|failed",
+                "Succeeded|succeeded",
+                "Disconnected|disconnected",
+                "Starting|starting",
+            ]
+        );
+        let older = &keys["attention older"];
+        registry.client(older, status(State::NeedsAttention, 100), at(950));
+        assert_eq!(shown(&registry)[0], "Needs attention|attention newer");
+        registry.client(older, status(State::NeedsAttention, 250), at(951));
+        assert_eq!(shown(&registry)[0], "Needs attention|attention older");
+    }
+
+    /// COM-06 (Monitor labels, pure supplement) and final rows (derived):
+    /// exit zero is Succeeded, a nonzero exit or a signal Failed with its
+    /// exact code or signal, exit 143 apart from signal 15. A final row sorts
+    /// by the daemon's terminal status time when it reported one, otherwise
+    /// by when the monitor learned the outcome, with or without `status-v1`.
+    /// The outcome survives disconnection, a later status never replaces it,
+    /// and a repeated final changes nothing.
+    #[test]
+    fn final_outcomes_are_labelled_exactly_and_sort_by_their_time() {
+        let mut registry = Registry::new(None);
+        let outcomes = [
+            (1, "signal", true, ended(Outcome::Signal(15), Some(25)), 99),
+            (2, "exit 143", true, ended(Outcome::Exit(143), None), 20),
+            (3, "exit 1", false, ended(Outcome::Exit(1), None), 10),
+            (4, "exit 0", false, ended(Outcome::Exit(0), None), 30),
+        ];
+        let mut keys = Vec::new();
+        for (suffix, command, selected, event, learned) in outcomes {
+            let key = opened(&mut registry, (suffix, command), selected, 1);
+            registry.client(&key, event, at(learned));
+            keys.push(key);
+        }
+        let expected = [
+            "Failed (signal 15)|signal",
+            "Failed (exit 143)|exit 143",
+            "Failed (exit 1)|exit 1",
+            "Succeeded|exit 0",
+        ];
+        assert_eq!(shown(&registry), expected);
+        registry.client(&keys[1], ClientEvent::Ended, at(40));
+        registry.client(&keys[0], status(State::Running, 50), at(41));
+        registry.client(&keys[2], ended(Outcome::Exit(0), Some(99)), at(42));
+        assert_eq!(shown(&registry), expected);
+    }
+
+    /// Not-connected rows (confirmed 2026-11-08) and STA-07 (Monitor, pure
+    /// supplement): a row with no current status and no final outcome sorts
+    /// after every status and final row, by the newest time it entered its
+    /// condition: This monitor, Starting (also a client opened with
+    /// `status-v1` awaiting its Initial metadata), Unavailable (uncertain,
+    /// failed, or connected without `status-v1`) and Disconnected, whose
+    /// stale status time neither sorts nor labels it.
+    #[test]
+    fn not_connected_rows_sort_by_when_they_entered_their_condition() {
+        let mut registry = Registry::new(Some(OWN.parse().unwrap()));
+        let own = metadata(OWN, "2026-11-13T10:00:00.000Z", "own", &[]);
+        registry.discovered(own, Found::Live, at(1));
+        let starting = metadata(&id(1), "2026-11-13T10:00:00.000Z", "starting", &[]);
+        registry.discovered(starting, Found::Live, at(2));
+        let unsure = metadata(&id(2), "2026-11-13T10:00:00.000Z", "unsure", &[]);
+        registry.discovered(unsure, Found::Uncertain, at(3));
+        opened(&mut registry, (3, "without status"), false, 4);
+        opened(&mut registry, (4, "awaiting"), true, 5);
+        let lost = opened(&mut registry, (5, "lost"), true, 1);
+        registry.client(&lost, status(State::Running, 100), at(5));
+        registry.client(&lost, ClientEvent::Ended, at(6));
+        let failed = opened(&mut registry, (6, "failed"), true, 1);
+        registry.client(&failed, ClientEvent::Unavailable("no".into()), at(7));
+        let idle = opened(&mut registry, (7, "idle"), true, 1);
+        registry.client(&idle, status(State::Idle, 0), at(8));
+        assert_eq!(
+            shown(&registry),
+            [
+                "Idle|idle",
+                "Unavailable|failed",
+                "Disconnected|lost",
+                "Starting|awaiting",
+                "Unavailable|without status",
+                "Unavailable|unsure",
+                "Starting|starting",
+                "This monitor|own",
+            ]
+        );
     }
 
     /// Own-session scenario (confirmed 2026-11-08): this monitor's own session
@@ -327,7 +581,7 @@ mod tests {
         let own = metadata(OWN, "2026-11-13T10:00:00.000Z", "bash", &[]);
         assert_eq!(registry.discovered(own.clone(), Found::Live, at(1)), None);
         assert_eq!(registry.discovered(own, Found::Live, at(2)), None);
-        assert_eq!(shown(&registry), [("This monitor", "bash".to_owned())]);
+        assert_eq!(shown(&registry), ["This monitor|bash"]);
     }
 
     /// DSC-04 (pure supplement): uncertainty and staleness never change a
@@ -350,23 +604,17 @@ mod tests {
             None
         );
         assert_eq!(registry.discovered(gone.clone(), Found::Stale, at(2)), None);
-        assert_eq!(
-            shown(&registry),
-            [
-                ("", "live".to_owned()),
-                ("Unavailable", "unsure".to_owned())
-            ]
-        );
+        assert_eq!(shown(&registry), ["Starting|live", "Unavailable|unsure"]);
         registry.discovered(live.clone(), Found::Uncertain, at(3));
         registry.discovered(live.clone(), Found::Stale, at(3));
-        assert_eq!(registry.rows()[0].status, "");
+        assert_eq!(shown(&registry), ["Starting|live", "Unavailable|unsure"]);
         assert_eq!(registry.rows()[0].since, at(2));
         assert_eq!(
             registry.discovered(unsure.clone(), Found::Live, at(5)),
             Some(unsure)
         );
-        assert_eq!(registry.rows()[1].status, "Starting");
-        assert_eq!(registry.rows()[1].since, at(5));
+        assert_eq!(shown(&registry), ["Starting|unsure", "Starting|live"]);
+        assert_eq!(registry.rows()[0].since, at(5));
     }
 
     /// Stale rows (owner decision on #106): a session proven gone drops its
@@ -406,16 +654,16 @@ mod tests {
                 None
             );
         }
-        assert_eq!(shown(&registry), [("Unavailable", "s4".to_owned())]);
+        assert_eq!(shown(&registry), ["Unavailable|s4"]);
         registry.client(&connected.session_id, ClientEvent::Ended, at(5));
         registry.client(&starting.session_id, ClientEvent::Ended, at(5));
-        assert_eq!(shown(&registry), [("Disconnected", "s4".to_owned())]);
+        assert_eq!(shown(&registry), ["Disconnected|s4"]);
         assert_eq!(registry.rows()[0].since, at(5));
     }
 
     /// COM-01 (Monitor, pure supplement) and the not-connected labels: a
-    /// connected row shows no fabricated status, or Unavailable without
-    /// `status-v1`; a failed client is Unavailable and an ended one
+    /// connected row shows no fabricated status: Starting until its status
+    /// arrives, or Unavailable without `status-v1`; a failed client is Unavailable and an ended one
     /// Disconnected, each recording when it entered that status.
     #[test]
     fn connection_statuses_are_labelled_as_specified() {
@@ -425,7 +673,7 @@ mod tests {
         registry.discovered(session, Found::Live, at(1));
         let steps = [
             (ClientEvent::Opened { status: false }, "Unavailable"),
-            (ClientEvent::Opened { status: true }, ""),
+            (ClientEvent::Opened { status: true }, "Starting"),
             (ClientEvent::Ended, "Disconnected"),
             (ClientEvent::Unavailable("refused".into()), "Unavailable"),
         ];
