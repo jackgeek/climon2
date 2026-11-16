@@ -132,8 +132,9 @@ impl StartupData {
         let log = climon2_platform::logging::library_log(context.home.root(), id)?;
         let guid: Guid = id.as_str().parse().map_err(std::io::Error::other)?;
         let path = |path: &Path| path.as_os_str().as_bytes().to_vec();
-        let (take_control_enabled, take_control_byte) =
-            context.take_control.map_or((0, 0), |key| (1, key.byte()));
+        let (take_control_enabled, take_control_byte) = context
+            .take_control
+            .map_or(Default::default(), |key| (1, key.byte()));
         Ok(Self {
             session: guid.bytes(),
             release: metadata.climon2_version.as_str().as_bytes().to_vec(),

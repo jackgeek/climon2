@@ -409,7 +409,8 @@ impl State {
             .map(|fd| libc::pollfd {
                 fd,
                 events: libc::POLLIN,
-                revents: 0,
+                // Output only.
+                revents: Default::default(),
             })
             .collect();
         wait(&mut table);
@@ -542,7 +543,9 @@ impl State {
     fn shut_down(mut self) {
         self.waiting.clear();
         let deadline = Instant::now() + self.context.shutdown;
-        while !self.instances.is_empty() && Instant::now() < deadline {
+        while !self.instances.is_empty()
+            && deadline.checked_duration_since(Instant::now()).is_some()
+        {
             let live = self
                 .instances
                 .values()
