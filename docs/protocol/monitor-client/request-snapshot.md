@@ -9,9 +9,14 @@ It tracks no shared-release allocation. Queued
 ([#93](https://github.com/jackgeek/climon2/issues/93)); input and display
 measurements stay zero until Input and Display arrive
 ([#94](https://github.com/jackgeek/climon2/issues/94)). Instance allocation
-undercounts: each instance's diagnostics dispatcher is not counted yet
-([#180](https://github.com/jackgeek/climon2/issues/180)). The caller is not
-implemented.**
+is measured at the library's allocator: every block allocated while working
+for the instance, its diagnostics, workers, requests, records and connection
+included, from creation until the block is freed
+([#180](https://github.com/jackgeek/climon2/issues/180)). Each worker's thread
+handle, which the Rust standard library allocates outside the library's
+allocator, is not counted. State a library dependency keeps for the whole
+process or a caller's thread is shared-release allocation, so it is not
+counted either. The caller is not implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) queries its
 [client](../../../GLOSSARY.md#sessions)'s local resource/progress measurements.
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

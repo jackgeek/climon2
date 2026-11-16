@@ -5,7 +5,7 @@
 use super::{
     abi::{Api, Handles},
     probe,
-    scenarios::{Owner, Setup, clean_up, create, drain_to_terminal, wait},
+    scenarios::{Owner, Setup, clean_up, create, drain_to_terminal, end, release, wait},
 };
 use climon2_core::native;
 use serde_json::{Map, Value, json};
@@ -55,12 +55,60 @@ pub fn independence(setup: &Setup) -> Value {
     Value::Object(report)
 }
 
-fn release(api: Api, owner: &Owner, handles: Handles) -> Value {
+/// `bystander`: instance `a` is created, then `b` lives its whole life
+/// beside it, one call at a time (created, ended, released and destroyed),
+/// with `a`'s snapshot before, beside and after `b`; then `a` ends.
+pub fn bystander(setup: &Setup) -> Value {
+    let api = setup.api;
+    let (owner_a, owner_b) = (Owner::spawn("owner-a"), Owner::spawn("owner-b"));
+    let (create_a, a) = create(setup, &owner_a, &setup.input["a"]);
+    let a = a.expect("a is created");
+    let a_before = api.snapshot(a);
+    let (create_b, b) = create(setup, &owner_b, &setup.input["b"]);
+    let b = b.expect("b is created");
+    let b_created = api.snapshot(b);
+    let a_beside = api.snapshot(a);
+    let end_b = end(api, &owner_b, b);
+    let release_b = release(api, &owner_b, b);
+    let a_after = api.snapshot(a);
     json!({
-        "release_communication": api.release_communication(handles),
-        "release_control": api.release_control(handles),
-        "destroy": owner.call(move || api.destroy(handles)),
+        "create_a": create_a,
+        "create_b": create_b,
+        "a_before": a_before,
+        "b_created": b_created,
+        "a_beside": a_beside,
+        "end_b": end_b,
+        "release_b": release_b,
+        "a_after": a_after,
+        "end_a": end(api, &owner_a, a),
+        "release_a": release(api, &owner_a, a),
+        "joined": [owner_a.join(), owner_b.join()],
     })
+}
+
+/// `successive`: instances `a`, then `b`, on one owner thread: each is
+/// created, has its snapshot taken, and is ended, released and destroyed
+/// before the next is created.
+pub fn successive(setup: &Setup) -> Value {
+    let api = setup.api;
+    let owner = Owner::spawn("owner");
+    let mut report = Map::new();
+    for name in ["a", "b"] {
+        let (create, handles) = create(setup, &owner, &setup.input[name]);
+        let handles = handles.expect("the instance is created");
+        let created = api.snapshot(handles);
+        report.insert(
+            name.into(),
+            json!({
+                "create": create,
+                "created": created,
+                "end": end(api, &owner, handles),
+                "release": release(api, &owner, handles),
+            }),
+        );
+    }
+    report.insert("joined".into(), json!(owner.join()));
+    Value::Object(report)
 }
 
 /// `ambient`: the process environment, working directory, signal

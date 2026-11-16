@@ -63,12 +63,17 @@ pub fn fault(setup: &Setup) -> Value {
         "readable_before_drain".into(),
         json!(probe::readable(descriptor)),
     );
+    // The snapshot right before the drain that succeeds: what a delivery
+    // charges is measured across that drain alone.
+    let mut before_drain = Value::Null;
     let (drain, drained) = attempts(|| {
+        before_drain = json!(api.snapshot(handles));
         let (call, drain) = api.drain(handles);
         (json!([call, drain.observed.clone()]), drain)
     });
     report.insert("drain".into(), drain);
     if drained.delivery.is_some() {
+        report.insert("snapshot_before_delivery".into(), before_drain);
         report.insert(
             "snapshot_with_delivery".into(),
             json!(api.snapshot(handles)),
@@ -104,6 +109,10 @@ pub fn fault(setup: &Setup) -> Value {
             owner.call(move || api.destroy(handles)),
         );
         report.insert("delivery_before_release".into(), drained.observe_again());
+        report.insert(
+            "snapshot_before_release".into(),
+            json!(api.snapshot(handles)),
+        );
         let (released, ()) = attempts(|| (api.release_delivery(delivery), ()));
         report.insert("release_delivery".into(), released);
         report.insert(

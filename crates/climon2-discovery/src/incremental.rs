@@ -175,16 +175,22 @@ impl Walk<'_> {
         finished.then_some(()).ok_or(Some(Incomplete::Deadline))
     }
 
-    /// Whether the deadline stops the pass: never before it progressed.
+    /// Whether the deadline stops the pass: never before it progressed. The
+    /// instant the deadline is reached exactly cannot be told apart from
+    /// either side of it, so only a deadline that has passed stops it.
     fn late(&self) -> bool {
-        self.progressed.load(Ordering::Relaxed) && Instant::now() >= self.deadline
+        self.progressed.load(Ordering::Relaxed)
+            && self
+                .deadline
+                .checked_duration_since(Instant::now())
+                .is_none()
     }
 
     /// The first `batch_records` metadata names in `range`, ascending, kept in
     /// a bounded heap while the directory is listed.
     fn names(&self, range: &Range) -> io::Result<Vec<OsString>> {
         let limit = self.scan.batch_records.get();
-        let mut kept = BinaryHeap::with_capacity(limit + 1);
+        let mut kept = BinaryHeap::new();
         for entry in listing(&self.sessions)? {
             let name = entry?.file_name();
             if range.admits(&name) {

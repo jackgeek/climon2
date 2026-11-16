@@ -1,18 +1,18 @@
 # Display — `0x49`
 
-**Status: agreed and implemented** for interactive attachments
+**Status: agreed and implemented** for interactive [attachments](../../../GLOSSARY.md#attachment-and-control)
 ([#87](https://github.com/jackgeek/climon2/issues/87)) and, with
 [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation), for monitor-mode connections
 ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) delivers ordered terminal
-[bytes](../TERMS.md#byte) to the controlling
-[client](../../../GLOSSARY.md#sessions), including background control.
+[bytes](../TERMS.md#byte) to the
+[controller](../../../GLOSSARY.md#attachment-and-control), including background control.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
 [terms](../TERMS.md), and inherited [wire rules](core-v1.md).
 
 ## Binary body and example
 
-The 16-byte header is two nonzero unsigned 64-bit
+The 16-byte header is two nonzero [unsigned 64-bit](../TERMS.md#unsigned-integer)
 [big-endian](../TERMS.md#big-endian) integers:
 [period](../../../GLOSSARY.md#attachment-and-control),
 [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts).
@@ -27,8 +27,8 @@ No [request ID](../TERMS.md#request-id) or [JSON](../TERMS.md#json) body is pres
 00 ff 41
 ```
 
-Length 20 is one type + 16 header + 3 payload bytes. Period 2, restoration 3
-carries exactly `00 ff 41`. Chunk to the advertised server [frame](../TERMS.md#frame) bound;
+Length 20 is one type + 16 header + 3 [payload](../TERMS.md#payload) bytes. Period 2, restoration 3
+carries exactly `00 ff 41`. Chunk to the advertised `max_server_frame_bytes` [frame](../TERMS.md#frame) bound;
 chunk boundaries do not change byte order.
 
 ## Order and guarantees
@@ -41,14 +41,16 @@ with the same authority IDs. Empty restoration has no Display frames.
 Metadata may interleave; terminal bytes remain ordered.
 No old-authority Display follows a newer begin or
 [revocation](../../../GLOSSARY.md#attachment-and-control) invalidating it.
-Revoked clients receive metadata, not core live mirroring.
-For monitor-mode connections all display/restoration bytes use effective session
-geometry, including background grants, never outer-host/requested dimensions.
+Revoked [clients](../../../GLOSSARY.md#sessions) receive metadata, not core live mirroring.
+For [monitor](../../../GLOSSARY.md#sessions)-mode connections all display/restoration bytes use effective
+[session](../../../GLOSSARY.md#sessions) [geometry](../TERMS.md#geometry), including background
+[grants](../../../GLOSSARY.md#attachment-and-control), never
+[outer-host](../../../GLOSSARY.md#sessions)/requested dimensions.
 The [canonical #63 policy](../terminal-integration.md#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1)
 needs no extra geometry field and leaves ordinary [direct](../../../GLOSSARY.md#restoration-and-presentation)/[derived](../../../GLOSSARY.md#restoration-and-presentation) attach unchanged.
-The monitor parses exact bytes into its own model and paints read-only Rust views
-with Ratatui; no session bytes go directly to the host and no duplicate query
-replies are emitted. Native cell serialization is not introduced.
+The monitor parses exact bytes into its own model and paints
+[read-only Rust views](../../../GLOSSARY.md#sessions) with Ratatui; no session
+bytes go directly to the host and no duplicate query replies are emitted. Native [cell](../TERMS.md#display-cell) serialization is not introduced.
 
 Delivery is not applied [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts),
 application consumption or command completion.

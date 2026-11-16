@@ -14,12 +14,17 @@ returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
 ones. All eleven [function-table](../TERMS.md#function-table) calls follow
-the rules below, with one gap: snapshot reports no shared-release allocation
-and undercounts instance allocation, because it does not yet count each
-instance's diagnostics dispatcher
-([#180](https://github.com/jackgeek/climon2/issues/180)). `submit` accepts
-`CM1_OPEN` in both modes, `CM1_LEAVE`, `CM1_ACQUIRE`, `CM1_INPUT`,
-`CM1_RESIZE`, `CM1_READY` and `CM1_FOCUS`; Set viewing, Acknowledge and Kill
+the rules below, with one gap: snapshot reports no shared-release allocation.
+Snapshot's instance allocation counts every block the library's allocator
+holds for work on that instance, its diagnostics, workers, queued requests,
+records, deliveries and connection included
+([#180](https://github.com/jackgeek/climon2/issues/180)), except each
+worker's thread handle, which the Rust standard library allocates outside the
+library's allocator. State a library dependency keeps for the whole process
+or a caller's thread is shared-release allocation, so it is not counted.
+`submit` accepts `CM1_OPEN` in both modes, `CM1_LEAVE`, `CM1_ACQUIRE`,
+`CM1_INPUT`, `CM1_RESIZE`, `CM1_READY` and `CM1_FOCUS`; Set viewing,
+Acknowledge and Kill
 report `CM1_UNSUPPORTED_OPERATION`. An instance opens a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) or an
 interactive attachment to its [session daemon](../../../GLOSSARY.md#sessions)
@@ -514,7 +519,7 @@ this section.
   reserves one record of `event_records`, and one record's charge plus
   `metadata_record_bytes` of `event_bytes`, for its outcome; without room, `submit` is `CM1_FULL`
   (`queue_full`).
-- **Records.** A record is charged twice `sizeof(cm1_record)`, for the
+- **Records.** A record is charged to `event_bytes` twice `sizeof(cm1_record)`, for the
   `cm1_record` and the library's own copy it points into, plus the bytes it
   owns once: copied text and token arrays. It is charged from its queueing
   until its delivery's release. The library's own error text is static and
