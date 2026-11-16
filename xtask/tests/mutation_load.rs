@@ -666,3 +666,49 @@ fn every_option_is_required() {
         );
     }
 }
+
+/// Workers and rounds must be at least one and the timeout factor positive: a value one past
+/// each limit is a usage error, and the limit itself is accepted. An accepted measurement of a
+/// workspace that cannot build fails on that build instead.
+#[test]
+fn counts_and_the_timeout_factor_are_validated_at_their_limits() {
+    let fixture = Fixture::new("compile_error!(\"never builds\");\n");
+    for (workers, rounds, timeout_factor, accepted) in [
+        ("0", "1", "10", false),
+        ("1", "0", "10", false),
+        ("1", "1", "0", false),
+        ("1", "1", "-1", false),
+        ("1", "1", "0.5", true),
+    ] {
+        let command = fixture.command(1, 1, "10");
+        let mut arguments: Vec<_> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        for (option, value) in [
+            ("--workers", workers),
+            ("--rounds", rounds),
+            ("--timeout-factor", timeout_factor),
+        ] {
+            let position = arguments
+                .iter()
+                .position(|argument| argument == option)
+                .unwrap();
+            arguments[position + 1] = value.to_owned();
+        }
+        let output = Command::new(python())
+            .args(&arguments)
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .env_remove("CARGO_BUILD_BUILD_DIR")
+            .output()
+            .unwrap();
+        let expected = if accepted { 1 } else { 2 };
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{workers} {rounds} {timeout_factor}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

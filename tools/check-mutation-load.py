@@ -75,7 +75,8 @@ class Suite:
         self.process = None
         self.limit = None
         self.killed = None
-        self.output = log.open("w")
+        # Line-buffered, so each line lands before the next stage's output.
+        self.output = log.open("w", buffering=1)
 
     def advance(self):
         """Starts the next stage; False when none remains."""
@@ -84,7 +85,6 @@ class Suite:
             return False
         arguments, stage_timeout = stage
         self.limit = self.deadline(" ".join(arguments), stage_timeout)
-        print(f"== cargo test {' '.join(arguments)}", file=self.output, flush=True)
         self.process = subprocess.Popen(
             self.command + arguments, cwd=self.root, env=self.environment,
             stdout=self.output, stderr=subprocess.STDOUT, start_new_session=True,
@@ -108,28 +108,26 @@ class Suite:
         """Whether the suite is done: passed, failed, or killed at a timeout."""
         code = self.process.poll()
         if code is None:
-            if self.limit is not None and time.monotonic() >= self.limit[0]:
-                self.killed = self.limit[1]
-                self.stop()
-                return True
-            return False
-        print(f"exit={code}", file=self.output, flush=True)
+            if self.limit is None or max(0.0, self.limit[0] - time.monotonic()):
+                return False
+            code = self.stop(self.limit[1])
+        print(f"exit={code}", file=self.output)
         return code != 0 or not self.advance()
 
     def failed(self):
         return self.process.returncode != 0
 
-    def stop(self):
+    def stop(self, reason):
+        """Kills the running stage's session for `reason` and returns its exit status."""
+        self.killed = reason
         with suppress(ProcessLookupError):
             os.killpg(self.process.pid, signal.SIGKILL)
-        self.process.wait()
-        print(f"Killed at {self.killed}", file=self.output)
-        print(f"exit={self.process.returncode}", file=self.output, flush=True)
+        print(f"Killed at {reason}", file=self.output)
+        return self.process.wait()
 
     def close(self):
         if self.process is not None and self.process.poll() is None:
-            self.killed = "an interruption"
-            self.stop()
+            print(f"exit={self.stop('an interruption')}", file=self.output)
         self.output.close()
 
 
@@ -161,7 +159,7 @@ def run_suites(root, cargo, environment, suites, stages, timeout=None):
 
 def report_build_failure(log):
     print(f"Mutation load could not build the workspace: {log}", file=sys.stderr)
-    print(log.read_text(errors="replace"), file=sys.stderr, flush=True)
+    print(log.read_text(errors="replace"), file=sys.stderr)
 
 
 def stuck_tests(text):
@@ -191,7 +189,7 @@ def report_failures(failed, killed):
             print(f"  {log}: {timeout}", file=sys.stderr)
     print("Failed suite logs:", file=sys.stderr)
     for log in failed:
-        print(f"  {log}", file=sys.stderr, flush=True)
+        print(f"  {log}", file=sys.stderr)
 
 
 def remove(path):
@@ -207,7 +205,7 @@ def measure(root, cargo, workers, rounds, timeout_factor, stages):
     history = target / "flake-logs"
     history.mkdir(parents=True, exist_ok=True)
     logs = Path(tempfile.mkdtemp(prefix="run-", dir=history))
-    print(f"Mutation load: {workers} workers, {rounds} rounds; logs: {logs}", flush=True)
+    print(f"Mutation load: {workers} workers, {rounds} rounds; logs: {logs}", file=sys.stderr)
     environment = os.environ.copy()
     for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
         environment.pop(key, None)
@@ -227,9 +225,9 @@ def measure(root, cargo, workers, rounds, timeout_factor, stages):
     if failed:
         report_failures(failed, {})
         return 1
-    print(f"Unloaded baseline passed; the mutation timeout is {timeout:.1f}s.", flush=True)
+    print(f"Unloaded baseline passed; the mutation timeout is {timeout:.1f}s.", file=sys.stderr)
     for arguments, stage_timeout in stages:
-        print(f"Stage `{' '.join(arguments)}` timeout: {stage_timeout:.1f}s.", flush=True)
+        print(f"Stage `{' '.join(arguments)}` timeout: {stage_timeout:.1f}s.", file=sys.stderr)
     try:
         scratch.mkdir()
         builds = [scratch / f"worker-{worker}" for worker in range(1, workers + 1)]
@@ -245,7 +243,7 @@ def measure(root, cargo, workers, rounds, timeout_factor, stages):
                 f"Mutation load round {round_number}/{rounds}: "
                 f"{len(failed)}/{workers} suites failed "
                 f"in {time.monotonic() - started:.1f}s",
-                flush=True,
+                file=sys.stderr,
             )
             if failed:
                 report_failures(failed, killed)
