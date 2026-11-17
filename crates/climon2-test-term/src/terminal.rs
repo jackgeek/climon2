@@ -30,6 +30,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// How many of the latest output bytes a terminal keeps for
+/// [`Terminal::received`]: enough for a test's whole run of monitor
+/// repaints, so a check of everything the host received (such as "the
+/// outer shell's title was the only OSC") still sees its start.
+const RECENT_BYTES: usize = 256 * 1024;
+
 struct Size {
     rows: usize,
     cols: usize,
@@ -307,7 +313,7 @@ impl Terminal {
                         state.signals.push(&buffer[..count]);
                         state.recent.extend_from_slice(&buffer[..count]);
                         state.last_output = Instant::now();
-                        let excess = state.recent.len().saturating_sub(65536);
+                        let excess = state.recent.len().saturating_sub(RECENT_BYTES);
                         state.recent.drain(..excess);
                         while let Ok(event) = events.try_recv() {
                             if let Err(error) = state.handle(event, &reader_writer) {
@@ -435,7 +441,7 @@ impl Terminal {
             .to_vec()
     }
 
-    /// The most recent output bytes (at most 64 KiB).
+    /// The most recent output bytes (at most `RECENT_BYTES`, 256 KiB).
     pub fn received(&self) -> Vec<u8> {
         self.screen.0.lock().expect("screen lock").recent.clone()
     }
