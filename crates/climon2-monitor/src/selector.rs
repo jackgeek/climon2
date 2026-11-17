@@ -241,7 +241,7 @@ mod tests {
                 id: format!("00000000-0000-4000-8000-0000000000{index:02x}")
                     .parse()
                     .unwrap(),
-                status,
+                status: (*status).to_owned(),
                 label: (*label).to_owned(),
                 since: SystemTime::UNIX_EPOCH,
             })

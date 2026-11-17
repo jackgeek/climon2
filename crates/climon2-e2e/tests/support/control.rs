@@ -105,25 +105,50 @@ pub struct Session {
 
 impl Session {
     pub fn start(package: &Package, root: &Path) -> Self {
-        Self::running(package, root, &["echo-until", "END"], &[])
+        Self::running(package, root, &["echo-until", "END"], &[], None)
     }
 
     /// A session whose application only waits for the `end` file after
     /// `ECHO-READY`, whoever controls it.
     pub fn idle(package: &Package, root: &Path) -> Self {
-        Self::running(package, root, &[], &[])
+        Self::running(package, root, &[], &[], None)
     }
 
     /// A session whose application only waits for the `end` file after
     /// `ECHO-READY`, then follows `then` (#96): for example `exit 143`,
     /// `kill-self TERM` or `await-file` of a file never created.
     pub fn ending(package: &Package, root: &Path, then: &[&str]) -> Self {
-        Self::running(package, root, &[], then)
+        Self::running(package, root, &[], then, None)
     }
 
-    fn running(package: &Package, root: &Path, before: &[&str], then: &[&str]) -> Self {
+    /// An idle session whose daemon's status clock is the test hook
+    /// `CLIMON2_DAEMON_CLOCK`, set to `clock`'s milliseconds before start
+    /// (#95).
+    pub fn clocked(package: &Package, root: &Path, clock: &Path) -> Self {
+        Self::running(package, root, &[], &[], Some(clock))
+    }
+
+    /// A clocked session (see [`Session::clocked`]) whose application,
+    /// after `ECHO-READY`, waits for the `work` file and then prints `MORE`,
+    /// new agent work for the status heuristic (#102).
+    pub fn clocked_working(package: &Package, root: &Path, clock: &Path, work: &Path) -> Self {
+        let work = work.to_str().unwrap();
+        let before = ["await-file", work, "print", "MORE"];
+        Self::running(package, root, &before, &[], Some(clock))
+    }
+
+    fn running(
+        package: &Package,
+        root: &Path,
+        before: &[&str],
+        then: &[&str],
+        clock: Option<&Path>,
+    ) -> Self {
         let end = root.join("end");
         let mut command = package.command("climon2");
+        if let Some(clock) = clock {
+            command.env("CLIMON2_DAEMON_CLOCK", clock);
+        }
         command.args(["exec", "climon2-fixture", "raw", "print", "\x1b[?1004h"]);
         command.args(["print", "ECHO-READY"]);
         command.args(before);

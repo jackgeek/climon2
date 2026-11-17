@@ -16,7 +16,6 @@ use support::{Package, library::CHARGE, passive::*};
 /// and stable error code.
 fn rejections() -> Vec<(Value, (u64, &'static str))> {
     let invalid = (INVALID_ARGUMENT, "invalid_argument");
-    let unsupported = (UNSUPPORTED_OPERATION, "unsupported_operation");
     let unrelayed = (UNSUPPORTED_OPERATION, "unsupported_capability");
     let monitor = |open: Value| json!({ "tag": "open", "request_id": 7, "open": open });
     let killing = |required: Value| json!({ "tag": "kill", "request_id": 7, "required": required });
@@ -67,7 +66,7 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
             invalid,
         ),
         (
-            lists(json!(["monitor-v1", "status-v1"]), json!([])),
+            lists(json!(["monitor-v1", "progress-v1"]), json!([])),
             unrelayed,
         ),
         (lists(json!(["x-later-v9"]), json!([])), unrelayed),
@@ -79,12 +78,13 @@ fn rejections() -> Vec<(Value, (u64, &'static str))> {
         (killing(json!({ "dangling": 0 })), invalid),
         (killing(json!([""])), invalid),
         (killing(json!(["title-v1", "title-v1"])), invalid),
-        (killing(json!(["status-v1"])), unrelayed),
+        (killing(json!(["progress-v1"])), unrelayed),
     ];
-    // Set viewing and Acknowledge; the control requests' own rejections
-    // are in `control_faults.rs` (#94), Kill's above (#96).
+    // Set viewing and Acknowledge naming no authority (#95); their other
+    // rejections are in `status_faults.rs`, the control requests' in
+    // `control_faults.rs` (#94), and Kill's above (#96).
     for tag in [6, 7] {
-        rejected.push((json!({ "tag": tag, "request_id": 7 }), unsupported));
+        rejected.push((json!({ "tag": tag, "request_id": 7 }), invalid));
     }
     rejected
 }

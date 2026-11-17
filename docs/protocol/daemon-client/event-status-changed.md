@@ -1,7 +1,8 @@
 # Status changed — `0x43`
 
 **Status: agreed and implemented for heuristic detection**
-([#91](https://github.com/jackgeek/climon2/issues/91)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+([#91](https://github.com/jackgeek/climon2/issues/91)), and relayed by the
+[client library](../../../GLOSSARY.md#sessions) ([#95](https://github.com/jackgeek/climon2/issues/95)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) sends effective
 [session status](../../../GLOSSARY.md#status-and-attention) to the
 [client](../../../GLOSSARY.md#sessions).
