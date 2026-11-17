@@ -2,8 +2,10 @@
 
 This diagram covers the climon2 executables and dynamic libraries that run when
 a user types `c2` followed by a command, and the artifacts those calls
-ultimately invoke. It omits installation and development or test-only
-executables. Arrows run from consumer to consumed artifact;
+ultimately invoke. It omits installation (the installer and install arrows)
+and development or test-only executables: `xtask`, Cargo tooling, fixtures,
+test harnesses, and stand-in or second-release libraries. Arrows run from
+consumer to consumed artifact;
 labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
 The current executable relationships apply on macOS and x86_64 GNU/Linux;
