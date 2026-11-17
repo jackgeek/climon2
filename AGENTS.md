@@ -35,6 +35,10 @@ in the first diagram, and one used only for development or tests goes in the
 second. A planned crate goes in the diagram of the group it will join. Derive
 current edges from `cargo metadata --no-deps --format-version 1`, not memory,
 and make sure each workspace-crate edge appears in exactly one diagram.
+Below each diagram, keep a table with one row per crate in that group,
+describing its purpose; the development table describes only development and
+test-only crates. Add, remove or reword rows whenever a crate is added,
+removed, renamed or changes purpose.
 
 Keep current and planned relationships distinct in the crate and artifact
 diagrams and preserve their README links.
