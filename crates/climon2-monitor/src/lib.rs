@@ -20,6 +20,7 @@ mod preference;
 mod registry;
 mod router;
 mod screen;
+mod search;
 mod selector;
 mod startup;
 mod supervisor;
@@ -182,6 +183,7 @@ impl Monitor {
         let supervisor = Supervisor::start(context(&startup, filter)?, dispatch.clone())?;
         let introduction = KeyIntroduction::new(prefix, startup.preference, hints);
         let limits = &config.settings().limits;
+        let search = usize::try_from(limits.search_bytes()).unwrap_or(usize::MAX);
         let discovery = Discovery::start(startup.home, limits.discovery())?;
         let model = limits.model();
         let start = Duration::from_millis(limits.library().start_ms.into());
@@ -190,7 +192,7 @@ impl Monitor {
             router: Router::new(prefix),
             introduction,
             registry: Registry::new(own_session()),
-            selector: Selector::default(),
+            selector: Selector::new(prefix, hints, search),
             discovery,
             supervisor,
             selected: None,
@@ -452,6 +454,7 @@ impl Monitor {
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
             self.report(&id, event, now);
         }
+        self.selector.update(&self.registry.rows());
         self.initialise();
     }
 
@@ -532,20 +535,29 @@ impl Monitor {
     /// Pastes, mouse reports and host focus reports bypass keys.
     fn routed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
         match routed {
-            Routed::Paste(pasted) => self.paste(pasted, typed),
-            Routed::Mouse(mouse) => self.mouse(mouse, typed),
-            Routed::Focus(focused) => self.host_focused = focused,
-            keyed => return self.keyed(keyed, typed),
+            Routed::Paste(pasted) => self.paste(pasted, typed).map(|()| None),
+            Routed::Mouse(mouse) => self.mouse(mouse, typed).map(|()| None),
+            Routed::Focus(focused) => {
+                self.host_focused = focused;
+                Ok(None)
+            }
+            keyed => self.keyed(keyed, typed),
         }
-        Ok(None)
     }
 
     /// A paste is data for the target that took input when it began, sent
     /// with that target's markers while it still takes input; once it does
     /// not, the paste is [cut](Monitor::cut) (spec #73, "Paste rules",
-    /// "Target changes"). A modal owns a paste, and discards it. A prefix
-    /// the paste discarded reaches its target as one literal prefix first.
-    fn paste(&mut self, pasted: Pasted, typed: &mut Vec<u8>) {
+    /// "Target changes"). A modal owns a paste: the selector's search takes
+    /// it (#113), the key introduction discards it; a paste a modal covers
+    /// part-way is cut, and the search ignores the rest of it, which it
+    /// never saw begin. A prefix the paste discarded reaches its target as
+    /// one literal prefix first.
+    fn paste(&mut self, pasted: Pasted, typed: &mut Vec<u8>) -> io::Result<()> {
+        if self.covered() {
+            self.cut(None);
+            return self.modal(&Routed::Paste(pasted));
+        }
         let taking = self.taking();
         let starts = pasted.begin != Begin::Continued;
         if starts {
@@ -571,6 +583,7 @@ impl Monitor {
                 .request(target.0.clone(), Request::Paste(target.1, part));
         }
         self.pasting = self.pasting.take().filter(|_| !ends);
+        Ok(())
     }
 
     /// A paste whose target no longer takes input as `current` (spec #73,
@@ -593,16 +606,17 @@ impl Monitor {
 
     /// A mouse report goes to its gesture's owner (`mouse.rs`): to the
     /// target taking input, at its cell below the top row, as its modes ask,
-    /// or nowhere; chrome and overlays keep theirs. Over an application
-    /// that does not report the mouse, a wheel notch scrolls its history a
-    /// row, or on its alternate screen is a cursor key with alternate
-    /// scroll on (#112).
-    fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) {
+    /// or nowhere; chrome and overlays keep theirs, and an open modal
+    /// takes them (#113). Over an application that does not report the
+    /// mouse, a wheel notch scrolls its history a row, or on its alternate
+    /// screen is a cursor key with alternate scroll on (#112).
+    fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) -> io::Result<()> {
         let taking = self.taking();
         let target = taking.as_ref().map(|taking| (&taking.target, taking.area));
         let cell = self.gestures.route(mouse, target);
         let Some((cell, taking)) = cell.zip(taking) else {
-            return self.inspect(mouse);
+            self.inspect(mouse);
+            return self.modal(&Routed::Mouse(mouse));
         };
         match mouse::wheel(mouse, &taking.modes, taking.alternate) {
             Some(Wheel::History(rows)) => self.terminal(&taking.target.0).scroll(rows),
@@ -610,6 +624,7 @@ impl Monitor {
             Some(Wheel::Nothing) => {}
             None => mouse::encode(mouse, cell, &taking.modes, typed),
         }
+        Ok(())
     }
 
     /// A vertical wheel notch, with no modal open, scrolls the selected
@@ -640,8 +655,8 @@ impl Monitor {
         self.submit(typed);
         match routed {
             Routed::Action(action) => Ok(self.action(action)),
-            Routed::Key(key) => self.modal(&key).map(|()| None),
-            _ => Ok(None),
+            Routed::Unknown(..) | Routed::Rest(_) => Ok(None),
+            input => self.modal(&input).map(|()| None),
         }
     }
 
@@ -706,21 +721,23 @@ impl Monitor {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
             Action::SessionList if !self.introduction.is_open() => {
-                self.selector.open(&self.registry.rows());
+                let area = self.screen.overlay();
+                self.selector
+                    .open(&self.registry.rows(), self.selected.as_ref(), area);
             }
             _ => {}
         }
         None
     }
 
-    /// A key no application takes goes to [`Monitor::modal_key`]. When it
+    /// Input no application takes goes to [`Monitor::modal_input`]. When it
     /// closes the last modal, the uncovered session is painted at once, so
     /// the rest of the same read meets the screen now in force and a key
     /// typed straight after Escape reaches the session (owner decision on
     /// #109). Nothing is kept beyond the read.
-    fn modal(&mut self, key: &Key) -> io::Result<()> {
+    fn modal(&mut self, input: &Routed) -> io::Result<()> {
         let covered = self.covered();
-        self.modal_key(key);
+        self.modal_input(input);
         if revealed(covered, self.covered()) {
             return self.show();
         }
@@ -732,26 +749,35 @@ impl Monitor {
         screen::covered(&self.selector, &self.introduction)
     }
 
-    /// A key no application takes goes to the key introduction while it is
+    /// Input no application takes goes to the key introduction while it is
     /// open, otherwise to the open selector; outside them the take-control
-    /// key takes control, and any other key is discarded, never kept for
+    /// key takes control, and anything else is discarded, never kept for
     /// later. Inside a modal the take-control key does nothing.
-    fn modal_key(&mut self, key: &Key) {
+    fn modal_input(&mut self, input: &Routed) {
         if self.introduction.is_open() {
-            self.introduction.key(key);
+            self.introduction_input(input);
         } else if self.selector.is_open() {
-            self.selector_key(key);
+            self.selector_input(input);
         } else if self
             .take_control
-            .is_some_and(|byte| *key == Key::Bytes(vec![byte]))
+            .is_some_and(|byte| *input == Routed::Key(Key::Bytes(vec![byte])))
         {
             self.take_control();
         }
     }
 
-    /// A key for the open selector; Enter acts on the row it chose.
-    fn selector_key(&mut self, key: &Key) {
-        if let Some(id) = self.selector.key(key, &self.registry.rows()) {
+    /// The key introduction takes keys only: pastes and mouse reports are
+    /// discarded while it is open.
+    fn introduction_input(&mut self, input: &Routed) {
+        if let Routed::Key(key) = input {
+            self.introduction.key(key);
+        }
+    }
+
+    /// Input for the open selector; Enter acts on the row it chose.
+    fn selector_input(&mut self, input: &Routed) {
+        let area = self.screen.overlay();
+        if let Some(id) = self.selector.input(input, &self.registry.rows(), area) {
             self.enter(id);
         }
     }

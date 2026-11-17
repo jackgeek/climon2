@@ -181,7 +181,7 @@ The screen a non-controlling client shows instead of session content, saying the
 _Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
 
 **Selector**:
-The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session.
+The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session; its always-focused search narrows the list to the rows that match.
 _Avoid_: Session picker, menu, switcher, session list window
 
 **Key introduction**:

@@ -471,6 +471,11 @@ impl Limits {
         }
     }
 
+    /// `ui.search_bytes`: the most UTF-8 bytes the selector's search holds.
+    pub fn search_bytes(&self) -> u64 {
+        self.0.ui.search_bytes
+    }
+
     pub fn lanes(&self) -> Lanes {
         Lanes {
             loads: self.0.scheduling.loads,
