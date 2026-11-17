@@ -752,7 +752,7 @@ fn a_session_silent_from_startup_stays_idle_and_cleared() {
     let (later, initial) = Watcher::open(&session);
     assert_eq!(initial, status(Idle, 0, None));
     drop((watcher, later));
-    crate::kill(session);
+    super::end_by_kill(session);
 }
 
 /// STA-01 (Contract, same-turn dispatch, through the `test-hooks` turn
@@ -794,31 +794,18 @@ fn input_comes_before_a_timer_due_in_the_same_turn() {
     completed(session, &mut attached, &mut [&mut watcher], 4_000);
 }
 
-/// The private attachment's Output until it holds `needle`.
-fn private_output_until(stream: &mut UnixStream, needle: &[u8]) -> Vec<u8> {
-    let mut output = Vec::new();
-    while crate::count(&output, needle) == 0 {
-        match crate::receive(stream) {
-            climon2_core::protocol::ServerMessage::Output(bytes) => output.extend(bytes),
-            other => panic!("expected Output holding {needle:?}, got {other:?}"),
-        }
-    }
-    output
-}
-
-/// STA-08 (Contract and Fault, private-protocol client): the private client
-/// forwards what its terminal sends as Input. While attention is pending,
-/// focus reports (`ESC [ I`, `ESC [ O`, alone or repeated), which its
-/// terminal sends once the application turns focus reporting on, are not
-/// user input and leave attention pending, though they reach the
-/// application. Terminal-query replies never arrive: the application's
-/// queries never reach the client, only the daemon answers them. Typed
-/// bytes do clear attention.
+/// STA-08 (Contract and Fault, focus reports and terminal queries): the
+/// controller's Input forwards what its terminal sends. While attention is
+/// pending, Input holding only focus reports (`ESC [ I`, `ESC [ O`, alone or
+/// repeated), which a terminal sends once the application turns focus
+/// reporting on, is accepted and reaches the application but is not user
+/// input: attention stays pending. Terminal-query replies never arrive: the
+/// application's queries never reach the controller's Display, only the
+/// daemon answers them. Typed bytes do clear attention.
 #[test]
 fn focus_reports_and_terminal_queries_never_clear_attention() {
     let mut session = clocked("script");
-    let mut private = session.attach();
-    session.wait_marker(&mut private);
+    let mut attached = ready_attachment(&session, &[]);
     let (mut watcher, _) = Watcher::open(&session);
     crate::script(&session, "title busy");
     assert_eq!(
@@ -831,28 +818,19 @@ fn focus_reports_and_terminal_queries_never_clear_attention() {
     watcher.changed(&status(NeedsAttention, 11_500, Some(1)));
 
     crate::script(&session, r"print \e[?1004h\e[c\e[6n\e[38;5;9m");
-    let output = private_output_until(&mut private, b"\x1b[38;5;9m");
-    assert_eq!(crate::count(&output, b"\x1b[?1004h"), 1, "{output:?}");
-    assert_eq!(crate::count(&output, b"\x1b[c"), 0, "{output:?}");
-    assert_eq!(crate::count(&output, b"\x1b[6n"), 0, "{output:?}");
+    attached.until_displayed(b"\x1b[38;5;9m", 1);
+    let output = &attached.display;
+    assert_eq!(crate::count(output, b"\x1b[?1004h"), 1, "{output:?}");
+    assert_eq!(crate::count(output, b"\x1b[c"), 0, "{output:?}");
+    assert_eq!(crate::count(output, b"\x1b[6n"), 0, "{output:?}");
     for report in [&b"\x1b[I"[..], b"\x1b[O\x1b[I\x1b[O"] {
-        crate::send(
-            &mut private,
-            climon2_core::protocol::ClientMessage::Input(report.to_vec()),
-        );
-        drop(session.connect());
+        attached.typed(report);
         watcher.quiet();
     }
-    crate::send(
-        &mut private,
-        climon2_core::protocol::ClientMessage::Input(b"x".to_vec()),
-    );
+    attached.typed(b"x");
     watcher.changed(&status(Running, 11_500, None));
     crate::issue(&session, "exit");
-    assert_eq!(
-        crate::until_terminal(&mut private).1,
-        climon2_core::protocol::ServerMessage::Exit { code: 0 }
-    );
+    attached.ended(&exited(0));
     watcher.ended(&exited(0), 11_500);
     session.finish();
 }

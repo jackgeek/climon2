@@ -22,13 +22,19 @@
 //! The detection mode selects the activity detector: heuristic sampling,
 //! explicit root OSC 7501 reports, or the fallback grace that measures quiet
 //! before heuristics resume; OSC 133 shell markers retire explicit scopes.
-//! #98 adds the notification signals, which request attention through
-//! [`Detector::request_attention`].
+//! Recognized notifications (#98) request attention through
+//! [`Detector::notify`]; progress never does.
+mod assembly;
 mod clock;
+mod notifications;
+mod progress;
 mod signals;
 
+pub use assembly::Assembler;
 use climon2_core::wire::{CommandResult, Counter, Status, StatusState, Utc};
 pub use clock::{Clock, SystemRandom, daemon_clock, first_episode};
+pub use notifications::Parsed;
+pub use progress::Tracker;
 pub use signals::{Interpreted, Marker, QUERY_REPLY, Report, Signal, interpret};
 use std::time::Duration;
 
@@ -517,6 +523,21 @@ impl<R: Random> Detector<R> {
         self.settle(now)
     }
 
+    /// A recognized logical notification: it requests attention, which a
+    /// pending episode absorbs, without touching activity, timers or the
+    /// detection mode.
+    pub fn notify(&mut self, now: &Now) -> Option<Status> {
+        self.step(now, |_, _| true)
+    }
+
+    /// The episode of pending attention, if any: the one a notification
+    /// just requested or joined.
+    pub fn pending_episode(&self) -> Option<Counter> {
+        (self.reported.state == StatusState::NeedsAttention)
+            .then_some(self.reported.episode)
+            .flatten()
+    }
+
     /// Accepted explicit acknowledgement of pending attention; nothing
     /// pending changes nothing.
     pub fn acknowledge(&mut self, now: &Now) -> Option<Status> {
@@ -947,6 +968,39 @@ mod tests {
             assert_eq!(unsampled(&mut detector, 20_000), None);
             assert_eq!(detector.status(), last);
         }
+    }
+
+    /// STA-06 (pure, notifications): a recognized notification requests
+    /// attention: from idle it is pending at once with episode 1, and while
+    /// pending a further one joins that episode silently. It leaves
+    /// activity alone: agent work's inactivity deadline stays armed under
+    /// acknowledged attention and starts the next episode. The pending
+    /// episode, which a notification record carries, is none once
+    /// attention is acknowledged or cleared, and after the final result,
+    /// when a notification changes nothing.
+    #[test]
+    fn notifications_request_attention_and_carry_the_pending_episode() {
+        let episode = |value| Some(Counter::new(value).unwrap());
+        let mut detector = fresh();
+        assert_eq!(detector.pending_episode(), None);
+        assert_eq!(detector.notify(&at(100)), needs(100, 1));
+        assert_eq!(detector.pending_episode(), episode(1));
+        assert_eq!(detector.notify(&at(200)), None);
+        assert_eq!(detector.pending_episode(), episode(1));
+        assert_eq!(detector.acknowledge(&at(300)), acknowledged(300, 1));
+        assert_eq!(detector.pending_episode(), None);
+        assert_eq!(detector.notify(&at(400)), needs(400, 2));
+        assert_eq!(detector.input(&at(500)), running(500));
+        assert_eq!(detector.pending_episode(), None);
+
+        let mut detector = working();
+        assert_eq!(detector.notify(&at(1_000)), needs(1_000, 1));
+        assert_eq!(detector.acknowledge(&at(1_100)), acknowledged(1_100, 1));
+        assert_eq!(poll(&mut detector, 10_000, screen("a")), None);
+        assert_eq!(poll(&mut detector, 10_500, screen("a")), needs(10_500, 2));
+        detector.finish(&at(11_000), &CommandResult::Exit { code: 0 });
+        assert_eq!(detector.notify(&at(11_100)), None);
+        assert_eq!(detector.pending_episode(), None);
     }
 
     /// LIM-05 (pure, episodes): episode identifiers are never wrapped or

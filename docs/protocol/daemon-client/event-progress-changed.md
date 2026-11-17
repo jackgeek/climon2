@@ -1,6 +1,6 @@
 # Progress changed — `0x45`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#98](https://github.com/jackgeek/climon2/issues/98)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) supplies retained normalized
 progress changes to a subscribed [client](../../../GLOSSARY.md#sessions).
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),
@@ -42,3 +42,24 @@ Invalid wire records or unselected families are not ignored application
 sequences: apply [fatal validation](core-v1.md#framing-and-validation).
 Required delivery is preserved or explicitly failed; numeric bounds #69.
 Related: [Command final](event-command-final.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) reads
+[OSC](../TERMS.md#osc) 9;4 reports in the command's output before filtering,
+`ESC ] 9 ; 4 [; state [; percent]] ST`, and none reaches
+[host](../../../GLOSSARY.md#sessions) output. A state is decimal digits from 0
+(none) to 4, leading zeros allowed, and is none when missing; a percentage is
+decimal digits from 0 to 100. A report with any other state or percentage, more parameters, or
+`normal` (1) without a percentage changes nothing. Progress starts at none.
+None clears the indicator and the cached number; normal, error and paused
+with a percentage report it and cache it; indeterminate ignores a supplied
+number and keeps the cache; error without a percentage reports null; paused
+without one reports the cached number, or null after none.
+
+A changed value goes, in the order the program wrote it, to every connection
+that selected `progress-v1`, whatever its control: passive, controlling in
+the background or revoked. An unchanged value sends nothing. A connection
+that selected `progress-v1` receives the current value in its
+[Initial metadata](event-initial-metadata.md). Progress never requests
+attention.

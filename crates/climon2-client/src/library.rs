@@ -123,6 +123,27 @@ fn hook(_call: &'static str) {
     hooks::panic_at(_call);
 }
 
+/// Where a new instance's monotonic snapshot counters start (input,
+/// display, drained, released): zero, unless a `test-hooks` fault brings
+/// them near exhaustion (#99).
+fn first_counts() -> [u64; 4] {
+    #[cfg(feature = "test-hooks")]
+    let counts = hooks::counters();
+    #[cfg(not(feature = "test-hooks"))]
+    let counts = [0; 4];
+    counts
+}
+
+/// The wire request ID a new connection counts as used: none, unless a
+/// `test-hooks` fault brings its IDs near exhaustion (#99).
+fn last_wire_id() -> u64 {
+    #[cfg(feature = "test-hooks")]
+    let last = hooks::last_wire_id();
+    #[cfg(not(feature = "test-hooks"))]
+    let last = 0;
+    last
+}
+
 /// An exported call's work with every panic contained: no unwinding leaves.
 fn contained(work: impl FnOnce() -> Result<(), Failure>) -> Call {
     failure::call(panic::catch_unwind(AssertUnwindSafe(work)).unwrap_or(Err(PANIC)))
@@ -409,7 +430,7 @@ unsafe extern "C" fn snapshot(communication: *mut Communication, metrics: *mut M
     unsafe { clear(metrics) };
     unsafe {
         query(communication, metrics, "snapshot", |shared| {
-            Ok(shared.snapshot())
+            shared.snapshot()
         })
     }
 }

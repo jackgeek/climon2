@@ -186,6 +186,9 @@ pub(crate) struct Terminal {
     limits: Limits,
     model: Option<Model>,
     held: Option<Held>,
+    /// Acquire is submitted and not yet answered. It counts only while no
+    /// control is held: a grant shows as held control instead, and every
+    /// end of held control clears it.
     acquiring: bool,
     /// Once the command ended (the model changes no more): whether its
     /// frozen view shows, which it does only if the control period held then
@@ -260,7 +263,6 @@ impl Terminal {
     }
 
     fn granted(&mut self, authority: Authority, effective: Geometry) {
-        self.acquiring = false;
         self.held = Some(Held {
             authority,
             effective,

@@ -6,25 +6,33 @@ requires in-process, version-matched
 [client libraries](../../GLOSSARY.md#sessions) with one client thread per
 [live session](../../GLOSSARY.md#sessions). The [daemon-client decision](https://github.com/jackgeek/climon2/issues/67)
 specifies an agreed [portable wire revision 1](../protocol/daemon-client/core-v1.md),
-now partly implemented. The private post-hello description
-below records current behavior, not a constraint on that contract.
+now partly implemented, which replaced the version-private post-hello
+protocol this ADR first described.
 
-**Revision 1 is the frozen post-hello wire, added beside the private
-protocol ([#73](https://github.com/jackgeek/climon2/issues/73),
-[#86](https://github.com/jackgeek/climon2/issues/86)).** Like hello, its
+**Revision 1 is the frozen post-hello wire, and the private protocol is
+retired ([#73](https://github.com/jackgeek/climon2/issues/73),
+[#104](https://github.com/jackgeek/climon2/issues/104)).** Like hello, its
 framing, records and rules never change within the revision; advertised
 capabilities, never release numbers, decide which families a session
-supports, and exact-release client matching stays mandatory. This release
-adds it beside the version-specific private protocol: the first frame after
-hello selects one by its type
-([post-hello boundary](../protocol/daemon-client/post-hello.md#choosing-a-protocol)),
-and the private protocol keeps serving attach and kill. Session daemons
-already advertise revision 1 in hello and serve
-[passive monitor connections](../../GLOSSARY.md#attachment-and-control) over
-it; the client executable moves onto it next, and then the private message
-set is deleted, so daemons speak only frozen hello and revision 1.
+supports, and exact-release client matching stays mandatory. It was added
+beside the version-private protocol
+([#86](https://github.com/jackgeek/climon2/issues/86)); the client
+executable then moved onto its own release's
+[client library](../../GLOSSARY.md#sessions), which it loads from its own
+version folder and drives for ordinary attach and kill
+([#100](https://github.com/jackgeek/climon2/issues/100),
+[#101](https://github.com/jackgeek/climon2/issues/101)); with parity proven,
+the private message set was deleted from core, the daemon and the client. There
+were no prior releases, so nothing had to stay compatible with it. Session
+daemons now speak only the frozen hello and revision 1: every frame after
+hello is a revision-1 frame
+([post-hello boundary](../protocol/daemon-client/post-hello.md#after-hello)),
+and traffic that never completes a valid hello is closed without a byte.
+The existing hello tokens (`attach`, `kill`, `state-v1`,
+`client-startup-v1`) and the `state` object keep their meanings for CLI
+admission and `climon2 list`; they never imply revision-1 support.
 
-The planned contract intentionally reopens the private-only boundary: future
+Revision 1 intentionally reopened the private-only boundary: future
 monitor forwarding needs a transport-independent core while exact-release
 client matching remains mandatory. Frozen hello required fields, limits and
 unknown-optional-field behavior are unchanged. Additive advertisements and the
@@ -62,7 +70,7 @@ are unchanged. [Numerical budgets](../monitor-operational-limits.md) and
 the [acceptance matrix](../monitor-acceptance.md) is agreed in #62.
 Executable conformance of the other plans remains future work.
 
-A [session daemon](../../GLOSSARY.md#sessions) is only ever reached by the client from its own version. Session metadata records the daemon's version folder, and the CLI runs `<climon2 executable home>/<version>/climon2-client`, even when a different version is current. This keeps the private protocol after hello version-specific, with no backward compatibility to maintain, and lets upgrades install alongside running sessions without breaking them. For the same reason, the hello handshake (framing and fields) is frozen forever: it is the one exchange that crosses versions, so any version of `climon2 list` can tell whether any daemon is live.
+A [session daemon](../../GLOSSARY.md#sessions) is only ever reached by the client from its own version. Session metadata records the daemon's version folder, and the CLI runs `<climon2 executable home>/<version>/climon2-client`, even when a different version is current; that executable loads the client library from its own folder. This keeps exact-release matching mandatory, and lets upgrades install alongside running sessions without breaking them. For the same reason, the hello handshake (framing and fields) is frozen forever: it is the one exchange that crosses versions, so any version of `climon2 list` can tell whether any daemon is live. What follows hello was first a version-private protocol, with no backward compatibility to maintain; the frozen revision 1 has replaced it.
 
 ## Frozen layout
 

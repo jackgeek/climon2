@@ -7,9 +7,11 @@ viewing and acknowledgement
 ([#91](https://github.com/jackgeek/climon2/issues/91)), and the explicit and
 fallback detection modes, OSC 7501 program status, OSC 133 shell boundaries
 and full and soft resets
-([#92](https://github.com/jackgeek/climon2/issues/92)), with the evidence in
-the [daemon's contract tests](../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios);
-notification and progress signals remain unimplemented. The monitor shows
+([#92](https://github.com/jackgeek/climon2/issues/92)), and notification and
+progress signals ([#98](https://github.com/jackgeek/climon2/issues/98)), with
+the evidence in the
+[daemon's contract tests](../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios).
+The monitor shows
 each row's effective status or final outcome and orders rows as
 [below](#reporting-ordering-and-initial-selection)
 ([#107](https://github.com/jackgeek/climon2/issues/107)), and makes the
@@ -384,8 +386,13 @@ This metadata is not live terminal-content mirroring and never grants control.
 Do not forward raw OSC sequences into outer terminals for interpretation.
 The [agreed wire reference](protocol/daemon-client/core-v1.md) specifies
 structured schemas, capabilities, ordering/correlation, source normalization
-and retention of current progress. [Native declarations](protocol/monitor-client/client-v1.h)
-and [numeric queue/assembly limits](monitor-operational-limits.md) are also
+and retention of current progress. The session daemon implements these
+signals, their [Notification](protocol/daemon-client/event-notification.md#implemented-behavior)
+and [Progress changed](protocol/daemon-client/event-progress-changed.md#implemented-behavior)
+records and the notification assembly limits of the
+[operational limits](monitor-operational-limits.md), and the client library
+relays the records as its [native records](protocol/monitor-client/client-v1.h)
+([#98](https://github.com/jackgeek/climon2/issues/98)). Queue limits remain
 agreed, not implemented.
 Implementing progress [UI](protocol/TERMS.md#ui) is not part of this revision.
 

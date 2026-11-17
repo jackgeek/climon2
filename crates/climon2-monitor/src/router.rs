@@ -997,6 +997,19 @@ mod tests {
         assert_eq!(router.read(b"x"), [EXIT]);
     }
 
+    /// INP-03 (pure input-router supplement): only the whole end marker
+    /// ends a paste, the first paste or a later one: pasted text that
+    /// begins like the marker without its Escape, or a pasted Escape
+    /// straight before the marker, stays pasted.
+    #[test]
+    fn only_the_whole_end_marker_ends_a_paste() {
+        let mut router = router("Ctrl+]");
+        let paste = b"\x1b[200~[201~x\x1b\x1b[201~y";
+        let routed = [pasted(Begin::Started, b"[201~x\x1b", true), bytes(b"y")];
+        assert_eq!(router.read(paste), routed);
+        assert_eq!(router.read(paste), routed);
+    }
+
     /// INP-02 (pure input-router supplement): a sequence that a control
     /// byte breaks is its bytes so far, then that control; an Escape
     /// breaking a string starts a new sequence.
