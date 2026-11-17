@@ -7177,7 +7177,6 @@ fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
     let live = controlled("Deep", RUNNING);
     emit(&package, "Deep", &numbered(1..=8000));
     frame_rows(&terminal, &live, &[(29, "line8000")]);
-    terminal.send(WHEEL_UP.repeat(8000)).unwrap();
     let history = session_top_row(
         usize::from(COLS),
         "Deep",
@@ -7194,17 +7193,26 @@ fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
                 .and_then(|number| number.parse::<u32>().ok())
                 .is_some_and(|number| number > 1000)
     };
-    // A loaded host can take longer than one wait to work through 8,000
-    // notches, so each wait only needs the view to keep scrolling.
+    // Eight batches of a thousand notches reach the oldest row. Each batch
+    // follows a whole frame that scrolled or shows the oldest row kept, and
+    // the test then waits while the view still scrolls: a loaded host is
+    // never asked to work through all the notches within one wait.
     let shown = std::cell::RefCell::new(String::new());
-    while !oldest_kept(&shown.borrow()) {
-        whole_frame_shows(&terminal, "the oldest row kept", |screen| {
+    let scrolled = |terminal: &Terminal| {
+        whole_frame_shows(terminal, "the oldest row kept", |screen| {
             let moved = screen != *shown.borrow();
             if moved {
                 screen.clone_into(&mut shown.borrow_mut());
             }
-            moved
+            moved || oldest_kept(screen)
         });
+    };
+    for _ in 0..8 {
+        terminal.send(WHEEL_UP.repeat(1000)).unwrap();
+        scrolled(&terminal);
+    }
+    while !oldest_kept(&shown.borrow()) {
+        scrolled(&terminal);
     }
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
