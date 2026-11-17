@@ -195,7 +195,6 @@ pub(crate) struct Context {
 enum Command {
     Start(Box<SessionMetadata>),
     Request(SessionId, Request),
-    Drop(SessionId, String),
     Retire(Retirement),
     /// Shut down by this deadline.
     Shutdown(Instant),
@@ -207,6 +206,9 @@ enum Retirement {
     Gone(SessionId),
     /// A confirmed Delete, with whether it needs a Kill.
     Delete(Box<SessionMetadata>, bool),
+    /// Its terminal model refused an update (#119): its open client fails
+    /// with why, and is retried passively.
+    Dropped(SessionId, String),
 }
 
 /// What the supervisor thread shares with the UI thread: its reports,
@@ -312,7 +314,8 @@ impl Supervisor {
     /// failed with `why` and retried passively, like any client the monitor
     /// stops itself (owner decision on #119, 2026-11-16).
     pub(crate) fn drop_client(&self, id: SessionId, why: String) {
-        let _ = self.commands.send(Command::Drop(id, why));
+        let dropped = Retirement::Dropped(id, why);
+        let _ = self.commands.send(Command::Retire(dropped));
     }
 
     /// Begins the coordinated shutdown (#118), which must end by the
@@ -671,7 +674,6 @@ impl State {
         match command {
             Command::Start(metadata) => self.wait(*metadata),
             Command::Request(id, request) => self.submit(&id, request),
-            Command::Drop(id, why) => self.fail(&id, why),
             Command::Retire(retirement) => self.retire(retirement),
             Command::Shutdown(deadline) => return Some(deadline),
         }
@@ -682,6 +684,7 @@ impl State {
         match retirement {
             Retirement::Gone(id) => self.forget(id),
             Retirement::Delete(metadata, kill) => self.remove(*metadata, kill),
+            Retirement::Dropped(id, why) => self.fail(&id, why),
         }
     }
 

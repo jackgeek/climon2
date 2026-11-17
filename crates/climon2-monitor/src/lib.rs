@@ -784,15 +784,7 @@ impl Monitor {
     /// drained meanwhile once its reports fill its allowance.
     fn collect(&mut self) {
         let now = SystemTime::now();
-        while let Ok(found) = self.discovery.found.try_recv() {
-            match found {
-                Found::Batch(batch) => self.batch(batch, now),
-                Found::Pass(progress) => {
-                    self.registry.pass(incomplete(&progress));
-                    self.initial.passed();
-                }
-            }
-        }
+        self.discover(now);
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
             self.work.push(id, event);
         }
@@ -809,6 +801,20 @@ impl Monitor {
             .filter(|confirmation| registry.kind(confirmation.target()).is_some());
         self.selector.update(&self.registry.rows());
         self.initialise();
+    }
+
+    /// What discovery found since the last turn: batches of sessions, and
+    /// the end of each pass.
+    fn discover(&mut self, now: SystemTime) {
+        while let Ok(found) = self.discovery.found.try_recv() {
+            match found {
+                Found::Batch(batch) => self.batch(batch, now),
+                Found::Pass(progress) => {
+                    self.registry.pass(incomplete(&progress));
+                    self.initial.passed();
+                }
+            }
+        }
     }
 
     /// Control and display go to the session's terminal, everything else to
