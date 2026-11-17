@@ -4143,11 +4143,6 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
 fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     let package = Package::new();
     without_introduction(&package);
-    // Each time a dialog covers or uncovers Keys the monitor reports its
-    // focus and viewing, and cancelling acknowledges: some forty operations
-    // in all, which a loaded daemon may not have answered yet. The default
-    // sixteen would then refuse the typed keys, visibly, as specified.
-    limits_config(&package, json!({"queues": {"operations": 64}}));
     // After an empty start Keys, the first to appear, is the initial
     // selection; Other comes after it.
     let mut terminal = outer(&package, "c2 monitor");
@@ -7756,8 +7751,13 @@ fn acknowledgement_waits_until_viewed_and_closing_help_or_focus_in_never_acknowl
     ready_at(&mut terminal, "Alpha", ATTENTION, "29 120");
     terminal.send("\x1ds").unwrap();
     listed_with(&terminal, ATTENTION, "Alpha");
+    // Focus is coalesced (owner decision on #114): only once Alpha has
+    // received focus out was the Focus before it answered, so the Escape's
+    // focus in is a change still to send.
+    got.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &got);
     terminal.send(ESCAPE).unwrap();
-    got.extend(b"\x1b[O\x1b[I");
+    got.extend(b"\x1b[I");
     received_by(&package, "Alpha", &got);
     ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
 

@@ -435,6 +435,9 @@ while switching/menu opening sends focus-out when valid. Optional core
 reporting is disabled, and truthfully distinguishes state acceptance from bytes
 accepted for forwarding. Newly enabled reporting emits current known state once;
 new readiness synchronizes latest local state without replaying old requests.
+The monitor coalesces Focus and Set viewing per session: while one of a kind is
+unanswered it sends no other, then sends the latest desired state once if it
+differs from the last sent; Acknowledge still goes once per explicit action.
 Missing library/daemon focus support keeps the session usable with an explicit
 limitation. These are [terminal focus semantics](protocol/terminal-integration.md#host-focus-and-application-focus),
 not another attention detector.

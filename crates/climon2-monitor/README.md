@@ -797,6 +797,19 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   session whose client opened with `status-v1` is sent Set viewing under
   its current authority when that changes; a control period starts not
   viewing, as the daemon's does. Viewing never acknowledges by itself.
+- **Coalesced reports.** Focus and Set viewing are coalesced per session
+  (owner decision on #114): while one of a kind is unanswered no other of
+  that kind is sent, and once it is answered, accepted or refused, the
+  latest desire goes if it differs from the one last sent. Toggling the
+  selector on a slow daemon so puts at most one Focus and one Set viewing
+  per session in the library's operation queue (`queues.operations`), not
+  one per change, which had filled it and got typed keys refused with
+  `queue_full`. The
+  end of the client forgets an unanswered one; a revocation does not, as
+  its answer still comes. Acknowledge is not coalesced: one per explicit
+  action, and a deferred one waits until Set viewing true was sent in the
+  current control period, so the daemon never refuses it as not viewing
+  while a coalesced viewing report is still held back.
 - **Acknowledgement.** Enter on a connected row, prefix+j, and closing or
   cancelling the selector back to the selected session (Escape or a click
   outside) each defer one Acknowledge for that session. It is submitted,
@@ -1241,6 +1254,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | NOT-03, NOT-04 (pure supplement): the jump target by newest change then full session ID, excluding acknowledged, final, disconnected and not-connected rows | `the_attention_target_is_the_newest_connected_row_needing_attention` (`src/registry.rs`) |
 | NOT-03, NOT-04, STA-08 (pure supplement): host reports' exact bytes, initial state and changes only; the notice up to 3 seconds and not at them; a deferred acknowledgement submitted once viewed, kept across restorations of its period, cancelled on a context change | `the_host_hears_the_initial_attention_state_and_changes_only`, `the_notice_shows_for_three_seconds`, `a_deferred_acknowledgement_submits_once_its_target_is_viewed`, `a_deferred_acknowledgement_is_cancelled_when_its_target_context_changes` (`src/attention.rs`) |
 | FOC-01, STA-08 (pure supplement): Set viewing on each change within a control period under the current authority, only with `status-v1`; a superseded Acknowledge owed again; Set viewing and Acknowledge as their native requests; Open says `status-v1` was selected | `viewing_is_reported_on_each_change_within_a_control_period`, `an_acknowledge_a_newer_restoration_superseded_is_owed_again` (`src/terminal.rs`), `viewing_and_acknowledge_become_their_native_requests`, `opening_says_whether_focus_and_status_were_selected` (`src/supervisor/client.rs`) |
+| FOC-01, STA-08 (pure supplement; owner decision on #114, 2026-11-17): Focus and Set viewing coalesce per session: none of a kind while one is unanswered, then the latest desire once if it differs from the last sent, each kind waiting only for its own answer; a revocation keeps waiting for the answer, the end of the client does not; an Acknowledge follows only Set viewing true sent in the held control period | `focus_and_viewing_wait_for_their_answers_and_then_send_the_latest_desire`, `only_the_end_of_the_client_forgets_unanswered_focus_and_viewing`, `an_acknowledge_follows_only_viewing_true_submitted_in_the_period` (`src/terminal.rs`) |
 | NOT-03 (pure supplement): the notice in the top row's error slot before the session's own error, or in the body before the startup progress | `a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own`, `the_body_says_the_startup_progress_or_the_state_and_any_incompleteness` (`src/screen.rs`) |
 | NOT-01 (Monitor), NOT-02 (Monitor: the queue), INP-05 (Monitor: toast clicks), with fake daemons: a final known at the first connection never toasts; attention pending at startup toasts once with the hint, its title held and its bell rung only once written however late the host reads the startup output; six episodes in a burst show three toasts and then `More events occurred. Check sessions list`; a final learned while running toasts once without a hint; clicks only dismiss; menus toast nothing again; one bell per toast | `toasts_announce_each_episode_and_final_once_and_queue_three_then_more` (e2e) |
 | STA-06 (Monitor), CTL-03 (Monitor: notifications), NOT-01 (Monitor: a final learned while viewed), NOT-02 (Monitor: shape, ellipsis, bell), TRM-03 (Monitor: toast resize): progress and incomplete OSC 99 toast nothing; OSC 9 toasts once, yellow, bottom-right, with the hint; resized to 80x25 it is 32 cells with `…`, no second bell; OSC 777 and OSC 99 within the pending episode toast nothing; a final learned while viewed never toasts, even once a menu opens; a new episode toasts again; prefix+x exits while one draws | `notifications_toast_once_per_episode_and_progress_never_does` (e2e) |
