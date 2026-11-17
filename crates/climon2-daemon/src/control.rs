@@ -746,10 +746,8 @@ impl Control {
         })
     }
 
-    /// A departing connection is removed before any succession. A
-    /// connection lost inside output routing is removed when it is marked,
-    /// before its loss is applied, so no departure in between promotes it.
-    pub fn unregister(&mut self, conn: ConnectionId) {
+    /// A departing connection is removed before any succession.
+    fn unregister(&mut self, conn: ConnectionId) {
         self.registrations.remove(conn);
     }
 

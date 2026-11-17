@@ -886,7 +886,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn respond(&mut self, id: u64, request_id: Counter, outcome: Outcome) {
         #[cfg(feature = "test-hooks")]
-        if self.overflows(id, &outcome) {
+        if Self::overflows(&outcome) {
             return self.mark_lost(id);
         }
         self.send_wire(
@@ -899,13 +899,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         );
     }
 
-    /// The `monitor-overflow` fault: a passive monitor connection's
-    /// rejection overflows its output queue.
+    /// The `rejection-overflow` fault: a rejection overflows its
+    /// connection's output queue.
     #[cfg(feature = "test-hooks")]
-    fn overflows(&self, id: u64, outcome: &Outcome) -> bool {
+    fn overflows(outcome: &Outcome) -> bool {
         matches!(outcome, Outcome::Rejected(_))
-            && self.kind(id) == Some(Kind::Monitor)
-            && crate::startup::selected_fault("monitor-overflow")
+            && crate::startup::selected_fault("rejection-overflow")
     }
 
     fn end_stream(&mut self, id: u64) {
