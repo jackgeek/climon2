@@ -1,8 +1,8 @@
 //! Command final and standalone Kill (#88): how the end of a session reaches
 //! revision-1 connections, beside the private protocol's results.
 use super::{
-    assert_closed, assert_final_then_closed, assert_rejected, assert_rejected_knowing,
-    command_final, counter, exited, frame,
+    assert_closed, assert_final_then_closed, assert_killed, assert_rejected,
+    assert_rejected_knowing, command_final, counter, exited, frame,
     interactive::{Attached, geometry, ready_attachment},
     kill, message, monitor, open, peer, request, signalled, terminating, title_changed,
 };
@@ -66,34 +66,21 @@ fn fixture_pid(session: &Session) -> u32 {
 /// reach every opened revision-1 connection as exactly one Command final
 /// with that result, and exit 143 is not signal 15. A passive monitor
 /// connection's stream then ends; an interactive attachment's control ends
-/// with the session (`session_ending`) and its stream closes. The private
-/// protocol keeps its mapping: its attachment gets `Exit` with 0, 143 and
-/// 143.
+/// with the session (`session_ending`) and its stream closes.
 #[test]
 fn command_final_reports_each_exit_and_signal_once() {
     let cases = [
-        ("exit", exited(0), 0),
-        ("exit 143", exited(143), 143),
-        ("signal 15", signalled(15), 143),
+        ("exit", exited(0)),
+        ("exit 143", exited(143)),
+        ("signal 15", signalled(15)),
     ];
-    for (script, result, private_code) in cases {
+    for (script, result) in cases {
         let mut session = Session::start("script");
-        let mut private = session.attach();
-        session.wait_marker(&mut private);
         let (mut watching, _) = monitor(&session, &[]);
         let mut attached = ready_attachment(&session, &[]);
-        assert_eq!(
-            crate::until_terminal(&mut private).1,
-            PrivateMessage::Revoked
-        );
         crate::issue(&session, script);
         assert_final_then_closed(&mut watching, &result);
         attached.ended(&result);
-        assert_eq!(
-            crate::until_terminal(&mut private).1,
-            PrivateMessage::Exit { code: private_code },
-            "{script}"
-        );
         session.finish();
     }
 }
@@ -103,14 +90,14 @@ fn command_final_reports_each_exit_and_signal_once() {
 /// commits the session's termination at once and is answered only after
 /// the command's termination is confirmed and the daemon cleaned up: after
 /// the real five-second hang-up grace, with its session metadata and socket
-/// removed and the command gone. A second standalone Kill and a private
-/// kill, sent late in the grace, join the same termination without
-/// restarting it, and all three are answered together. On the Kill's
+/// removed and the command gone. A second standalone Kill, sent late in
+/// the grace, joins the same termination without restarting it, and both
+/// are answered together. On the Kill's
 /// connection, a later Kill or Open is `invalid_state`, as are Leave and
 /// Acquire, with nothing opened; Input, Resize and Ready are `not_attached`,
 /// and Focus, never selected, is `unsupported_capability`. The command
 /// ignores SIGHUP, so SIGKILL ends it: the Kills and every Command final say
-/// signal 9, while the private kill gets `Terminated` 137.
+/// signal 9.
 #[test]
 fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it() {
     let mut session = Session::start("ignore-hup");
@@ -174,14 +161,12 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
     // Connected before the grace can end, so both are served after cleanup
     // removes the socket too.
     let mut second = peer(&session);
-    let mut private = session.connect();
     // The joining Kills go out late in the grace, which leaves the most
     // room the five-second grace allows between a restarted grace and the
     // end-of-grace work of a loaded host; not an ordering step.
     thread::sleep((committed + Duration::from_secs(4)).saturating_duration_since(Instant::now()));
     let joined = Instant::now();
     request(&mut second, &kill(1, 1, &["daemon-wire-v1"]));
-    crate::send(&mut private, ClientMessage::Kill);
 
     let killed = signalled(9);
     assert_eq!(message(&mut first), terminated(1, &killed));
@@ -192,10 +177,6 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
     assert_closed(&mut first);
     assert_eq!(message(&mut second), terminated(1, &killed));
     assert_closed(&mut second);
-    assert_eq!(
-        crate::receive(&mut private),
-        PrivateMessage::Terminated { code: 137 }
-    );
     assert_final_then_closed(&mut watching, &killed);
     attached.ended(&killed);
     session.finish();
@@ -203,13 +184,14 @@ fn a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_j
 
 /// COM-06 (Contract, known-final result) and COM-05 (Contract, Initial
 /// metadata case): once the daemon knows the command's result, a later
-/// Open's Initial metadata carries it and no Command final follows, and a
-/// rejected first role carries it as `known_final`. Here the command exits
-/// while its only controller withholds Ready, so the session lives on.
-/// During the grace of a Kill that follows, an interactive Open is
-/// `session_terminating` and a Kill requiring an unknown family
-/// `unsupported_capability`, each with the result. The Kill then confirms
-/// the same result, and no connection gets a second Command final.
+/// Open's Initial metadata carries it, and a rejected first role carries it
+/// as `known_final`. Here the command exits while its only controller
+/// withholds Ready, so the session lives on. During the grace of a Kill
+/// that follows, an interactive Open is `session_terminating` and a Kill
+/// requiring an unknown family `unsupported_capability`, each with the
+/// result. The Kill then confirms the same result; the monitor that opened
+/// after the exit receives it as its one Command final as the session ends
+/// (#259), and no connection gets a second one.
 #[test]
 fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
     let mut session = Session::start("script");
@@ -263,6 +245,7 @@ fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
     assert_eq!(message(&mut killer), terminated(1, &result));
     assert_closed(&mut killer);
     assert_closed(&mut early);
+    assert_eq!(message(&mut late), command_final(&result));
     assert_closed(&mut late);
     attached.ended(&result);
     session.finish();
@@ -275,7 +258,7 @@ fn a_known_result_reaches_later_opens_and_rejected_first_roles() {
 /// Command final. The monitor's stream just ends, and the attachment's
 /// control ends with the session before its stream closes. The standalone
 /// Kill fails with `cleanup_failed`, reporting no result and incomplete
-/// cleanup, while the private kill keeps its mapping: `Terminated` 125.
+/// cleanup.
 #[test]
 fn a_session_ending_without_final_evidence_sends_no_command_final() {
     let mut session = Session::configured("ignore-hup", |command, _| {
@@ -286,13 +269,7 @@ fn a_session_ending_without_final_evidence_sends_no_command_final() {
     let mut killer = peer(&session);
     request(&mut killer, &kill(1, 1, &[]));
     terminating(&session);
-    let mut private = session.connect();
-    crate::send(&mut private, ClientMessage::Kill);
     assert_kill_failed(&mut killer, None);
-    assert_eq!(
-        crate::receive(&mut private),
-        PrivateMessage::Terminated { code: 125 }
-    );
     assert_closed(&mut watching);
     attached.session_ended();
     session.finish();
@@ -305,7 +282,7 @@ fn a_session_ending_without_final_evidence_sends_no_command_final() {
 /// follows, and the hook fails the final kill of what remained of the
 /// command's terminal session. The Kill fails with `cleanup_failed` and
 /// incomplete cleanup, but with exit 7, as the monitor's Command final
-/// reported it; the private kill keeps `Terminated` 125.
+/// reported it.
 #[test]
 fn a_failed_kill_keeps_the_result_the_daemon_knew() {
     let mut session = Session::configured("script", |command, _| {
@@ -319,13 +296,7 @@ fn a_failed_kill_keeps_the_result_the_daemon_knew() {
     let mut killer = peer(&session);
     request(&mut killer, &kill(1, 1, &[]));
     terminating(&session);
-    let mut private = session.connect();
-    crate::send(&mut private, ClientMessage::Kill);
     assert_kill_failed(&mut killer, Some(result.clone()));
-    assert_eq!(
-        crate::receive(&mut private),
-        PrivateMessage::Terminated { code: 125 }
-    );
     assert_closed(&mut watching);
     attached.ended(&result);
     session.finish();
@@ -335,8 +306,7 @@ fn a_failed_kill_keeps_the_result_the_daemon_knew() {
 /// through the `cleanup` test hook): when the daemon's cleanup fails after
 /// it confirmed how the command ended, a Kill fails with `cleanup_failed`
 /// and incomplete cleanup, but carries that confirmed result, signal 9, as
-/// every Command final did. The private kill gets `Error`, as after any
-/// failed cleanup.
+/// every Command final did.
 #[test]
 fn a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result() {
     let mut session = Session::configured("ignore-hup", |command, _| {
@@ -347,14 +317,8 @@ fn a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result() {
     let mut killer = peer(&session);
     request(&mut killer, &kill(1, 1, &[]));
     terminating(&session);
-    let mut private = session.connect();
-    crate::send(&mut private, ClientMessage::Kill);
     let killed = signalled(9);
     assert_kill_failed(&mut killer, Some(killed.clone()));
-    assert!(matches!(
-        crate::receive(&mut private),
-        PrivateMessage::Error { .. }
-    ));
     assert_final_then_closed(&mut watching, &killed);
     attached.ended(&killed);
     session.finish();
@@ -366,31 +330,22 @@ fn a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result() {
 /// it but does not by itself fail a Kill. Once the daemon confirmed how the
 /// command ended (it ignores SIGHUP, so SIGKILL after the grace) and its
 /// cleanup completed, a standalone Kill sent during the grace succeeds with
-/// signal 9, the monitor's Command final says the same, and only the
-/// private protocol's attachment and kill report `Error`.
+/// signal 9, and the controller's and the monitor's Command final say the
+/// same.
 #[test]
 fn a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed() {
     let mut session = Session::configured("ignore-hup", |command, _| {
         command.env("CLIMON2_DAEMON_FAULT", "pty-write");
     });
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let mut controlling = ready_attachment(&session, &[]);
     let (mut watching, _) = monitor(&session, &[]);
-    crate::send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
+    controlling.typed(b"go\n");
     terminating(&session);
     let mut killer = peer(&session);
     request(&mut killer, &kill(1, 1, &[]));
-    let mut private = session.connect();
-    crate::send(&mut private, ClientMessage::Kill);
     let killed = signalled(9);
-    assert_eq!(message(&mut killer), terminated(1, &killed));
-    assert_closed(&mut killer);
-    assert!(matches!(
-        crate::receive(&mut private),
-        PrivateMessage::Error { .. }
-    ));
-    let (_, result) = crate::until_terminal(&mut controlling);
-    assert!(matches!(result, PrivateMessage::Error { .. }), "{result:?}");
+    assert_killed(&mut killer, &killed);
+    controlling.ended(&killed);
     assert_final_then_closed(&mut watching, &killed);
     session.finish();
 }
@@ -400,13 +355,12 @@ fn a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed() {
 /// command closes its terminal and keeps running; once the daemon has read
 /// the end of its output, a monitor that opens reports no command result
 /// in its Initial metadata, and the monitor opened before has received
-/// nothing. Only the command's exit, 3, reaches both, as one Command final,
-/// and the private controller gets `Exit` 3.
+/// nothing. Only the command's exit, 3, reaches both and the controller, as
+/// one Command final.
 #[test]
 fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
     let mut session = Session::start("close-terminal");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let mut controlling = ready_attachment(&session, &[]);
     let (mut early, _) = monitor(&session, &[]);
     let closed = session.directory.path().join("terminal-closed");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -439,10 +393,7 @@ fn the_end_of_the_commands_output_while_it_runs_is_no_final_result() {
     let result = exited(3);
     assert_final_then_closed(&mut early, &result);
     assert_final_then_closed(&mut late, &result);
-    assert_eq!(
-        crate::until_terminal(&mut controlling).1,
-        PrivateMessage::Exit { code: 3 }
-    );
+    controlling.ended(&result);
     session.finish();
 }
 
@@ -744,11 +695,12 @@ fn a_held_synchronized_update_reaches_a_derived_controller_before_command_final(
 }
 
 /// COM-06 (Contract: Command final is still sent within the existing
-/// bounds), COM-05 (Contract: a promotion's grant precedes its restoration)
-/// and CTL-04 (Contract: the controller's loss promotes the newest
-/// registration): a restoration whose reader stalls holds Command final
-/// only until that reader is lost. The restoration of a large screen and
-/// history begins in the pass that ends the drain
+/// bounds), COM-05 (Contract: a promotion's grant precedes its restoration),
+/// CTL-04 (Contract: the controller's loss promotes the newest
+/// registration) and LIM-01 (Contract: the five seconds without progress
+/// bound a revision-1 reader): a restoration whose reader stalls holds
+/// Command final only until that reader is lost. The restoration of a
+/// large screen and history begins in the pass that ends the drain
 /// ([`opened_as_the_drain_ends`]), and its reader never reads. The
 /// restoration is larger than the restoration window and the socket's
 /// buffer together, so it cannot complete, and after five seconds without

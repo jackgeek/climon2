@@ -62,6 +62,11 @@ its first restoration, then the success with `changed:true` and that
 the connection drains. The controller's own Acquire is an explicit no-op:
 `changed:false` with its current period and restoration ID, and nothing
 else. During committed termination Acquire is `session_terminating`.
+Otherwise, once the session has issued its last control period or
+restoration ID, an Acquire that would take control, which needs a new one
+of each, is `resource_limit` without effects, while the controller's own
+stays the no-op above
+([#90](https://github.com/jackgeek/climon2/issues/90)).
 
 On a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
 Acquire converts the registration into an
