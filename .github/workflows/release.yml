@@ -13,16 +13,165 @@ jobs:
     with:
       mutate_all: true
   # PERF-01 measurement of a release candidate's exact artifacts (#121). It
-  # never gates publishing: a missed target is a failed Measure case needing
-  # the owner's written disposition, and #122 blocks qualification until then.
+  # never gates publishing by itself: a missed target is a failed Measure case
+  # needing the owner's written disposition, which qualification requires.
   measure:
     needs: verify
     if: contains(github.ref_name, '-rc.')
     uses: ./.github/workflows/measure.yml
     with:
       candidate_built: true
+  # Release qualification (#122) between build and publish: the complete
+  # acceptance matrix on the exact candidate archives, natively on x86-64
+  # GNU/Linux and both macOS architectures. It always runs the macOS jobs,
+  # whatever CLIMON2_MACOS_TESTS says (owner decision on #122); pull requests
+  # never qualify. Each job records every case's evidence, failures
+  # included, and uploads it.
+  qualify:
+    name: Qualify / ${{ matrix.runner }}
+    needs: [verify, measure]
+    if: ${{ !cancelled() && needs.verify.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            archive: macos-universal
+            platform: macos-arm64
+          - runner: macos-15-intel
+            archive: macos-universal
+            platform: macos-x86_64
+          - runner: ubuntu-24.04
+            archive: linux-x86_64-gnu
+            platform: linux-x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      # Restore the Rust cache before downloading the archive: a partial-match
+      # restore cleans target/, which would delete target/dist.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: qualify-${{ matrix.runner }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist-${{ matrix.archive }}
+          path: target/dist
+      - name: Take this runner's Measure reports
+        if: contains(github.ref_name, '-rc.')
+        uses: actions/download-artifact@v4
+        with:
+          pattern: measure-${{ matrix.runner }}-*
+          path: target/measure-reports
+          merge-multiple: true
+      - name: Require the advertised architecture
+        env:
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          expected=arm64
+          if [[ "$RUNNER_LABEL" != macos-15 ]]; then expected=x86_64; fi
+          test "$(uname -m)" = "$expected"
+      - name: Install test prerequisites
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y clang libclang-dev shellcheck vim less
+          else
+            brew list shellcheck >/dev/null 2>&1 || brew install shellcheck
+          fi
+      - name: Install universal payload targets for install tests
+        if: runner.os == 'macOS' && runner.arch == 'ARM64'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: ./.github/actions/controlled-bash
+      - name: Verify the exact downloaded artifact
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          cd target/dist
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sha256sum -c SHA256SUMS
+          else
+            shasum -a 256 -c SHA256SUMS
+          fi
+          archive="$PWD/climon2-${GITHUB_REF_NAME#v}-$ARCHIVE.tar.gz"
+          test -f "$archive"
+          echo "CLIMON2_QUALIFY_ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - name: Obtain the actual previous release when one exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name')"
+          previous=
+          while IFS= read -r tag; do
+            if [[ -n "$tag" && "$tag" != "$GITHUB_REF_NAME" ]]; then
+              assets="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+              if grep -q -- "-$ARCHIVE.tar.gz$" <<< "$assets"; then
+                previous="$tag"
+                break
+              fi
+            fi
+          done <<< "$tags"
+          if [[ -n "$previous" ]]; then
+            destination="$RUNNER_TEMP/climon2-previous"
+            mkdir -p "$destination"
+            gh release download "$previous" --pattern "climon2-*-$ARCHIVE.tar.gz" --dir "$destination"
+            archives=("$destination"/climon2-*-"$ARCHIVE".tar.gz)
+            test "${#archives[@]}" = 1
+            echo "CLIMON2_E2E_PREVIOUS_ARCHIVE=${archives[0]}" >> "$GITHUB_ENV"
+          else
+            echo "First $ARCHIVE release: no previous platform archive exists."
+          fi
+      - name: Build test harnesses and debug siblings without substituting archive binaries
+        run: cargo test --workspace --locked --no-run
+      - name: Record every scenario case on this exact archive
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          RUNNER_LABEL: ${{ matrix.runner }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          measure=()
+          if [[ -d target/measure-reports ]]; then measure=(--measure target/measure-reports); fi
+          cargo xtask qualify run --platform "$PLATFORM" --archive "$CLIMON2_QUALIFY_ARCHIVE" \
+            --out "target/qualification/$PLATFORM" "${measure[@]}" \
+            --provenance "release-dist-$ARCHIVE of run $GITHUB_RUN_ID on $RUNNER_LABEL"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: qualification-${{ matrix.platform }}
+          path: target/qualification/
+          if-no-files-found: warn
+  # Unqualified conformance needs every mandatory case passed on every
+  # platform; the owner's dispositions recorded in
+  # qualification/dispositions.json let the release be published with them.
+  # Otherwise this fails and nothing is published.
+  verdict:
+    name: Qualification verdict
+    needs: [verify, qualify]
+    if: ${{ !cancelled() && needs.verify.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qualification-*
+          path: target/evidence
+      - name: Judge every platform's evidence with the owner's dispositions
+        run: cargo xtask qualify verdict --evidence target/evidence --out target/verdict
+      - name: Summarize the verdict
+        if: ${{ !cancelled() }}
+        run: |
+          if [[ -f target/verdict/qualification.md ]]; then
+            cat target/verdict/qualification.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: qualification-verdict
+          path: target/verdict/
+          if-no-files-found: warn
   publish:
-    needs: verify
+    needs: [verify, verdict]
     runs-on: macos-15
     permissions:
       contents: write
@@ -33,6 +182,10 @@ jobs:
         with:
           pattern: release-dist-*
           path: target/downloaded
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qualification-*
+          path: target/qualification
       - name: Assemble both native release artifacts
         run: |
           mkdir -p target/dist
@@ -46,6 +199,11 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: target/dist/*
+      - name: Pack the qualification evidence records
+        run: |
+          mkdir -p target/evidence
+          tar -czf "target/evidence/climon2-${GITHUB_REF_NAME#v}-qualification.tar.gz" \
+            -C target/qualification .
       - name: Publish only after every release gate passes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,4 +215,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "target/dist/climon2-$version-macos-universal.tar.gz" \
             "target/dist/climon2-$version-linux-x86_64-gnu.tar.gz" \
-            target/dist/install.sh target/dist/SHA256SUMS "${args[@]}"
+            target/dist/install.sh target/dist/SHA256SUMS \
+            "target/evidence/climon2-$version-qualification.tar.gz" "${args[@]}"

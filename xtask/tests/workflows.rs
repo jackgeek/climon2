@@ -1,7 +1,8 @@
 //! The PERF-01 measurement workflow's triggers and placement (#121; owner
 //! decisions, 2026-11-16): release candidates and manual dispatch on hosted
 //! macos-15, macos-15-intel and ubuntu-24.04, never pull requests, and never
-//! gating publication.
+//! gating publication; and release qualification (#122): always on all
+//! three native runners, between build and publish, blocking publication.
 
 use std::{fs, path::Path};
 
@@ -65,5 +66,108 @@ fn release_candidates_are_measured_without_gating_publication() {
     assert!(measure.contains(&"    uses: ./.github/workflows/measure.yml"));
     assert!(measure.contains(&"      candidate_built: true"));
     let publish = job(&release, "publish");
-    assert!(publish.contains(&"    needs: verify"), "{publish:#?}");
+    let needs = publish
+        .iter()
+        .find(|line| line.starts_with("    needs:"))
+        .unwrap();
+    assert!(!needs.contains("measure"), "{publish:#?}");
+}
+
+/// Release qualification (#122; owner decisions, 2026-11-16): the Release
+/// workflow qualifies natively on ubuntu-24.04, macos-15 and
+/// macos-15-intel, always, whatever CLIMON2_MACOS_TESTS says, each job
+/// recording every case with `cargo xtask qualify run` on its platform.
+#[test]
+fn qualification_always_runs_on_all_three_native_runners() {
+    let release = workflow("release.yml");
+    let qualify = job(&release, "qualify");
+    for (runner, archive, platform) in [
+        ("macos-15", "macos-universal", "macos-arm64"),
+        ("macos-15-intel", "macos-universal", "macos-x86_64"),
+        ("ubuntu-24.04", "linux-x86_64-gnu", "linux-x86_64"),
+    ] {
+        let at = qualify
+            .iter()
+            .position(|line| *line == format!("          - runner: {runner}"))
+            .unwrap_or_else(|| panic!("{runner} missing: {qualify:#?}"));
+        assert_eq!(qualify[at + 1], format!("            archive: {archive}"));
+        assert_eq!(qualify[at + 2], format!("            platform: {platform}"));
+    }
+    assert!(
+        !qualify
+            .iter()
+            .any(|line| line.contains("CLIMON2_MACOS_TESTS")),
+        "{qualify:#?}"
+    );
+    assert!(qualify.contains(&"    runs-on: ${{ matrix.runner }}"));
+    assert!(
+        qualify.iter().any(|line| line
+            .trim_start()
+            .starts_with("cargo xtask qualify run --platform \"$PLATFORM\"")),
+        "{qualify:#?}"
+    );
+}
+
+/// Qualification sits between build and publish and blocks publishing:
+/// it needs the verified build (and any Measure reports), the verdict needs
+/// every qualification job, and publishing needs the verdict, which fails
+/// unless every case passed or has the owner's disposition. Measurement
+/// alone never gates publishing.
+#[test]
+fn publishing_waits_for_the_qualification_verdict() {
+    let release = workflow("release.yml");
+    let qualify = job(&release, "qualify");
+    assert!(
+        qualify.contains(&"    needs: [verify, measure]"),
+        "{qualify:#?}"
+    );
+    assert!(qualify.contains(&"    if: ${{ !cancelled() && needs.verify.result == 'success' }}"));
+    let verdict = job(&release, "verdict");
+    assert!(
+        verdict.contains(&"    needs: [verify, qualify]"),
+        "{verdict:#?}"
+    );
+    assert!(
+        verdict.iter().any(|line| line.trim_start()
+            == "run: cargo xtask qualify verdict --evidence target/evidence --out target/verdict"),
+        "{verdict:#?}"
+    );
+    let publish = job(&release, "publish");
+    assert!(
+        publish.contains(&"    needs: [verify, verdict]"),
+        "{publish:#?}"
+    );
+    assert!(
+        !publish.iter().any(|line| line.contains("if:")),
+        "{publish:#?}"
+    );
+}
+
+/// Evidence records go to workflow artifacts and release assets (owner
+/// decision on #122).
+#[test]
+fn evidence_records_are_artifacts_and_release_assets() {
+    let release = workflow("release.yml");
+    let qualify = job(&release, "qualify");
+    assert!(qualify.contains(&"          name: qualification-${{ matrix.platform }}"));
+    let verdict = job(&release, "verdict");
+    assert!(verdict.contains(&"          name: qualification-verdict"));
+    let publish = job(&release, "publish");
+    assert!(
+        publish.contains(&"          pattern: qualification-*"),
+        "{publish:#?}"
+    );
+    assert!(
+        publish.contains(
+            &"            \"target/evidence/climon2-$version-qualification.tar.gz\" \"${args[@]}\""
+        ),
+        "{publish:#?}"
+    );
+}
+
+/// Pull requests never qualify: the checks workflow has no qualification.
+#[test]
+fn pull_requests_never_qualify() {
+    assert!(!workflow("check.yml").contains("qualify"));
+    assert!(!workflow("measure.yml").contains("qualify"));
 }
