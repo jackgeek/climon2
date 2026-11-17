@@ -319,7 +319,8 @@ impl Monitor {
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
         self.menus();
-        let began = self.toasts.frame(now, self.screen.overlay());
+        self.toasts.frame(now, self.screen.overlay());
+        let titling = self.toasts.titling(now, self.screen.overlay());
         self.mark_shown();
         self.synchronise();
         let rows = self.registry.rows();
@@ -348,7 +349,7 @@ impl Monitor {
             session,
         };
         self.screen.show(&scene)?;
-        self.ring(began)?;
+        self.title(titling)?;
         self.attend()
     }
 
@@ -371,10 +372,21 @@ impl Monitor {
         self.toasts.announce(id, news, label, viewed);
     }
 
-    /// One BEL when a toast `began` drawing, while `monitor.bell` is on
-    /// (docs/protocol/monitor-host/bell.md).
-    fn ring(&self, began: bool) -> io::Result<()> {
-        if began && self.bell {
+    /// Once the frame first showing a toast's full title (`titling`) has
+    /// been written to the host, the toast's hold starts and, while
+    /// `monitor.bell` is on, one BEL rings (owner decision on #115,
+    /// 2026-11-17; docs/protocol/monitor-host/bell.md).
+    fn title(&mut self, titling: bool) -> io::Result<()> {
+        if !titling {
+            return Ok(());
+        }
+        self.toasts.titled(Instant::now());
+        self.ring()
+    }
+
+    /// One BEL, while `monitor.bell` is on.
+    fn ring(&self) -> io::Result<()> {
+        if self.bell {
             return host::write_host(BEL);
         }
         Ok(())
