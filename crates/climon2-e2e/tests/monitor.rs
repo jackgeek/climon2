@@ -7167,8 +7167,12 @@ fn a_notification_storm_stays_within_the_toast_bound_while_input_responds() {
     }
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
-    let rung = bells(&terminal);
-    assert!((1..=5).contains(&rung), "{rung} bells");
+    // The first toast's bell rings once its title has been written (owner
+    // decision on #115, 2026-11-17).
+    terminal
+        .wait_for_host_signals(TIMEOUT, |signals| signals.contains(&HostSignal::Bell))
+        .unwrap();
+    assert!(bells(&terminal) <= 5, "{} bells", bells(&terminal));
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     assert!(bells(&terminal) <= 5, "{} bells", bells(&terminal));
