@@ -7941,16 +7941,28 @@ fn episode_status(state: &str, episode: u64, second: u32) -> Act {
 /// acquiring or acknowledging: the selection, its control and its pending
 /// attention stay. Opening the selector and the key introduction toasts
 /// nothing again: the pending episodes were toasted. One bell rings as each
-/// toast begins, six in all.
+/// toast begins, six in all. Pending's Initial metadata waits until the
+/// host shows the startup progress, so its toast begins once the host has
+/// read the monitor's startup output: a toast's paints follow elapsed time,
+/// skipping obsolete ones (operational limits), so a host still reading
+/// that output when the toast began could miss its every held frame.
 #[test]
 fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
     let package = Package::new();
     without_introduction(&package);
     // The acquisition initial selection starts is never granted, nor timed
-    // out while the test runs.
-    limits_config(&package, json!({"deadlines": {"operation_ms": 120_000}}));
+    // out while the test runs, and collection waits for Pending's client
+    // while the test holds it.
+    limits_config(
+        &package,
+        json!({"deadlines": {"start_ms": 120_000, "operation_ms": 120_000}}),
+    );
     let home = package.isolation.home().to_owned();
-    let (go, end) = (home.join("burst.go"), home.join("end.go"));
+    let (open, go, end) = (
+        home.join("pending.go"),
+        home.join("burst.go"),
+        home.join("end.go"),
+    );
     let ear = Ear::default();
     let created = "2026-01-01T00:00:00.000Z";
     let start = |suffix: u8, answer: Answer| {
@@ -7962,12 +7974,15 @@ fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
         Some(exited(0)),
         vec![],
     );
-    let pending = with_status(
-        "pending",
-        wire_status("needs_attention", &utc(2)),
-        None,
-        vec![],
-    );
+    let pending = serving(vec![
+        Act::Await(open.clone()),
+        opened_with(true),
+        initial_metadata(
+            "pending",
+            Some(wire_status("needs_attention", &utc(2))),
+            None,
+        ),
+    ]);
     let mut burst = vec![Act::Await(go.clone())];
     for episode in 1..=6u32 {
         if episode > 1 {
@@ -7996,6 +8011,14 @@ fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
     let later = with_status("later", wire_status("running", &utc(3)), None, burst);
     let daemons = [start(0xe1, known), start(0xe2, pending), start(0xe3, later)];
     let mut terminal = outer(&package, "c2 monitor");
+    // Collection waits for Pending alone; its attention is still pending
+    // at startup, in its client's first Initial metadata.
+    let progress = [
+        "Connecting to 3 sessions (2 ready)",
+        "Press Ctrl+] then x to exit.",
+    ];
+    shows(&mut terminal, &empty_monitor(ROWS, COLS, &progress));
+    fs::write(&open, b"").unwrap();
     let top = session_top_row(
         usize::from(COLS),
         "pending",
