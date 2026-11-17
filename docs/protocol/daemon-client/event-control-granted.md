@@ -71,4 +71,11 @@ policy as an ordinary attach; for a monitor-mode connection it is always the
 session's current geometry, as its grants never resize the session. Periods
 and restoration IDs are session-wide and only increase. Private-protocol
 attachments share the same control, and their grants use periods and
-restorations too, so the numbers one connection sees can skip.
+restorations too, so the numbers one connection sees can skip. They never
+wrap: once the last period or restoration ID, 18446744073709551615, is
+issued, no grant follows
+([#90](https://github.com/jackgeek/climon2/issues/90)). Then no
+registration is promoted, and a departing controller hands control back to
+nobody: no remaining attachment could ever control again, so the daemon
+explicitly fails each of them by closing its stream, and the session goes on
+as after its last attachment's departure.

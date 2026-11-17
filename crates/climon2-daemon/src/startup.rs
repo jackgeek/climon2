@@ -224,6 +224,24 @@ pub(crate) fn held() -> bool {
     true
 }
 
+/// `CLIMON2_DAEMON_ISSUED=<period>,<restoration>`: the session starts as if
+/// these were the control period and restoration ID issued last, so a test
+/// reaches their exhaustion.
+#[cfg(feature = "test-hooks")]
+pub(crate) fn issued(control: crate::control::Control) -> crate::control::Control {
+    use crate::control::{Authority, Period, Restoration};
+    let Ok(value) = std::env::var("CLIMON2_DAEMON_ISSUED") else {
+        return control;
+    };
+    let parsed = value.split_once(',').and_then(|(period, restoration)| {
+        Some(Authority {
+            period: Period(period.parse().ok()?),
+            restoration: Restoration(restoration.parse().ok()?),
+        })
+    });
+    control.issued_after(parsed.expect("CLIMON2_DAEMON_ISSUED is <period>,<restoration>"))
+}
+
 #[cfg(feature = "test-hooks")]
 fn never_ready() {
     std::thread::sleep(std::time::Duration::MAX);

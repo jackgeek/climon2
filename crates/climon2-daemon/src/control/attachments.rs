@@ -1,11 +1,12 @@
 use super::{
-    Authority, ConnectionId, Controlling, Effect, Grants, Issued, geometry, shutdown::Members,
+    Authority, ConnectionId, Controlling, Effect, Fresh, Grants, Issued, Open, geometry,
+    shutdown::Members,
 };
 use climon2_core::{
     protocol::TerminalSize,
     wire::{GrantReason, OperationalCode},
 };
-use std::mem;
+use std::{iter, mem};
 
 /// One accepted attachment and its latest valid host size.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,9 +98,14 @@ pub(super) struct Controller {
 
 impl Controller {
     /// Grants control at once under a new period and its first restoration.
-    fn granted(attachment: Attachment, reason: GrantReason, grants: &mut Grants) -> (Self, Effect) {
+    fn granted(
+        attachment: Attachment,
+        reason: GrantReason,
+        fresh: Fresh,
+        grants: &mut Grants,
+    ) -> (Self, Effect) {
         let attachment = attachment.granted_at(grants.sizes.session);
-        let authority = grants.issued.grant();
+        let authority = grants.issued.grant(fresh);
         let restored_for = attachment.restoration_size();
         let grant = Effect::Grant {
             conn: attachment.conn,
@@ -228,6 +234,37 @@ impl Controller {
         }]
     }
 
+    /// Whether recording `host` would need a new restoration: while
+    /// restoring when the size its restoration is serialized for changes,
+    /// and once ready for a canonical one at a new geometry. A replacement
+    /// already pending needs no other.
+    fn restores_for(&self, host: TerminalSize) -> bool {
+        let restores = !matches!(
+            (self.phase, self.attachment.target),
+            (Phase::Replacing, _) | (Phase::Ready, Target::Host)
+        );
+        let size = Attachment {
+            host,
+            ..self.attachment
+        }
+        .restoration_size();
+        restores && size != self.restored_for
+    }
+
+    /// A host size for `conn` that would need a new restoration of the
+    /// controller is refused once none can be issued.
+    fn recordable(
+        &self,
+        conn: ConnectionId,
+        host: TerminalSize,
+        issued: Issued,
+    ) -> Result<(), OperationalCode> {
+        let exhausted = self.conn() == conn && self.restores_for(host) && !issued.can_restore();
+        (!exhausted)
+            .then_some(())
+            .ok_or(OperationalCode::ResourceLimit)
+    }
+
     /// A restoration no longer matches the size it is serialized for after
     /// a host change before readiness.
     fn invalidate(&mut self) {
@@ -287,8 +324,13 @@ pub(super) struct Attachments {
 
 impl Attachments {
     /// The first attachment, granted at once for `reason`.
-    pub fn new(attachment: Attachment, reason: GrantReason, grants: &mut Grants) -> (Self, Effect) {
-        let (controller, grant) = Controller::granted(attachment, reason, grants);
+    pub fn new(
+        attachment: Attachment,
+        reason: GrantReason,
+        fresh: Fresh,
+        grants: &mut Grants,
+    ) -> (Self, Effect) {
+        let (controller, grant) = Controller::granted(attachment, reason, fresh, grants);
         let attachments = Self {
             controller,
             others: Vec::new(),
@@ -312,12 +354,17 @@ impl Attachments {
 
     /// A non-controlling attachment takes control at once; nothing changes
     /// for anyone else.
-    pub fn take_control(&mut self, conn: ConnectionId, grants: &mut Grants) -> Vec<Effect> {
+    pub fn take_control(
+        &mut self,
+        conn: ConnectionId,
+        fresh: Fresh,
+        grants: &mut Grants,
+    ) -> Vec<Effect> {
         let Some(index) = self.position(conn) else {
             return Vec::new();
         };
         let attachment = self.others.remove(index);
-        self.grant(attachment, GrantReason::Acquire, grants)
+        self.grant(attachment, GrantReason::Acquire, fresh, grants)
     }
 
     /// Makes `attachment` the controller at once; the previous one stays,
@@ -326,9 +373,10 @@ impl Attachments {
         &mut self,
         attachment: Attachment,
         reason: GrantReason,
+        fresh: Fresh,
         grants: &mut Grants,
     ) -> Vec<Effect> {
-        let (controller, grant) = Controller::granted(attachment, reason, grants);
+        let (controller, grant) = Controller::granted(attachment, reason, fresh, grants);
         let previous = mem::replace(&mut self.controller, controller);
         self.others.insert(0, previous.attachment);
         let mut effects = previous.revoke();
@@ -340,7 +388,15 @@ impl Attachments {
         self.others.iter().position(|other| other.conn == conn)
     }
 
-    pub fn resize(&mut self, conn: ConnectionId, host: TerminalSize) {
+    /// Records `conn`'s host size, unless the controller would need a new
+    /// restoration for it that cannot be issued.
+    pub fn resize(
+        &mut self,
+        conn: ConnectionId,
+        host: TerminalSize,
+        issued: Issued,
+    ) -> Result<(), OperationalCode> {
+        self.controller.recordable(conn, host, issued)?;
         let controller = &mut self.controller.attachment;
         for attachment in std::iter::once(controller).chain(&mut self.others) {
             if attachment.conn == conn {
@@ -348,15 +404,16 @@ impl Attachments {
             }
         }
         self.controller.invalidate();
+        Ok(())
     }
 
-    /// Returns the remaining attachments, if any, after `conn` departs.
+    /// The remaining attachments after `conn` departs.
     pub fn depart(
         mut self,
         conn: ConnectionId,
         departure: Departure,
         grants: &mut Grants,
-    ) -> (Option<Self>, Vec<Effect>) {
+    ) -> (Open, Vec<Effect>) {
         if self.controller.conn() == conn {
             return self.hand_back(departure, grants);
         }
@@ -367,22 +424,35 @@ impl Attachments {
             }
             None => Vec::new(),
         };
-        (Some(self), effects)
+        (Open::Attached(self), effects)
     }
 
-    /// The most recently controlling remaining attachment is granted at once.
-    fn hand_back(self, departure: Departure, grants: &mut Grants) -> (Option<Self>, Vec<Effect>) {
+    /// The most recently controlling remaining attachment is granted at
+    /// once. When no new period can be issued, no attachment can control
+    /// again, so the remaining ones are explicitly failed: their
+    /// connections close, each already released when its control was
+    /// revoked.
+    fn hand_back(self, departure: Departure, grants: &mut Grants) -> (Open, Vec<Effect>) {
         let mut effects = self.controller.end_admission();
         effects.extend(departure.of_controller(self.controller.conn()));
         let mut others = self.others.into_iter();
-        let remaining = others.next().map(|recent| {
-            let (controller, grant) = Controller::granted(recent, GrantReason::HandBack, grants);
-            effects.push(grant);
-            Self {
-                controller,
-                others: others.collect(),
+        let remaining = match (others.next(), grants.issued.next_grant()) {
+            (Some(recent), Some(fresh)) => {
+                let reason = GrantReason::HandBack;
+                let (controller, grant) = Controller::granted(recent, reason, fresh, grants);
+                effects.push(grant);
+                Open::Attached(Self {
+                    controller,
+                    others: others.collect(),
+                })
             }
-        });
+            (Some(recent), None) => {
+                let failed = iter::once(recent).chain(others);
+                effects.extend(failed.map(|other| Effect::Disconnect { conn: other.conn }));
+                Open::Detached
+            }
+            (None, _) => Open::Detached,
+        };
         (remaining, effects)
     }
 
