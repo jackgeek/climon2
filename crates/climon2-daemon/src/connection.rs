@@ -29,6 +29,15 @@ struct PendingFrame {
     written: usize,
 }
 
+impl PendingFrame {
+    /// What a queued frame holds against the output queue's bound until it
+    /// is written whole or discarded: its allocation and its place in the
+    /// queue, not only its bytes.
+    fn charge(&self) -> usize {
+        self.bytes.capacity() + std::mem::size_of::<Self>()
+    }
+}
+
 /// The protocol a connection speaks after the frozen hello.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Protocol {
@@ -101,6 +110,8 @@ impl Connection {
         self.outgoing.is_empty()
     }
 
+    /// What the queued frames hold against the 16 MiB bound: each one's
+    /// allocation and its place in the queue.
     pub fn queued_bytes(&self) -> usize {
         self.queued_bytes
     }
@@ -136,12 +147,13 @@ impl Connection {
     }
 
     fn queue_bytes(&mut self, bytes: Vec<u8>) -> io::Result<()> {
-        let queued = self.queued_bytes.saturating_add(bytes.len());
+        let frame = PendingFrame { bytes, written: 0 };
+        let queued = self.queued_bytes.saturating_add(frame.charge());
         if WRITE_WINDOW.checked_sub(queued).is_none() {
             return Err(super::io_error("connection output queue is full"));
         }
-        self.queued_bytes += bytes.len();
-        self.outgoing.push_back(PendingFrame { bytes, written: 0 });
+        self.queued_bytes = queued;
+        self.outgoing.push_back(frame);
         Ok(())
     }
 
@@ -175,7 +187,7 @@ impl Connection {
     fn last(&mut self, queue: impl FnOnce(&mut Self) -> io::Result<()>) {
         if self.outgoing.front().is_none_or(|frame| frame.written == 0) {
             for unsent in self.outgoing.drain(..) {
-                self.queued_bytes -= unsent.bytes.len();
+                self.queued_bytes -= unsent.charge();
             }
         }
         let _ = queue(self);
@@ -191,9 +203,9 @@ impl Connection {
                 break;
             };
             frame.written += count;
-            self.queued_bytes -= count;
             self.last_progress = Instant::now();
             if frame.written == frame.bytes.len() {
+                self.queued_bytes -= frame.charge();
                 self.outgoing.pop_front();
             }
         }
@@ -420,5 +432,81 @@ fn protocol_error(error: &io::Error) -> String {
 impl Drop for Connection {
     fn drop(&mut self) {
         let _ = self.stream.shutdown(Shutdown::Both);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    const SIXTEEN_MIB: usize = 16 * 1024 * 1024;
+    /// A queued frame's place in the queue: its `Vec` (pointer, capacity
+    /// and length) and its written count, 8 bytes each on 64-bit targets.
+    const SLOT: usize = 32;
+
+    fn connection() -> (Connection, UnixStream) {
+        let (ours, peer) = UnixStream::pair().unwrap();
+        (Connection::new(ours).unwrap(), peer)
+    }
+
+    /// LIM-01 (queue bound, at the limit and one past): the output queue
+    /// holds 16 MiB of what its frames hold, each frame's allocation and
+    /// its 32-byte place in the queue. A frame that would take it one byte
+    /// past is refused and queues nothing, so even empty frames are
+    /// bounded: 524,288 fill it.
+    #[test]
+    fn the_output_queue_holds_sixteen_mebibytes_of_frames_and_their_overhead() {
+        let (mut full, _peer) = connection();
+        full.queue_bytes(vec![0; SIXTEEN_MIB - 2 * SLOT - 1])
+            .unwrap();
+        full.queue_bytes(vec![0; 1]).unwrap();
+        assert_eq!(full.queued_bytes(), SIXTEEN_MIB);
+        assert!(full.queue_bytes(Vec::new()).is_err());
+        assert_eq!(full.queued_bytes(), SIXTEEN_MIB);
+        let (mut empty, _peer) = connection();
+        assert!(empty.queue_bytes(vec![0; SIXTEEN_MIB - SLOT + 1]).is_err());
+        assert_eq!(empty.queued_bytes(), 0);
+        assert!(empty.available());
+        let (mut records, _peer) = connection();
+        for _ in 0..524_288 {
+            records.queue_bytes(Vec::new()).unwrap();
+        }
+        assert_eq!(records.queued_bytes(), SIXTEEN_MIB);
+        assert!(records.queue_bytes(Vec::new()).is_err());
+    }
+
+    /// A frame written whole releases its charge, and a Fatal error that
+    /// replaces a backlog not yet started releases the backlog's.
+    #[test]
+    fn written_and_replaced_frames_release_their_charge() {
+        let (mut connection, mut peer) = connection();
+        connection.queue_bytes(vec![7; 10]).unwrap();
+        assert_eq!(connection.queued_bytes(), 10 + SLOT);
+        connection.flush().unwrap();
+        assert_eq!(connection.queued_bytes(), 0);
+        let mut received = [0; 10];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(received, [7; 10]);
+        connection.queue_bytes(vec![1; 100]).unwrap();
+        connection.queue_bytes(vec![2; 100]).unwrap();
+        connection.fail(Failure::Fatal(FatalCode::InvalidFrameLength));
+        assert_eq!(connection.queued_bytes(), 0);
+        let fatal = wire::read_frame(&mut peer, frame_limit()).unwrap().unwrap();
+        assert_eq!(fatal.code(), 0x4d);
+    }
+
+    /// LIM-01 (frame bound, at the limit and one past): a revision-1 frame
+    /// of 1,048,576 bytes, its type byte and body, is queued whole after
+    /// its four-byte prefix; one byte more is never sent.
+    #[test]
+    fn a_server_frame_over_the_limit_is_never_queued() {
+        let (mut connection, _peer) = connection();
+        let largest = wire::Frame::new(0x41, vec![b' '; 1_048_575]);
+        connection.queue_wire(&largest).unwrap();
+        assert_eq!(connection.queued_bytes(), 4 + 1_048_576 + SLOT);
+        let oversized = wire::Frame::new(0x41, vec![b' '; 1_048_576]);
+        assert!(connection.queue_wire(&oversized).is_err());
+        assert_eq!(connection.queued_bytes(), 4 + 1_048_576 + SLOT);
     }
 }
