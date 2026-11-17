@@ -342,8 +342,9 @@ impl Monitor {
     /// Once a frame is painted (spec #73, "Viewing, focus, acknowledgement
     /// and host signals"; #114): each daemon hears whether the monitor
     /// views its session, a deferred acknowledgement is submitted once its
-    /// target is viewed, after that viewing, and the host hears whether any
-    /// connected session needs attention.
+    /// target is viewed, after that viewing was submitted (Set viewing is
+    /// coalesced, so it can lag the frame: owner decision on #114), and the
+    /// host hears whether any connected session needs attention.
     fn attend(&mut self) -> io::Result<()> {
         self.reacknowledge();
         let viewed = self.viewed().cloned();
@@ -352,7 +353,8 @@ impl Monitor {
                 self.supervisor.request(id.clone(), request);
             }
         }
-        self.acknowledge(viewed.is_some());
+        let reported = viewed.and_then(|id| self.terminals.get(&id));
+        self.acknowledge(reported.is_some_and(Terminal::viewing_reported));
         let pending = self.registry.attention().is_some();
         self.host_report
             .report(pending)
