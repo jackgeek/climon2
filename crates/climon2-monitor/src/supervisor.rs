@@ -123,7 +123,9 @@ impl Supervisor {
         let _ = self.commands.send(Command::Request(id, request));
     }
 
-    /// Shuts every client down, waiting at most `deadlines.shutdown_ms` (and
+    /// Waits for accepted input to be answered (at most
+    /// `deadlines.operation_ms`), then shuts every client down, waiting at
+    /// most `deadlines.shutdown_ms` (and
     /// one tick) for their terminal evidence, released handles and joined
     /// owners. Instances unconfirmed by then are logged and left, never
     /// destroyed, to process exit; the fail-stop arrives with #118.
@@ -276,7 +278,32 @@ impl State {
             self.schedule();
             self.poll();
         }
+        self.settle_input();
         self.shut_down();
+    }
+
+    /// Before shutting down, waits until every input chunk an open client
+    /// accepted is answered, at most `deadlines.operation_ms` (owner decision
+    /// on #109): typed keys read with prefix+x still reach their session, and
+    /// a stuck one holds exit no longer than one operation may take.
+    fn settle_input(&mut self) {
+        let bound = Duration::from_millis(self.context.limits.operation_ms.into());
+        let deadline = Instant::now() + bound;
+        while self.input_pending() && Instant::now() < deadline {
+            self.internals();
+            self.poll();
+        }
+    }
+
+    /// Whether an open client has accepted input not yet answered.
+    fn input_pending(&self) -> bool {
+        self.instances.values().any(|instance| {
+            matches!(instance.phase, Phase::Open(_))
+                && instance
+                    .pending
+                    .values()
+                    .any(|request| matches!(request, Request::Input(..)))
+        })
     }
 
     /// Takes every pending command; false once shutdown is asked for.
@@ -311,10 +338,20 @@ impl State {
         self.waiting.insert(key, metadata);
     }
 
-    /// Submits `request` through an open client and remembers it until its
-    /// answer; anything else is answered at once with why not.
+    /// Submits `request` through an open client, input in chunks of at most
+    /// `chunk_bytes`, in order. The first refusal is answered at once with
+    /// why, carrying every byte not submitted, and nothing after it is
+    /// submitted.
     fn submit(&mut self, id: &SessionId, request: Request) {
-        if let Err(why) = self.submit_one(id, request) {
+        let chunk = self.context.limits.chunk_bytes as usize;
+        let mut unsent: Option<(Request, String)> = None;
+        for request in split(request, chunk) {
+            match unsent.as_mut() {
+                Some((refused, _)) => absorb(refused, request),
+                None => unsent = self.submit_one(id, request).err(),
+            }
+        }
+        if let Some((request, why)) = unsent {
             self.tell(
                 id,
                 ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
@@ -325,7 +362,7 @@ impl State {
     /// Submits one request and enters it in the pending ledger once the
     /// library accepts it. A request refused, here or by the library,
     /// consumes no request ID.
-    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), String> {
+    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), (Request, String)> {
         let capacity = self.ledger;
         let open = self
             .instances
@@ -335,13 +372,16 @@ impl State {
                 _ => None,
             });
         let Some((live, instance)) = open else {
-            return Err("the session's client is not connected".to_owned());
+            return Err((request, "the session's client is not connected".to_owned()));
         };
         if instance.pending.len() >= capacity {
-            return Err("too many requests are awaiting their answers".to_owned());
+            let why = "too many requests are awaiting their answers".to_owned();
+            return Err((request, why));
         }
         let request_id = instance.next;
-        live.client.submit(request_id, request)?;
+        if let Err(why) = live.client.submit(request_id, &request) {
+            return Err((request, why));
+        }
         instance.next += 1;
         instance.pending.insert(request_id, request);
         Ok(())
@@ -671,6 +711,25 @@ fn wait(table: &mut [libc::pollfd]) {
     };
 }
 
+/// The requests `request` is submitted as: input in chunks of at most
+/// `chunk` bytes (the library refuses larger ones), anything else whole.
+fn split(request: Request, chunk: usize) -> Vec<Request> {
+    match request {
+        Request::Input(authority, bytes) => bytes
+            .chunks(chunk)
+            .map(|bytes| Request::Input(authority, bytes.to_vec()))
+            .collect(),
+        request => vec![request],
+    }
+}
+
+/// Adds a later chunk's bytes to the refused input they follow.
+fn absorb(refused: &mut Request, request: Request) {
+    if let (Request::Input(_, unsent), Request::Input(_, more)) = (refused, request) {
+        unsent.extend(more);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! The supervisor against a fake revision-1 client library (#106, Fault
@@ -734,7 +793,8 @@ mod tests {
     }
 
     /// A request the fake accepted: tag, request ID and its arguments' words
-    /// (generation; or generation, period, restoration; plus columns and rows).
+    /// (generation; or generation, period, restoration; plus columns and rows,
+    /// or each input byte).
     type Submitted = (u32, u64, Vec<u64>);
 
     #[derive(Default)]
@@ -1030,6 +1090,7 @@ mod tests {
             match request.tag {
                 native::ACQUIRE => vec![request.args.generation],
                 native::READY => authority_words(request.args.authority),
+                native::INPUT => input_words(request.args.input),
                 _ => {
                     let resize = request.args.resize;
                     let mut words = authority_words(resize.authority);
@@ -1041,6 +1102,10 @@ mod tests {
                 }
             }
         };
+        // Input holding an F does not fit.
+        if request.tag == native::INPUT && words[3..].contains(&u64::from(b'F')) {
+            return failure(native::FULL, b"full", b"no room");
+        }
         changed(&mut world(), |world| {
             world
                 .submitted
@@ -1057,6 +1122,19 @@ mod tests {
             answer(request.request_id, refused),
         ]));
         success()
+    }
+
+    /// The input's authority, then each of its bytes.
+    ///
+    /// # Safety
+    /// The input's bytes are valid for this call.
+    unsafe fn input_words(input: native::Input) -> Vec<u64> {
+        let mut words = authority_words(input.authority);
+        // SAFETY: as the caller promises.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(input.bytes.data, input.bytes.length as usize) };
+        words.extend(bytes.iter().map(|&byte| u64::from(byte)));
+        words
     }
 
     fn authority_words(authority: native::Authority) -> Vec<u64> {
@@ -1658,7 +1736,7 @@ mod tests {
             Asked::Resize(held, size),
         ];
         for request in requests {
-            supervisor.request(id.clone(), request);
+            supervisor.request(id.clone(), request.clone());
             let answer = if matches!(request, Asked::Ready(_)) {
                 Err("stale".to_owned())
             } else {
@@ -1810,6 +1888,119 @@ mod tests {
         supervisor.stop();
         let acquire = |request_id| (native::ACQUIRE, request_id, vec![GENERATION]);
         assert_eq!(submitted(&id), [acquire(OPEN_ID + 1), acquire(OPEN_ID + 2)]);
+    }
+
+    /// COM-03 queue-full and COM-04 typed cases (#109): input is submitted under
+    /// its authority in chunks of at most `chunk_bytes`, at the limit and one
+    /// past, in order, and each accepted chunk is answered as itself. The first
+    /// chunk the library refuses is answered at once with why, carrying it and
+    /// every later byte; nothing after it is submitted, and it consumes no
+    /// request ID.
+    #[test]
+    fn input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte() {
+        let id = session(9, 1);
+        let mut limits = climon2_core::config::Limits::default().library();
+        limits.chunk_bytes = 3;
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = limited(1, 20_000, fake_library(), limits);
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(&supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        let held = Authority {
+            generation: 1,
+            period: 5,
+            restoration: 6,
+        };
+        let input = |bytes: &[u8]| Asked::Input(held, bytes.to_vec());
+        let answered = |bytes: &[u8], answer| {
+            (
+                id.clone(),
+                presented(Presentation::Answered(input(bytes), answer)),
+            )
+        };
+        supervisor.request(id.clone(), input(b"abc"));
+        supervisor.request(id.clone(), input(b"\0\xffAz"));
+        for chunk in [&b"abc"[..], b"\0\xffA", b"z"] {
+            assert_eq!(next(&supervisor), answered(chunk, Ok(())));
+        }
+        supervisor.request(id.clone(), input(b"xyzFghij"));
+        let mut reports = [next(&supervisor), next(&supervisor)];
+        reports.sort_by_key(|(_, event)| format!("{event:?}"));
+        let mut expected = [
+            answered(b"xyz", Ok(())),
+            answered(b"Fghij", Err("full: no room".to_owned())),
+        ];
+        expected.sort_by_key(|(_, event)| format!("{event:?}"));
+        assert_eq!(reports, expected);
+        supervisor.request(id.clone(), input(b"k"));
+        assert_eq!(next(&supervisor), answered(b"k", Ok(())));
+        supervisor.stop();
+        let words = |bytes: &[u8]| {
+            let mut words = vec![1, 5, 6];
+            words.extend(bytes.iter().map(|&byte| u64::from(byte)));
+            words
+        };
+        assert_eq!(
+            submitted(&id)
+                .into_iter()
+                .filter(|(tag, ..)| *tag == native::INPUT)
+                .collect::<Vec<_>>(),
+            [
+                (native::INPUT, 2, words(b"abc")),
+                (native::INPUT, 3, words(b"\0\xffA")),
+                (native::INPUT, 4, words(b"z")),
+                (native::INPUT, 5, words(b"xyz")),
+                (native::INPUT, 6, words(b"k")),
+            ]
+        );
+    }
+
+    /// Spec #73 exit (#109, owner decision): stopping first waits until every
+    /// accepted input chunk is answered, at most `deadlines.operation_ms`, so a
+    /// stuck session's unanswered input holds shutdown for the bound and no
+    /// longer; answered input holds it not at all.
+    #[test]
+    fn stopping_waits_for_accepted_input_at_most_the_operation_deadline() {
+        let held = Authority {
+            generation: 1,
+            period: 9,
+            restoration: 9,
+        };
+        for (index, silent, operation_ms) in [(1, true, 400), (2, false, 30_000)] {
+            let id = session(10, index);
+            script(
+                &id,
+                Script {
+                    silent,
+                    ..Script::default()
+                },
+            );
+            let mut limits = climon2_core::config::Limits::default().library();
+            limits.operation_ms = operation_ms;
+            let Supervised {
+                mut supervisor,
+                directory: _home,
+                ..
+            } = limited(1, 1_000, fake_library(), limits);
+            supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+            assert_eq!(
+                next(&supervisor),
+                (id.clone(), ClientEvent::Opened { status: false })
+            );
+            supervisor.request(id.clone(), Asked::Input(held, b"z".to_vec()));
+            let started = Instant::now();
+            supervisor.stop();
+            let took = started.elapsed();
+            if silent {
+                assert!(took >= Duration::from_millis(400), "{took:?}");
+            }
+            assert!(took < Duration::from_secs(15), "{took:?}");
+        }
     }
 
     const UNCONFIRMED: &str = "client shutdown unconfirmed at its deadline";

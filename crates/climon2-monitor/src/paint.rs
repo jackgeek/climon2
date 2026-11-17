@@ -24,6 +24,10 @@ pub(crate) struct HostCursor {
 pub(crate) struct Frame {
     pub(crate) buffer: Buffer,
     pub(crate) cursor: Option<HostCursor>,
+    /// The host keypad is in application mode (DECKPAM), as the session
+    /// taking input asked: the host sends its keypad keys as that
+    /// application expects them.
+    pub(crate) keypad: bool,
 }
 
 /// The cursor is hidden while cells are written, every cell's rendition is
@@ -200,6 +204,7 @@ mod tests {
         let painted = text(paint(&Frame {
             buffer,
             cursor: None,
+            keypad: false,
         }));
         let expected = [
             "\x1b[?25l\x1b[1;1H",
@@ -230,6 +235,7 @@ mod tests {
                 row: 0,
                 style: 6,
             }),
+            keypad: false,
         }));
         assert_eq!(
             painted,
@@ -257,6 +263,7 @@ mod tests {
         let painted = text(paint(&Frame {
             buffer,
             cursor: None,
+            keypad: false,
         }));
         assert_eq!(
             painted,
@@ -271,7 +278,8 @@ mod tests {
         assert_eq!(
             text(paint(&Frame {
                 buffer,
-                cursor: None
+                cursor: None,
+                keypad: false,
             })),
             "\x1b[?25l\x1b[1;1H\x1b[0;39;49m  \x1b[2;1H  \x1b[0m"
         );
