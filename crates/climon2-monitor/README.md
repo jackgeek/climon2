@@ -2,7 +2,7 @@
 
 The [monitor](../../GLOSSARY.md#sessions) executable, `climon2-monitor`, ships in
 every version folder beside the CLI, client and daemon, on macOS and x86-64
-GNU/Linux. Users reach it as `c2 monitor` or `c2 mon` (or the same through
+GNU/Linux. Users reach it as `c2 monitor` or `c2 m` (or the same through
 `climon2`): the launcher runs the current version's CLI, which execs its own
 version's monitor with no arguments or envelope. That handoff between
 executables of one release is not frozen. The library boundary is
@@ -529,7 +529,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 
 | Scenario | Named test |
 |---|---|
-| ENT-01 (Monitor): `c2 monitor`, `c2 mon`, `climon2 monitor` and `climon2 mon` open the same installed monitor; top row, empty state, exact host modes; prefix+x exits 0 with the host released, the prefix read alone | `installed_monitor_and_mon_open_the_same_monitor` (e2e) |
+| ENT-01 (Monitor): `c2 monitor`, `c2 m`, `climon2 monitor` and `climon2 m` open the same installed monitor; top row, empty state, exact host modes; prefix+x exits 0 with the host released, the prefix read alone | `installed_monitor_and_mon_open_the_same_monitor` (e2e) |
 | INP-01 (Monitor): configured prefix hint and exit; null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits | `installed_monitor_hints_and_exits_with_the_configured_prefix` (e2e) |
 | INP-01 (Monitor): null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` (e2e) |
 | CFG-01 (Monitor): unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings each refused with one diagnostic and 125 before terminal changes | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` (e2e) |

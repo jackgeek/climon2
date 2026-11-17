@@ -32,7 +32,7 @@ flowchart TB
         cli -->|"exec (not --headless) / attach / kill: session version"| client
         cli -->|"hello probes for discovery"| daemon
         daemon -->|"runs on session PTY"| command
-        cli -->|"monitor / mon: execs own version"| monitor
+        cli -->|"monitor / m: execs own version"| monitor
         monitor -->|"hello probes for discovery"| daemon
         monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
         client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
@@ -257,7 +257,7 @@ packaged controlled-versions test runs this build's client executable from a
 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
-on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 mon`, or their `climon2`
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m`, or their `climon2`
 spellings, reach it through the launcher and the current version's CLI, which
 execs its own version's monitor exactly as it execs a version-matched client,
 so the monitor is always the current version. That handoff between executables

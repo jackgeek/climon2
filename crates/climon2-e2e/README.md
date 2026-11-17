@@ -402,7 +402,7 @@ before it.
 
 ### Monitor (#74, spec #73)
 
-`tests/monitor.rs` drives the installed `c2 monitor`/`mon` (and the `climon2`
+`tests/monitor.rs` drives the installed `c2 monitor`/`m` (and the `climon2`
 spellings) on macOS and Linux, from outer shells that title the host and record
 termios around it. Each case checks the documented baseline, exact termios,
 the untouched title, no OSC output and ordinary shell input afterwards. Cases
@@ -417,7 +417,7 @@ earlier run would, so they open on the empty state.
 
 | Scenario | Named packaged test (`tests/monitor.rs`) |
 |---|---|
-| ENT-01 `c2 monitor`, `c2 mon`, `climon2 monitor` and `climon2 mon` open the same installed monitor through the launcher: top row, empty state, exact host modes, prefix+x exits 0 with the prefix read alone | `installed_monitor_and_mon_open_the_same_monitor` |
+| ENT-01 `c2 monitor`, `c2 m`, `climon2 monitor` and `climon2 m` open the same installed monitor through the launcher: top row, empty state, exact host modes, prefix+x exits 0 with the prefix read alone | `installed_monitor_and_mon_open_the_same_monitor` |
 | INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
 | INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
 | CFG-01 unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings: one diagnostic, 125, no terminal change | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` |
