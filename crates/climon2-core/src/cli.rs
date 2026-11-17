@@ -53,35 +53,65 @@ impl CliArgs {
         let name = subcommand.to_str();
         match SUBCOMMANDS
             .iter()
-            .find(|(full, shortcut, _)| name.is_some_and(|name| [*full, *shortcut].contains(&name)))
+            .find(|command| name.is_some_and(|name| command.is_named(name)))
         {
-            Some((_, _, parse)) => parse(remaining),
+            Some(command) => (command.parse)(remaining),
             None => parse_flag(name, &remaining),
         }
     }
 }
 
-/// Each command's full name and its single-letter shortcut, in usage order.
+/// Each command's full name and its single-letter shortcut, in usage order:
+/// the one list the parser and the usage line's test share.
 pub fn commands() -> impl Iterator<Item = (&'static str, &'static str)> {
     SUBCOMMANDS
         .iter()
-        .map(|(full, shortcut, _)| (*full, *shortcut))
+        .map(|command| (command.name, command.shortcut))
 }
 
 type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
 
-/// Each command's full name, its single-letter shortcut and its parser. A
-/// shortcut is a pure synonym; `r` is reserved for `relay`.
-const SUBCOMMANDS: [(&str, &str, Parser); 5] = [
-    ("exec", "x", parse_exec),
-    ("list", "l", parse_list),
-    ("attach", "a", |arguments| {
-        parse_selector(arguments, CliArgs::Attach)
-    }),
-    ("kill", "k", |arguments| {
-        parse_selector(arguments, CliArgs::Kill)
-    }),
-    ("monitor", "m", parse_monitor),
+/// A command: its full name, its single-letter shortcut (a pure synonym) and
+/// its parser.
+struct Subcommand {
+    name: &'static str,
+    shortcut: &'static str,
+    parse: Parser,
+}
+
+impl Subcommand {
+    fn is_named(&self, name: &str) -> bool {
+        name == self.name || name == self.shortcut
+    }
+}
+
+/// Every command, in usage order. `r` is reserved for `relay`.
+const SUBCOMMANDS: [Subcommand; 5] = [
+    Subcommand {
+        name: "exec",
+        shortcut: "x",
+        parse: parse_exec,
+    },
+    Subcommand {
+        name: "attach",
+        shortcut: "a",
+        parse: |arguments| parse_selector(arguments, CliArgs::Attach),
+    },
+    Subcommand {
+        name: "kill",
+        shortcut: "k",
+        parse: |arguments| parse_selector(arguments, CliArgs::Kill),
+    },
+    Subcommand {
+        name: "list",
+        shortcut: "l",
+        parse: parse_list,
+    },
+    Subcommand {
+        name: "monitor",
+        shortcut: "m",
+        parse: parse_monitor,
+    },
 ];
 
 /// Help and version flags accept no further arguments.

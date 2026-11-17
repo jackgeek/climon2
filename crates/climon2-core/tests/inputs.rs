@@ -355,17 +355,30 @@ fn issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow()
     assert_eq!(ordinal(u32::MAX), "4294967295th");
 }
 
+/// #287: each command and its single-letter shortcut, as the spec lists them.
+const SHORTCUTS: [(&str, &str); 5] = [
+    ("exec", "x"),
+    ("attach", "a"),
+    ("kill", "k"),
+    ("list", "l"),
+    ("monitor", "m"),
+];
+
 /// #287: every command's single-letter shortcut is a pure synonym: given any
 /// arguments, valid or not, it parses exactly as the full name does.
 #[test]
 fn shortcuts_parse_exactly_as_their_full_commands() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
-    let tails: [&[&str]; 13] = [
+    let tails: [&[&str]; 18] = [
         &[],
         &["cmd", "--flag", ""],
         &["--", "-cmd"],
+        &["--headless"],
         &["--headless", "make", "test"],
         &["--headless", "--", "--headless"],
+        &["-h"],
+        &["-h", "make", "-h"],
+        &["-h", "--", ""],
         &["--json"],
         &["--json", "--json"],
         &["01234567"],
@@ -374,14 +387,9 @@ fn shortcuts_parse_exactly_as_their_full_commands() {
         &["short"],
         &[""],
         &["--help"],
+        &["extra"],
     ];
-    for (full, shortcut) in [
-        ("exec", "x"),
-        ("attach", "a"),
-        ("kill", "k"),
-        ("list", "l"),
-        ("monitor", "m"),
-    ] {
+    for (full, shortcut) in SHORTCUTS {
         let mut accepted = 0;
         for tail in tails {
             let long = [&[full][..], tail].concat();
@@ -440,16 +448,7 @@ fn exec_dash_h_is_headless_only_as_the_first_argument() {
 #[test]
 fn every_command_has_its_own_single_letter_shortcut() {
     let commands: Vec<_> = cli::commands().collect();
-    assert_eq!(
-        commands,
-        [
-            ("exec", "x"),
-            ("list", "l"),
-            ("attach", "a"),
-            ("kill", "k"),
-            ("monitor", "m"),
-        ]
-    );
+    assert_eq!(commands, SHORTCUTS);
     let mut names: Vec<_> = commands
         .iter()
         .flat_map(|(full, shortcut)| [*full, *shortcut])
@@ -465,17 +464,24 @@ fn every_command_has_its_own_single_letter_shortcut() {
     for (full, shortcut) in &commands {
         assert_eq!(shortcut.chars().count(), 1, "{full}");
         assert_ne!(*shortcut, "r", "{full} takes relay's reserved shortcut");
-        assert!(
-            cli::USAGE.contains(&format!("{full}|{shortcut} "))
-                || cli::USAGE.ends_with(&format!("{full}|{shortcut}")),
-            "usage omits {full}|{shortcut}: {}",
-            cli::USAGE
-        );
     }
-    assert!(cli::USAGE.contains("[--headless|-h]"), "{}", cli::USAGE);
-    let words: Vec<_> = cli::USAGE
-        .split(['|', ' '])
-        .filter(|word| !word.is_empty())
+    // The usage line names exactly these commands, each beside its shortcut.
+    let named: Vec<_> = cli::USAGE
+        .trim_start_matches("usage: c2 ")
+        .split(" | ")
+        .map(|form| form.split(' ').next().unwrap())
         .collect();
-    assert!(!words.contains(&"mon"), "{}", cli::USAGE);
+    let expected: Vec<_> = SHORTCUTS
+        .iter()
+        .map(|(full, shortcut)| format!("{full}|{shortcut}"))
+        .collect();
+    assert_eq!(named, expected, "{}", cli::USAGE);
+    assert!(cli::USAGE.contains("[--headless|-h]"), "{}", cli::USAGE);
+    assert_eq!(
+        CliArgs::parse(["r"].map(OsString::from))
+            .unwrap_err()
+            .exit_code(),
+        2,
+        "r is reserved, not a command"
+    );
 }
