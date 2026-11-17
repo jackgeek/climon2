@@ -15,7 +15,7 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), paste, mouse and focus (#111), disconnection, read-only history
+(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), disconnection, read-only history
 and passive recovery (#116), and coordinated shutdown with a truthful exit
 status (#118). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
@@ -84,7 +84,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `Keys`, one column of space inside its border, centred in the rows below the
   top row (an odd spare row falls above it, an odd spare column to its left):
   `<prefix> then x  Exit the monitor`, `… s  Open
-  the session list`, `… ?  Show this dialog`, a blank line, `[ ] Don't show
+  the session list`, `… ?  Show this dialog`, a blank line, the selector's
+  keys under `In the session list:` (owner decision on #113: the footer names
+  only select, cancel and help, and help lists the rest; see
+  [On-screen strings](#on-screen-strings)), a blank line, `[ ] Don't show
   again (Space)` (`[x]` once saved), any problem with the saved choice, a
   blank line and `Continue (Enter)`. With key hints off, the empty state shows
   the same problem, until a save succeeds. The screen repaints only when its
@@ -249,23 +252,65 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   session=<id>`, `client published`, `client failed`, `client stopped`,
   `client ended`, `client retry scheduled session=<id> delay_ms=<n>` and
   client diagnostics, content-free.
-- **The selector** (`selector.rs`): prefix+s, unless the modal key
-  introduction is open, overlays the rows below the top row, one cell in from
-  each edge, with a captionless double border. Each row is its status, padded
-  to the widest status shown, a space and its label, clipped by display cell
-  without splitting a wide character; the highlighted row is reversed and
-  kept in view. It opens on the first row; prefix+s while open does nothing.
-  Up and Down (`ESC [ A`/`B` or `ESC O A`/`B`) move the highlight without
-  wrapping; while nothing is highlighted (it opened with no rows, or the
-  highlighted row was dropped), either highlights the first row. A bare
-  Escape closes it when the next key arrives (the router has no timer); a
-  cursor key split across reads anywhere never closes it, and the key after
-  the Escape is routed once it has closed (#109, INP-02). Opening it never resizes an application or
-  acquires anything. Rows that reorder while it is open keep the highlight
-  on the same row. Enter (a typed CR) acts on the highlighted row's
-  condition (below, #108 and #110). While rows exist, nothing is
-  selected and the selector is closed, the body reads `No session selected.`
-  above the key hint.
+- **The selector** (`selector.rs`, `search.rs`; #106, #113): prefix+s,
+  unless the modal key introduction is open, overlays the rows below the top
+  row, one cell in from each edge, with a captionless double border. Its
+  first line is the search, always focused, with the host cursor at its
+  insertion point (scrolled so the cursor stays in view); a single separator
+  `╟──╢` joins the side borders below it. Then the rows the search matches,
+  in row order: each is its status, padded to the widest status of any row,
+  a space and its label, ending in `…` without splitting a wide character
+  when it does not fit (owner decision on #112); the highlighted row is
+  reversed across the list. With `monitor.show_key_hints` on, the last line
+  inside the border is the footer, `Enter: select  Esc: cancel  <prefix>
+  then ?: help` (owner decision on #113: only these three), with
+  `<prefix> then <prefix>` for Enter when Ctrl+M is the prefix and no Escape
+  hint when Ctrl+[ is, ending in `…` when too long; with hints off its row
+  goes to the list. Search, separator, footer and list each draw only while
+  the box has room, and the overlay never resizes an application.
+  It opens with an empty search on the selected session, scrolled into
+  view, or else on the first row; prefix+s while open does nothing.
+  - **Search** matches a row when every search character occurs in order in
+    its displayed status, a space and its label, both lowercased (so case
+    is ignored beyond ASCII), as `fuzzy-matcher`'s `SkimMatcherV2` finds
+    them; spaces count, scores are never used, and there is no cutoff.
+    Typed characters insert at the cursor once their UTF-8 is complete
+    (control characters, Tab included, and invalid bytes insert nothing);
+    Backspace (DEL or BS) deletes before it; Left, Right, Home and End
+    (`ESC [ H`/`F`, `ESC O H`/`F`, `ESC [ 1 ~`/`4 ~`) move it. A bracketed
+    paste is inserted at its end as one line: CR, LF, CRLF and tab each one
+    space, other control characters and invalid UTF-8 discarded; it never
+    acts as keys. The search holds at most `ui.search_bytes` UTF-8 bytes: a
+    typed character or paste that would exceed them is refused whole, and
+    the footer's row (lent to it while hints are off) says `Search is
+    limited to <N> bytes` until the next key or paste.
+  - **Highlight.** A search edit keeps a highlight that still matches,
+    otherwise highlights the first match (or nothing), and scrolls back to
+    the list's start as far as the highlight allows; clearing the search
+    never restores an older highlight. Up and Down (`ESC [ A`/`B` or
+    `ESC O A`/`B`) move it a row, PageUp and PageDown (`ESC [ 5 ~`/`6 ~`) a
+    list's height, never wrapping, scrolling to keep it in view; while
+    nothing is highlighted, each highlights the first match. Rows that
+    reorder keep the highlight on the same row; when an update removes the
+    highlighted row or it stops matching, the highlight is gone for good,
+    and Enter does nothing until the user navigates or clicks.
+  - **Mouse** (SGR reports, `mouse.rs`): a left press on a listed row only
+    highlights it; one elsewhere inside the box does nothing, and one
+    outside it cancels the selector (owner decision on #113). Each wheel
+    notch scrolls the list one row, as far as it goes, without moving the
+    highlight. Releases, motion and other buttons do nothing.
+  - **Keys** come from the input router (#109). A bare Escape closes it when
+    the next key arrives (the router has no timer); a cursor key split
+    across reads anywhere never closes it, and the key after the Escape is
+    routed once it has closed (INP-02). With Ctrl+[ as the prefix a bare
+    Escape waits as the prefix and cannot cancel (the accepted limitation).
+    Cancelling, by Escape or a click outside, changes neither the selection
+    nor control. Opening it never acquires anything. Enter (a typed CR)
+    acts on the highlighted row's condition (below, #108 and #110). Prefix+?
+    opens the key introduction over it, which takes every key, paste and
+    click until it closes, leaving the selector's search and highlight as
+    they were. While rows exist, nothing is selected and the selector is
+    closed, the body reads `No session selected.` above the key hint.
 - **Exit** is the coordinated shutdown [below](#exit-and-coordinated-shutdown-118).
 
 ## Selection, control and painting (#108)
@@ -531,9 +576,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   application's own markers (`ESC [ 200 ~`, `ESC [ 201 ~`) only if the
   application had bracketed paste on then, and otherwise as the payload
   alone. A prefix pending when a paste begins reaches that target as one
-  literal prefix first; with no target taking input, or a modal open (it
-  owns the paste and discards it until #113's search), the prefix and the
-  paste are discarded. The supervisor submits a paste's parts as input in
+  literal prefix first; with no target taking input the prefix and the
+  paste are discarded. An open modal owns a paste and discards the prefix:
+  the selector's search takes the paste as one line (#113), the key
+  introduction discards it. A paste a modal covers part-way is cut (below),
+  and the search ignores the rest of it, which it never saw begin. The supervisor submits a paste's parts as input in
   chunks of at most `transfer.chunk_bytes`, its markers in chunks of their
   own; once the library refuses one (owner decision
   on #111), the top row's error slot says `Paste truncated`, the rest of
@@ -563,8 +610,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   selected session's canvas below the top row, within its geometry and the
   host, begins a gesture the application owns; one anywhere else (the top
   row, a margin, any report while a modal is open or nothing takes input)
-  begins a gesture the monitor keeps, and the selector does nothing with it
-  yet (#113). Every later report of a gesture, until its release, goes to
+  begins a gesture the monitor keeps; while the selector is open, its
+  reports go to the selector (#113), and otherwise nowhere. Every later report of a gesture, until its release, goes to
   its owner, at the nearest application cell when it strays, or is
   discarded, with the rest of the gesture, once its owner stops taking
   input. Motion and the wheel outside a gesture go where they land. An
@@ -721,6 +768,11 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | The whole host while shutdown waits (#118, owner decision 2026-11-16) | `Exiting: waiting for <N> sessions`; for one, `Exiting: waiting for 1 session` | `screen.rs` |
 | After exit, on the shell, with the climon2 error code (#118; only on failure, owner decision 2026-11-16) | `climon2: error: monitor shutdown unconfirmed: <part>; <part>… (logs: <path>)`, each part `session <id>: <what>, …` or `<work> unfinished`; `<what>` among `Leave rejected`, `Leave failed`, `Leave unconfirmed`, `client failed: <error>`, `connection closure unconfirmed`, `no terminal evidence`, `handles not released`, `run not returned`, `worker cleanup unconfirmed: <why>`, `not destroyed`, `not destroyed: <error>`, `thread not joined`; `<work>` among `release <version> load`, `discovery pass`, `client supervisor` | `shutdown.rs`, `failstop.rs` |
 | Top row's error slot: a lost or failed client's diagnostic (#116, owner decision 2026-11-16) | the library's or loader's own message, or the monitor's: `cannot poll the client: <error>`, `cannot drain the client: <error>`, `the client stopped without terminal evidence`, `the client stopped before it opened`, `cannot confirm the client's cleanup: <error>` | `supervisor.rs` |
+| Selector footer, key hints on (#113, owner decision: only select, cancel and help) | `Enter: select  Esc: cancel  <prefix> then ?: help`; with Ctrl+[ as the prefix `Enter: select  <prefix> then ?: help`; with Ctrl+M as the prefix `<prefix> then <prefix>: select  Esc: cancel  <prefix> then ?: help` | `selector.rs` |
+| Key introduction (#105) | `<prefix> then x  Exit the monitor`, `<prefix> then s  Open the session list`, `<prefix> then ?  Show this dialog`, `[ ] Don't show again (Space)` (`[x]` once saved), `Continue (Enter)`, titled `Keys` | `keys.rs`, `introduction.rs` |
+| Key introduction, the selector's keys (#113, owner decision: help lists what the footer leaves out) | `In the session list:`, `Type or paste  Search by status and title`, `Left, Right, Home, End, Backspace  Edit the search`, `Up, Down, PageUp, PageDown  Move the highlight`, `Enter  Select the highlighted session` (`<prefix> then <prefix>  …` with Ctrl+M as the prefix), `Esc  Cancel` (left out with Ctrl+[ as the prefix), `Click a row  Highlight it`, `Click outside  Cancel`, `Wheel  Scroll the list` | `selector.rs` |
+| Selector footer's row, search refused for its length (#113) | `Search is limited to <N> bytes` | `selector.rs` |
+| Selector rows and footer too long for the box (#113, owner decision on #112) | the text that fits, then `…` | `selector.rs` |
 
 ## Specification mapping
 
@@ -764,7 +816,17 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Client supervisor: `scheduling.starts` at its bound starts that many clients and holds the next session (no client, no log directory) until one opens | `client_starts_never_exceed_the_start_lane` (`src/supervisor.rs`) |
 | Client supervisor: terminal evidence before Open's response makes the row Unavailable with its message, or a stated reason when it is empty | `terminal_evidence_before_open_says_why_the_session_is_unavailable` (`src/supervisor.rs`) |
 | Own-session scenario (confirmed 2026-11-08; hidden, owner decision on #110), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping): the own session is never listed and gets no client, while nested and controlled sessions appear | `the_own_session_is_hidden_while_nested_and_controlled_sessions_appear` (e2e) |
-| SEL-01 (Monitor, basic cases): border, columns, highlight, Up/Down without wrap, Escape, no application resize or acquisition (only the initial selection is acquired and resized, #266) | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
+| SEL-01 (Monitor, basic cases): border, search line, separator, columns, footer, highlight on the selected session, Up/Down without wrap, Escape, no application resize or acquisition (only the initial selection is acquired and resized, #266); many frames, so only the title itself is checked afterwards | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
+| SEL-01 (Monitor: search line, separator, footer, empty matches), SEL-02 (Contract and Monitor: exact, subsequence, short, spaced, status-crossing, Unicode and wide queries in row order, never by score; edit keys; paste as one line, its prefix+x and CR inert; Enter) | `the_selector_search_filters_by_status_and_label_in_row_order` (e2e) |
+| SEL-01 (Monitor: narrow 40x14 and large 200x60 hosts, scrolling, `…` clipping of long and wide labels and the footer), SEL-02 (Monitor: Tab, Up, Down, PageUp, PageDown without wrapping, clicks, the wheel), INP-05 (Monitor, selector case: clicks inside and outside the box), TRM-03 (Monitor, overlay case) | `selector_navigation_mouse_and_wheel_on_narrow_and_large_hosts` (e2e) |
+| SEL-02 (Monitor: asynchronous title and status updates clear the highlight for good), SEL-03 (Monitor and Fault: Enter pins the highlighted session through a reorder and another client's takeover) | `async_updates_clear_the_highlight_and_enter_pins_the_highlighted_session` (e2e) |
+| SEL-03 (Monitor and Fault: loss): a highlighted session lost (its daemon killed) turns Disconnected and moves with the highlight; Enter there acquires neither it nor the row that took its place; Up then Enter acquires exactly that row | `enter_pins_the_highlighted_session_while_it_is_lost` (e2e) |
+| SEL-03 (Monitor: Escape and a click outside cancel, keeping selection and control; with Ctrl+[ as the prefix Escape cannot cancel, the footer omits it, prefix+x exits) | `cancelling_keeps_the_selection_and_an_escape_prefix_cannot_cancel` (e2e) |
+| HLP-02 (Monitor, over the selector): the key introduction lists the selector's keys (owner decision on #113); input isolation while the selected session writes output, search and highlight restored, cursor hidden then back in the search, prefix+x exits | `help_over_the_selector_isolates_input_and_restores_search_and_highlight` (e2e) |
+| Operational limits `ui.search_bytes` (Monitor): typed and pasted text at the limit taken, one byte past (single- and multi-byte) refused visibly, nothing reaching the session | `search_text_past_its_byte_limit_is_refused_visibly` (e2e) |
+| SEL-02 (Contract, pure supplement): `SkimMatcherV2` ordered-subsequence matching over status, space and label, ignoring case beyond ASCII; editing, control characters and invalid UTF-8; paste as one line; `ui.search_bytes` at 4096 and 4097 bytes, single- and multi-byte, typed and pasted; the search line keeps its cursor in view | `search_matches_ordered_subsequences_of_status_and_label`, `search_ignores_unicode_case_and_matches_wide_text`, `typing_backspace_and_cursor_keys_edit_at_the_cursor`, `control_characters_and_invalid_bytes_insert_nothing`, `typing_past_the_search_limit_is_refused`, `a_paste_is_inserted_as_one_line`, `a_paste_past_the_search_limit_is_refused_whole`, `the_search_line_keeps_the_cursor_in_view` (`src/search.rs`) |
+| SEL-01, SEL-02, DSC-05 (pure supplement): layout, footer variants and reclaimed row, navigation and scrolling, highlight rules for edits and live updates, opening, mouse, paste and refusals, search cursor, the smallest boxes, input other than keys, pastes and mouse reports | `the_selector_draws_search_separator_and_two_columns`, `the_footer_names_the_actual_bindings_and_its_row_is_reclaimed_without_hints`, `navigation_moves_without_wrapping_and_keeps_the_highlight_in_view`, `search_edits_keep_a_matching_highlight_or_take_the_first_match`, `a_highlighted_row_that_leaves_or_stops_matching_is_unhighlighted_for_good`, `opening_highlights_the_selected_session_or_the_first_row`, `clicks_highlight_rows_or_cancel_outside_and_the_wheel_scrolls`, `pastes_fill_the_search_and_refusals_show_in_the_footer`, `the_selector_takes_keys_pastes_and_mouse_reports_only`, `search_edits_and_reopening_scroll_back_to_the_start`, `the_search_cursor_follows_the_text`, `the_selector_draws_only_what_fits`, `help_lists_every_selector_key_with_the_actual_prefix` (`src/selector.rs`) |
+| INP-05 (pure supplement): SGR mouse reports parsed; clicks and wheel notches whatever the modifiers | `sgr_reports_parse_and_malformed_ones_do_not`, `left_presses_click_and_wheel_notches_scroll_with_any_modifiers` (`src/mouse.rs`) |
 | DSC-03 (pure registry supplement): one client request per live session; rows tied on their entry time in ascending full session ID | `live_sessions_need_one_client_each` (`src/registry.rs`) |
 | DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07 (Monitor, hidden change), DSC-05 (Monitor, reorder case): real sessions at known daemon clock times show Needs attention, Running, Idle, Failed (signal 15), Failed (exit 143) and Succeeded in group and daemon-time order, finals kept after their sessions end; working under pending attention moves nothing, even with its daemon clock moved past a newer attention row's time; a reorder keeps the highlighted row | `real_sessions_show_their_effective_status_and_final_outcomes_in_order` (e2e) |
 | DSC-01 (Monitor, status order: every status group, a tied change time broken by ascending full session ID, never creation order, delayed Initial metadata Starting until it arrives; initial-selection case, #266: the startup progress `Connecting to 9 sessions (8 ready)` until the delayed Initial metadata, then the first eligible row, neither the newest created nor the first started, selected and acquired under the open selector), DSC-05 (Monitor, reorder case: a row moving in above the highlight, and the highlighted row's own status change) | `rows_order_by_status_group_daemon_change_time_and_full_session_id` (e2e, Fault peers) |
@@ -864,14 +926,13 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
-Not yet claimed: selector clicks and
-the wheel in the selector, and paste into search (#113), toasts and their gestures (INP-05's
+Not yet claimed: toasts and their gestures (INP-05's
 toast cases, #115), viewing and host focus's effect on it (#114), FOC-01's
 toast cases (#115), FOC-02's host-native
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
-else could receive the rest, and a reconnect replays none of it), HLP-02 over the selector (#113), selector
-search and footer (#113), Enter on Awaiting resources rows (#120),
+else could receive the rest, and a reconnect replays none of it), Delete in the
+selector (#117) and its line in the key introduction, Enter on Awaiting resources rows (#120),
 Awaiting resources
 ending initial collection (#120), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), a session

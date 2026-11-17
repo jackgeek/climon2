@@ -1,8 +1,9 @@
 //! The modal key introduction (selector document, "Key introduction and
 //! help"): the configured prefix followed by each prefix action's key, the
-//! **Don't show again** checkbox showing the saved choice, and the Continue
+//! selector's own keys (owner decision on #113), the **Don't show again**
+//! checkbox showing the saved choice, and the Continue
 //! action that Enter takes. It opens at startup or on prefix+?.
-use crate::{keys::BINDINGS, preference::Preference, router::Key};
+use crate::{keys::BINDINGS, preference::Preference, router::Key, selector};
 use climon2_core::keys::ControlKey;
 use ratatui::{
     buffer::Buffer,
@@ -88,6 +89,8 @@ impl KeyIntroduction {
                 Line::from(format!("{prefix} then {key}  {}", binding.label))
             })
             .collect();
+        lines.push(Line::default());
+        lines.extend(selector::help(prefix).into_iter().map(Line::from));
         let mark = if self.preference.suppressed() {
             'x'
         } else {
