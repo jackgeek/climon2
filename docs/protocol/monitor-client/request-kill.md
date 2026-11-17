@@ -3,7 +3,8 @@
 **Status: agreed revision-1 specification. The
 [client library](../../../GLOSSARY.md#sessions) implements it
 ([#96](https://github.com/jackgeek/climon2/issues/96)) as its
-[implemented behavior](core-v1.md#implemented-behavior) details.**
+[implemented behavior](core-v1.md#implemented-behavior) details; the
+monitor submits it for selector Delete ([#117](https://github.com/jackgeek/climon2/issues/117)).**
 The [monitor](../../../GLOSSARY.md#sessions) requests
 [Kill](../../../GLOSSARY.md#attachment-and-control) through its
 [client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

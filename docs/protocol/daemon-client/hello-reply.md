@@ -77,7 +77,7 @@ A snapshot can become outdated immediately. It does not [grant](../../../GLOSSAR
 future successful attachment. The [post-hello boundary](post-hello.md)
 describes what follows hello: daemon wire revision 1 only.
 
-This implemented `state` object does not contain the planned
+This implemented `state` object does not contain the
 [activity/attention status or its UTC change timestamp](../../session-status.md).
 Those core reports use [separate wire schemas](core-v1.md); do not infer them from
 the current lifecycle advertisement or silently repurpose its existing fields.

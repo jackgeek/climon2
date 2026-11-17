@@ -38,8 +38,9 @@ ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)),
 with its viewing and acknowledgement
 ([#102](https://github.com/jackgeek/climon2/issues/102)), and kill
 ([#100](https://github.com/jackgeek/climon2/issues/100)) through the function
-table; test tooling uses it too. The monitor's admission, recovery and
-fail-stop remain unimplemented. The
+table; test tooling uses it too. The monitor also recovers lost clients
+passively ([#116](https://github.com/jackgeek/climon2/issues/116)), shuts every instance down with a bounded fail-stop
+([#118](https://github.com/jackgeek/climon2/issues/118)) and admits each load and client against its limits ([#120](https://github.com/jackgeek/climon2/issues/120)). The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in
@@ -199,8 +200,9 @@ validity and release operations follow the [native calls](monitor-client/core-v1
 [detach](../../GLOSSARY.md#attachment-and-control) is not proof of cleanup or
 thread completion. Cleanup failure must be reported, not called success.
 
-Never forcibly terminate a stalled thread or unload running code. The agreed,
-unimplemented [lifecycle contract](../monitor-lifecycle.md#coordinated-shutdown)
+Never forcibly terminate a stalled thread or unload running code. The agreed
+[lifecycle contract](../monitor-lifecycle.md#coordinated-shutdown), implemented
+by [#118](https://github.com/jackgeek/climon2/issues/118),
 requests shutdown concurrently for every owned instance, including passive,
 attached, partially started and failing ones. Keep draining/releasing deliveries;
 required atomic [Leave](daemon-client/request-leave.md) removes registration and

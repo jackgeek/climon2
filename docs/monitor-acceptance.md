@@ -15,11 +15,16 @@ the switching, revocation and take-control key of
 [#110](https://github.com/jackgeek/climon2/issues/110),
 and the initial selection of
 [#266](https://github.com/jackgeek/climon2/issues/266), moved there from
-#107, and the disconnection, read-only history and passive recovery of
-[#116](https://github.com/jackgeek/climon2/issues/116), and the coordinated
-shutdown and exit status of
-[#118](https://github.com/jackgeek/climon2/issues/118), whose Monitor-layer
-cases are mapped in the monitor README.
+#107, and the later monitor tickets
+[#111](https://github.com/jackgeek/climon2/issues/111) to
+[#121](https://github.com/jackgeek/climon2/issues/121): paste, mouse and focus,
+the history viewport, selector search, viewing and the attention jump, toasts
+and the bell, the disconnection, read-only history and passive recovery of
+[#116](https://github.com/jackgeek/climon2/issues/116), Delete, the
+coordinated shutdown and exit status of
+[#118](https://github.com/jackgeek/climon2/issues/118), memory accounting,
+admission and the measurement job, whose cases are mapped in the crate
+READMEs' scenario-to-test tables.
 The daemon wire is partly implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
@@ -50,6 +55,10 @@ creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
 and its monitor-row case in the monitor README. Resolving this
 specification does not pass a [release gate](../GLOSSARY.md#testing).
+[Release qualification](../GLOSSARY.md#testing)
+([#122](https://github.com/jackgeek/climon2/issues/122)) records every
+scenario case's evidence with the candidate artifacts, as
+[distribution](distribution.md#release-qualification) describes.
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.
 Read the [domain glossary](../GLOSSARY.md), [technical terms](protocol/TERMS.md)
@@ -372,6 +381,14 @@ diagnostics must not log session content.
 This document is the specification, not the result manifest. No row is currently
 claimed passed. Store execution records with candidate test/qualification
 artifacts rather than editing a plan to imply tests ran.
+`cargo xtask qualify` ([#122](https://github.com/jackgeek/climon2/issues/122))
+writes one record per scenario case: each scenario's required layer on each
+qualified platform, taking its tests from the crate READMEs' scenario-to-test
+tables. The Release workflow runs it on the exact candidate archives, stores
+the records as workflow artifacts and a release asset, and publishes only
+when every case passed or has the owner's disposition recorded in
+`qualification/dispositions.json`
+([distribution](distribution.md#release-qualification)).
 
 ## Existing fixtures and missing capabilities
 

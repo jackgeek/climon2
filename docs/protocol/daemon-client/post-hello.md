@@ -83,8 +83,9 @@ application/resize semantics, canonical monitor geometry and optional non-user
 limits/deadlines/policy. The
 [agreed lifecycle contract](../../monitor-lifecycle.md) owns recovery,
 concurrent truthful shutdown, run-local selector removal and
-[headless-session](../../../GLOSSARY.md#sessions) zero-client lifetime. Only the
-headless lifetime is implemented; none of these
+[headless-session](../../../GLOSSARY.md#sessions) zero-client lifetime, all
+implemented: the headless lifetime ([#78](https://github.com/jackgeek/climon2/issues/78)) and, by the monitor, recovery
+([#116](https://github.com/jackgeek/climon2/issues/116)), removal ([#117](https://github.com/jackgeek/climon2/issues/117)) and shutdown ([#118](https://github.com/jackgeek/climon2/issues/118)); none of these
 amendments changes a wire schema. Native declarations are agreed in #71; the
 [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
 not executed conformance evidence.

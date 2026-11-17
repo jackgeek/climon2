@@ -26,14 +26,16 @@ sessions are supported. Session data defaults to `~/.climon2`; set
 `CLIMON2_HOME` to override it.
 
 The [protocol reference](docs/protocol/README.md) explains the current daemon
-handshake and the planned in-process monitor-client interface for future plugin authors.
+handshake and the in-process monitor-client interface for future plugin authors.
 It distinguishes implemented behavior from agreed plans and unresolved details.
-The planned [session status, attention, and activity mechanics](docs/session-status.md)
-include both daemon state machines and the monitor's ordering/recovery behavior.
+The [session status, attention, and activity mechanics](docs/session-status.md)
+include both daemon state machines and the monitor's ordering/recovery behavior;
+the daemon implements them (#91, #92, #98), and so does the monitor (#107,
+#114, #115, #116).
 The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
-the required real-monitor, packaged-library and measured evidence; only the
-monitor's entry, startup refusals and exits, and headless sessions (HDL-01),
-have tests so far.
+the required real-monitor, packaged-library and measured evidence. Each
+crate's README maps the scenarios it covers to their tests; a mapped test is
+not release qualification evidence.
 
 ## Sessions
 
@@ -126,8 +128,8 @@ control returns to the most recently controlling client that is still attached.
   resizing the session or typing into it. The rules above then apply only
   when no monitor is left watching. Watching alone is not attaching, so it
   does not stop the five-second rule for a starting session, and a session
-  being killed passes control to no one. (The shipped monitor does not watch
-  sessions yet.)
+  being killed passes control to no one. (The monitor watches every live
+  session this way, #106.)
 
 **Kill** one session with `c2 kill <session>` (same selector rules), whether
 or not clients are attached. It needs no terminal and prints nothing. The
@@ -265,7 +267,8 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   bell, never hiding a toast or the host attention reports.
 - `monitor.limits` holds the [operational limits](docs/monitor-operational-limits.md),
   in bytes, milliseconds (`_ms`) or counts. The monitor validates and reports
-  them; nothing enforces them yet. Its `history.max_rows` is the monitor's own
+  them and enforces most of them (#106 to #120); the operational limits'
+  status says which it does not enforce yet. Its `history.max_rows` is the monitor's own
   local history and never changes `scrollback.max_rows`. Each is an integer:
   - 1 to 3600000 for durations, but 1 to 50 for `ui.client_quantum_ms` and
     `ui.background_quantum_ms`;
@@ -323,13 +326,12 @@ small for its terminal model, exits 125 before anything starts.
 The file is read once per command; there is no environment override,
 auto-creation or live reload.
 
-### Planned monitor behavior (not implemented)
+### Monitor behavior
 
 The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
 interactive terminal input/rendering, internal normal-screen history, one top
-status row, and explicit control/restoration gates. Of these, the
-[monitor](#monitor) implements only its top row, empty state, exits and key
-introduction so far, and already treats pasted shortcuts as data. It reads the
+status row, and explicit control/restoration gates. The [monitor](#monitor)
+implements them (#108 to #112) and treats pasted shortcuts as data. It reads the
 configuration above once, before changing terminal state. Null takeover is
 allowed because selector confirmation can acquire control. Lowercase prefix+s
 opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
@@ -340,16 +342,17 @@ Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
 Needs-attention toasts hint the actual configured prefix plus lowercase j
 and describe a dynamic most-recent jump, unless `monitor.show_key_hints` is false.
 
-Help opened over the selector will keep the selector's search and highlight
-and return to them when it closes, without acquiring or acknowledging
-anything.
+Help opened over the selector keeps the selector's search and highlight
+and returns to them when it closes, without acquiring or acknowledging
+anything (#113).
 
 `monitor.bell` false suppresses the explicit host bell, not
 toasts or OSC 7501 reports; host settings govern actual audibility.
 The [selector specification](docs/monitor-selector.md) records the accepted
 layout, read-only disconnected/final history selection and animated toasts.
-The later [lifecycle specification](docs/monitor-lifecycle.md) adds planned
-default-Cancel Delete confirmation pinned to immutable session identity.
+The later [lifecycle specification](docs/monitor-lifecycle.md) adds
+default-Cancel Delete confirmation pinned to immutable session identity
+(implemented by #117), and the recovery below (implemented by #116).
 Removal waits for definitive termination and local instance cleanup/join,
 dismisses only for this run, and never acquires a fallback session or re-adds
 the dismissed GUID in the same run. No connected revoked-cache inspection route
@@ -361,18 +364,19 @@ stop it. Replacement instances wait for old cleanup/join; no indeterminate
 input/request/Kill is replayed. The monitor remains open through empty/all-final
 states and preserves selection identity without automatic replacement takeover.
 
-Planned prefix+x and catchable signals coordinate concurrent shutdown of every
-owned instance. Accepted Leave, connection closure, final outcome, cleanup and
+Prefix+x and catchable signals coordinate concurrent shutdown of every
+owned instance (implemented by #118). Accepted Leave, connection closure, final outcome, cleanup and
 join are separate evidence. Restore host state and clear root attention before
 diagnostics; stalled cleanup uses bounded whole-process failure, never a false
 detach/join claim or thread kill. The agreed
 [operational limits](docs/monitor-operational-limits.md) define the
-`monitor.limits` budgets, deadlines and evidence; only their configuration is
-validated so far. Under pressure, local history shrinks to its newest captured
-page, never disappears entirely; resource-blocked sessions remain visible. All
-of this is unimplemented; no general session-survival or native-crash isolation
+`monitor.limits` budgets, deadlines and evidence; the monitor enforces most
+of them (#119, #120), and that document's status lists what it does not.
+Under pressure, local history shrinks to its newest captured
+page, never disappears entirely; resource-blocked sessions remain visible
+(#119, #120). No general session-survival or native-crash isolation
 is added.
-Planned explicit exit succeeds only after required Leave outcomes, local cleanup/
+Explicit exit succeeds only after required Leave outcomes, local cleanup/
 joins and host restoration succeed, never with the selected command's status.
 Fatal monitor errors, required Leave failure/uncertainty, incomplete cleanup or
 restoration failure use 125; a catchable signal uses signal-style status only
@@ -404,7 +408,7 @@ operation fail with 125 and are left undisturbed. `list` needs no client.
 
 ## Monitor
 
-`c2 monitor`, or `c2 mon`, opens the monitor: one terminal that will track
+`c2 monitor`, or `c2 mon`, opens the monitor: one terminal that tracks
 every live session. It takes no arguments (any is a usage error, 2) and needs a
 terminal on stdin and stdout. The launcher always runs the current version's
 monitor, on macOS and x86-64 GNU/Linux alike. Before your terminal changes, it
@@ -415,8 +419,9 @@ prefix, the only way to reach its actions. Startup errors, any invalid setting
 included, are reported, with status 125, before your terminal changes. Editing
 the file while the monitor runs changes nothing.
 
-The monitor does not discover sessions yet. On its own alternate screen it shows
-one permanent top row and an empty state whose key hint names your escape
+The monitor discovers live sessions continuously and gives each one a passive
+client (#106). On its own alternate screen it shows one permanent top row and,
+while there are no sessions, an empty state whose key hint names your escape
 prefix; with `monitor.show_key_hints` false only `No sessions to show.` remains:
 
 ```text
@@ -461,9 +466,10 @@ showing your saved choice; doing so while it is open changes nothing. The
 dialog takes every other key and any paste, and none of them does anything
 else; the escape prefix followed by `x` still exits. The escape prefix pressed
 twice reaches the dialog as that key, so with `Ctrl+M` (Enter) as the prefix,
-Enter Enter continues. There is no session list for `s` to open yet, and
-Escape does not close the dialog: with `Ctrl+[` as the prefix it never can,
-because Escape is the prefix.
+Enter Enter continues. The escape prefix followed by `s` opens the session
+list (#106, #113). A bare Escape closes the dialog when the next key arrives
+(#109), except with `Ctrl+[` as the prefix: then it never can, because Escape
+is the prefix.
 
 The choice lives in `<climon2 home>/monitor-preferences.json`, apart from
 `config.jsonc`: `{"version":1,"suppress_key_introduction":true}`. Every
@@ -599,8 +605,8 @@ logs older than seven days are pruned.
 ## Development and releases
 
 See the [executable and dynamic-library relationships](https://github.com/jackgeek/climon2/blob/main/docs/runtime-artifacts.md)
-for the current runtime and client library, test tooling, and the planned
-monitor loading design.
+for the current runtime and client library, test tooling, and the monitor's
+loading of client libraries.
 See the [workspace crate diagram](https://github.com/jackgeek/climon2/blob/main/docs/crate-relationships.md)
 for consumption relationships between climon2 crates, including test tooling.
 

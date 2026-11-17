@@ -5,8 +5,9 @@
 ([#85](https://github.com/jackgeek/climon2/issues/85)); with a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) open
 it attempts one [Leave](request-detach.md)
-([#93](https://github.com/jackgeek/climon2/issues/93)). The caller is not
-implemented.**
+([#93](https://github.com/jackgeek/climon2/issues/93)). The monitor requests
+it for a failed or removed instance ([#106](https://github.com/jackgeek/climon2/issues/106), [#117](https://github.com/jackgeek/climon2/issues/117)) and for every
+instance at exit ([#118](https://github.com/jackgeek/climon2/issues/118)).**
 The [monitor](../../../GLOSSARY.md#sessions) requests shutdown through its
 [client](../../../GLOSSARY.md#sessions)'s independent control handle.
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

@@ -419,6 +419,18 @@ _Avoid_: Sanity test, canary
 A check that must pass before a version can be released.
 _Avoid_: Quality gate, CI check
 
+**Release qualification**:
+The release gate between building and publishing that runs the complete acceptance matrix on the exact candidate archives, natively on x86-64 GNU/Linux and both macOS architectures, and publishes only when every scenario case passed or has the owner's disposition.
+_Avoid_: Release check, certification
+
+**Evidence record**:
+What release qualification stores for one scenario case, one required layer of one scenario on one platform: its state (not implemented, not run, passed, failed or blocked), the tests and artifacts behind it, and what was observed.
+_Avoid_: Test report, result manifest
+
+**Disposition**:
+The owner's recorded decision to accept a scenario case that did not pass, which lets the release be published while staying visible in its evidence records; it names its exact scenario and layer, so a performance disposition never waives a functional case.
+_Avoid_: Waiver, exemption
+
 **Measurement job**:
 The PERF-01 run of the test-only `climon2-measure` harness on a release candidate's exact archives, on hosted macOS arm64, macOS x86_64 and Ubuntu runners; a missed target is recorded as a failed Measure case needing the owner's written disposition, never as a failed build.
 _Avoid_: Benchmark, perf test

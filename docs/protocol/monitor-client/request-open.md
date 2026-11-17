@@ -4,8 +4,8 @@
 [client library](../../../GLOSSARY.md#sessions) implements monitor-mode Open
 ([#93](https://github.com/jackgeek/climon2/issues/93)) and interactive Open
 ([#94](https://github.com/jackgeek/climon2/issues/94)), as its
-[implemented behavior](core-v1.md#implemented-behavior) details. The caller is
-not implemented.**
+[implemented behavior](core-v1.md#implemented-behavior) details. The monitor
+submits monitor-mode Open for each client ([#106](https://github.com/jackgeek/climon2/issues/106)).**
 The [monitor](../../../GLOSSARY.md#sessions) asks its
 [client](../../../GLOSSARY.md#sessions) to establish a role with the
 [session daemon](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

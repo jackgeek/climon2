@@ -1,14 +1,14 @@
 # Monitor selector and attention presentation
 
-**Agreed planning specification from [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).**
-The [monitor](../GLOSSARY.md#sessions) ships only as the empty walking skeleton of
+**Agreed specification from [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).**
+The [monitor](../GLOSSARY.md#sessions) grew from the empty walking skeleton of
 [#74](https://github.com/jackgeek/climon2/issues/74), whose packaged tests show
 that typed prefix+x exits it, with the
 [key introduction and help](#key-introduction-and-help) of
-[#105](https://github.com/jackgeek/climon2/issues/105) over its empty state.
+[#105](https://github.com/jackgeek/climon2/issues/105).
 That dialog closes on a bare Escape when Escape is not the prefix
-([#109](https://github.com/jackgeek/climon2/issues/109)); it does not yet open
-over a selector. The basic [selector](../GLOSSARY.md#attachment-and-control) of
+([#109](https://github.com/jackgeek/climon2/issues/109)), and opens over the
+selector ([#113](https://github.com/jackgeek/climon2/issues/113)). The basic [selector](../GLOSSARY.md#attachment-and-control) of
 [#106](https://github.com/jackgeek/climon2/issues/106) is implemented: prefix+s
 overlays the captionless double border with status and title columns and a
 reversed highlight, Up and Down move it without wrapping, and Escape closes
@@ -36,7 +36,8 @@ go to it at once. Enter selects the highlighted row
 known to be final is acquired, and a Starting row or an Unavailable row
 without a connected client is selected without acquiring
 ([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
-final rows wait for [#116](https://github.com/jackgeek/climon2/issues/116). The full selector of
+final rows are selected read-only
+([#116](https://github.com/jackgeek/climon2/issues/116)). The full selector of
 [#113](https://github.com/jackgeek/climon2/issues/113) is implemented: the
 always-focused search with its separator, `SkimMatcherV2` ordered-subsequence
 matching in row order, typed and pasted search text within `ui.search_bytes`,
@@ -60,8 +61,10 @@ primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and
 [session-status mechanics](session-status.md) for existing authority and attention rules.
 The later [lifecycle specification](monitor-lifecycle.md) amends history,
-recovery, exit and selector termination/removal. Apart from the empty monitor's
-exits and key introduction, all remain unimplemented.
+recovery, exit and selector termination/removal, implemented by
+[#116](https://github.com/jackgeek/climon2/issues/116),
+[#117](https://github.com/jackgeek/climon2/issues/117) and
+[#118](https://github.com/jackgeek/climon2/issues/118).
 
 ## Key introduction and help
 

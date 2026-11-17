@@ -16,7 +16,13 @@ each row's effective status or final outcome and orders rows as
 [below](#reporting-ordering-and-initial-selection)
 ([#107](https://github.com/jackgeek/climon2/issues/107)), and makes the
 initial selection after a bounded collection
-([#266](https://github.com/jackgeek/climon2/issues/266)), with the evidence
+([#266](https://github.com/jackgeek/climon2/issues/266)). It reports viewing,
+acknowledges attention, jumps to it with prefix+j and sends the host
+attention reports ([#114](https://github.com/jackgeek/climon2/issues/114)),
+shows toasts and rings the bell
+([#115](https://github.com/jackgeek/climon2/issues/115)), and recovers
+lost clients passively
+([#116](https://github.com/jackgeek/climon2/issues/116)), with the evidence
 in the [monitor's scenario table](../crates/climon2-monitor/README.md#specification-mapping).
 It supersedes the earlier two-state activity heuristic,
 title-plugin requirement, creation-time monitor ordering, and
@@ -30,8 +36,9 @@ explicit acknowledgement and local notification behavior below, without
 changing activity detectors, deadlines or either state machine.
 The subsequent agreed [#63 terminal contract](protocol/terminal-integration.md)
 adds [host](../GLOSSARY.md#sessions)/application focus, terminal-style history, canonical monitor
-presentation, and #64/#59 lowercase-j/configuration amendments. It is also
-unimplemented; neither diagram below changes.
+presentation, and #64/#59 lowercase-j/configuration amendments. The monitor
+implements it ([#108](https://github.com/jackgeek/climon2/issues/108) to
+[#116](https://github.com/jackgeek/climon2/issues/116)); neither diagram below changes.
 
 The [session daemon](../GLOSSARY.md#sessions) owns both
 [activity state and attention state](../GLOSSARY.md#status-and-attention).
@@ -392,8 +399,10 @@ and [Progress changed](protocol/daemon-client/event-progress-changed.md#implemen
 records and the notification assembly limits of the
 [operational limits](monitor-operational-limits.md), and the client library
 relays the records as its [native records](protocol/monitor-client/client-v1.h)
-([#98](https://github.com/jackgeek/climon2/issues/98)). Queue limits remain
-agreed, not implemented.
+([#98](https://github.com/jackgeek/climon2/issues/98)). The client library
+bounds its queues and keeps a reserve for progress
+([#93](https://github.com/jackgeek/climon2/issues/93),
+[#99](https://github.com/jackgeek/climon2/issues/99)).
 Implementing progress [UI](protocol/TERMS.md#ui) is not part of this revision.
 
 ## Viewing is not merely control
@@ -550,8 +559,9 @@ worker panics. Permanent protocol/interface rejection and invalid configuration
 stop retries with explicit errors. Definitive completion also stops retries.
 Wait for previous-instance deliveries/handles, workers and thread cleanup/join
 before any fresh attempt; never overlap replacement instances.
-The [agreed, unimplemented lifecycle contract](monitor-lifecycle.md) owns these
-rules; [operational limits](monitor-operational-limits.md#passive-retry)
+The [agreed lifecycle contract](monitor-lifecycle.md) owns these
+rules, which the monitor implements
+([#116](https://github.com/jackgeek/climon2/issues/116)); [operational limits](monitor-operational-limits.md#passive-retry)
 specifies numerical delays/caps/jitter.
 Reconnect passively and refresh status/title without automatically taking
 control, even if the session remains selected. Explicit user action resumes
@@ -651,18 +661,21 @@ never routed to another/background session. Modal menus also clear keyboard focu
 ## Remaining work and required evidence
 
 The daemon wire schemas, compatibility/rejection, source normalization, viewing
-validation and notification identities are now agreed in #67, not implemented.
-The [lifecycle specification](monitor-lifecycle.md) now agrees recovery,
+validation and notification identities are agreed in #67 and implemented by
+the session daemon (#86 to #92, #98) and the client library (#93 to #96, #98).
+The [lifecycle specification](monitor-lifecycle.md) agrees recovery,
 concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence and
-bounded whole-process fail-stop, all unimplemented, and headless lifetime, which
-is implemented.
-The [operational specification](monitor-operational-limits.md) now agrees
-numerical budgets/rate limits/retry intervals/retention (#69), not implemented.
+bounded whole-process fail-stop, implemented by the monitor (#116, #118), and
+headless lifetime, which is implemented (#78).
+The [operational specification](monitor-operational-limits.md) agrees
+numerical budgets/rate limits/retry intervals/retention (#69); its status
+says which the monitor enforces (#116, #119, #120) and which it does not yet.
 [Native declarations](protocol/monitor-client/core-v1.md) are agreed in #71;
-the [acceptance matrix](monitor-acceptance.md) is agreed in #62, while
-real-library runtime evidence and automated monitor conformance remain future work.
-Terminal application is now agreed in the [#63 contract](protocol/terminal-integration.md),
-not implemented; its required real-monitor-host evidence includes history
+the [acceptance matrix](monitor-acceptance.md) is agreed in #62. The crate
+READMEs map tests to its scenarios; release qualification against it (#122)
+is not claimed here.
+Terminal application is agreed in the [#63 contract](protocol/terminal-integration.md)
+and implemented by the monitor (#108 to #116); its required real-monitor-host evidence includes history
 replacement, coherent resize, supported keys/mouse/paste, host/application focus,
 dynamic j/hints, gesture/notification routing, query authority and failure isolation.
 

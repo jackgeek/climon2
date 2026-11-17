@@ -154,15 +154,16 @@ shown in the artifact diagram, not as a Cargo dependency.
 
 The [status/activity revision](session-status.md) also requires the monitor
 to keep one `climon2-vt` terminal model per session across uncertain
-disconnections, through its existing `vt` edge. Daemon-core title detection and
+disconnections, through its existing `vt` edge, which it does (#108, #116).
+Daemon-core title detection and
 activity/[attention](../GLOSSARY.md#status-and-attention) machines, terminal-signal interpretation, and structured
 notification/progress relay do not require a plugin crate; plugin
 implementation is deferred. The agreed detection modes and fallback policy
 do not assign another workspace crate or change the current dependency edges.
 The [agreed terminal contract](protocol/terminal-integration.md) has the monitor
 paint read-only Rust cell, cursor, mode and history views of these models, which
-`climon2-vt` provides (#83) without exposing engine types; the monitor does not
-paint from them yet, and today uses the crate only for the documented
+`climon2-vt` provides (#83) without exposing engine types; the monitor paints
+from them (#108), and also uses the crate for the documented
 normal-shell baseline and, at startup, the `Model`'s mandatory allocation, to
 check that its limits hold one session's terminal model (#167).
 Exact-release libraries carry terminal bytes, not a native cross-release cell
@@ -182,23 +183,24 @@ placement is unassigned; no new crate or Cargo edge is implied. The wire
 specification does not implement these relationships or a native library in a
 browser. All workspace crates above remain unchanged.
 
-The [agreed lifecycle](monitor-lifecycle.md), not implemented, specifies
-concurrent per-instance shutdown/joins and exponential passive recovery. Selector
+The [agreed lifecycle](monitor-lifecycle.md) specifies
+concurrent per-instance shutdown/joins (implemented by #118) and exponential
+passive recovery (implemented by #116). Selector
 Delete reuses Kill and dismisses a row/cache only after definitive termination
-and local cleanup. Implemented headless creation changes only an explicitly
+and local cleanup (implemented by #117). Implemented headless creation changes only an explicitly
 headless session's zero-client lifetime. Its policy type lives in
 `climon2-core`, which the CLI and daemon already consume; it does not select
 another crate or alter a current Cargo edge. No new crate or consumption arrow
 is introduced here.
 
-The agreed [operational limits](monitor-operational-limits.md), unimplemented,
-require allocation-aware terminal/parser updates and bounded discovery/queues/
+The agreed [operational limits](monitor-operational-limits.md), implemented
+as far as their status says (#119, #120), require allocation-aware terminal/parser updates and bounded discovery/queues/
 thread resources. Monitor reuse of `climon2-vt` must qualify its combining and
 auxiliary allocations; the narrow unchanged-engine/infallible-interface
 assumptions are reopened, not silently treated as bounded. `climon2-vt`'s
 allocation-bounded `Model` (#76, ADR 0007), with one `Parser` shared per
-monitor (#166), qualifies them on the unchanged engine; the monitor keeps no
-models yet and reads only their mandatory allocation (#167). No replacement
+monitor (#166), qualifies them on the unchanged engine; the monitor keeps one
+per session (#108) and checks their mandatory allocation at startup (#167). No replacement
 engine, additional workspace crate or dependency edge is selected.
 
 Current edges come from workspace `Cargo.toml` files. This is a consumption

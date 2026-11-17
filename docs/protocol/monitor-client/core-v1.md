@@ -38,6 +38,8 @@ final, Control granted and revoked, Restoration begin and complete, Display,
 Geometry and diagnostic records, and attempts
 [Leave](../daemon-client/request-leave.md) once on shutdown. It sends
 [Kill](../daemon-client/request-kill.md) on an auxiliary connection of its own.
+The [monitor](../../../GLOSSARY.md#sessions) loads the library and calls every function except snapshot
+([#106](https://github.com/jackgeek/climon2/issues/106) to [#120](https://github.com/jackgeek/climon2/issues/120)).
 [Implemented behavior](#implemented-behavior) records the choices this page
 leaves open. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field

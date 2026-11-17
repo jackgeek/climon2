@@ -18,8 +18,19 @@ Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md
 and headless creation and lifetime of [#78](https://github.com/jackgeek/climon2/issues/78),
 specified [below](#headless-creation-and-existing-cli-kill), and
 [selector Delete](#selector-delete-terminate-and-remove) of
-[#117](https://github.com/jackgeek/climon2/issues/117). Later tickets added discovery, clients and recovery (see the
-[monitor README](../crates/climon2-monitor/README.md)).
+[#117](https://github.com/jackgeek/climon2/issues/117). The
+[monitor and selection lifetime](#monitor-and-selection-lifetime) is
+implemented with discovery and passive clients
+([#106](https://github.com/jackgeek/climon2/issues/106)), selection
+([#108](https://github.com/jackgeek/climon2/issues/108),
+[#110](https://github.com/jackgeek/climon2/issues/110)), bounded history
+([#119](https://github.com/jackgeek/climon2/issues/119)) and
+resource-blocked rows ([#120](https://github.com/jackgeek/climon2/issues/120)),
+and [history and passive recovery](#history-and-passive-recovery) by
+[#116](https://github.com/jackgeek/climon2/issues/116) (see the
+[monitor README](../crates/climon2-monitor/README.md)). Not implemented: the
+explicit coordinated monitor failure when required identities cannot be
+retained.
 [Coordinated shutdown](#coordinated-shutdown) and the [exit status](#exit-status)
 are **implemented with packaged evidence** by
 [#118](https://github.com/jackgeek/climon2/issues/118): one deadline that
