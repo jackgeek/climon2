@@ -185,9 +185,17 @@ pub(crate) struct Context {
 enum Command {
     Start(Box<SessionMetadata>),
     Request(SessionId, Request),
-    Forget(SessionId),
-    Drop(SessionId, String),
+    Retire(Retirement),
     Shutdown,
+}
+
+/// Why a session's clients come to an end.
+enum Retirement {
+    /// Discovery proved its daemon gone: it is never retried.
+    Gone(SessionId),
+    /// Its terminal model refused an update (#119): its open client fails
+    /// with why, and is retried passively.
+    Dropped(SessionId, String),
 }
 
 /// The running supervisor, as the UI thread holds it.
@@ -255,14 +263,15 @@ impl Supervisor {
     /// Discovery proved `id`'s daemon gone: nothing retries it any more
     /// (owner decision on #116, 2026-11-16).
     pub(crate) fn forget(&self, id: SessionId) {
-        let _ = self.commands.send(Command::Forget(id));
+        let _ = self.commands.send(Command::Retire(Retirement::Gone(id)));
     }
 
     /// `id`'s terminal model refused an update (#119): its open client is
     /// failed with `why` and retried passively, like any client the monitor
     /// stops itself (owner decision on #119, 2026-11-16).
     pub(crate) fn drop_client(&self, id: SessionId, why: String) {
-        let _ = self.commands.send(Command::Drop(id, why));
+        let dropped = Retirement::Dropped(id, why);
+        let _ = self.commands.send(Command::Retire(dropped));
     }
 
     /// Waits for accepted input to be answered (at most
@@ -515,11 +524,17 @@ impl State {
         match command {
             Command::Start(metadata) => self.wait(*metadata),
             Command::Request(id, request) => self.submit(&id, request),
-            Command::Forget(id) => self.forget(id),
-            Command::Drop(id, why) => self.fail(&id, why),
+            Command::Retire(retirement) => self.retire(retirement),
             Command::Shutdown => return false,
         }
         true
+    }
+
+    fn retire(&mut self, retirement: Retirement) {
+        match retirement {
+            Retirement::Gone(id) => self.forget(id),
+            Retirement::Dropped(id, why) => self.fail(&id, why),
+        }
     }
 
     /// Retries of a session proven gone stop: one scheduled is dropped,
