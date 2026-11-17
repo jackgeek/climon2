@@ -7,6 +7,9 @@ pub mod library;
 /// Only the passive-connection suites use it (#93).
 #[allow(dead_code)]
 pub mod passive;
+/// Only the status, viewing and acknowledgement suites use it (#95).
+#[allow(dead_code)]
+pub mod status;
 
 use climon2_install::{Payload, install};
 use climon2_test_term::{Isolation, Modes, Terminal, bin_path, process_command};

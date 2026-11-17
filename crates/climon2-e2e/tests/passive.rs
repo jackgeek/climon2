@@ -228,7 +228,7 @@ fn assert_passive(report: &Value, generation: u64, state: &Value) {
 /// keeps receiving the session's live output), CTL-03 Library (title case:
 /// Response, atomic Initial metadata with the title by value, then
 /// gap-free Title changed records by value, empty and unset distinct),
-/// COM-01 Library (the optional families intersect: of six requested, only
+/// COM-01 Library (the optional families intersect: of five requested, only
 /// `title-v1` and `focus-v1`, which the library relays and the daemon
 /// advertises, are selected; an unknown family is not), COM-03 Library (the Open's
 /// arguments were copied before `submit` returned and the caller's memory

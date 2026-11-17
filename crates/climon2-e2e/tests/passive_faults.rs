@@ -276,8 +276,8 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
 }
 
 /// COM-01 Fault (optional families intersect three ways, and the selection
-/// must be one the request allows): a daemon advertising `status-v1` and
-/// `progress-v1` but not `title-v1` is asked for no optional family at all,
+/// must be one the request allows): a daemon advertising `notification-v1`
+/// and `progress-v1` but not `title-v1` is asked for no optional family at all,
 /// since the library relays neither and the daemon lacks titles; its Initial
 /// metadata reports the title unavailable, never a fabricated empty one.
 /// A daemon that selects a family the Open did not request, or omits a
@@ -286,7 +286,12 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
 fn installed_library_selects_only_families_both_sides_support() {
     let package = Package::new();
     let root = root(&package);
-    let advertised = ["daemon-wire-v1", "monitor-v1", "status-v1", "progress-v1"];
+    let advertised = [
+        "daemon-wire-v1",
+        "monitor-v1",
+        "notification-v1",
+        "progress-v1",
+    ];
     let unavailable = send(
         0x41,
         json!({
@@ -303,7 +308,7 @@ fn installed_library_selects_only_families_both_sides_support() {
     });
     let unrequested = json!({ "open": [opened(&["daemon-wire-v1", "monitor-v1", "status-v1"])] });
     let incomplete = json!({ "open": [opened(&["title-v1"])] });
-    let optional = ["title-v1", "status-v1", "progress-v1"];
+    let optional = ["title-v1", "notification-v1", "progress-v1"];
     let steps = json!([
         { "do": "create", "instance": "a", "peer": intersected },
         { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &optional) },
@@ -369,7 +374,8 @@ fn installed_library_selects_only_families_both_sides_support() {
 /// for no request (`invalid_request_id`) or with another operation's result,
 /// a title before the Open's response or before the Initial metadata, an
 /// Initial metadata reporting a family nobody selected, a title when
-/// `title-v1` is not selected, or a Status changed when `status-v1` is not
+/// `title-v1` is not selected, a Status changed when `status-v1` is not,
+/// or a Notification, which this library never selects
 /// (`invalid_record`) each fail the connection:
 /// a transport diagnostic, then failed terminal evidence with passive retry,
 /// the connection closed and no Leave needed. A title one byte over
@@ -535,6 +541,20 @@ fn installed_library_fails_the_connection_on_traffic_revision_one_forbids() {
                     0x43,
                     json!({ "status": {
                         "state": "idle", "changed_at": "2026-11-13T00:00:00.000Z", "episode_id": null } }),
+                )]),
+                json!({}),
+                &request,
+            ),
+            transport("invalid_record"),
+            2,
+        ),
+        (
+            case(
+                "notification",
+                opened_then(vec![send(
+                    0x44,
+                    json!({ "source": "osc9", "source_id": null, "title": null,
+                            "body": "done", "episode_id": null }),
                 )]),
                 json!({}),
                 &request,
