@@ -1,6 +1,6 @@
 # Notification metadata
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification, implemented by the client library ([#98](https://github.com/jackgeek/climon2/issues/98)); see [implemented behavior](core-v1.md#implemented-behavior).**
 The [session daemon](../../../GLOSSARY.md#sessions) sends normalized notification
 metadata through its [client](../../../GLOSSARY.md#sessions) to the
 [monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

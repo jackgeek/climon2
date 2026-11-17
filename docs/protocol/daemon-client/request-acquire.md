@@ -47,11 +47,11 @@ Related: [Acknowledge](request-acknowledge.md), [Ready](request-ready.md).
 On an interactive attachment the
 [session daemon](../../../GLOSSARY.md#sessions) serves Acquire. A
 non-controlling attachment takes control at once. The previous
-[controller](../../../GLOSSARY.md#attachment-and-control), of either protocol, first
+[controller](../../../GLOSSARY.md#attachment-and-control) first
 receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation), then a
-[revocation](../../../GLOSSARY.md#attachment-and-control): a revision-1 one
-gets [Control revoked](event-control-revoked.md) with reason `takeover`.
+[revocation](../../../GLOSSARY.md#attachment-and-control):
+[Control revoked](event-control-revoked.md) with reason `takeover`.
 The requester receives [Control granted](event-control-granted.md) with
 reason `acquire` and the [Restoration begin](event-restoration-begin.md) of
 its first restoration, then the success with `changed:true` and that
@@ -62,6 +62,11 @@ its first restoration, then the success with `changed:true` and that
 the connection drains. The controller's own Acquire is an explicit no-op:
 `changed:false` with its current period and restoration ID, and nothing
 else. During committed termination Acquire is `session_terminating`.
+Otherwise, once the session has issued its last control period or
+restoration ID, an Acquire that would take control, which needs a new one
+of each, is `resource_limit` without effects, while the controller's own
+stays the no-op above
+([#90](https://github.com/jackgeek/climon2/issues/90)).
 
 On a [passive monitor connection](../../../GLOSSARY.md#attachment-and-control)
 Acquire converts the registration into an

@@ -356,10 +356,7 @@ fn published_binary_examples_round_trip_byte_identically() {
 
 fn hello(body: &str) -> (HelloReply, HelloExtensions) {
     let frame = protocol::Frame::new(0x01, body.as_bytes().to_vec()).unwrap();
-    let protocol::ServerMessage::Hello(reply) = protocol::ServerMessage::from_frame(frame).unwrap()
-    else {
-        panic!("{body} is a hello reply");
-    };
+    let reply = HelloReply::from_frame(&frame).unwrap();
     (reply, HelloExtensions::from_body(body.as_bytes()))
 }
 
@@ -387,7 +384,7 @@ fn published_hello_reply_examples_decode_and_the_encoded_ones_round_trip() {
             daemon_wire_v1: Advertised::Absent,
         }
     );
-    let encoded = protocol::ServerMessage::Hello(reply).to_frame().unwrap();
+    let encoded = reply.to_frame().unwrap();
     assert_eq!(encoded.body(), frozen.as_bytes());
 
     let (reply, extensions) = hello(&without_revision1);

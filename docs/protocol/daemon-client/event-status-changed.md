@@ -74,5 +74,7 @@ shell markers in the command's output also change activity and attention
 ([#92](https://github.com/jackgeek/climon2/issues/92)), as the
 [status mechanics](../../session-status.md#explicit-program-status-and-fallback)
 specify: each change they cause is reported here the same way, in the order
-the program wrote them. Notification signals arrive with
-[#98](https://github.com/jackgeek/climon2/issues/98).
+the program wrote them. Each recognized
+[Notification](event-notification.md#implemented-behavior)
+([#98](https://github.com/jackgeek/climon2/issues/98)) requests attention
+the same way; its Status changed, if any, precedes the Notification.
