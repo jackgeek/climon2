@@ -237,18 +237,22 @@ impl Pty {
         pending
     }
 
-    fn wait_consumed(&self) {
+    /// Types `keys` and waits until the client has read them all. A write to
+    /// the master reaches the terminal's input queue later, from a kernel
+    /// worker, so an empty queue right after it proves nothing: the keys are
+    /// typed while the client is stopped and must all arrive before it runs.
+    fn type_consumed(&mut self, keys: &[u8]) {
+        self.while_stopped(|pty| {
+            pty.master.write_all(keys).unwrap();
+            pty.wait_unread(keys.len() as i32, "the keys never reached the terminal");
+        });
+        self.wait_unread(0, "client did not read its input");
+    }
+
+    fn wait_unread(&self, count: i32, failure: &str) {
         let deadline = Instant::now() + BOUND;
-        loop {
-            let mut pending = 0;
-            assert_eq!(
-                unsafe { libc::ioctl(self.slave.as_raw_fd(), libc::FIONREAD, &mut pending) },
-                0
-            );
-            if pending == 0 {
-                return;
-            }
-            assert!(Instant::now() < deadline, "client did not read its input");
+        while self.unread() != count {
+            assert!(Instant::now() < deadline, "{failure}");
             thread::sleep(Duration::from_millis(2));
         }
     }
@@ -929,8 +933,7 @@ fn input_typed_before_restore_end_is_drained_and_never_replayed() {
     peer.attach();
     pty.wait_raw();
 
-    pty.master.write_all(b"stale\n").unwrap();
-    pty.wait_consumed();
+    pty.type_consumed(b"stale\n");
 
     peer.grant(FIRST, "attach");
     peer.display(FIRST, b"restored-screen");
@@ -1160,13 +1163,11 @@ fn a_paste_spanning_role_changes_is_never_replayed_or_read_as_keys() {
     assert_eq!(peer.input(), b"\x1b[200~abc");
     peer.revoke(FIRST, "takeover");
     pty.read_until(b"take control");
-    pty.master.write_all(b"\x14\x1dd more\x1b[201~").unwrap();
-    pty.wait_consumed();
+    pty.type_consumed(b"\x14\x1dd more\x1b[201~");
     pty.master.write_all(b"\x14").unwrap();
     let acquire = peer.json(0x33);
 
-    pty.master.write_all(b"\x1b[200~observed").unwrap();
-    pty.wait_consumed();
+    pty.type_consumed(b"\x1b[200~observed");
     let second = (2, 2);
     peer.grant(second, "acquire");
     let mut acquired = ids(second);
@@ -2416,8 +2417,7 @@ fn a_replacement_restoration_drops_typed_keys_until_ready() {
     peer.send(0x48, &begin);
     peer.display(replacement, b"redrawn");
     pty.read_until(b"redrawn");
-    pty.master.write_all(b"stale").unwrap();
-    pty.wait_consumed();
+    pty.type_consumed(b"stale");
     peer.complete(replacement);
     peer.ready(replacement);
     pty.master.write_all(b"live").unwrap();

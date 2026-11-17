@@ -33,7 +33,7 @@ use command::{Command, Read, classify};
 use delivery::{DISPLAY_CHUNK, Delivery, Out};
 use paste::PasteTracker;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, VecDeque},
     io,
     time::{Duration, Instant},
 };
@@ -69,7 +69,9 @@ struct Session<'a, C> {
     controller: Option<u64>,
     /// Restorations, of grants and replacements, awaiting their snapshot.
     pending_restorations: BTreeMap<u64, (Authority, TerminalSize)>,
-    pending_lost: BTreeSet<u64>,
+    /// The effects of losses marked inside output routing, which the
+    /// control state already applied: performed before any later effect.
+    marked: Vec<Effect>,
     pty_writes: PtyWrites,
     paste: PasteTracker,
     command: Command,
@@ -115,7 +117,7 @@ pub(crate) fn serve(
         next_id: Default::default(),
         controller: None,
         pending_restorations: BTreeMap::new(),
-        pending_lost: BTreeSet::new(),
+        marked: Vec::new(),
         pty_writes: PtyWrites::default(),
         paste: PasteTracker::default(),
         command: Command::Running,
@@ -343,7 +345,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
+    /// A message meets the effects of every loss marked before it.
     fn dispatch(&mut self, id: u64, received: Received) -> io::Result<()> {
+        self.lose_marked()?;
         match received {
             Received::Hello => self.hello(id),
             Received::Request(request) => self.request(id, request),
@@ -469,6 +473,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.end_sync(now);
         self.start_restorations(now);
         self.deliver(now);
+        self.lose_marked()?;
         self.report_exit(now)
     }
 
@@ -663,11 +668,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
+    /// Performs the effects of every loss marked so far.
     fn lose_marked(&mut self) -> io::Result<()> {
-        for id in std::mem::take(&mut self.pending_lost) {
-            self.react(|control| control.lost(ConnectionId(id)))?;
-        }
-        Ok(())
+        self.effects(Vec::new())
     }
 
     fn deadlines(&mut self, now: Instant) -> io::Result<()> {
@@ -764,9 +767,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.effects(effects)
     }
 
+    /// Effects in the order of the transitions that returned them: those
+    /// of losses marked earlier come first, and those of a loss marked while
+    /// performing one follow the rest of its batch.
     fn effects(&mut self, effects: Vec<Effect>) -> io::Result<()> {
-        for effect in effects {
+        let mut queue = VecDeque::from(std::mem::take(&mut self.marked));
+        queue.extend(effects);
+        while let Some(effect) = queue.pop_front() {
             self.effect(effect)?;
+            queue.extend(std::mem::take(&mut self.marked));
         }
         Ok(())
     }
@@ -1018,12 +1027,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    /// Loses a connection from inside output routing; the state machine
-    /// hears of it after this iteration's output, but a registration can
-    /// inherit control no more from now on.
+    /// Loses a connection from inside output routing: the control state
+    /// applies the loss at once, so no later departure hands control to it
+    /// or promotes it, and only the loss's effects wait for the next
+    /// effects performed.
     fn mark_lost(&mut self, id: u64) {
-        self.control.unregister(ConnectionId(id));
-        self.pending_lost.insert(id);
+        let effects = self.control.lost(ConnectionId(id));
+        self.marked.extend(effects);
         self.remove_connection(id);
     }
 
