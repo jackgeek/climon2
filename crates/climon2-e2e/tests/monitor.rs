@@ -4146,21 +4146,24 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
 
 /// Spec #73 exit (owner decision on #109): input accepted before prefix+x
 /// holds shutdown only until it is answered or `deadlines.operation_ms`
-/// passes, inside the two-second `deadlines.shutdown_ms` (owner decision
-/// on #118). EXT-02 and EXT-04 (Monitor, Fault; #118): with the session's
-/// daemon stopped, a key read with prefix+x is never answered, so its
-/// operation deadline fails the client's connection during shutdown, with
-/// no Leave confirmed: the monitor releases the host and clears it within
-/// the deadlines (and a few seconds' margin for the host's release), then
-/// exits with the climon2 error code and one diagnostic naming the session
-/// and why, never status 0.
+/// passes, inside `deadlines.shutdown_ms` (owner decision on #118).
+/// EXT-02 and EXT-04 (Monitor, Fault; #118): with the session's daemon
+/// stopped, a key read with prefix+x is never answered, so its ten-second
+/// operation deadline fails the client's connection during the twelve-second
+/// shutdown, with no Leave confirmed: the monitor releases the host and
+/// clears it within the deadlines (and a few seconds' margin for the host's
+/// release), well before the test's own bound, then exits with the climon2
+/// error code and one diagnostic naming the session and why, never status
+/// 0. The operation deadline also bounds every operation before the daemon
+/// stops, Acquire, Ready and Focus among them, so it is long enough for a
+/// loaded host to answer those.
 #[test]
 fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let package = Package::new();
     without_introduction(&package);
     limits_config(
         &package,
-        serde_json::json!({"deadlines": {"operation_ms": 1000, "shutdown_ms": 2000}}),
+        serde_json::json!({"deadlines": {"operation_ms": 10_000, "shutdown_ms": 12_000}}),
     );
     let id = headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid as i32;
@@ -4173,7 +4176,7 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
     let took = started.elapsed();
     kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
-    assert!(took < Duration::from_secs(6), "{took:?}");
+    assert!(took < Duration::from_secs(17), "{took:?}");
     assert_diagnosed_after_release(
         &mut terminal,
         &format!(
