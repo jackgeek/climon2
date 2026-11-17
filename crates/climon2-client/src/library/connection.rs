@@ -14,7 +14,7 @@ use super::{
     instance::{Descriptor, Next, Shared, Taken},
     kill::{Errand, Settled},
     link::{self, Link, TIMEOUT},
-    records::{Answer, Event, Response},
+    records::{Answer, Event, Response, Restoring},
     request::{Act, Command, Open, Operation, Submitted},
     stream::{Departure, Effect, Stream},
 };
@@ -39,10 +39,55 @@ const OVERSIZED: Fault = Fault::library(
     "resource_limit",
     "a record from the session daemon exceeds metadata_record_bytes",
 );
-const STALLED: Fault = Fault::library(
-    "delivery_stalled",
-    "no record waiting for event room was queued within delivery_stall_ms",
+const RESTORATION_STALLED: Fault = Fault::library(
+    "timeout",
+    "no Display of the restoration was queued within restoration_stall_ms",
 );
+const RESTORATION_LATE: Fault = Fault::library(
+    "timeout",
+    "the restoration did not complete within restoration_total_ms",
+);
+
+/// The delivery stall, stating how many records were still undelivered:
+/// those that waited for event room (#99).
+fn stalled(undelivered: usize) -> Fault {
+    Fault::composed(
+        "delivery_stalled",
+        format!(
+            "no record waiting for event room was queued within delivery_stall_ms; \
+             undelivered records: {undelivered}"
+        ),
+    )
+}
+
+/// Whether `deadline` has passed.
+fn expired(deadline: Instant) -> bool {
+    link::remaining(deadline).is_none()
+}
+
+/// A restoration under way, from its beginning until its complete (#99):
+/// it fails at `stall` unless a Display of it is queued first, which
+/// restarts that deadline, and at `total` regardless.
+#[derive(Clone, Copy)]
+struct Window {
+    stall: Instant,
+    total: Instant,
+}
+
+impl Window {
+    fn deadline(self) -> Instant {
+        self.stall.min(self.total)
+    }
+
+    /// Why the restoration failed once its deadline passed.
+    fn fault(self) -> Fault {
+        if expired(self.total) {
+            RESTORATION_LATE
+        } else {
+            RESTORATION_STALLED
+        }
+    }
+}
 const UNSELECTED: Fault = Fault::library(
     "unsupported_capability",
     "the family this request needs is not selected on this connection",
@@ -84,6 +129,8 @@ struct Driver<'a> {
     /// While records wait: when the connection fails unless one of them
     /// is queued first.
     stall: Option<Instant>,
+    /// The restoration under way, once its beginning is queued.
+    restoration: Option<Window>,
     /// The Kill under way on its auxiliary connection: at most one.
     errand: Option<Errand<'a>>,
     shutdown: bool,
@@ -96,11 +143,12 @@ impl<'a> Driver<'a> {
         Self {
             shared,
             taken: Taken::new(shared),
-            stream: Stream::new(shared.limits().title_bytes),
+            stream: Stream::new(shared.limits().into()),
             connection: None,
             start: None,
             parked: VecDeque::new(),
             stall: None,
+            restoration: None,
             errand: None,
             shutdown: false,
             departure: Departure::NOT_REQUIRED,
@@ -272,17 +320,30 @@ impl<'a> Driver<'a> {
     }
 
     /// Sends a Leave, the caller's or shutdown's: nothing calls for a retry
-    /// after it, whatever its fate.
+    /// after it, whatever its fate. One that cannot be sent is
+    /// [`unsent`](Self::unsent).
     fn send_leave(&mut self, id: Option<u64>) {
-        self.shared.conclude(true);
         let leave_ms = Duration::from_millis(self.shared.limits().leave_ms.into());
         let deadline = Instant::now() + leave_ms;
         let sent = self.connection.as_mut().map(|connection| {
             let frame = self.stream.leave(id, connection.peer.send, deadline);
             frame.map(|frame| connection.link.send(&frame))
         });
-        if let Some(Err(fault)) = sent {
-            self.broken(fault);
+        match sent {
+            Some(Err(fault)) => self.unsent(id, fault),
+            _ => self.shared.conclude(true),
+        }
+    }
+
+    /// A Leave refused before it was sent: the caller's is rejected and the
+    /// role goes on; shutdown's ends the stream with that Leave failed.
+    fn unsent(&mut self, id: Option<u64>, fault: Fault) {
+        match id {
+            Some(id) => self.reject(id, fault),
+            None => {
+                self.departure = Departure::unsent(fault);
+                self.ended = true;
+            }
         }
     }
 
@@ -369,8 +430,10 @@ impl<'a> Driver<'a> {
     /// the next one afresh.
     fn unpark(&mut self) {
         while let Some(event) = self.parked.pop_front() {
+            let step = event.restoring();
             let Some(event) = self.shared.offer(event) else {
                 self.stall = None;
+                self.restored(step);
                 continue;
             };
             self.parked.push_front(event);
@@ -379,6 +442,32 @@ impl<'a> Driver<'a> {
         if !self.parked.is_empty() {
             let stall_ms = Duration::from_millis(self.shared.limits().delivery_stall_ms.into());
             self.stall.get_or_insert_with(|| Instant::now() + stall_ms);
+        }
+    }
+
+    /// A queued record's `step` in the restoration under way: a beginning
+    /// opens its window, a Display restarts its stall deadline, and its
+    /// complete or a revocation closes it.
+    fn restored(&mut self, step: Restoring) {
+        let limits = self.shared.limits();
+        let now = Instant::now();
+        let stall = now + Duration::from_millis(limits.restoration_stall_ms.into());
+        match step {
+            Restoring::Begins => {
+                let total = now + Duration::from_millis(limits.restoration_total_ms.into());
+                self.restoration = Some(Window { stall, total });
+            }
+            Restoring::Progresses => self.progressed(stall),
+            Restoring::Ends => self.restoration = None,
+            Restoring::Neither => {}
+        }
+    }
+
+    /// A Display was queued: during a restoration, its stall deadline is
+    /// now `stall`.
+    fn progressed(&mut self, stall: Instant) {
+        if let Some(window) = &mut self.restoration {
+            window.stall = stall;
         }
     }
 
@@ -392,11 +481,13 @@ impl<'a> Driver<'a> {
         })
     }
 
-    /// The earliest deadline to wake for: the stream's or a Kill's.
+    /// The earliest deadline to wake for: the stream's, a Kill's or the
+    /// restoration's.
     fn deadline(&self) -> Option<Instant> {
         self.stream_deadline()
             .into_iter()
             .chain(self.errand.as_ref().map(Errand::deadline))
+            .chain(self.restoration.map(Window::deadline))
             .min()
     }
 
@@ -509,11 +600,20 @@ impl<'a> Driver<'a> {
         }
     }
 
+    /// A restoration past its deadline fails the connection with library
+    /// `timeout` (#99); otherwise the stream's deadline applies.
     fn expire(&mut self) {
-        let expired = self
-            .stream_deadline()
-            .is_some_and(|deadline| link::remaining(deadline).is_none());
-        if expired && !self.ended {
+        if self.ended {
+            return;
+        }
+        match self.restoration.filter(|window| expired(window.deadline())) {
+            Some(window) => self.broken(window.fault()),
+            None => self.expire_stream(),
+        }
+    }
+
+    fn expire_stream(&mut self) {
+        if self.stream_deadline().is_some_and(expired) {
             self.timed_out();
         }
     }
@@ -523,7 +623,7 @@ impl<'a> Driver<'a> {
     /// otherwise the request a deadline bounded reports `timeout`.
     fn timed_out(&mut self) {
         match self.stall {
-            Some(_) => self.broken(STALLED),
+            Some(_) => self.broken(stalled(self.parked.len())),
             None => self.late(),
         }
     }

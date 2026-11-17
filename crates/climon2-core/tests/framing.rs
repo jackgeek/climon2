@@ -23,78 +23,44 @@ impl<T: Write> Write for Fragmented<T> {
 
 #[test]
 fn issue20_frozen_frame_handles_partial_io_and_raw_bytes() {
-    let frame = Frame::new(0x11, vec![0, 0xff, b'\n']).unwrap();
+    let frame = Frame::new(0x01, vec![0, 0xff, b'\n']).unwrap();
     let mut wire = Fragmented(Vec::new());
     write_frame(&mut wire, &frame).unwrap();
-    assert_eq!(wire.0, [0, 0, 0, 4, 0x11, 0, 0xff, b'\n']);
+    assert_eq!(wire.0, [0, 0, 0, 4, 0x01, 0, 0xff, b'\n']);
     let mut reader = Fragmented(Cursor::new(wire.0));
     assert_eq!(read_frame(&mut reader).unwrap(), frame);
 }
 
+/// COM-01 (Contract after retirement): the frozen layout carries hello
+/// only. A frame's length counts its type byte and is 1 to 1,048,576; any
+/// type but hello `0x01`, the retired private ones included, is invalid
+/// before its body is read.
 #[test]
 fn issue20_frame_bounds_include_type_and_reject_truncation_before_allocation() {
-    for (code, size) in [(0x01, 0), (0x01, 1_048_575), (0x11, 65_535), (0x21, 65_535)] {
-        let frame = Frame::new(code, vec![0; size]).unwrap();
+    for size in [0, 1_048_575] {
+        let frame = Frame::new(0x01, vec![0; size]).unwrap();
         let mut bytes = Vec::new();
         write_frame(&mut bytes, &frame).unwrap();
         assert_eq!(read_frame(&mut bytes.as_slice()).unwrap(), frame);
         bytes.pop();
         assert!(read_frame(&mut bytes.as_slice()).is_err());
     }
-    for (code, size) in [(1, 1_048_576), (0x11, 65_536), (0x21, 65_536)] {
-        assert!(Frame::new(code, vec![0; size]).is_err());
-    }
+    assert!(Frame::new(0x01, vec![0; 1_048_576]).is_err());
     for length in [0_u32, 1_048_577, u32::MAX] {
         let error = read_frame(&mut length.to_be_bytes().as_slice()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
-    // #20: an oversized data header is rejected before any body byte is read.
-    for code in [0x11_u8, 0x21] {
-        let mut header = 65_537_u32.to_be_bytes().to_vec();
+    for code in [0, 2, 0x10, 0x11, 0x16, 0x21, 0x27, 0x30, 0x40, 0x7f, 0xff] {
+        assert!(Frame::new(code, vec![]).is_err(), "{code}");
+        let mut header = 1_048_576_u32.to_be_bytes().to_vec();
         header.push(code);
         let error = read_frame(&mut header.as_slice()).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    }
-    for code in [0, 2, 0x0f, 0x17, 0x1f, 0x28, 0x2f, 0x7e, 0x80, 0xff] {
-        assert!(Frame::new(code, vec![]).is_err());
-        assert_eq!(
-            read_frame(&mut [0, 0, 0, 1, code].as_slice())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{code}");
     }
     for bytes in [&[][..], &[0, 0, 0][..], &[0, 0, 0, 1][..]] {
         assert_eq!(
             read_frame(&mut &*bytes).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
-    }
-}
-
-/// Plan 3.4: every protocol code frames; only Input and Output are data frames.
-#[test]
-fn continuity_codes_frame_and_only_input_and_output_have_the_data_limit() {
-    let codes = [
-        0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
-        0x27, 0x7f,
-    ];
-    for code in codes {
-        let size = if matches!(code, 0x11 | 0x21) {
-            65_535
-        } else {
-            1_048_575
-        };
-        let frame = Frame::new(code, vec![b'x'; size]).unwrap();
-        let mut bytes = Vec::new();
-        write_frame(&mut bytes, &frame).unwrap();
-        assert_eq!(read_frame(&mut bytes.as_slice()).unwrap(), frame, "{code}");
-        let mut header = ((size + 2) as u32).to_be_bytes().to_vec();
-        header.push(code);
-        let error = read_frame(&mut header.as_slice()).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{code}");
-    }
-    for code in [0x13, 0x14, 0x16, 0x23, 0x24, 0x27] {
-        assert!(Frame::new(code, vec![0; 65_536]).is_ok(), "{code}");
     }
 }

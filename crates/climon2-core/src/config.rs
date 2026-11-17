@@ -8,7 +8,9 @@ use crate::{
     keys::{ClientSettings, ControlKey, SettingsError},
     layout::HomeLayout,
 };
-pub use limits::{Backoff, DiscoveryLimits, Lanes, Limits, MandatoryAllocation, ModelLimits};
+pub use limits::{
+    Assembly, Backoff, DiscoveryLimits, Lanes, Limits, MandatoryAllocation, ModelLimits,
+};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{DeserializeOwned, Error as _},
@@ -51,8 +53,11 @@ impl Range {
     /// Why `setting` may not hold `value`, if it may not.
     fn refusal(self, setting: &str, value: u64) -> Option<String> {
         let Self { min, max } = self;
-        (!(min..=max).contains(&value))
-            .then(|| format!("{setting} must be an integer from {min} to {max}"))
+        (!self.contains(value)).then(|| format!("{setting} must be an integer from {min} to {max}"))
+    }
+
+    fn contains(self, value: u64) -> bool {
+        (self.min..=self.max).contains(&value)
     }
 }
 
@@ -99,11 +104,14 @@ pub struct ScrollbackSettings {
     pub max_rows: MaxRows,
 }
 
-/// Everything `exec` validates before starting the daemon.
+/// Everything `exec` validates before starting the daemon, and what it
+/// passes on: the client bindings, the daemon's retained history and its
+/// notification assembly limits.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ExecConfig {
     pub client: ClientSettings,
     pub scrollback: ScrollbackSettings,
+    pub assembly: Assembly,
 }
 
 /// Everything `attach` validates: the client bindings only.
@@ -117,6 +125,7 @@ impl ExecConfig {
         parse::<ExecFile>(text).map(|file| Self {
             client: file.client,
             scrollback: file.scrollback,
+            assembly: file.monitor.limits.assembly(),
         })
     }
 }
@@ -253,15 +262,16 @@ impl ConfigSource {
     }
 }
 
-/// Exec validates the `monitor` section and passes none of it on.
+/// Exec validates the `monitor` section and passes on only the daemon's
+/// notification assembly limits.
 #[derive(Deserialize)]
 struct ExecFile {
     #[serde(default, deserialize_with = "client")]
     client: ClientSettings,
     #[serde(default, deserialize_with = "object")]
     scrollback: ScrollbackSettings,
-    #[serde(default, rename = "monitor", deserialize_with = "object")]
-    _monitor: MonitorSettings,
+    #[serde(default, deserialize_with = "object")]
+    monitor: MonitorSettings,
 }
 
 /// Unnamed `scrollback` and `monitor` are unknown here, so serde ignores them

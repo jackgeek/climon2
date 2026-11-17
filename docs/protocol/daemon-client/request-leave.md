@@ -76,14 +76,13 @@ receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation) as
 [Display](event-display.md), then control is
 [handed back](../../../GLOSSARY.md#attachment-and-control) to the most recently
-controlling remaining attachment, of either protocol, with reason
+controlling remaining attachment, with reason
 `hand_back`; when no attachment remains, the newest passive monitor
 connection is promoted instead, with a [Control granted](event-control-granted.md)
 of reason `successor`. The success reports `attachment_detached:true`, and the
 stream then closes. Every controller departure, a loss included, passes
 control on the same way. Only then does the
-[leave policy](../../../GLOSSARY.md#attachment-and-control) apply, as the private
-protocol's: a final deliberate Leave keeps the session running, detached,
+[leave policy](../../../GLOSSARY.md#attachment-and-control) apply: a final deliberate Leave keeps the session running, detached,
 while a final unexpected departure, closing without Leave, ends it. A
 registered monitor therefore keeps a session alive when its last attachment
 departs. During committed termination Leave still removes the attachment,

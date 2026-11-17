@@ -102,8 +102,9 @@ impl Session {
 /// The Response and Initial metadata a passive Open of a session titled
 /// `first` delivers: OK `opened` with a fresh connection GUID and the
 /// families the library relays and the daemon selected, then the atomic
-/// report: the title by value, status and progress explicitly unavailable,
-/// no command result.
+/// report: the title by value, status explicitly unavailable, progress none
+/// when `progress-v1` is selected (#98) and explicitly unavailable
+/// otherwise, no command result.
 fn assert_opened(records: &[Value], id: u64, generation: u64, selected: &[&str]) {
     assert_eq!(records.len(), 2, "{records:#?}");
     let response = assert_response(&records[0], generation, id, OK);
@@ -125,10 +126,13 @@ fn assert_opened(records: &[Value], id: u64, generation: u64, selected: &[&str])
     let metadata = &records[1]["metadata"];
     assert_eq!(metadata["title"], title(VALUE, Some("first")));
     assert_eq!(metadata["status"], json!({ "available": 0, "reserved": 0 }));
-    assert_eq!(
-        metadata["progress"],
+    let progress = if selected.contains(&"progress-v1") {
+        json!({ "available": 1, "reserved": 0, "value": {
+            "state": PROGRESS_NONE, "percent_present": 0, "percent": 0, "reserved": 0 } })
+    } else {
         json!({ "available": 0, "reserved": 0 })
-    );
+    };
+    assert_eq!(metadata["progress"], progress);
     assert_eq!(metadata["command_result"]["present"], 0);
     assert_eq!(metadata["command_result"]["reserved"], 0);
 }
@@ -188,7 +192,14 @@ fn assert_passive(report: &Value, generation: u64, state: &Value) {
     assert_eq!(queued["operations"], 1, "{queued:#}");
     let all: Vec<&str> = REQUIRED.iter().chain(&OPTIONAL).copied().collect();
     assert_eq!(queued["request_bytes"], charge(&all), "{queued:#}");
-    let selected = ["daemon-wire-v1", "focus-v1", "monitor-v1", "title-v1"];
+    // `notification-v1` needs `status-v1`, which these suites leave out.
+    let selected = [
+        "daemon-wire-v1",
+        "focus-v1",
+        "monitor-v1",
+        "progress-v1",
+        "title-v1",
+    ];
     let first = step(report, 5)["records"].as_array().unwrap();
     assert_opened(first, 5, generation, &selected);
     // Whether the two records share a delivery depends on when the drain
