@@ -28,6 +28,9 @@ const NO_SELECTION: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
 /// The body once rows exist, while nothing is selected (#107).
 const UNSELECTED: &str = "No session selected.";
+/// The list is incomplete: initial collection ended with sessions still
+/// starting (#266).
+const LATE_INCOMPLETE: &str = "Discovery incomplete: some sessions are still starting";
 const TOO_SMALL: &str = "Terminal too small";
 /// The non-controller placeholder, as the client executable words it.
 const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
@@ -86,13 +89,22 @@ pub(crate) struct Scene<'a> {
     pub(crate) selector: &'a Selector,
     /// Why the latest discovery pass was incomplete, if it was.
     pub(crate) incomplete: Option<&'a str>,
+    /// The startup progress while the initial collection lasts (#266).
+    pub(crate) progress: Option<String>,
+    /// Whether the initial collection ended with sessions still starting.
+    pub(crate) late: bool,
     pub(crate) session: Option<Session<'a>>,
 }
 
+/// Whether modal or overlaid UI covers the canvas: the selector or the key
+/// introduction.
+pub(crate) fn covered(selector: &Selector, introduction: &KeyIntroduction) -> bool {
+    selector.is_open() || introduction.is_open()
+}
+
 impl Scene<'_> {
-    /// Whether modal or overlaid UI covers the canvas.
     fn covered(&self) -> bool {
-        self.selector.is_open() || self.introduction.is_open()
+        covered(self.selector, self.introduction)
     }
 }
 
@@ -152,6 +164,12 @@ impl Screen {
         })
     }
 
+    /// Whether a frame shows the selected session's canvas: nothing
+    /// `covered` it and the host has room for a session.
+    pub(crate) fn shows_canvas(&self, covered: bool) -> bool {
+        !covered && self.desire().is_some()
+    }
+
     /// Paints `scene` unless its frame is the one painted.
     pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
@@ -197,7 +215,8 @@ impl Screen {
                 None
             }
             (Some(_), Some(session)) => {
-                session_row(&mut buffer, top, session, self.top_hint.as_deref());
+                let error = error(session.error, scene.late);
+                session_row(&mut buffer, top, session, error, self.top_hint.as_deref());
                 self.canvas(&session.canvas, &mut buffer, below)
             }
             (Some(_), None) => {
@@ -210,7 +229,7 @@ impl Screen {
         scene.introduction.render(below, &mut buffer);
         Frame {
             buffer,
-            cursor: cursor.filter(|_| !scene.covered()),
+            cursor: cursor.filter(|_| self.shows_canvas(scene.covered())),
             keypad: self.keypad(scene),
         }
     }
@@ -223,28 +242,20 @@ impl Screen {
             .session
             .as_ref()
             .and_then(|session| session.canvas.view());
-        let shown = !scene.covered() && self.desire().is_some();
-        shown && view.is_some_and(|view| view.modes().application_keypad)
+        self.shows_canvas(scene.covered())
+            && view.is_some_and(|view| view.modes().application_keypad)
     }
 
-    /// The body with nothing selected, centred: the empty state until a row
-    /// exists, then that nothing is selected; an incomplete discovery pass
-    /// is said under it, so a list is never presented as complete. With key
-    /// hints off, it names any problem with the saved choice where its hint
-    /// would be: a diagnostic, not a hint.
+    /// The body with nothing selected, centred: its [`state`], then any
+    /// [`incomplete`] discovery under it, so a list is never presented as
+    /// complete. With key hints off, it names any problem with the saved
+    /// choice where its hint would be: a diagnostic, not a hint.
     fn body(&self, scene: &Scene<'_>, buffer: &mut Buffer, below: Rect) {
         let note = self.hint.as_deref().or(scene.introduction.problem());
-        let state = if scene.rows.is_empty() {
-            EMPTY
-        } else {
-            UNSELECTED
-        };
-        let incomplete = scene
-            .incomplete
-            .map(|why| format!("Discovery incomplete: {why}"));
-        let lines: Vec<_> = std::iter::once(state)
+        let incomplete = incomplete(scene.incomplete, scene.late);
+        let lines: Vec<_> = std::iter::once(state(scene.progress.as_deref(), scene.rows))
             .chain(note)
-            .chain(incomplete.as_deref())
+            .chain(incomplete.iter().map(String::as_str))
             .collect();
         centred(&lines, buffer, below);
     }
@@ -265,6 +276,30 @@ impl Screen {
         }
         None
     }
+}
+
+/// The body's state with nothing selected: the startup progress while the
+/// initial collection lasts, otherwise the empty state until a row exists,
+/// then that nothing is selected.
+fn state<'a>(progress: Option<&'a str>, rows: &[View]) -> &'a str {
+    let idle = [EMPTY, UNSELECTED][usize::from(!rows.is_empty())];
+    progress.unwrap_or(idle)
+}
+
+/// The top row's error slot: the session's own error, otherwise, while the
+/// initial collection's late sessions still start, that discovery is
+/// incomplete (owner decision, 2026-11-16).
+fn error(own: Option<&str>, late: bool) -> Option<&str> {
+    own.or(late.then_some(LATE_INCOMPLETE))
+}
+
+/// Why discovery is incomplete: the latest pass's reason, then whether the
+/// initial collection ended with sessions still starting.
+fn incomplete(pass: Option<&str>, late: bool) -> Vec<String> {
+    pass.map(|why| format!("Discovery incomplete: {why}"))
+        .into_iter()
+        .chain(late.then(|| LATE_INCOMPLETE.to_owned()))
+        .collect()
 }
 
 /// `lines`, each centred, in the middle of `area`.
@@ -298,7 +333,13 @@ fn top_row(buffer: &mut Buffer, top: Rect, text: &str) {
 /// the cells they leave from the left, and any error follows it in what
 /// the label leaves: the error is clipped first, and never squeezes out the
 /// label.
-fn session_row(buffer: &mut Buffer, top: Rect, session: &Session<'_>, hint: Option<&str>) {
+fn session_row(
+    buffer: &mut Buffer,
+    top: Rect,
+    session: &Session<'_>,
+    error: Option<&str>,
+    hint: Option<&str>,
+) {
     let style = Style::new().reversed();
     top_row(buffer, top, "");
     let separator = SEPARATOR.width() as u16;
@@ -311,15 +352,16 @@ fn session_row(buffer: &mut Buffer, top: Rect, session: &Session<'_>, hint: Opti
     let slots: Vec<_> = slots.collect();
     let width: u16 = slots.iter().map(|(_, width)| separator + width).sum();
     let room = top.width.saturating_sub(width);
-    let mut x = top.x + room;
+    let slots_start = top.x + room;
+    let mut x = slots_start;
     for (text, slot) in slots {
         buffer.set_stringn(x, top.y, SEPARATOR, usize::from(separator), style);
         buffer.set_stringn(x + separator, top.y, text, usize::from(slot), style);
         x += separator + slot;
     }
     let (end, _) = buffer.set_stringn(top.x, top.y, session.label, room.into(), style);
-    let left = usize::from(room - (end - top.x));
-    if let Some(error) = session.error.filter(|_| left > SEPARATOR.width()) {
+    let left = usize::from(slots_start - end);
+    if let Some(error) = error.filter(|_| left > SEPARATOR.width()) {
         buffer.set_stringn(end, top.y, format!("{SEPARATOR}{error}"), left, style);
     }
 }
@@ -468,7 +510,13 @@ mod tests {
             error,
             canvas: Canvas::Nothing,
         };
-        session_row(&mut buffer, area, &session, hint.then_some(HINT));
+        session_row(
+            &mut buffer,
+            area,
+            &session,
+            session.error,
+            hint.then_some(HINT),
+        );
         assert!(
             buffer
                 .content()
@@ -600,6 +648,112 @@ mod tests {
             shown(Some(0x14), true, &Canvas::Nothing),
             ["", "", "", "", ""]
         );
+    }
+
+    /// DSC-01 (initial-selection case, pure supplement) and the owner's
+    /// wording of 2026-11-16: with nothing selected the body reads the
+    /// startup progress while collecting, otherwise the empty state until a
+    /// row exists and then that nothing is selected; an incomplete pass and
+    /// a collection that ended with sessions still starting are each said
+    /// as discovery incomplete, the pass first.
+    #[test]
+    fn the_body_says_the_startup_progress_or_the_state_and_any_incompleteness() {
+        let row = View {
+            id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
+            status: "Idle".into(),
+            label: "Row".into(),
+            since: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let progress = "Connecting to 2 sessions (1 ready)";
+        assert_eq!(state(Some(progress), &[]), progress);
+        assert_eq!(state(Some(progress), std::slice::from_ref(&row)), progress);
+        assert_eq!(state(None, &[]), "No sessions to show.");
+        assert_eq!(state(None, &[row]), "No session selected.");
+        assert_eq!(incomplete(None, false), Vec::<String>::new());
+        assert_eq!(
+            incomplete(Some("the pass deadline passed"), true),
+            [
+                "Discovery incomplete: the pass deadline passed",
+                "Discovery incomplete: some sessions are still starting",
+            ]
+        );
+        assert_eq!(
+            incomplete(None, true),
+            ["Discovery incomplete: some sessions are still starting"]
+        );
+    }
+
+    /// The owner's decision of 2026-11-16 on #266 (pure supplement): while
+    /// the initial collection's late sessions still start, the top row's
+    /// error slot says discovery is incomplete with a row selected too,
+    /// unless the session has its own error, which it never hides.
+    #[test]
+    fn a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own() {
+        let late = "Discovery incomplete: some sessions are still starting";
+        assert_eq!(error(None, false), None);
+        assert_eq!(error(None, true), Some(late));
+        assert_eq!(error(Some("timed out"), true), Some("timed out"));
+        assert_eq!(error(Some("timed out"), false), Some("timed out"));
+    }
+
+    /// What a host `cols` by 4 receives of `model`'s session in one frame:
+    /// whether its keypad is in application mode, and the cursor, under the
+    /// selector or the key introduction when they are open.
+    fn received(
+        cols: u16,
+        model: &Model,
+        selector: bool,
+        introduction: bool,
+    ) -> (bool, Option<HostCursor>) {
+        let prefix = ControlKey::from_byte(0x1d).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let layout = climon2_core::layout::HomeLayout::at(home.path()).unwrap();
+        let preference = crate::preference::Preference::read(&layout);
+        let mut key_introduction = KeyIntroduction::new(prefix, preference, false);
+        if introduction {
+            key_introduction.open();
+        }
+        let mut list = Selector::default();
+        if selector {
+            list.open(&[]);
+        }
+        let scene = Scene {
+            introduction: &key_introduction,
+            rows: &[],
+            selector: &list,
+            incomplete: None,
+            progress: None,
+            late: false,
+            session: Some(Session {
+                label: "Paint",
+                status: "Idle",
+                control: "Controlling",
+                error: None,
+                canvas: Canvas::View(model.view()),
+            }),
+        };
+        let screen = Screen::new(TerminalSize { cols, rows: 4 }, prefix, None, false);
+        let frame = screen.frame(&scene);
+        (frame.keypad, frame.cursor)
+    }
+
+    /// INP-02 and TRM-01 (pure supplement): the session's application
+    /// keypad mode and its cursor reach the host only while its canvas
+    /// shows. Either modal alone over it gives the host its own numeric
+    /// keypad and no session cursor, and so does a host too small for a
+    /// session.
+    #[test]
+    fn a_modal_or_a_small_host_keeps_the_sessions_keypad_mode_and_cursor() {
+        let session = model(10, 3, b"\x1b=\x1b[2;3H");
+        let cursor = Some(HostCursor {
+            column: 2,
+            row: 2,
+            style: 0,
+        });
+        assert_eq!(received(10, &session, false, false), (true, cursor));
+        assert_eq!(received(10, &session, true, false), (false, None));
+        assert_eq!(received(10, &session, false, true), (false, None));
+        assert_eq!(received(4, &session, false, false), (false, None));
     }
 
     /// A model `cols` by `rows` that took `bytes`.

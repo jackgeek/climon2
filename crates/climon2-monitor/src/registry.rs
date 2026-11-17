@@ -214,6 +214,16 @@ impl Row {
         }
     }
 
+    /// Whether the row awaits its client: no status or outcome yet, and a
+    /// client starting or opened with `status-v1`.
+    fn starting(&self) -> bool {
+        let waiting = matches!(
+            self.connection,
+            Connection::Starting | Connection::Connected { status: true }
+        );
+        waiting && self.standing().0 == Group::Disconnected
+    }
+
     /// What Enter does on this row, and what its canvas shows without a view.
     fn kind(&self) -> Kind {
         match (&self.connection, self.ended.is_some()) {
@@ -223,13 +233,16 @@ impl Row {
         }
     }
 
+    /// A report changes what the row shows, a connection event its
+    /// connection; control, display and answers are never row state.
     fn apply(&mut self, event: ClientEvent, now: SystemTime) {
         match event {
-            ClientEvent::Opened { status } => self.connect(Connection::Connected { status }, now),
-            ClientEvent::Unavailable(why) => self.connect(Connection::Unavailable(why), now),
-            ClientEvent::Ended => self.connect(Connection::Disconnected, now),
             ClientEvent::Report(report) => self.learn(report, now),
-            ClientEvent::Presentation(_) | ClientEvent::Answer(..) => {}
+            event => {
+                if let Some(connection) = connection(event) {
+                    self.connect(connection, now);
+                }
+            }
         }
     }
 
@@ -352,6 +365,27 @@ impl Registry {
     /// Every row by ordering group, then newest time first, then ascending
     /// full session ID.
     pub(crate) fn rows(&self) -> Vec<View> {
+        self.ordered().into_iter().map(|(_, view)| view).collect()
+    }
+
+    /// The first row in row order that initial selection may take (spec
+    /// #73, "Initial selection"): connected, its status known and not
+    /// final. The own session has no row.
+    pub(crate) fn eligible(&self) -> Option<SessionId> {
+        self.ordered()
+            .into_iter()
+            .find(|(group, _)| matches!(group, Group::Status(_)))
+            .map(|(_, view)| view.id)
+    }
+
+    /// Whether `id`'s row still awaits its client: Starting, also once
+    /// opened with `status-v1` until its status arrives.
+    pub(crate) fn starting(&self, id: &SessionId) -> bool {
+        self.rows.get(id).is_some_and(Row::starting)
+    }
+
+    /// Every row as shown, with its ordering group, in row order.
+    fn ordered(&self) -> Vec<(Group, View)> {
         let mut rows: Vec<_> = self
             .rows
             .values()
@@ -367,7 +401,19 @@ impl Registry {
             })
             .collect();
         rows.sort_by(|(left, a), (right, b)| (left, &a.id).cmp(&(right, &b.id)));
-        rows.into_iter().map(|(_, view)| view).collect()
+        rows.into_iter()
+            .map(|((group, _), view)| (group, view))
+            .collect()
+    }
+}
+
+/// The connection a client event moves its row to, if any.
+fn connection(event: ClientEvent) -> Option<Connection> {
+    match event {
+        ClientEvent::Opened { status } => Some(Connection::Connected { status }),
+        ClientEvent::Unavailable(why) => Some(Connection::Unavailable(why)),
+        ClientEvent::Ended => Some(Connection::Disconnected),
+        _ => None,
     }
 }
 
@@ -800,6 +846,42 @@ mod tests {
         assert_eq!(registry.kind(&id(7).parse().unwrap()), None);
         let first = registry.rows().into_iter().find(|row| row.id == key(0));
         assert_eq!(first.map(|row| row.since), Some(at(2)));
+    }
+
+    /// DSC-01 (initial-selection case, pure supplement) and the confirmed
+    /// exclusion: initial selection may take only a connected row whose
+    /// status is known and not final, the first in row order; a final row,
+    /// a disconnected row with a stale status and every not-connected row
+    /// are never eligible. A row awaits its client while Starting, also
+    /// once opened with `status-v1` until its status arrives.
+    #[test]
+    fn only_a_connected_row_with_a_known_nonfinal_status_is_eligible() {
+        let mut registry = Registry::new(None);
+        let starting = metadata(&id(1), "2026-11-13T10:00:00.000Z", "starting", &[]);
+        let unsure = metadata(&id(2), "2026-11-13T10:00:00.000Z", "unsure", &[]);
+        registry.discovered(starting.clone(), Found::Live, at(1));
+        registry.discovered(unsure.clone(), Found::Uncertain, at(1));
+        let awaiting = opened(&mut registry, (3, "awaiting"), true, 1);
+        let without = opened(&mut registry, (4, "without"), false, 1);
+        let lost = opened(&mut registry, (5, "lost"), true, 1);
+        registry.client(&lost, status(State::NeedsAttention, 90), at(2));
+        registry.client(&lost, ClientEvent::Ended, at(3));
+        let failed = opened(&mut registry, (6, "failed"), true, 1);
+        registry.client(&failed, ended(Outcome::Exit(1), Some(95)), at(2));
+        assert_eq!(registry.eligible(), None);
+        let starts: Vec<_> = [&starting.session_id, &unsure.session_id, &awaiting]
+            .into_iter()
+            .chain([&without, &lost, &failed])
+            .map(|key| registry.starting(key))
+            .collect();
+        assert_eq!(starts, [true, false, true, false, false, false]);
+        let idle = opened(&mut registry, (7, "idle"), true, 1);
+        registry.client(&idle, status(State::Idle, 99), at(4));
+        assert_eq!(registry.eligible(), Some(idle.clone()));
+        registry.client(&awaiting, status(State::Running, 10), at(5));
+        assert!(!registry.starting(&awaiting));
+        assert_eq!(registry.eligible(), Some(awaiting));
+        assert!(!registry.starting(&id(9).parse().unwrap()));
     }
 
     /// TRM-06 label cases: the latest nonempty title, otherwise command and

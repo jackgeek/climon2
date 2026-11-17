@@ -3,12 +3,15 @@
 //! owns the host with one permanent top row, discovers sessions off its UI
 //! thread, keeps one passive client per live session, and lists them in the
 //! selector on prefix+s, under the key introduction when it is due, until
-//! prefix+x or a catchable termination signal. Nothing is selected yet.
+//! prefix+x or a catchable termination signal. Once its first discovery
+//! pass's clients are ready, it selects and acquires the first eligible row
+//! (#266).
 
 mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod host;
+mod initial;
 mod introduction;
 mod keys;
 mod paint;
@@ -26,6 +29,7 @@ use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
 use climon2_vt::{Limits, Parser};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
+use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
 use registry::{ClientEvent, Kind, Registry, Report};
@@ -36,7 +40,7 @@ use startup::Startup;
 use std::{
     collections::BTreeMap,
     io, mem,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
 use terminal::{Control, Presentation, Request, Terminal};
@@ -106,9 +110,11 @@ struct Monitor {
     selector: Selector,
     discovery: Discovery,
     supervisor: Supervisor,
-    /// The selected session: none until the user selects one, and no
-    /// arrival ever moves it.
+    /// The selected session: none until initial selection or the user
+    /// selects one, and no arrival ever moves it.
     selected: Option<SessionId>,
+    /// Initial selection, until a selection exists.
+    initial: Initial,
     /// One terminal per session ID, kept for the whole run.
     terminals: BTreeMap<SessionId, Terminal>,
     /// What bounds each terminal's model.
@@ -136,6 +142,7 @@ impl Monitor {
         let limits = &config.settings().limits;
         let discovery = Discovery::start(startup.home, limits.discovery())?;
         let model = limits.model();
+        let start = Duration::from_millis(limits.library().start_ms.into());
         let mut monitor = Self {
             screen: Screen::new(size, prefix, take_control, hints),
             router: Router::new(prefix),
@@ -145,6 +152,7 @@ impl Monitor {
             discovery,
             supervisor,
             selected: None,
+            initial: Initial::new(start),
             terminals: BTreeMap::new(),
             model: Limits {
                 bytes: usize::try_from(model.bytes).unwrap_or(usize::MAX),
@@ -218,18 +226,29 @@ impl Monitor {
             rows: &rows,
             selector: &self.selector,
             incomplete: self.registry.incomplete(),
+            progress: self
+                .initial
+                .progress(&self.registry)
+                .map(|progress| progress.to_string()),
+            late: self.initial.late(&self.registry),
             session,
         };
         self.screen.show(&scene)
     }
 
-    /// Only the selected terminal can be shown, and only while nothing
-    /// covers its canvas and the host has room for it.
+    /// Only the [`Monitor::shown`] terminal is shown.
     fn mark_shown(&mut self) {
-        let visible = self.screen.desire().is_some() && !self.covered();
+        let shown = self.shown().cloned();
         for (id, terminal) in &mut self.terminals {
-            terminal.painted(visible && self.selected.as_ref() == Some(id));
+            terminal.painted(shown.as_ref() == Some(id));
         }
+    }
+
+    /// The selected session while the screen shows its canvas: nothing
+    /// covers it and the host has room for it.
+    fn shown(&self) -> Option<&SessionId> {
+        let shows = self.screen.shows_canvas(self.covered());
+        self.selected.as_ref().filter(|_| shows)
     }
 
     /// `id`'s terminal, created the first time it is needed.
@@ -275,10 +294,22 @@ impl Monitor {
     }
 
     /// Selects `id` and closes the selector. A session selected before
-    /// keeps any control in the background.
+    /// keeps any control in the background, and nothing is selected
+    /// automatically any more.
     fn choose(&mut self, id: SessionId) {
         self.selector.close();
+        self.initial.selected();
         self.selected = Some(id);
+    }
+
+    /// Initial selection (spec #73): once collection has ended, the first
+    /// eligible row is selected and acquired, at most once and never over
+    /// an existing selection. Any open modal stays open over it.
+    fn initialise(&mut self) {
+        if let Some(id) = self.initial.choose(&self.registry, Instant::now()) {
+            self.selected = Some(id.clone());
+            self.acquire(&id);
+        }
     }
 
     /// Takes control of `id` explicitly, then keeps the selected
@@ -325,12 +356,16 @@ impl Monitor {
         while let Ok(found) = self.discovery.found.try_recv() {
             match found {
                 Found::Batch(batch) => self.batch(batch, now),
-                Found::Pass(progress) => self.registry.pass(incomplete(&progress)),
+                Found::Pass(progress) => {
+                    self.registry.pass(incomplete(&progress));
+                    self.initial.passed();
+                }
             }
         }
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
             self.report(&id, event, now);
         }
+        self.initialise();
     }
 
     /// Control and display go to the session's terminal, everything else to
@@ -367,6 +402,8 @@ impl Monitor {
             Outcome::Stale(metadata, _) => (metadata, registry::Found::Stale),
         };
         if let Some(metadata) = self.registry.discovered(metadata, found, now) {
+            self.initial
+                .started(metadata.session_id.clone(), Instant::now());
             self.supervisor.start_client(metadata);
         }
     }
@@ -430,13 +467,9 @@ impl Monitor {
     /// learns of a modal or a small host only at the next frame; within one
     /// read, a key after prefix+s must already reach the selector.
     fn target(&self) -> Option<(&SessionId, &Terminal)> {
-        let open = !self.introduction.is_open() && !self.selector.is_open();
-        let id = self.selected.as_ref().filter(|_| open)?;
+        let id = self.shown()?;
         let terminal = self.terminals.get(id)?;
-        terminal
-            .input()
-            .and(self.screen.desire())
-            .map(|_| (id, terminal))
+        terminal.input().map(|_| (id, terminal))
     }
 
     /// Submits the application bytes gathered so far to the target they
@@ -485,7 +518,7 @@ impl Monitor {
 
     /// Whether the selector or the key introduction covers the canvas.
     fn covered(&self) -> bool {
-        self.selector.is_open() || self.introduction.is_open()
+        screen::covered(&self.selector, &self.introduction)
     }
 
     /// A key no application takes goes to the key introduction while it is
