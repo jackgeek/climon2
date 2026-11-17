@@ -92,9 +92,12 @@ test-only executable of the existing harness crate.
 crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It
 consumes `core`, `discovery` (#106), `platform` and `vt` (the only exception to
 [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)'s daemon-only
-`climon2-vt` rule) and never the CLI, client or daemon crates.
+`climon2-vt` rule: the release baseline, and since #108 each session's model
+and its read-only views for painting) and never the CLI, client or daemon
+crates.
 `climon2-test-term` consumes it only to unify `test-hooks` into the test build.
-Ratatui is a dependency of this crate alone; third-party crates are
+Ratatui (with `ratatui-core`, enabled for underline colours) is a dependency
+of this crate alone; third-party crates are
 deliberately excluded from this workspace-only diagram.
 
 **Current (#75):** the [client library](../GLOSSARY.md#sessions)'s `cdylib`,
@@ -102,8 +105,8 @@ deliberately excluded from this workspace-only diagram.
 artifact of `climon2-client`, not another crate. The `#[repr(C)]` declarations
 of its native interface live in `climon2-core`, so the client library, the
 client executable and the monitor can share them without new edges; today the
-library, the client executable (#100), the monitor (#106), the library host
-fixture and xtask's release checks consume them.
+library, the client executable (#100, #101), the monitor (#106), the library
+host fixture and xtask's release checks consume them.
 
 **Current (#77):** `climon2-discovery` holds the session discovery that
 [Define monitor startup and session discovery](https://github.com/jackgeek/climon2/issues/59)
@@ -114,9 +117,9 @@ bounded passes continuously.
 **Current (#84):** the one validated loader for client libraries lives in
 `climon2-platform`, as [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)
 records. The monitor (#106), the library-host fixture, xtask release checks
-and the client executable's kill mode (#100) use it. Test-only loader fixtures
-consume the platform crate as dev-dependencies, and the client's kill tests
-consume `climon2-fixtures` for the faulty-library stand-in.
+and the client executable, for attach and kill (#100, #101), use it. Test-only
+loader fixtures consume the platform crate as dev-dependencies, and the
+client's tests consume `climon2-fixtures` for the client library stand-in.
 
 **Current (#155):** the CLI, the client executable and the monitor share
 their start-up and failure rules instead of copying them; no edge changes.

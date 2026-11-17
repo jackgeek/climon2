@@ -3,8 +3,7 @@
 **Status: agreed revision-1 specification, implemented by the
 [client library](../../../GLOSSARY.md#sessions)
 ([#94](https://github.com/jackgeek/climon2/issues/94)) as its
-[implemented behavior](core-v1.md#implemented-behavior) details; the caller is
-not implemented.**
+[implemented behavior](core-v1.md#implemented-behavior) details; the monitor parses it into its own model ([#108](https://github.com/jackgeek/climon2/issues/108); [monitor README](../../../crates/climon2-monitor/README.md#selection-control-and-painting-108)).**
 The [client](../../../GLOSSARY.md#sessions) delivers ordered terminal
 [bytes](../TERMS.md#byte) to the [monitor](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

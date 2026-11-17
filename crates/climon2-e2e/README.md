@@ -62,6 +62,21 @@ fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
 renaming the same archive binary, never by rebuilding/substituting it.
+The archive's session daemon has no controllable status clock
+(`CLIMON2_DAEMON_CLOCK`), so the monitor's real-session status order case
+returns early in archive mode, and its other real-session cases expect the
+status the daemon's own heuristic settles on (a session whose title changed
+needs attention ten quiet seconds later) instead of the frozen clock's Idle.
+The monitor's real-session scenarios of #108-#110 and #266 do not depend on
+that clock, so they run against the archive too: each of their sessions
+reports a root OSC 7501 `working` at start, which holds its status at Running
+on any clock (explicit detection; typed input's user work returns to it), a
+session that must stay Idle reports `clear` instead, and a scenario with
+several sessions starts the monitor empty, so the first session to appear
+is the initial selection whatever the statuses. Only the restoration
+scenario (`keys_and_resizes_during_a_restoration_reach_no_session`), which
+holds the daemon with its `CLIMON2_DAEMON_HOLD` test hook, also returns
+early in archive mode.
 
 From release two, set `CLIMON2_E2E_PREVIOUS_ARCHIVE` to the actual published
 previous release archive for that platform as well. The compatibility gate starts its real
@@ -143,6 +158,10 @@ acknowledge the turn that read it, so each status change happens at an
 exact, hand-computed time. Release archives have no hooks, so those cases
 return early in archive mode. The passive suites leave `status-v1` out of
 their Opens, because a real daemon reports status on its own clock.
+`status.rs` also watches ordinary `climon2 attach` clients acknowledge
+attention (#102): the host runs in a thread beside the test's terminals,
+its `await_file` step waits for a file the test creates once a client has
+attached or taken control, and its `touch` step tells the test when to act.
 
 `tests/mixed.rs` (#97) runs two releases in one host process. Each test
 installs, in its own executable home and with the real installer, the
@@ -170,6 +189,13 @@ bash 5 outer terminals (section 6.1 of
 the actual exit statuses and ends with `assert_clean()`. Ordering uses
 acknowledgement files and observable completion, never sleeps.
 
+Since #101 the installed client executable attaches through its own release's
+client library over daemon wire revision 1, not the private post-hello
+protocol. These continuity scenarios and the packaged attach, kill,
+leave-policy and termination scenarios run unchanged on it: together they are
+the COM-01 Monitor parity case, the evidence that gates deleting the private
+protocol.
+
 ## Specification mapping
 
 Each test also has a specification doc comment in `tests/packaged.rs`, for
@@ -192,7 +218,7 @@ sessions in `tests/headless.rs`.
 | #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
 | ADR 0001/#19/#25 missing version-matched client after Ready, version/log diagnostic, startup owner cleanup | `missing_installed_client_after_ready_is_diagnostic_and_cleans_command` |
 | #21.17–20 crash mid-install/recovery while real client remains usable | `debug_hook_mid_install_crash_recovers_without_stranding_live_client` |
-| ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
+| ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff; each wrapper execs a real client kept as `climon2-client` in a folder of its session's release beside that release's library, the second-release fixture's 0.0.97 for the new version (#101) | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
 | ADRs 0001/0002/0005/#26/#39 actual previous/current archive compatibility, no fabricated previous release | `actual_previous_release_remains_live_across_current_archive_install` |
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
@@ -311,6 +337,7 @@ before it.
 | Scenario | Named test |
 |---|---|
 | STA-07 Library (idle at the daemon's start in every Initial metadata, running at the first sample, needs_attention episode 1 ten seconds later; a fresh instance's Initial metadata keeps that episode and time; the final status only with Command final, completed, no Status after it), CTL-03 Library status case (the same status reaches a passive registration, an attachment revoked by takeover and a background controller) and STA-08 Library (viewing false from a background controller before Ready) | `installed_library_relays_status_to_every_role_and_keeps_its_identity_across_instances` (`status.rs`) |
+| Derived client-executable scenario (#102), STA-08 ordinary-attach case against a real daemon: pending attention stays pending while the session's own ready client only shows it; an explicit `climon2 attach` acknowledges it once ready (same episode); new agent work requests episode 2, which the viewing attached client does not acknowledge; the first client's take-control key acknowledges it once ready | `ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready` (`status.rs`) |
 | STA-08 Library: viewing true and Acknowledge `not_ready` before Ready, viewing false accepted during restoration; `not_viewing` until viewing true; viewing changed then unchanged; explicit no-change Acknowledge; Status acknowledged (same episode and time) before the changed success, then no change; viewing false leaves the status; `not_controller` after takeover; a new period starts not viewing; accepted Input clears acknowledged attention, its Status first. COM-03 Library: `stale_generation` locally | `installed_library_sets_viewing_and_acknowledges_attention_through_a_real_daemon` (`status.rs`) |
 | COM-03 Library and Fault (viewing and acknowledgement cases): malformed requests `invalid_argument`, queued requests `cancelled` by shutdown; STA-08 Fault: `unsupported_capability` without `status-v1` and `stale_generation`, none sent | `installed_library_rejects_viewing_and_acknowledgement_it_cannot_send` (`status_faults.rs`) |
 | STA-08 Library and Fault and COM-03 Library and Fault: wire bodies sent once; viewing and acknowledgement results mapped, no-change explicit, Status before a changed acknowledgement; daemon rejections (`stale_period`, `stale_restoration`, `not_ready`, `not_viewing`) kept; contradicting or mismatched results `invalid_record`; held answers `timeout` (indeterminate), closed connections no fabricated Response, nothing replayed | `installed_library_maps_viewing_and_acknowledgement_answers_without_replay` (`status_faults.rs`) |
@@ -400,6 +427,11 @@ earlier run would, so they open on the empty state.
 | HLP-02 (empty monitor) the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` |
 | HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the key introduction, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` |
 | HLP-02 (empty monitor) a doubled prefix reaches the key introduction as one literal prefix: with Ctrl+M as the prefix, Enter Enter continues, the prefix and Space reach nothing, prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` |
+| INP-01, INP-02, TRM-02, COM-04 (typed), EXT-03 (Ctrl+C) typed bytes reach the selected session exactly, identically when split into ten reads; prefix rules, replies and reports applied; cursor and keypad keys follow the application's modes; a lone Escape reaches the session at once and its key's rest follows; keys read with prefix+x arrive before exit | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` |
+| INP-01 (live and too-small screens) global actions work; input that cannot reach the session is discarded, never buffered | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` |
+| INP-02, HLP-02 (Escape) a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives; Escape then a key in one read closes it and the key reaches the session (many frames: only the title itself is checked afterwards) | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` |
+| Spec #73 exit (owner decision on #109) a stuck session's unanswered key, read with prefix+x, holds exit no longer than the operation and shutdown deadlines | `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` |
+| COM-03 (queue full), COM-04 (chunks) a refusal is shown with the bytes not sent; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon

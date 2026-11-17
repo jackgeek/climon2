@@ -7,13 +7,14 @@
 #[allow(dead_code)]
 mod support;
 
-use climon2_test_term::{InputTerminal, Modes, Terminal, bin_path};
+use climon2_test_term::{AnsiColor, Color, InputTerminal, Modes, Terminal, Width, bin_path};
 use nix::{
     sys::signal::{Signal, kill},
     unistd::Pid,
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     env, fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -36,17 +37,26 @@ const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n"
 /// alone, followed by a typed x.
 const PASTES: &[u8] = b"\x1b[200~\x1dx\x1b[201~\x1d\x1b[200~x\x1b[201~x\x1b[200~\x1d\x1b[201~x";
 const TOP_ROW: &str = "No session selected";
+/// Escape for the selector, then a focus report that nothing takes: a lone
+/// Escape waits for the byte after it (owner decision on #109), so the
+/// report makes it take effect at once.
+const ESCAPE: &str = "\x1b\x1b[I";
 const EMPTY: &str = "No sessions to show.";
 
 /// The [`support::outer`] shell, first titling its host and marking where
 /// `command`'s output begins.
 fn outer(package: &Package, command: &str) -> Terminal {
+    outer_sized(package, command, COLS)
+}
+
+/// [`outer`] on a host `cols` wide.
+fn outer_sized(package: &Package, command: &str, cols: u16) -> Terminal {
     support::outer(
         package,
         Path::new("/bin/bash"),
         &format!("printf '\\033]2;{TITLE}\\007'; printf 'BEFORE-MONITOR\\n'; {command}"),
         ROWS,
-        COLS,
+        cols,
     )
 }
 
@@ -522,11 +532,18 @@ fn a_monitor_outside_a_version_folder_refuses_to_start() {
 /// text. Each line is centred on the middle column: it starts half the
 /// columns less half its width from the left, both halves rounded down.
 fn empty_monitor(rows: u16, cols: u16, lines: &[&str]) -> String {
+    let top = format!("{TOP_ROW:<width$}", width = usize::from(cols));
+    centred_below(&top, rows, cols, lines)
+}
+
+/// A host `rows` by `cols` showing the top row `top` and below it `lines`
+/// centred as [`empty_monitor`] centres them.
+fn centred_below(top: &str, rows: u16, cols: u16, lines: &[&str]) -> String {
     let (rows, cols) = (usize::from(rows), usize::from(cols));
     let first = 1 + (rows - lines.len()) / 2;
     (0..rows)
         .map(|row| match row {
-            0 => format!("{TOP_ROW:<cols$}"),
+            0 => top.to_owned(),
             _ if (first..first + lines.len()).contains(&row) => {
                 let line = lines[row - first];
                 let left = cols / 2 - line.chars().count() / 2;
@@ -595,7 +612,7 @@ fn overlaid(screen: &str, dialog: &[String]) -> String {
 /// mouse reports and focus reports, no cursor, every other mode at the
 /// baseline, and the host's title untouched.
 fn opened(terminal: &mut Terminal) {
-    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    whole_frame_shows(terminal, EMPTY, |screen| screen.contains(EMPTY));
     owns_host(terminal);
 }
 
@@ -603,6 +620,39 @@ fn opened(terminal: &mut Terminal) {
 fn opened_on(terminal: &mut Terminal, expected: &str) {
     shows(terminal, expected);
     owns_host(terminal);
+}
+
+/// Whether `output` ends where a monitor frame ends: its closing SGR 0, or
+/// the cursor shown after it. Neither occurs inside a frame, whose cells
+/// set SGR as `0;...` and whose cursor is hidden while they are written.
+fn frame_ended(output: &[u8]) -> bool {
+    output.ends_with(b"\x1b[0m") || output.ends_with(b"\x1b[?25h")
+}
+
+/// Waits until `condition` holds of a screen that shows only whole frames:
+/// the output ended where a frame ends and nothing arrived while the screen
+/// was read. A host read can split a frame, so the screen alone may show one
+/// half painted. `what` names the condition for a failure.
+fn whole_frame_shows(terminal: &Terminal, what: &str, condition: impl Fn(&str) -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let before = terminal.received();
+        let screen = terminal.screen();
+        let whole = frame_ended(&before) && terminal.received() == before;
+        if whole && condition(&screen) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what} never shown in a whole frame:\n{screen}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until a whole frame shows no selector.
+fn selector_closed(terminal: &Terminal) {
+    whole_frame_shows(terminal, "no selector", |screen| !screen.contains('║'));
 }
 
 /// Waits until the host shows exactly `expected`.
@@ -1462,15 +1512,51 @@ fn with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction(
 
 /// A headless session running `script` in bash: its full session ID. Each
 /// script holds until `$HOME/<finish>` exists, giving up after two minutes,
-/// so a failed test leaves nothing running for long.
+/// so a failed test leaves nothing running for long. Its daemon reads the
+/// status clock [`clock`] gives it.
 fn headless(package: &Package, script: &str, finish: &str) -> String {
+    let at = clock(package, None);
+    headless_on(package, script, finish, &at)
+}
+
+/// The [`T0`] of the daemons' controllable status clock,
+/// 2027-01-15T08:00:00.000Z.
+const T0: u64 = 1_800_000_000_000;
+
+/// A new controllable status clock for one session's daemon, set to
+/// `millis` after [`T0`], or by default one second later than the clock
+/// made before it, starting a second after [`T0`]: so idle sessions sort
+/// newest created first. Nothing advances it, so no heuristic sample ever
+/// changes a session's status; only what its application reports does, at
+/// the clock's time.
+fn clock(package: &Package, millis: Option<u64>) -> PathBuf {
+    let home = package.isolation.home();
+    let made = fs::read_dir(home)
+        .unwrap()
+        .filter(|entry| {
+            // Not the `.ack` files the daemons write beside their clocks.
+            let name = entry.as_ref().unwrap().file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("clock-") && !name.contains('.')
+        })
+        .count() as u64;
+    let path = home.join(format!("clock-{made}"));
+    let millis = millis.unwrap_or((made + 1) * 1000);
+    fs::write(&path, (T0 + millis).to_string()).unwrap();
+    path
+}
+
+/// [`headless`], with the daemon reading its status clock from `clock`.
+fn headless_on(package: &Package, script: &str, finish: &str, clock: &Path) -> String {
     let script = format!(
         "{script}\nuntil [ -e \"$HOME/{finish}\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done"
     );
-    let output = support::scripted(
+    let output = support::scripted_with(
         package,
         "c2",
         &["exec", "--headless", "/bin/bash", "-c", &script],
+        std::process::Stdio::piped(),
+        &[("CLIMON2_DAEMON_CLOCK", clock)],
     );
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
@@ -1522,25 +1608,51 @@ fn library_logs(package: &Package, id: &str) -> Vec<PathBuf> {
     logs
 }
 
-/// Waits until a row of the host screen contains `text`.
+/// Waits until a whole frame has a row that contains `text`.
 fn shows_row(terminal: &mut Terminal, text: &str) {
-    terminal
-        .wait_for_screen(TIMEOUT, |screen| {
-            screen.lines().any(|line| line.contains(text))
-        })
-        .unwrap_or_else(|_| panic!("{text:?} never shown:\n{}", terminal.screen()));
+    whole_frame_shows(terminal, text, |screen| {
+        screen.lines().any(|line| line.contains(text))
+    });
 }
 
-/// DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor)
-/// and HDL-01 (Monitor rows): a monitor started on an empty home lists
-/// headless sessions as they are created, without being asked. Each gets one
-/// passive client, reused across later passes: one start and one library log
-/// in its own session log directory. Passive clients never attach or take
-/// control. The daemon advertises `status-v1` (#95), and the monitor shows
-/// no effective status before #107, so a connected row's status column stays
-/// empty, never a fabricated status; its title arrives through `title-v1`,
-/// and an untitled session shows its command and arguments. On
-/// Linux the monitor maps exactly the session version's
+/// Whether the packaged binaries are an exact release archive's, which has
+/// no test hooks.
+fn archive() -> bool {
+    env::var_os("CLIMON2_E2E_ARCHIVE").is_some()
+}
+
+/// The status a real session whose title or screen changed shows once it
+/// has settled. Hooked daemons read the status clock [`headless`] gives
+/// them, which nothing advances, so it stays Idle. A release archive's
+/// daemon has no such hook: its heuristic sees the change, and ten quiet
+/// seconds later requests attention, which stays without user input.
+fn settled() -> &'static str {
+    if archive() { "Needs attention" } else { "Idle" }
+}
+
+/// The start of a selector row showing `status` and `title`, its status
+/// column as wide as the widest of `status` and `others`.
+fn row(others: &[&str], status: &str, title: &str) -> String {
+    let width = others
+        .iter()
+        .fold(status.len(), |widest, other| widest.max(other.len()));
+    format!("║{status:width$} {title}")
+}
+
+/// DSC-03 (Monitor, including its selection case), CTL-01 (Monitor),
+/// COM-01 (Monitor), LIB-01 (Monitor) and HDL-01 (Monitor rows), with the
+/// empty-start scenario (confirmed 2026-11-08): a monitor started on an
+/// empty home lists headless sessions as they are created, without being
+/// asked. The first eligible session to appear becomes the one-time
+/// initial selection and is acquired (#266); a later arrival never moves
+/// it and is never acquired. Each session gets one passive client, reused
+/// across later passes: one start and one library log in its own session
+/// log directory. A connected row shows the status its daemon reports
+/// through `status-v1`, never a fabricated one (#107): Idle, or once a
+/// release archive's daemon has seen its title change, Needs attention
+/// ([`settled`]); its title
+/// arrives through `title-v1`, and an untitled session shows its command
+/// and arguments. On Linux the monitor maps exactly the session version's
 /// `libclimon2_client.so`.
 #[test]
 fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
@@ -1549,29 +1661,28 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
     let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     let titled = headless(&package, "printf '\\033]2;Alpha\\007'", "finish");
-    shows(
-        &mut terminal,
-        &empty_monitor(
-            ROWS,
-            COLS,
-            &["No session selected.", "Press Ctrl+] then x to exit."],
-        ),
-    );
-    terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║ Alpha");
+    let alpha = controlled("Alpha", settled());
+    top_row_is(&mut terminal, &alpha);
+    // Its screen and title never change, so it stays Idle on any clock.
     let untitled = headless(&package, ": untitled", "finish");
-    shows_row(&mut terminal, "║ /bin/bash -c : untitled");
+    terminal.send("\x1ds").unwrap();
+    shows_row(
+        &mut terminal,
+        &row(&[settled()], "Idle", "/bin/bash -c : untitled"),
+    );
+    shows_row(&mut terminal, &row(&["Idle"], settled(), "Alpha"));
+    terminal.send(ESCAPE).unwrap();
+    top_row_is(&mut terminal, &alpha);
     for id in [&titled, &untitled] {
         let logs = library_logs(&package, id);
         assert_eq!(logs.len(), 1, "{logs:?}");
     }
-    for session in package.list() {
-        assert_eq!(
-            session["state"],
-            serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false}),
-            "{session}"
-        );
-    }
+    let attached =
+        serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true});
+    listed_as(&package, "Alpha", &attached);
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "untitled", &detached);
     if cfg!(target_os = "linux") {
         let monitor = monitor_process(&package).0;
         let maps = fs::read_to_string(format!("/proc/{monitor}/maps")).unwrap();
@@ -1598,7 +1709,7 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
 }
 
 /// How a fake daemon answers each connection.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Answer {
     /// The hello as `id`, advertising `daemon-wire-v1` and `monitor-v1`;
     /// then, if the peer goes on to send anything (a client's Open, never a
@@ -1606,6 +1717,27 @@ enum Answer {
     Hello(&'static str),
     /// Read the hello and never answer, until the prober hangs up.
     Silent,
+    /// The hello as [`Answer::Hello`] gives it; then hold the connection,
+    /// answering nothing, until the peer hangs up or the fake is dropped:
+    /// a client's Open never completes while it holds.
+    Held(&'static str),
+    /// The hello as its own session, advertising `title-v1` and `status-v1`
+    /// too; then, after a client's Open, these acts in turn, then a
+    /// successful answer to its Leave.
+    Serve(std::sync::Arc<Vec<Act>>),
+}
+
+/// What a serving fake daemon does after a client's Open, as the daemon
+/// wire reference specifies its frames.
+#[derive(Clone)]
+enum Act {
+    /// A frame of `code` with a JSON body, in which the string `"$open"` is
+    /// the Open's request ID.
+    Send(u8, Value),
+    /// Wait until this file exists, for at most [`TIMEOUT`].
+    Await(PathBuf),
+    /// Hang up.
+    Close,
 }
 
 /// What a fake daemon heard, in the order its threads recorded it.
@@ -1691,7 +1823,9 @@ impl FakeDaemon {
                 hear(&ear, id, Heard::Connected);
                 connection.set_nonblocking(false).unwrap();
                 let ear = ear.clone();
-                thread::spawn(move || answer_once(&mut connection, id, answer, &ear));
+                let answer = answer.clone();
+                let stopped = stopped.clone();
+                thread::spawn(move || answer_once(&mut connection, id, &answer, &ear, &stopped));
             }
         });
         Self {
@@ -1706,35 +1840,23 @@ impl FakeDaemon {
 fn answer_once(
     connection: &mut std::os::unix::net::UnixStream,
     id: &'static str,
-    answer: Answer,
+    answer: &Answer,
     ear: &Ear,
+    stopped: &std::sync::atomic::AtomicBool,
 ) {
-    use climon2_core::{
-        hello::{Lifecycle, SessionState, advertise_revision1},
-        protocol::{HelloReply, read_frame, write_frame},
-        wire::{Advertisement, Family, FrameLimit, FrameLimits},
-    };
+    use climon2_core::{protocol::read_frame, wire::Family};
     use std::io::Read;
     let _ = connection.set_read_timeout(Some(TIMEOUT));
     let _ = read_frame(connection);
     match answer {
+        Answer::Serve(acts) => {
+            let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
+            if hello(connection, id, families) {
+                serve(connection, acts);
+            }
+        }
         Answer::Hello(answered) => {
-            let reply = HelloReply {
-                session_id: answered.parse().unwrap(),
-                climon2_version: VERSION.parse().unwrap(),
-                protocol: 1,
-            };
-            let limit = FrameLimit::new(1_048_576).unwrap();
-            let revision1 = Advertisement::new(
-                [Family::DaemonWireV1, Family::MonitorV1],
-                FrameLimits {
-                    max_request_frame_bytes: limit,
-                    max_server_frame_bytes: limit,
-                },
-            );
-            let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
-            let hello = advertise_revision1(&reply, state, &revision1).unwrap();
-            let _ = write_frame(connection, &hello);
+            let _ = hello(connection, answered, [Family::MonitorV1]);
             if connection.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
                 hear(ear, id, Heard::Client);
                 hear(ear, id, Heard::HangingUp);
@@ -1744,8 +1866,100 @@ fn answer_once(
             let _ = connection.read_to_end(&mut Vec::new());
             hear(ear, id, Heard::Closed);
         }
+        Answer::Held(answered) => {
+            let _ = hello(connection, answered, [Family::MonitorV1]);
+            let _ = connection.set_read_timeout(Some(Duration::from_millis(20)));
+            while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                match connection.read(&mut [0; 256]) {
+                    Ok(0) => return,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(_) => return,
+                }
+            }
+        }
     }
 }
+
+/// Answers the hello as session `id`, advertising `daemon-wire-v1` and
+/// `families`; whether the answer was written.
+fn hello(
+    connection: &mut std::os::unix::net::UnixStream,
+    id: &str,
+    families: impl IntoIterator<Item = climon2_core::wire::Family>,
+) -> bool {
+    use climon2_core::{
+        hello::{Lifecycle, SessionState, advertise_revision1},
+        protocol::{HelloReply, write_frame},
+        wire::{Advertisement, FrameLimit, FrameLimits},
+    };
+    let reply = HelloReply {
+        session_id: id.parse().unwrap(),
+        climon2_version: VERSION.parse().unwrap(),
+        protocol: 1,
+    };
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let limits = FrameLimits {
+        max_request_frame_bytes: limit,
+        max_server_frame_bytes: limit,
+    };
+    let state = SessionState::new(Lifecycle::Detached, 0, false).unwrap();
+    let hello = advertise_revision1(&reply, state, &Advertisement::new(families, limits)).unwrap();
+    write_frame(connection, &hello).is_ok()
+}
+
+/// Serves one client: reads its Open, performs `acts`, then answers its
+/// Leave and hangs up.
+fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
+    use climon2_core::wire::{Frame, FrameLimit, read_frame, write_frame};
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let Ok(Some(open)) = read_frame(connection, limit) else {
+        return;
+    };
+    // The client stays until it leaves or the monitor exits.
+    let _ = connection.set_read_timeout(None);
+    let open: Value = serde_json::from_slice(open.body()).unwrap();
+    let request = open["request_id"].to_string();
+    let send = |connection: &mut std::os::unix::net::UnixStream, code: u8, body: &Value| {
+        let body = body.to_string().replace("\"$open\"", &request);
+        write_frame(connection, &Frame::new(code, body.into_bytes()), limit).is_ok()
+    };
+    for act in acts {
+        let sent = match act {
+            Act::Send(code, body) => send(connection, *code, body),
+            Act::Await(path) => {
+                let deadline = Instant::now() + TIMEOUT;
+                while !path.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                true
+            }
+            Act::Close => false,
+        };
+        if !sent {
+            return;
+        }
+    }
+    while let Ok(Some(frame)) = read_frame(connection, limit) {
+        if frame.code() == LEAVE {
+            let leave: Value = serde_json::from_slice(frame.body()).unwrap();
+            let left = json!({
+                "request_id": leave["request_id"], "outcome": "ok",
+                "result": {"kind": "left", "attachment_detached": false}, "error": null,
+            });
+            send(connection, RESPONSE, &left);
+            return;
+        }
+    }
+}
+
+/// Daemon wire revision 1 frame types, from the daemon wire reference.
+const LEAVE: u8 = 0x37;
+const RESPONSE: u8 = 0x40;
+const INITIAL_METADATA: u8 = 0x41;
+const STATUS_CHANGED: u8 = 0x43;
+const COMMAND_FINAL: u8 = 0x4c;
 
 impl Drop for FakeDaemon {
     fn drop(&mut self) {
@@ -1775,7 +1989,9 @@ fn limits_config(package: &Package, limits: serde_json::Value) {
 /// disappearing never removes its row or tears its client down. A session
 /// proven gone (its socket missing, its daemon identity not running) that no
 /// client ever reached adds no row and gets no client (stale rows, owner
-/// decision on #106). No metadata is ever deleted.
+/// decision on #106). No metadata is ever deleted. With the live session
+/// connected without `status-v1`, no row is eligible, so nothing is
+/// selected (DSC-01 confirmed exclusion, #266) and the body stays in view.
 #[test]
 fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     let package = Package::new();
@@ -1784,7 +2000,17 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         &package,
         serde_json::json!({"discovery": {"metadata_file_bytes": 4096}}),
     );
-    let live = headless(&package, "printf '\\033]2;Live\\007'", "finish");
+    let ear = Ear::default();
+    let live = FakeDaemon::start(
+        &package,
+        fake_id(0xf5),
+        "2026-01-02T00:00:00.000Z",
+        serving(vec![
+            opened_with(false),
+            initial_metadata("Live", None, None),
+        ]),
+        &ear,
+    );
     let sessions = package.isolation.climon2_home().join("sessions");
     let malformed = sessions.join("not-a-session.pty");
     fs::write(&malformed, b"{}").unwrap();
@@ -1805,7 +2031,6 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         "2026-01-01T00:00:00.000Z",
         &package.isolation.home().join("gone.sock"),
     );
-    let ear = Ear::default();
     let mismatched = FakeDaemon::start(
         &package,
         "0d5c0000-0000-4000-8000-0000000000f2",
@@ -1825,7 +2050,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║            Live");
+    shows_row(&mut terminal, "║Unavailable Live");
     shows_row(
         &mut terminal,
         "║Unavailable fake 0d5c0000-0000-4000-8000-0000000000f2",
@@ -1840,27 +2065,28 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         terminal.screen()
     );
 
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     let parked = package.isolation.home().join("parked.pty");
-    let live_metadata = sessions.join(format!("{live}.pty"));
-    fs::rename(&live_metadata, &parked).unwrap();
+    fs::rename(&live.metadata, &parked).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o000)).unwrap();
     shows_row(
         &mut terminal,
         "Discovery incomplete: cannot list sessions: Permission denied (os error 13)",
     );
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║            Live");
-    terminal.send("\x1b").unwrap();
+    shows_row(&mut terminal, "║Unavailable Live");
+    terminal.send(ESCAPE).unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Discovery incomplete"))
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║            Live");
+    // The live session's client was never torn down: its row is still
+    // connected, never Disconnected.
+    shows_row(&mut terminal, "║Unavailable Live");
     // A complete pass has reported every batch, the stale session's included.
     assert!(
         !terminal.screen().contains("0000000000f4"),
@@ -1868,8 +2094,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         terminal.screen()
     );
     assert_eq!(library_logs(&package, stale_id), Vec::<PathBuf>::new());
-    fs::rename(&parked, &live_metadata).unwrap();
-    assert_eq!(library_logs(&package, &live).len(), 1);
+    fs::rename(&parked, &live.metadata).unwrap();
     assert_eq!(heard(&ear, Heard::Client), []);
     for file in [
         &malformed,
@@ -1882,11 +2107,10 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
     }
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
-    drop((mismatched, silent));
+    drop((live, mismatched, silent));
     fs::remove_file(&malformed).unwrap();
     fs::remove_file(&oversized).unwrap();
     fs::remove_file(&stale).unwrap();
-    finish_sessions(&package, "finish");
     package.assert_clean();
 }
 
@@ -2008,6 +2232,12 @@ fn discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap()
     package.assert_clean();
 }
 
+/// [`titled_hold`], reporting a root OSC 7501 `clear` after the title: the
+/// session stays Idle, never needing attention, on any clock.
+fn quiet_hold(title: &str) -> String {
+    titled_hold(title).replacen("; until", &format!("; {}; until", report("clear")), 1)
+}
+
 /// Bash that sets its session's title to `title`, then holds as
 /// [`headless`]'s scripts do.
 fn titled_hold(title: &str) -> String {
@@ -2025,19 +2255,23 @@ fn listed(package: &Package, text: &str) -> Value {
         .unwrap_or_else(|| panic!("no session runs {text:?}"))
 }
 
-/// Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01
-/// (Monitor rows) and CTL-01 (Monitor): a monitor running inside a session
-/// shows that session as This monitor and starts no client for it, while a
-/// nested headless session and a session controlled elsewhere appear with
-/// their titles, wide text included, in the home they share; labels keep the
-/// selector's border whole however wide or long (TRM-06 label cases, SEL-01
-/// cell-safe clipping). Passive clients leave the controller in control.
+/// Own-session scenario (confirmed 2026-11-08; owner decision on #110,
+/// 2026-11-14: hidden), DSC-06 (Monitor), HDL-01 (Monitor rows) and CTL-01
+/// (Monitor): a monitor running inside a session never lists that session
+/// and starts no client for it, while a nested headless session and a
+/// session controlled elsewhere appear with their titles, wide text
+/// included, in the home they share; labels keep the selector's border
+/// whole however wide or long (TRM-06 label cases, SEL-01 cell-safe
+/// clipping). A session created once the monitor runs appears in a later
+/// pass, so every earlier pass, which found the monitor's own session too,
+/// has been shown. Passive clients leave the controller in control.
 #[test]
-fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
+fn the_own_session_is_hidden_while_nested_and_controlled_sessions_appear() {
     let package = Package::new();
     without_introduction(&package);
     let mut elsewhere = package.command("c2");
-    elsewhere.args(["exec", "/bin/bash", "-c", &titled_hold("Elsewhere")]);
+    elsewhere.env("CLIMON2_DAEMON_CLOCK", clock(&package, None));
+    elsewhere.args(["exec", "/bin/bash", "-c", &quiet_hold("Elsewhere")]);
     let mut elsewhere = Terminal::spawn(elsewhere, ROWS, COLS).unwrap();
     // The controlled session's metadata, not a listing that could race its
     // creation.
@@ -2052,21 +2286,44 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
     }
     let nested = format!(
         "c2 exec --headless /bin/bash -c {}",
-        quote(Path::new(&titled_hold("Nested 日本")))
+        quote(Path::new(&working(&titled_hold("Nested 日本"))))
     );
     headless(&package, &nested, "finish");
     let mut terminal = outer(&package, "c2 exec /bin/bash -c 'c2 monitor'");
-    terminal
-        .wait_for_text("No session selected.", TIMEOUT)
-        .unwrap();
+    // Initial selection takes one of the headless pair: never the
+    // monitor's own session, nor the session controlled elsewhere, which
+    // stays Idle with the oldest change time below them on any clock.
+    whole_frame_shows(&terminal, "an initial selection", |screen| {
+        screen.lines().next().is_some_and(|top| {
+            top.contains(&format!(" | {CONTROLLING:<15} |")) && !top.starts_with("Elsewhere")
+        })
+    });
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║This monitor /bin/bash -c c2 monitor ");
     // The host's screen text follows each wide character with its covered cell.
-    shows_row(&mut terminal, "║             Nested 日 本 ");
-    shows_row(&mut terminal, "║             Elsewhere");
-    shows_row(
-        &mut terminal,
-        "║             /bin/bash -c c2 exec --headless",
+    // The headless session that started the nested one never reported,
+    // so its status is the daemon's own: [`settled`].
+    let shown = [RUNNING, "Idle", settled()];
+    for (status, title) in [
+        (RUNNING, "Nested 日 本 "),
+        ("Idle", "Elsewhere"),
+        (settled(), "/bin/bash -c c2 exec --headless"),
+    ] {
+        shows_row(&mut terminal, &row(&shown, status, title));
+    }
+    headless(&package, &working(&titled_hold("Later")), "finish");
+    shows_row(&mut terminal, &row(&shown, RUNNING, "Later"));
+    // Every pass so far is shown: four rows, and none is the monitor's own.
+    let rows: Vec<_> = terminal
+        .screen()
+        .lines()
+        .filter(|row| row.starts_with(" ║") && !row.trim_matches([' ', '║']).is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(rows.len(), 4, "{rows:?}");
+    assert!(
+        !terminal.screen().contains("c2 monitor"),
+        "{}",
+        terminal.screen()
     );
     // Wide labels, and the long one clipped to the list, keep the border
     // whole once the frame is painted: one snapshot may land mid-paint.
@@ -2079,8 +2336,25 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
 
     let own = listed(&package, "c2 monitor");
     let own = own["session_id"].as_str().unwrap();
-    assert!(library_logs(&package, own).is_empty());
-    assert_eq!(listed(&package, "Nested")["depth"], 2);
+    // The own session's client executable logs its own library use there
+    // (#101), but the monitor's process must have started no client for it.
+    let monitor = format!("-{}.log", monitor_process(&package).0);
+    let logs = library_logs(&package, own);
+    assert!(
+        logs.iter()
+            .all(|log| !log.to_string_lossy().ends_with(&monitor)),
+        "{logs:?}"
+    );
+    // The session that started the nested one names it in its arguments too.
+    let inner = package
+        .list()
+        .into_iter()
+        .find(|session| {
+            let args = session["args"].to_string();
+            args.contains("Nested") && !args.contains("--headless")
+        })
+        .unwrap();
+    assert_eq!(inner["depth"], 2);
     assert_eq!(
         listed(&package, "Elsewhere")["state"],
         serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true})
@@ -2128,11 +2402,13 @@ fn highlighted_rows(terminal: &Terminal) -> Vec<usize> {
 /// SEL-01 (Monitor, basic cases): prefix+s overlays the captionless double
 /// border with status and title columns and the first row highlighted,
 /// reversed; Up and Down move the highlight without wrapping, prefix+s while
-/// open changes nothing, and Escape closes it, back to the body. Every step
-/// is followed by a key with a known effect, so a step that wrapped or
-/// reopened the selector ends on another row. Opening it
-/// never resizes or acquires a session: the sessions keep their size and
-/// stay detached.
+/// open changes nothing, and Escape closes it, back to the selected
+/// session. Every step is followed by a key with a known effect, so a step
+/// that wrapped or reopened the selector ends on another row. After an
+/// empty start, initial selection acquires and resizes C3, the first to
+/// appear (#266); opening the selector never resizes or acquires a session:
+/// the others keep their size and stay detached. Each reports `working`, so
+/// the rows list newest first, A1, B2, C3, on any clock.
 #[test]
 fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
     let package = Package::new();
@@ -2142,20 +2418,22 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
             "stty size > \"$HOME/{name}.size\"; trap 'touch \"$HOME/{name}.winch\"' WINCH; printf '\\033]2;{name}\\007'"
         )
     };
-    for name in ["A1", "B2", "C3"] {
-        headless(&package, &sized(name), "finish");
-    }
     let mut terminal = outer(&package, "c2 monitor");
-    let body = empty_monitor(
-        ROWS,
-        COLS,
-        &["No session selected.", "Press Ctrl+] then x to exit."],
-    );
-    terminal
-        .wait_for_text("No session selected.", TIMEOUT)
-        .unwrap();
+    opened(&mut terminal);
+    headless(&package, &working(&sized("C3")), "finish");
+    let body = centred_below(&controlled("C3", RUNNING), ROWS, COLS, &[]);
+    shows(&mut terminal, &body);
+    for name in ["B2", "A1"] {
+        headless(&package, &working(&sized(name)), "finish");
+    }
     terminal.send("\x1ds").unwrap();
-    let open = with_selector(&body, &[("", "C3"), ("", "B2"), ("", "A1")]);
+    let open = with_selector(&body, &[(RUNNING, "A1"), (RUNNING, "B2"), (RUNNING, "C3")]);
+    shows(&mut terminal, &open);
+    // Rows reorder as their statuses arrive, and the highlight keeps the row
+    // that was first when the selector opened: reopen it on the settled list.
+    terminal.send(ESCAPE).unwrap();
+    shows(&mut terminal, &body);
+    terminal.send("\x1ds").unwrap();
     shows(&mut terminal, &open);
     assert_eq!(highlighted_rows(&terminal), [3]);
     // Each step's keys end on a row that differs from where the step
@@ -2181,10 +2459,17 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         }
         assert_eq!(terminal.screen(), open);
     }
-    terminal.send("\x1b").unwrap();
+    terminal.send(ESCAPE).unwrap();
     shows(&mut terminal, &body);
-    for session in package.list() {
-        assert_eq!(session["state"]["lifecycle"], "detached", "{session}");
+    for name in ["A1", "B2"] {
+        assert_eq!(listed(&package, name)["state"]["lifecycle"], "detached");
+    }
+    assert_eq!(listed(&package, "C3")["state"]["lifecycle"], "attached");
+    let winched = package.isolation.home().join("C3.winch");
+    let deadline = Instant::now() + TIMEOUT;
+    while !winched.exists() {
+        assert!(Instant::now() < deadline, "C3 was never resized");
+        thread::sleep(Duration::from_millis(20));
     }
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
@@ -2197,10 +2482,2347 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
                 .trim(),
             "24 80"
         );
+        let resized = home.join(format!("{name}.winch")).exists();
+        assert_eq!(resized, name == "C3", "{name}");
+    }
+    package.assert_clean();
+}
+
+/// The top row's key hint beside a selected session, with the default
+/// prefix.
+const SESSIONS_HINT: &str = "Ctrl+] then s: sessions";
+/// The status a selected session shows: its daemon's status clock never
+/// advances (#107), and the control the monitor holds once input may go.
+const STATUS: &str = "Idle";
+/// The status of a session that reported a root OSC 7501 `working`
+/// ([`working`]), or that accepted typed input on a clock that never
+/// advances.
+const RUNNING: &str = "Running";
+
+/// `script`, after a root OSC 7501 `working` report: explicit detection then
+/// holds the session's status at Running on any clock, through output,
+/// title changes and typed input (user work ends in agent work again), so
+/// neither its label nor its order depends on the daemon's clock, a test
+/// hook release archives lack.
+fn working(script: &str) -> String {
+    format!("{}; {script}", report("working"))
+}
+const CONTROLLING: &str = "Controlling";
+
+/// The top row with a session selected, as #108 lays it out (owner
+/// decision, 2026-11-14): the label from the left, then fixed slots at the
+/// right edge, each after ` | `: the status (`fields[0]`) in 18 cells, the
+/// control (`fields[1]`) in 15 and any key hint (`fields[2]`).
+fn session_top_row(cols: usize, label: &str, fields: &[&str]) -> String {
+    let mut slots = format!(" | {:<18} | {:<15}", fields[0], fields[1]);
+    if let Some(hint) = fields.get(2) {
+        slots.push_str(&format!(" | {hint}"));
+    }
+    let width = cols - slots.chars().count();
+    format!("{label:<width$}{slots}")
+}
+
+/// The top row of `label`'s session, selected and controlled by the
+/// monitor, showing `status`, with the default prefix's hint.
+fn controlled(label: &str, status: &str) -> String {
+    session_top_row(
+        usize::from(COLS),
+        label,
+        &[status, CONTROLLING, SESSIONS_HINT],
+    )
+}
+
+/// Waits until a whole frame's top row is exactly `expected`.
+fn top_row_is(terminal: &mut Terminal, expected: &str) {
+    whole_frame_shows(terminal, expected, |screen| {
+        screen.lines().next() == Some(expected)
+    });
+}
+
+/// Waits until the host shows its cursor at `row` and `column`: a frame's
+/// cursor follows its cells, and a host read can split them.
+fn cursor_at(terminal: &Terminal, row: usize, column: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let cursor = terminal.cursor();
+        if (cursor.row, cursor.column, cursor.visible) == (row, column, true) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "cursor {cursor:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Bash that titles its session `title`, then, until `$HOME/finish` exists,
+/// appends each new `stty size` of its terminal to `$HOME/<title>.sizes`.
+/// A `$HOME/<title>.probe` seen before a read is renamed `.probed` after it.
+fn sized(title: &str) -> String {
+    format!(
+        "printf '\\033]2;{title}\\007'; p=; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         q=; [ -e \"$HOME/{title}.probe\" ] && q=1; \
+         s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; fi; \
+         [ -n \"$q\" ] && mv \"$HOME/{title}.probe\" \"$HOME/{title}.probed\"; \
+         sleep 0.05; done"
+    )
+}
+
+/// The sizes [`sized`]'s session `title` has had once it has read its size
+/// after this call: every resize applied before the call is among them.
+fn settled_sizes(package: &Package, title: &str) -> Vec<String> {
+    let home = package.isolation.home();
+    let probed = home.join(format!("{title}.probed"));
+    let _ = fs::remove_file(&probed);
+    fs::write(home.join(format!("{title}.probe")), b"").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !probed.exists() {
+        assert!(Instant::now() < deadline, "{title} never read its size");
+        thread::sleep(Duration::from_millis(20));
+    }
+    sizes(package, title)
+}
+
+/// The sizes [`sized`]'s session `title` has had, oldest first.
+fn sizes(package: &Package, title: &str) -> Vec<String> {
+    let path = package.isolation.home().join(format!("{title}.sizes"));
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Waits until session `title` has had exactly the sizes `expected`.
+fn sized_to(package: &Package, title: &str, expected: &[&str]) {
+    let deadline = Instant::now() + TIMEOUT;
+    while sizes(package, title) != expected {
         assert!(
-            !home.join(format!("{name}.winch")).exists(),
-            "{name} was resized"
+            Instant::now() < deadline,
+            "{title} sizes {:?}, not {expected:?}",
+            sizes(package, title)
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// CTL-05 (Monitor) and TRM-01 (Monitor, basic cases), with spec #73's
+/// initial selection (#266): the one session, Idle, is selected and
+/// acquired once collection ends, and its screen is painted directly below
+/// the top row from the monitor's own model: plain, ANSI-coloured,
+/// bold-on-blue, wide and combining text, each cell as written, and the
+/// cursor where the application left it. Later output is painted live. A
+/// session created later never moves the selection, and the monitor
+/// controls the session.
+#[test]
+fn the_initial_selection_is_acquired_and_painted_live() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = r#"printf '\033]2;Paint\007plain \033[31mred\033[0m \033[1;44mbold\033[0m \xe7\x95\x8ce\xcc\x81\r\n\033[3;5H'; until [ -e "$HOME/more" ] || [ "$SECONDS" -ge 120 ]; do sleep 0.05; done; printf 'MORE'"#;
+    headless(&package, &working(script), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    let top = session_top_row(
+        usize::from(COLS),
+        "Paint",
+        &[RUNNING, CONTROLLING, SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &top);
+    // The host's row text has each cell's character alone, and a blank for
+    // the column a wide character covers.
+    assert_eq!(terminal.row(1).trim_end(), "plain red bold 界 e");
+    let cells = terminal.cells(1);
+    let red = Color::Ansi(AnsiColor::Red);
+    assert_eq!(
+        (cells[5].text.as_str(), cells[5].foreground),
+        (" ", Color::Default)
+    );
+    for cell in &cells[6..9] {
+        assert_eq!(cell.foreground, red, "{cell:?}");
+        assert!(!cell.rendition.bold);
+    }
+    assert_eq!(cells[9].foreground, Color::Default);
+    for cell in &cells[10..14] {
+        assert!(cell.rendition.bold, "{cell:?}");
+        assert_eq!(
+            (cell.foreground, cell.background),
+            (Color::Default, Color::Ansi(AnsiColor::Blue))
         );
     }
+    assert_eq!(cells[14].background, Color::Default);
+    assert_eq!(
+        (cells[15].text.as_str(), cells[15].width),
+        ("界", Width::Wide)
+    );
+    assert_eq!(cells[16].width, Width::Spacer);
+    assert_eq!(
+        (cells[17].text.as_str(), cells[17].width),
+        ("e\u{301}", Width::Single)
+    );
+    cursor_at(&terminal, 3, 4);
+    for row in 2..usize::from(ROWS) {
+        assert_eq!(terminal.row(row).trim_end(), "", "row {row}");
+    }
+
+    fs::write(package.isolation.home().join("more"), b"").unwrap();
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen
+                .lines()
+                .nth(3)
+                .is_some_and(|row| row.starts_with("    MORE"))
+        })
+        .unwrap();
+    cursor_at(&terminal, 3, 8);
+
+    headless(&package, &working(&titled_hold("Later")), "finish");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Later"));
+    // The selector covers the canvas, but control has not changed: the top
+    // row still says Controlling (owner decision, 2026-11-14).
+    top_row_is(&mut terminal, &top);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    assert_eq!(terminal.row(0), top);
+    assert_eq!(
+        listed(&package, "Paint")["state"],
+        serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true})
+    );
+    assert_eq!(listed(&package, "Later")["state"]["controlled"], false);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// TRM-02 (Monitor): the session daemon alone answers a session's queries;
+/// the monitor never asks the host anything, never forwards a session's
+/// bytes (its queries and a title it sets) to the host, and shows the title
+/// only as an inert label, so the host title stays the outer shell's.
+#[test]
+fn only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = r#"printf '\033]2;Queries\007\033[6n'; IFS= read -rs -t 10 -d R reply; printf 'GOT %s\r\n\033[c' "${reply#*[}""#;
+    headless(&package, &working(script), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires Queries, the only session (#266).
+    top_row_is(
+        &mut terminal,
+        &session_top_row(
+            usize::from(COLS),
+            "Queries",
+            &[RUNNING, CONTROLLING, SESSIONS_HINT],
+        ),
+    );
+    assert_eq!(terminal.row(1).trim_end(), "GOT 1;1");
+    assert_eq!(terminal.host_requests(), Vec::<String>::new());
+    let received = terminal.received();
+    for forwarded in [&b"\x1b[6n"[..], b"\x1b[c", b"\x1b]2;Queries"] {
+        assert!(
+            !contains(&received, forwarded),
+            "{forwarded:?} reached the host"
+        );
+    }
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// TRM-03 (Monitor) at 80x24, 200x60, the 500x200 boundary and a larger
+/// host: one top row; the selected session is asked for the host width by
+/// its height less one, which the daemon clamps to 500x200; the session's
+/// bottom-right cell, written by absolute position at its own geometry,
+/// lands there below the top row; and the margins beyond it stay blank.
+#[test]
+fn the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geometry() {
+    let hosts: [(u16, u16, (u16, u16)); 4] = [
+        (24, 80, (23, 80)),
+        (60, 200, (59, 200)),
+        (201, 500, (200, 500)),
+        (204, 503, (200, 500)),
+    ];
+    for (rows, cols, session) in hosts {
+        let package = Package::new();
+        without_introduction(&package);
+        let corner = format!(
+            "printf '\\033]2;Corner\\007'; until [ \"$(stty size)\" = '{} {}' ] || [ \"$SECONDS\" -ge 60 ]; do sleep 0.05; done; printf '\\033[{};{}HZ'",
+            session.0, session.1, session.0, session.1
+        );
+        headless(&package, &working(&corner), "finish");
+        let mut terminal =
+            support::outer(&package, Path::new("/bin/bash"), "c2 monitor", rows, cols);
+        // Initial selection acquires Corner, the only session (#266).
+        let (bottom, right) = (usize::from(session.0), usize::from(session.1) - 1);
+        terminal
+            .wait_for_screen(TIMEOUT, |screen| {
+                screen
+                    .lines()
+                    .nth(bottom)
+                    .and_then(|row| row.chars().nth(right))
+                    == Some('Z')
+            })
+            .unwrap_or_else(|_| panic!("{rows}x{cols}: no corner"));
+        let top = session_top_row(
+            usize::from(cols),
+            "Corner",
+            &[RUNNING, CONTROLLING, SESSIONS_HINT],
+        );
+        top_row_is(&mut terminal, &top);
+        let screen = terminal.screen();
+        let lines: Vec<&str> = screen.lines().collect();
+        assert_eq!(lines.len(), usize::from(rows));
+        for (index, line) in lines.iter().enumerate().skip(1) {
+            let expected = if index == bottom {
+                format!("{}Z", " ".repeat(right))
+            } else {
+                String::new()
+            };
+            assert_eq!(line.trim_end(), expected, "{rows}x{cols} row {index}");
+        }
+        cursor_at(&terminal, bottom, right);
+        terminal.send("\x1dx").unwrap();
+        support::assert_released(&package, &mut terminal, 0);
+        finish_sessions(&package, "finish");
+        package.assert_clean();
+    }
+}
+
+/// CTL-05 (Monitor) and TRM-03 (real host resizes): Resize goes only to the
+/// selected controller. Selecting a session, initially or explicitly, sizes
+/// it to the host less the top row; after another is selected, host resizes
+/// reach only that one, although the first stays controlled in the
+/// background; selecting the first again sizes it to the host as it is then.
+#[test]
+fn host_resizes_reach_only_the_selected_controller() {
+    let package = Package::new();
+    without_introduction(&package);
+    // After an empty start First, the first to appear, is the initial
+    // selection (#266); Second comes after it. Both report `working`, so
+    // their rows stay put: Second, newer, then First.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &working(&sized("First")), "finish");
+    sized_to(&package, "First", &["24 80", "29 120"]);
+    headless(&package, &working(&sized("Second")), "finish");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Second");
+    enter_on(&mut terminal, "Second");
+    sized_to(&package, "Second", &["24 80", "29 120"]);
+    terminal.resize(40, 100).unwrap();
+    sized_to(&package, "Second", &["24 80", "29 120", "39 100"]);
+    terminal.resize(35, 90).unwrap();
+    sized_to(&package, "Second", &["24 80", "29 120", "39 100", "34 90"]);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "First");
+    sized_to(&package, "First", &["24 80", "29 120", "34 90"]);
+    for session in package.list() {
+        assert_eq!(session["state"]["controlled"], true, "{session}");
+    }
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    assert_eq!(sizes(&package, "First"), ["24 80", "29 120", "34 90"]);
+    package.assert_clean();
+}
+
+/// The host shows only `Terminal too small` in its top row, clipped to
+/// its width, above blank rows, with no cursor.
+fn shows_too_small(terminal: &mut Terminal, rows: u16, cols: u16) {
+    let width = usize::from(cols);
+    let shown: String = "Terminal too small".chars().take(width).collect();
+    let blank = format!("\n{:width$}", "").repeat(usize::from(rows) - 1);
+    shows(terminal, &format!("{shown:<width$}{blank}"));
+    assert!(!terminal.cursor().visible);
+}
+
+/// TRM-04 (Monitor, too-small cases; owner decision 2026-11-14): a host
+/// under four rows or five columns shows `Terminal too small` and sends no
+/// resize, at each limit and one below it: once the too-small frame shows,
+/// the session reads its size, and never had the one a resize would have
+/// given it (2x120, 29x4). Four rows and five columns are room enough, and
+/// each recovery resizes the selected session to the host less its top
+/// row. The client and control survive throughout, and prefix+x still exits
+/// while too small.
+#[test]
+fn a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &working(&sized("Small")), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires Small, the only session (#266).
+    sized_to(&package, "Small", &["24 80", "29 120"]);
+    let fields = [RUNNING, CONTROLLING, SESSIONS_HINT];
+    let mut expected = vec!["24 80", "29 120"];
+    for (rows, cols, size) in [
+        (3, 120, None),
+        (4, 120, Some("3 120")),
+        (30, 4, None),
+        (30, 5, Some("29 5")),
+        (30, 120, Some("29 120")),
+    ] {
+        terminal.resize(rows, cols).unwrap();
+        match size {
+            None => {
+                shows_too_small(&mut terminal, rows, cols);
+                assert_eq!(settled_sizes(&package, "Small"), expected);
+            }
+            Some(size) => {
+                expected.push(size);
+                sized_to(&package, "Small", &expected);
+            }
+        }
+    }
+    top_row_is(
+        &mut terminal,
+        &session_top_row(usize::from(COLS), "Small", &fields),
+    );
+    assert_eq!(listed(&package, "Small")["state"]["controlled"], true);
+    terminal.resize(3, 120).unwrap();
+    shows_too_small(&mut terminal, 3, 120);
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_bytes(b"OUTER-DONE=0", TIMEOUT).unwrap();
+    // The outer shell's lines need more than three rows to be read back.
+    terminal.resize(ROWS, COLS).unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    assert_eq!(sizes(&package, "Small"), expected);
+    package.assert_clean();
+}
+
+/// Top-row key hints (#108): with `monitor.show_key_hints` false, the top
+/// row beside a selected session shows its label, status and control and
+/// no hint.
+#[test]
+fn without_key_hints_the_top_row_shows_no_hint() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"monitor": {"show_key_hints": false}}"#,
+    )
+    .unwrap();
+    headless(&package, &working(&titled_hold("Plain")), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires Plain, the only session (#266).
+    top_row_is(
+        &mut terminal,
+        &session_top_row(usize::from(COLS), "Plain", &[RUNNING, CONTROLLING]),
+    );
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Spec #73 Enter ("never exposing cached output") and CTL-05 (revoked):
+/// when another client takes control of the selected session, the monitor
+/// shows it is no longer controlling and paints only the placeholder
+/// (#110), so its now-cached screen never shows. The session's screen then changes
+/// while the other client controls it; Enter takes control back, and only
+/// the new restoration is painted, never the cache.
+#[test]
+fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = "printf '\\033]2;Taken\\007VISIBLE\\r\\n'; \
+         until [ -e \"$HOME/change\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; \
+         printf '\\033[2J\\033[HCHANGED\\r\\n'";
+    let id = headless(&package, &working(script), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires Taken, the only session (#266).
+    let fields = |control| [RUNNING, control, SESSIONS_HINT];
+    let controlling = session_top_row(usize::from(COLS), "Taken", &fields(CONTROLLING));
+    top_row_is(&mut terminal, &controlling);
+    assert_eq!(terminal.row(1).trim_end(), "VISIBLE");
+
+    let mut attach = package.command("c2");
+    attach.args(["attach", &id]);
+    let mut attach = Terminal::spawn(attach, ROWS, COLS).unwrap();
+    attach.wait_for_text("VISIBLE", TIMEOUT).unwrap();
+    // The whole frame, since a host read can split it after its top row:
+    // only the placeholder (#110), never the cached screen.
+    shows(&mut terminal, &placeholder_screen("Taken", RUNNING));
+    assert!(!terminal.cursor().visible);
+    fs::write(package.isolation.home().join("change"), b"").unwrap();
+    attach.wait_for_text("CHANGED", TIMEOUT).unwrap();
+
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Taken");
+    top_row_is(&mut terminal, &controlling);
+    assert_eq!(terminal.row(1).trim_end(), "CHANGED");
+    assert_eq!(terminal.row(2).trim_end(), "");
+    attach
+        .wait_for_text("This session is being viewed elsewhere.", TIMEOUT)
+        .unwrap();
+    attach.send("\x1dd").unwrap();
+    assert_eq!(attach.wait_exit(TIMEOUT).unwrap(), 0);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The #94 rule for #108, with COM-06 (Monitor labels, #107): a finished
+/// session's view freezes at its Command final. Its last screen stays
+/// painted, and the top row says it ended with its exact outcome, which
+/// outlives its connection; Enter on its row, known final, neither selects
+/// nor acquires anything.
+#[test]
+fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
+    let package = Package::new();
+    without_introduction(&package);
+    let script = "printf '\\033]2;Done\\007FINAL OUTPUT'; until [ -e \"$HOME/end\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; exit 3";
+    headless(&package, &working(script), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires Done, the only session (#266).
+    top_row_is(
+        &mut terminal,
+        &session_top_row(
+            usize::from(COLS),
+            "Done",
+            &[RUNNING, CONTROLLING, SESSIONS_HINT],
+        ),
+    );
+    fs::write(package.isolation.home().join("end"), b"").unwrap();
+    let ended = session_top_row(
+        usize::from(COLS),
+        "Done",
+        &["Failed (exit 3)", "Ended", SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &ended);
+    assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Failed (exit 3) Done");
+    terminal.send("\r").unwrap();
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    assert_eq!(terminal.row(0), ended);
+    assert_eq!(terminal.row(1).trim_end(), "FINAL OUTPUT");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Bash that titles its session `title`, puts its terminal in raw mode
+/// without echo, and appends every byte it receives to `$HOME/got`, saying
+/// `RAW` once it does; when `$HOME/modes` appears it turns on application
+/// cursor keys (DECCKM) and the application keypad (DECKPAM). It holds until
+/// `$HOME/finish` exists.
+fn recorder(title: &str) -> String {
+    recording(title, "-echo")
+}
+
+/// A [`recorder`] whose terminal echoes every byte it receives after `RAW`.
+/// The daemon answers an Input before it reads the echo, on the same
+/// connection, so once the monitor shows a byte's echo, every operation it
+/// submitted before that byte has been answered.
+fn echoing_recorder(title: &str) -> String {
+    recording(title, "echo")
+}
+
+/// The [`recorder`] script, with stty's `echo` setting `echo`.
+fn recording(title: &str, echo: &str) -> String {
+    working(&format!(
+        "printf '\\033]2;{title}\\007'; stty raw {echo}; cat </dev/tty >\"$HOME/got\" & printf RAW; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         if [ -e \"$HOME/modes\" ] && [ -z \"$m\" ]; then printf '\\033[?1h\\033='; m=1; fi; \
+         sleep 0.05; done; kill $!"
+    ))
+}
+
+/// Waits until the [`recorder`] session has received exactly `expected`.
+fn received(package: &Package, expected: &[u8]) {
+    let path = package.isolation.home().join("got");
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let got = fs::read(&path).unwrap_or_default();
+        if got == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session received {:?}, not {:?}",
+            got.escape_ascii().to_string(),
+            expected.escape_ascii().to_string()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Waits until initial selection has selected and acquired the
+/// [`recorder`] session `title`, the first to appear after an empty start
+/// or the only session (#266), and the monitor
+/// controls it with its terminal raw.
+fn record(terminal: &mut Terminal, title: &str, cols: u16) {
+    top_row_is(
+        terminal,
+        &session_top_row(
+            usize::from(cols),
+            title,
+            &[RUNNING, CONTROLLING, SESSIONS_HINT],
+        ),
+    );
+    whole_frame_shows(terminal, "RAW", |screen| {
+        screen
+            .lines()
+            .nth(1)
+            .is_some_and(|row| row.starts_with("RAW"))
+    });
+}
+
+/// Typed keys, host replies and reports, as the host sends them: NUL, a
+/// non-UTF-8 byte, `A`, Ctrl+C and invalid UTF-8; a doubled prefix; the
+/// prefix with d, h, r, uppercase J and the take-control key; prefix+j;
+/// Up as CSI and Down as SS3; keypad 0 in application form; Alt+x; a device
+/// attributes reply, an OSC colour reply, a focus report, an SGR mouse
+/// press and release; then `end`.
+const TYPED: &[u8] = b"\x00\xff\x41\x03\xc3\x28\x1d\x1d\x1dd\x1dh\x1dr\x1dJ\x1d\x14\x1dj\
+\x1b[A\x1bOB\x1bOp\x1bx\x1b[?62;22c\x1b]11;rgb:0/0/0\x07\x1b[I\x1b[<0;5;5M\x1b[<0;5;5mend";
+
+/// What an application in normal cursor and keypad modes receives for
+/// [`TYPED`], written by hand: every key exactly, one literal prefix for
+/// the doubled one, both bytes of each unknown suffix, nothing for prefix+j,
+/// the replies and the reports, the cursor keys as CSI and keypad 0 as `0`.
+const RECEIVED: &[u8] =
+    b"\x00\xff\x41\x03\xc3\x28\x1d\x1dd\x1dh\x1dr\x1dJ\x1d\x14\x1b[A\x1b[B0\x1bxend";
+
+/// [`TYPED`] cut inside a doubled prefix, after a lone prefix, right after a
+/// cursor key's Escape (released to the session at once), inside a keypad
+/// key, a reply, its OSC string and a mouse report.
+const FRAGMENTS: [&[u8]; 10] = [
+    b"\x00\xff\x41\x03\xc3",
+    b"\x28\x1d",
+    b"\x1d\x1d",
+    b"d\x1dh\x1dr\x1dJ\x1d\x14\x1d",
+    b"j\x1b",
+    b"[A\x1bOB\x1bO",
+    b"p\x1bx\x1b[?62;",
+    b"22c\x1b]11;rgb",
+    b":0/0/0\x07\x1b[I\x1b[<0;5",
+    b";5M\x1b[<0;5;5mend",
+];
+
+/// INP-01, INP-02 and TRM-02 (Monitor), COM-04 (Monitor, typed cases) and
+/// EXT-03 (Monitor, Ctrl+C): bytes typed at the host reach the selected,
+/// controlling session's application exactly: binary and invalid UTF-8
+/// bytes and Ctrl+C as they are, a doubled prefix as one literal prefix,
+/// the prefix with d, h, r, J or the take-control key as both bytes, and
+/// prefix+j, host replies, focus and mouse reports never. The same bytes
+/// cut into ten reads, each read alone, arrive identically. Once the
+/// application turns on application cursor keys and keypad, the host keypad
+/// follows it, and cursor keys typed in either form arrive as SS3, keypad
+/// keys as sent and modified cursor keys unchanged. A lone Escape reaches
+/// the session at once, before the rest of its key arrives, and that rest
+/// still follows the application's cursor mode. Keys read with prefix+x
+/// before it reach the session before the monitor shuts down (owner
+/// decision on #109), and none after it.
+#[test]
+fn typed_bytes_reach_the_selected_session_exactly_however_reads_split() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &recorder("Keys"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", COLS);
+    terminal.send(TYPED).unwrap();
+    received(&package, RECEIVED);
+    assert_eq!(FRAGMENTS.concat(), TYPED);
+    let monitor = monitor_process(&package).0;
+    for fragment in FRAGMENTS {
+        read_alone(&mut terminal, monitor, fragment);
+    }
+    let twice = [RECEIVED, RECEIVED].concat();
+    received(&package, &twice);
+    assert!(!terminal.modes().application_keypad);
+    fs::write(package.isolation.home().join("modes"), b"").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !terminal.modes().application_keypad {
+        assert!(Instant::now() < deadline, "the host keypad never followed");
+        thread::sleep(Duration::from_millis(10));
+    }
+    terminal
+        .send(b"\x1b[A\x1bOB\x1b[D\x1bOp\x1bOM\x1b[1;5A")
+        .unwrap();
+    let moded = [&twice[..], b"\x1bOA\x1bOB\x1bOD\x1bOp\x1bOM\x1b[1;5A"].concat();
+    received(&package, &moded);
+    read_alone(&mut terminal, monitor, b"\x1b");
+    received(&package, &[&moded[..], b"\x1b"].concat());
+    read_alone(&mut terminal, monitor, b"[C");
+    let moded = [&moded[..], b"\x1bOC"].concat();
+    received(&package, &moded);
+    read_alone(&mut terminal, monitor, b"z\x1dxlate");
+    assert_released(&package, &mut terminal, 0);
+    received(&package, &[&moded[..], b"z"].concat());
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-01 (Monitor: live and too-small screens) and spec #73 Routing: from a
+/// live session, prefix+? opens the key introduction and prefix+s the
+/// selector, and keys typed while either is open reach neither the session
+/// nor anything later. On a host too small for any session, typed input is
+/// discarded, never kept for later, while prefix+s still opens the selector,
+/// shown once the host has room again, and prefix+x still exits.
+#[test]
+fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &recorder("Keys"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", COLS);
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    terminal.send("a\r").unwrap();
+    whole_frame_shows(&terminal, "no key introduction", |screen| {
+        !screen.contains("Exit the monitor")
+    });
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Keys"));
+    terminal.send("b").unwrap();
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("c").unwrap();
+    received(&package, b"c");
+    terminal.resize(3, COLS).unwrap();
+    top_row_is(&mut terminal, &format!("{:<120}", "Terminal too small"));
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"lost\x1ds");
+    terminal.resize(ROWS, COLS).unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Keys"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("d").unwrap();
+    received(&package, b"cd");
+    terminal.resize(3, COLS).unwrap();
+    top_row_is(&mut terminal, &format!("{:<120}", "Terminal too small"));
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_bytes(b"OUTER-DONE=0", TIMEOUT).unwrap();
+    // The three-row host scrolled the status away; growing it brings it back.
+    terminal.resize(ROWS, COLS).unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-02 (Monitor) and HLP-02 (Monitor, Escape), by owner decisions on
+/// #106, #105 and #109: Escape handling does not depend on read
+/// fragmentation and uses no timer. Down split right after its Escape and
+/// Up split after its introducer, each read alone, move the selector's
+/// highlight and never close it. A lone Escape leaves the selector open
+/// until the next key arrives, then closes it, and that key acts as itself:
+/// prefix+? opens the key introduction. The key introduction behaves alike
+/// with split Up and Down, and Escape and prefix+s in one read close it
+/// (the prefix, Ctrl+], does not consume Escape) and then open the
+/// selector. Escape and a key in one read close the selector or the key
+/// introduction and the key reaches the session (owner decision on #109:
+/// the uncovered session is painted before the rest of the read is
+/// routed), as does a key read after a lone Escape. No other dialog key
+/// reaches the session, and prefix+x exits from the selector (INP-01).
+#[test]
+fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
+    let package = Package::new();
+    without_introduction(&package);
+    // After an empty start Keys, the first to appear, is the initial
+    // selection; Other comes after it.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &recorder("Keys"), "finish");
+    record(&mut terminal, "Keys", COLS);
+    headless(&package, &working(&titled_hold("Other")), "finish");
+    let monitor = monitor_process(&package).0;
+    // Once Other's row has its status, reopen the selector on the settled
+    // list, so the highlight starts on its first row.
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Other"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Other"));
+    assert_eq!(highlighted_rows(&terminal), [3]);
+    for (reads, row) in [([&b"\x1b"[..], b"[B"], 4), ([b"\x1b[", b"A"], 3)] {
+        for read in reads {
+            read_alone(&mut terminal, monitor, read);
+        }
+        highlight_at(&terminal, row);
+    }
+    read_alone(&mut terminal, monitor, b"\x1b");
+    whole_frame_shows(&terminal, "the selector", |screen| screen.contains('║'));
+    read_alone(&mut terminal, monitor, b"\x1d?");
+    whole_frame_shows(&terminal, "the key introduction alone", |screen| {
+        !screen.contains('║') && screen.contains("Exit the monitor")
+    });
+    for read in [&b"\x1b"[..], b"[A", b"\x1b[", b"B", b"\x1b\x1ds"] {
+        read_alone(&mut terminal, monitor, read);
+    }
+    whole_frame_shows(&terminal, "the selector alone", |screen| {
+        screen.contains('║') && !screen.contains("Exit the monitor")
+    });
+    read_alone(&mut terminal, monitor, b"\x1bq");
+    received(&package, b"q");
+    selector_closed(&terminal);
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    read_alone(&mut terminal, monitor, b"\x1bz");
+    received(&package, b"qz");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Other"));
+    read_alone(&mut terminal, monitor, b"\x1b");
+    read_alone(&mut terminal, monitor, b"y");
+    received(&package, b"qzy");
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Other"));
+    terminal.send("\x1dx").unwrap();
+    // Its many frames outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// In the open selector, once a whole frame lists a row containing `text`,
+/// moves the highlight from where it is to that row and presses Enter. The
+/// rows must not reorder meanwhile.
+fn enter_on(terminal: &mut Terminal, text: &str) {
+    highlight_on(terminal, text);
+    terminal.send("\r").unwrap();
+}
+
+/// In the open selector, once a whole frame lists a row containing `text`,
+/// moves the highlight from where it is to that row, and waits until it is
+/// there. The rows must not reorder meanwhile.
+fn highlight_on(terminal: &mut Terminal, text: &str) {
+    let listed = |line: &str| line.starts_with(" ║") && line.contains(text);
+    whole_frame_shows(terminal, text, |screen| screen.lines().any(listed));
+    let target = terminal.screen().lines().position(listed).unwrap();
+    let from = highlighted_rows(terminal)[0];
+    let keys = if target < from {
+        "\x1b[A".repeat(from - target)
+    } else {
+        "\x1b[B".repeat(target - from)
+    };
+    terminal.send(keys).unwrap();
+    highlight_at(terminal, target);
+}
+
+/// Waits until the selector highlights host row `row` alone.
+fn highlight_at(terminal: &Terminal, row: usize) {
+    whole_frame_shows(terminal, "the highlight", |_| {
+        highlighted_rows(terminal) == [row]
+    });
+}
+
+/// COM-03 (Monitor, queue-full case) and COM-04 (Monitor, chunking): with
+/// two-byte chunks and room for three outstanding operations, once every
+/// earlier operation is answered (a typed z is echoed) and while the
+/// session's daemon is stopped, nine typed bytes are submitted as ab, cd
+/// and ef, and the fourth chunk does not fit: the top row says that its
+/// three bytes and those after them (ghi) were not sent and that earlier
+/// input was accepted. Once the daemon resumes, the session has received exactly
+/// zabcdef, nothing is replayed, and later typing reaches it.
+#[test]
+fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
+    const WIDE: u16 = 250;
+    let package = Package::new();
+    without_introduction(&package);
+    // ab, cd and ef stay unanswered while the daemon is stopped, and an
+    // operation past `deadlines.operation_ms` fails the connection: the
+    // deadline must outlast the test's steps until it resumes the daemon,
+    // even on a loaded host. The operations a newly ready controller
+    // submits by itself, such as Focus, leave room for the z typed to wait
+    // for their answers.
+    limits_config(
+        &package,
+        serde_json::json!({
+            "transfer": {"chunk_bytes": 2},
+            "queues": {"operations": 3},
+            "deadlines": {"operation_ms": 120_000},
+        }),
+    );
+    headless(&package, &echoing_recorder("Keys"), "finish");
+    let daemon = package.metadata().daemon_pid;
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    record(&mut terminal, "Keys", WIDE);
+    terminal.send("z").unwrap();
+    whole_frame_shows(&terminal, "the echoed z", |screen| {
+        screen
+            .lines()
+            .nth(1)
+            .is_some_and(|row| row.starts_with("RAWz"))
+    });
+    let monitor = monitor_process(&package).0;
+    stop(daemon as i32);
+    read_alone(&mut terminal, monitor, b"abcdefghi");
+    shows_row(
+        &mut terminal,
+        "Input not sent (3 bytes; earlier input was accepted): queue_full: the request does not fit",
+    );
+    kill(Pid::from_raw(daemon as i32), Signal::SIGCONT).unwrap();
+    received(&package, b"zabcdef");
+    terminal.send("j").unwrap();
+    received(&package, b"zabcdefj");
+    terminal.send("\x1dx").unwrap();
+    // Its wide frames can outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Spec #73 exit (owner decision on #109): input accepted before prefix+x
+/// holds shutdown only until it is answered or `deadlines.operation_ms`
+/// passes. With the session's daemon stopped, a key read with prefix+x is
+/// never answered, and the monitor still exits with status 0 within the
+/// one-second operation deadline plus the two-second shutdown deadline
+/// (and a few seconds' margin for the host's release).
+#[test]
+fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"operation_ms": 1000, "shutdown_ms": 2000}}),
+    );
+    headless(&package, &recorder("Keys"), "finish");
+    let daemon = package.metadata().daemon_pid as i32;
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", COLS);
+    let monitor = monitor_process(&package).0;
+    stop(daemon);
+    let started = Instant::now();
+    read_alone(&mut terminal, monitor, b"k\x1dx");
+    terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
+    let took = started.elapsed();
+    kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
+    assert!(took < Duration::from_secs(6), "{took:?}");
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The non-controller placeholder (#110), as the client executable words
+/// it, and its takeover hint with the default take-control key.
+const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
+const TAKEOVER_HINT: &str = "Press Ctrl+T to take control";
+const NO_CONTENT: &str = "No terminal content is available.";
+const NOT_CONTROLLING: &str = "Not controlling";
+
+/// Bash for a session the #110 scenarios watch. It reports `working`
+/// ([`working`]), titles its session
+/// `title`, puts its terminal in raw mode without echo, appends every byte
+/// it receives to `$HOME/<title>.got` and says `RAW`. Until `$HOME/finish`
+/// exists it appends each new `stty size` to `$HOME/<title>.sizes` (with
+/// [`sized`]'s probe) and writes it on its second row as `SIZE <rows>
+/// <cols>`, leaving the cursor where it was; it retitles itself whenever
+/// `$HOME/<title>.title` holds a new title, reports the root OSC 7501 state
+/// `$HOME/<title>.state` holds whenever it changes, and says ` SAID` once
+/// `$HOME/<title>.say` exists.
+fn watched(title: &str) -> String {
+    working(&format!(
+        "printf '\\033]2;{title}\\007'; stty raw -echo; cat </dev/tty >\"$HOME/{title}.got\" & printf RAW; \
+         p=; t=; o=; w=; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         q=; [ -e \"$HOME/{title}.probe\" ] && q=1; \
+         s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; \
+         printf '\\x1b7\\033[2;1HSIZE %s\\033[K\\x1b8' \"$s\"; fi; \
+         n=$(cat \"$HOME/{title}.title\" 2>/dev/null); \
+         if [ \"$n\" != \"$t\" ]; then printf '\\033]2;%s\\007' \"$n\"; t=$n; fi; \
+         r=$(cat \"$HOME/{title}.state\" 2>/dev/null); \
+         if [ -n \"$r\" ] && [ \"$r\" != \"$w\" ]; then printf '\\033]7501;state=%s\\033\\\\' \"$r\"; w=$r; fi; \
+         if [ -e \"$HOME/{title}.say\" ] && [ -z \"$o\" ]; then printf ' SAID'; o=1; fi; \
+         [ -n \"$q\" ] && mv \"$HOME/{title}.probe\" \"$HOME/{title}.probed\"; \
+         sleep 0.05; done; kill $!"
+    ))
+}
+
+/// Has the [`watched`] session `title` retitle itself `new`.
+fn retitle(package: &Package, title: &str, new: &str) {
+    let home = package.isolation.home();
+    let staged = home.join(format!("{title}.title.new"));
+    fs::write(&staged, new).unwrap();
+    fs::rename(staged, home.join(format!("{title}.title"))).unwrap();
+}
+
+/// Has the [`watched`] session `title` say ` SAID`.
+/// Makes the [`watched`] session `title` report the root OSC 7501 `state`.
+fn report_state(package: &Package, title: &str, state: &str) {
+    let home = package.isolation.home();
+    let staged = home.join(format!("{title}.state.new"));
+    fs::write(&staged, state).unwrap();
+    fs::rename(staged, home.join(format!("{title}.state"))).unwrap();
+}
+
+/// Waits until the open selector lists `label` with `status`, whatever the
+/// status column's width.
+fn listed_with(terminal: &Terminal, status: &str, label: &str) {
+    whole_frame_shows(terminal, &format!("{status} {label}"), |screen| {
+        screen.lines().any(|line| {
+            line.strip_prefix(" ║")
+                .and_then(|row| row.strip_prefix(status))
+                .is_some_and(|rest| rest.trim_start().starts_with(label))
+        })
+    });
+}
+
+fn say(package: &Package, title: &str) {
+    fs::write(package.isolation.home().join(format!("{title}.say")), b"").unwrap();
+}
+
+/// Waits until the [`watched`] session `title` has received exactly
+/// `expected`.
+fn received_by(package: &Package, title: &str, expected: &[u8]) {
+    let path = package.isolation.home().join(format!("{title}.got"));
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let got = fs::read(&path).unwrap_or_default();
+        if got == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{title} received {:?}, not {:?}",
+            got.escape_ascii().to_string(),
+            expected.escape_ascii().to_string()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Waits until a whole frame shows the [`watched`] session `label`
+/// controlled with input open at `size`: its top row says Controlling and
+/// its canvas shows the `SIZE` line the session wrote once resized to
+/// `size`. That line follows the restoration the resize brought, which the
+/// canvas shows only once applied, and Controlling means its Ready was
+/// accepted, so the frame shows the restoration and keys typed now reach
+/// the session.
+fn ready_at(terminal: &mut Terminal, label: &str, status: &str, size: &str) {
+    ready_on(terminal, COLS, (label, status), size);
+}
+
+/// [`ready_at`] on a host `cols` wide.
+fn ready_on(terminal: &mut Terminal, cols: u16, (label, status): (&str, &str), size: &str) {
+    let top = session_top_row(
+        usize::from(cols),
+        label,
+        &[status, CONTROLLING, SESSIONS_HINT],
+    );
+    let line = format!("SIZE {size}");
+    whole_frame_shows(terminal, &line, |screen| {
+        let mut rows = screen.lines();
+        rows.next() == Some(top.as_str()) && rows.nth(1).is_some_and(|row| row.starts_with(&line))
+    });
+}
+
+/// Waits until a whole frame's second row starts with `text`: the
+/// selected session's first row.
+fn first_row_starts(terminal: &Terminal, text: &str) {
+    whole_frame_shows(terminal, text, |screen| {
+        screen
+            .lines()
+            .nth(1)
+            .is_some_and(|row| row.starts_with(text))
+    });
+}
+
+/// The `c2 list` state of the session whose arguments contain `text`, once
+/// it is `expected`.
+fn listed_as(package: &Package, text: &str, expected: &Value) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let state = listed(package, text)["state"].clone();
+        if state == *expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{text} is {state}, not {expected}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The daemon process of session `id`, from its metadata.
+fn daemon_of(package: &Package, id: &str) -> i32 {
+    let path = package
+        .isolation
+        .climon2_home()
+        .join("sessions")
+        .join(format!("{id}.pty"));
+    let metadata: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    i32::try_from(metadata["daemon_pid"].as_i64().unwrap()).unwrap()
+}
+
+/// `c2 attach` to the [`watched`] session `id` on its own host, once it is
+/// ready: keys typed then reach the session. Its grant resizes the session
+/// to the host, and the session writes that size only after the
+/// restoration's snapshot, so the line arrives as live output, which the
+/// client shows only after its restoration ended.
+fn attach(package: &Package, id: &str) -> Terminal {
+    let mut attach = package.command("c2");
+    attach.args(["attach", id]);
+    let mut attach = Terminal::spawn(attach, ROWS, COLS).unwrap();
+    attached_ready(&mut attach);
+    attach
+}
+
+/// Waits until the attached client `attach`, granted control on its own
+/// host, shows the [`watched`] session's `SIZE` line for that host: live
+/// output, as the session was another size before the grant.
+fn attached_ready(attach: &mut Terminal) {
+    let line = format!("SIZE {ROWS} {COLS}");
+    attach
+        .wait_for_screen(TIMEOUT, |screen| {
+            let mut rows = screen.lines();
+            rows.next().is_some_and(|row| row.starts_with("RAW"))
+                && rows.next().is_some_and(|row| row.starts_with(&line))
+        })
+        .unwrap();
+}
+
+/// Waits until the attached client `attach`, after its placeholder, shows
+/// the [`watched`] session again: a grant's restoration, painted.
+fn restored(attach: &mut Terminal) {
+    attach
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen.starts_with("RAW") && !screen.contains(VIEWED_ELSEWHERE)
+        })
+        .unwrap();
+}
+
+/// Detaches the attached client `attach`, which exits 0.
+fn detach(mut attach: Terminal) {
+    attach.send("\x1dd").unwrap();
+    assert_eq!(attach.wait_exit(TIMEOUT).unwrap(), 0);
+}
+
+/// The whole host showing `label`'s session revoked: its top row not
+/// controlling, and only the placeholder, never its cached output.
+fn placeholder_screen(label: &str, status: &str) -> String {
+    let top = session_top_row(
+        usize::from(COLS),
+        label,
+        &[status, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    centred_below(&top, ROWS, COLS, &[VIEWED_ELSEWHERE, TAKEOVER_HINT])
+}
+
+/// CTL-02 (Monitor), CTL-03 (Monitor), CTL-05 (Monitor: background and
+/// revoked), DSC-05 (Monitor: revocation) and INP-01 (Monitor: takeover):
+/// Alpha, the first to appear after an empty start, is the initial
+/// selection (#266); explicitly selecting
+/// Beta then leaves Alpha controlled by the monitor in the background, and
+/// typed keys reach only the selected session. Alpha's title updates in the
+/// background, under the selector, and switching back shows Alpha at once. When another client attaches,
+/// the last acquisition wins: the selection stays on Alpha, which shows
+/// only the placeholder with its takeover hint, never its cached output;
+/// typed keys and a host resize reach no session, the take-control key does
+/// nothing in the selector or the key introduction, Alpha's title still
+/// updates, and the monitor never takes control back by itself. The
+/// take-control key then acquires Alpha and is consumed; once the monitor
+/// controls Alpha it is ordinary input. Beta, background throughout, then
+/// receives only what is typed once it is selected again.
+#[test]
+fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
+    let package = Package::new();
+    without_introduction(&package);
+    // After an empty start Alpha, the first to appear, is the initial
+    // selection; Beta comes after it.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    headless(&package, &watched("Beta"), "finish");
+    first_row_starts(&terminal, "RAW");
+    terminal.send("a").unwrap();
+    received_by(&package, "Alpha", b"a");
+    // Rows, both Running: Beta, newer, then Alpha.
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Beta");
+    enter_on(&mut terminal, "Beta");
+    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
+    first_row_starts(&terminal, "RAW");
+    terminal.send("b").unwrap();
+    received_by(&package, "Beta", b"b");
+    let attached =
+        serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true});
+    listed_as(&package, "Alpha", &attached);
+
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Alpha"));
+    retitle(&package, "Alpha", "Alpha background");
+    shows_row(&mut terminal, &format!("║{RUNNING} Alpha background"));
+    enter_on(&mut terminal, "Alpha background");
+    top_row_is(&mut terminal, &controlled("Alpha background", RUNNING));
+    first_row_starts(&terminal, "RAW");
+    terminal.send("c").unwrap();
+    received_by(&package, "Alpha", b"ac");
+
+    let mut other = attach(&package, &alpha);
+    shows(
+        &mut terminal,
+        &placeholder_screen("Alpha background", RUNNING),
+    );
+    assert!(!terminal.cursor().visible);
+    terminal.send("x").unwrap();
+    terminal.resize(40, 100).unwrap();
+    let wide = session_top_row(
+        100,
+        "Alpha background",
+        &[RUNNING, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&wide, 40, 100, &[VIEWED_ELSEWHERE, TAKEOVER_HINT]),
+    );
+    terminal.resize(ROWS, COLS).unwrap();
+    shows(
+        &mut terminal,
+        &placeholder_screen("Alpha background", RUNNING),
+    );
+    // Alpha was sized for the monitor, then for the attached client; Beta
+    // only for the monitor.
+    assert_eq!(
+        settled_sizes(&package, "Alpha"),
+        ["24 80", "29 120", "30 120"]
+    );
+    assert_eq!(settled_sizes(&package, "Beta"), ["24 80", "29 120"]);
+
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Alpha background"));
+    terminal.send("\x14").unwrap();
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1d?").unwrap();
+    terminal.wait_for_text("Continue (Enter)", TIMEOUT).unwrap();
+    terminal.send("\x14\r").unwrap();
+    retitle(&package, "Alpha", "Alpha revoked");
+    shows(&mut terminal, &placeholder_screen("Alpha revoked", RUNNING));
+    assert!(
+        !other.screen().contains(VIEWED_ELSEWHERE),
+        "{}",
+        other.screen()
+    );
+
+    terminal.send("\x14").unwrap();
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+    // The attached client sized Alpha 30 by 120; the grant's resize brings
+    // it back, and its restoration.
+    ready_at(&mut terminal, "Alpha revoked", RUNNING, "29 120");
+    terminal.send("\x14d").unwrap();
+    received_by(&package, "Alpha", b"ac\x14d");
+    // Beta, in the background all along, received nothing more: once
+    // selected, what it receives next follows anything sent before.
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Beta");
+    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
+    first_row_starts(&terminal, "RAW");
+    terminal.send("e").unwrap();
+    received_by(&package, "Beta", b"be");
+    terminal.send("\x1dx").unwrap();
+    // Its many frames can outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    // The monitor's exit handed Alpha back to the attached client, whose
+    // grant resized it back to that client's host.
+    attached_ready(&mut other);
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// CTL-03 (Monitor, status-value case, moved from #107 to #266 by the
+/// owner): a session's effective status keeps updating in the monitor
+/// whatever its role, on any clock: each session reports `working` at
+/// start, then what the test makes it report. Alpha, the initial selection
+/// after an empty start, keeps control in the background once Beta is
+/// selected, and its row turns Needs attention when it reports `idle`;
+/// Beta's row, its canvas covered by the open selector, turns Needs
+/// attention when Beta reports `idle`, as does its top row once the
+/// selector closes. After another client's attach takes Alpha over and
+/// acknowledges its attention, its revoked row turns Acknowledged, then
+/// Needs attention again when Alpha reports `done`.
+#[test]
+fn status_keeps_updating_for_background_covered_and_revoked_rows() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    headless(&package, &watched("Beta"), "finish");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Beta");
+    enter_on(&mut terminal, "Beta");
+    ready_at(&mut terminal, "Beta", RUNNING, "29 120");
+
+    report_state(&package, "Alpha", "idle");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Needs attention", "Alpha");
+    report_state(&package, "Beta", "idle");
+    listed_with(&terminal, "Needs attention", "Beta");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    ready_at(&mut terminal, "Beta", "Needs attention", "29 120");
+
+    // Ready on its own host once Alpha, resized for it, says so live; its
+    // attach acknowledged Alpha's pending attention (#102).
+    let other = attach(&package, &alpha);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Acknowledged", "Alpha");
+    report_state(&package, "Alpha", "done");
+    listed_with(&terminal, "Needs attention", "Alpha");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// DSC-01 (Monitor, bounded collection; uncertainty explicit), the owner's
+/// decisions of 2026-11-16 and spec #73 initial selection, with fake
+/// daemons and one start slot: Held never completes its client's Open, so
+/// Slow waits for the slot. While both start the body shows the startup
+/// progress, `Connecting to 2 sessions (0 ready)`; at `deadlines.start_ms`
+/// collection ends without them, selecting nothing, and the body says
+/// discovery is incomplete while a late session still starts, also in the
+/// top row's error slot once a row is selected (owner decision on #266,
+/// 2026-11-16). Once Slow's
+/// Initial metadata reports its status, it is the first eligible row and
+/// becomes the one-time initial selection, acquired. Had the user selected
+/// a row meanwhile, even read-only, Slow would not be selected.
+#[test]
+fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible() {
+    // Wide enough for the late note beside the held row's label.
+    const WIDE: u16 = 200;
+    let held = fake_id(0xd1);
+    for explicit in [false, true] {
+        let package = Package::new();
+        without_introduction(&package);
+        limits_config(
+            &package,
+            serde_json::json!({
+                "scheduling": {"starts": 1},
+                "deadlines": {"start_ms": 4000, "operation_ms": 120_000},
+            }),
+        );
+        let go = package.isolation.home().join("slow.go");
+        let ear = Ear::default();
+        let slow = serving(vec![
+            opened_with(true),
+            Act::Await(go.clone()),
+            initial_metadata("Slow", Some(wire_status("idle", &utc(1))), None),
+        ]);
+        let daemons = [
+            FakeDaemon::start(
+                &package,
+                held,
+                "2026-01-01T00:00:02.000Z",
+                Answer::Held(held),
+                &ear,
+            ),
+            FakeDaemon::start(
+                &package,
+                fake_id(0xd2),
+                "2026-01-01T00:00:01.000Z",
+                slow,
+                &ear,
+            ),
+        ];
+        let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+        let hint = "Press Ctrl+] then x to exit.";
+        shows(
+            &mut terminal,
+            &empty_monitor(ROWS, WIDE, &["Connecting to 2 sessions (0 ready)", hint]),
+        );
+        let late = "Discovery incomplete: some sessions are still starting";
+        shows(
+            &mut terminal,
+            &empty_monitor(ROWS, WIDE, &["No session selected.", hint, late]),
+        );
+        if explicit {
+            terminal.send("\x1ds").unwrap();
+            enter_on(&mut terminal, held);
+            // With a row selected, the top row's error slot says it.
+            let noted = format!("fake {held} | {late} ");
+            whole_frame_shows(&terminal, &noted, |screen| screen.starts_with(&noted));
+        }
+        fs::write(&go, b"").unwrap();
+        if explicit {
+            terminal.send("\x1ds").unwrap();
+            listed_with(&terminal, STATUS, "Slow");
+            terminal.send(ESCAPE).unwrap();
+            selector_closed(&terminal);
+            let plain = format!("fake {held} ");
+            whole_frame_shows(&terminal, "the held row, no longer late", |screen| {
+                screen.starts_with(&plain) && !screen.contains(late)
+            });
+        } else {
+            let top = session_top_row(
+                usize::from(WIDE),
+                "Slow",
+                &[STATUS, "Acquiring", SESSIONS_HINT],
+            );
+            shows(&mut terminal, &centred_below(&top, ROWS, WIDE, &[]));
+        }
+        terminal.send("\x1dx").unwrap();
+        // Its wide frames can outgrow the oracle's recent bytes, so only the
+        // title itself is checked.
+        support::assert_released(&package, &mut terminal, 0);
+        assert_eq!(terminal.title().as_deref(), Some(TITLE));
+        drop(daemons);
+        package.assert_clean();
+    }
+}
+
+/// Waits until a whole frame shows `lines` centred below a top row whose
+/// slots read `status` and `control`.
+fn read_only_shows(terminal: &Terminal, status: &str, control: &str, lines: &[&str]) {
+    let expected = centred_below("", ROWS, COLS, lines);
+    let slots = format!(" | {status:<18} | {control:<15} | {SESSIONS_HINT}");
+    whole_frame_shows(terminal, &expected, |screen| {
+        let (top, below) = screen.split_once('\n').unwrap();
+        top.ends_with(&slots) && below == &expected[1..]
+    });
+}
+
+/// Spec #73 Enter on unconnected rows (derived scenarios) and CTL-05
+/// (Monitor: unavailable): with one start slot held by a fake daemon that
+/// never completes its client's Open, Enter on an Unavailable row with no
+/// client (its daemon stopped) and then on a Starting row selects each
+/// read-only: no terminal content, its condition, nothing acquired, and
+/// typed keys reach no session, not even the one the monitor controls in
+/// the background. Once the Starting row's client connects, it shows the
+/// non-controller placeholder until the take-control key acquires it.
+#[test]
+fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000c1";
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"scheduling": {"starts": 1}, "deadlines": {"start_ms": 120_000}}),
+    );
+    headless(&package, &watched("Alpha"), "finish");
+    let paused = headless(&package, &watched("Paused"), "finish");
+    let paused = daemon_of(&package, &paused);
+    stop(paused);
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    // A stopped daemon never answers the probe's hello: no client.
+    whole_frame_shows(&terminal, "Paused unavailable", |screen| {
+        screen
+            .lines()
+            .any(|row| row.starts_with(" ║Unavailable /bin/bash") && row.contains("Paused"))
+    });
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    // Initial selection acquires Alpha, the one connected row (#266).
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    terminal.send("a").unwrap();
+    received_by(&package, "Alpha", b"a");
+
+    let ear = Ear::default();
+    let held = FakeDaemon::start(
+        &package,
+        HELD,
+        "2099-01-01T00:00:00.000Z",
+        Answer::Held(HELD),
+        &ear,
+    );
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║Starting    fake {HELD}"));
+    // Reopened, the selector highlights the held fake's row, the newest.
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    headless(&package, &watched("Slow"), "finish");
+    terminal.send("\x1ds").unwrap();
+    whole_frame_shows(&terminal, "Slow starting", |screen| {
+        screen
+            .lines()
+            .any(|row| row.starts_with(" ║Starting    /bin/bash") && row.contains("Slow"))
+    });
+    // Rows: Alpha, then the not-connected rows by entry, newest first:
+    // Slow, the held fake, Paused.
+    enter_on(&mut terminal, "Paused");
+    read_only_shows(
+        &terminal,
+        "Unavailable",
+        NOT_CONTROLLING,
+        &[NO_CONTENT, "Unavailable"],
+    );
+    terminal.send("k").unwrap();
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Slow");
+    read_only_shows(
+        &terminal,
+        "Starting",
+        NOT_CONTROLLING,
+        &[NO_CONTENT, "Starting"],
+    );
+    terminal.send("k\x14").unwrap();
+
+    drop(held);
+    shows(&mut terminal, &placeholder_screen("Slow", RUNNING));
+    listed_as(
+        &package,
+        "Slow",
+        &serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false}),
+    );
+    terminal.send("\x14").unwrap();
+    top_row_is(&mut terminal, &controlled("Slow", RUNNING));
+    ready_at(&mut terminal, "Slow", RUNNING, "29 120");
+    // The take-control key and keys typed before reached no session.
+    terminal.send("s").unwrap();
+    received_by(&package, "Slow", b"s");
+
+    kill(Pid::from_raw(paused), Signal::SIGCONT).unwrap();
+    terminal.send("\x1ds").unwrap();
+    // Every session reported `working`; once Paused's resumed daemon is
+    // reached too, the rows stay put.
+    for label in ["Slow", "Paused", "Alpha"] {
+        listed_with(&terminal, RUNNING, label);
+    }
+    enter_on(&mut terminal, "Alpha");
+    first_row_starts(&terminal, "RAW");
+    terminal.send("z").unwrap();
+    received_by(&package, "Alpha", b"az");
+    terminal.send("\x1dx").unwrap();
+    // Its many frames can outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// CTL-04 (Monitor): when the only attached client of a session detaches,
+/// the daemon promotes the monitor's passive client. The monitor applies
+/// that restoration and keeps the model live in the background without
+/// selecting the session, resizing it or sending it input: the selection
+/// stays where it was and typed keys still reach only it. Enter then finds
+/// the session already controlled, so the daemon starts no new
+/// restoration, and the model built in the background is painted at once,
+/// output written since included; only now is the session resized.
+#[test]
+fn promotion_keeps_a_background_model_without_selection_resize_or_input() {
+    let package = Package::new();
+    without_introduction(&package);
+    // After an empty start Other, the first to appear, is the initial
+    // selection; Promoted, attached elsewhere, comes after it.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Other"), "finish");
+    top_row_is(&mut terminal, &controlled("Other", RUNNING));
+    let promoted = headless(&package, &watched("Promoted"), "finish");
+    let other = attach(&package, &promoted);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Promoted"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+
+    detach(other);
+    let attached =
+        serde_json::json!({"lifecycle": "attached", "attachments": 1, "controlled": true});
+    listed_as(&package, "Promoted", &attached);
+    say(&package, "Promoted");
+    terminal.send("o").unwrap();
+    received_by(&package, "Other", b"o");
+    top_row_is(&mut terminal, &controlled("Other", RUNNING));
+    assert_eq!(settled_sizes(&package, "Promoted"), ["24 80", "30 120"]);
+
+    // Rows, both Running: Promoted, newer, then Other.
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Promoted");
+    top_row_is(&mut terminal, &controlled("Promoted", RUNNING));
+    first_row_starts(&terminal, "RAW SAID");
+    sized_to(&package, "Promoted", &["24 80", "30 120", "29 120"]);
+    // The resize brings a restoration, which closes input until it is ready.
+    ready_at(&mut terminal, "Promoted", RUNNING, "29 120");
+    terminal.send("p").unwrap();
+    received_by(&package, "Promoted", b"p");
+    received_by(&package, "Other", b"o");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The top row's start once Taken's Acquire timed out: its label and the
+/// library's timeout.
+const TIMED_OUT: &str = "Taken | the session daemon did not answer in time";
+
+/// DSC-05 (Monitor, Fault: failed acquisition and loss): with a session's
+/// daemon stopped, Enter selects it and its Acquire times out, which also
+/// ends that client. The selection stays on it, showing the failure, and
+/// typed keys reach no session (not the one the monitor still controls in
+/// the background). The resumed daemon still serves that Acquire, so the
+/// client that controls the session loses control and gets it back.
+#[test]
+fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
+    let package = Package::new();
+    without_introduction(&package);
+    // After an empty start Alpha, the first to appear, is the initial
+    // selection; Taken, attached elsewhere, comes after it.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    let taken = headless(&package, &watched("Taken"), "finish");
+    let mut other = attach(&package, &taken);
+    first_row_starts(&terminal, "RAW");
+    terminal.send("a").unwrap();
+    received_by(&package, "Alpha", b"a");
+    // Rows, both Running: Taken, newer, then Alpha.
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Taken");
+    highlight_on(&mut terminal, "Taken");
+    let daemon = daemon_of(&package, &taken);
+    stop(daemon);
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "the failed acquisition", |screen| {
+        let top = screen.lines().next().unwrap_or_default();
+        top.starts_with(TIMED_OUT)
+            && top.contains(&format!(
+                "| {:<18} | {NOT_CONTROLLING:<15} |",
+                "Disconnected"
+            ))
+    });
+    terminal.send("k").unwrap();
+    kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
+    // The timeout left the Acquire's outcome indeterminate, not failed: the
+    // resumed daemon serves it before it sees that connection closed. The
+    // other client loses control to it, then gets control back with a new
+    // restoration, which discards keys typed before it ends.
+    other
+        .wait_for_bytes(VIEWED_ELSEWHERE.as_bytes(), TIMEOUT)
+        .unwrap();
+    restored(&mut other);
+    // Live output follows the restoration, so the other client is ready.
+    say(&package, "Taken");
+    other.wait_for_text("RAW SAID", TIMEOUT).unwrap();
+    assert!(terminal.row(0).starts_with(TIMED_OUT));
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING:<12} Alpha"));
+    enter_on(&mut terminal, "Alpha");
+    first_row_starts(&terminal, "RAW");
+    terminal.send("z").unwrap();
+    received_by(&package, "Alpha", b"az");
+    // What Taken receives from its controller follows anything sent before.
+    other.send("t").unwrap();
+    received_by(&package, "Taken", b"t");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-01 (Monitor: takeover on a too-small host; owner decision on #110,
+/// 2026-11-14): the take-control key acquires a revoked selection even on
+/// a host under four rows or five columns, where the placeholder cannot
+/// show. Nothing is resized while the host is too small; once it has room
+/// again the session is resized, painted, and takes input. When the other
+/// client takes control back, prefix+x exits from the placeholder (INP-01,
+/// the placeholder screen).
+#[test]
+fn the_take_control_key_acquires_on_a_too_small_host() {
+    let package = Package::new();
+    without_introduction(&package);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires Alpha, the only session (#266).
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    let mut other = attach(&package, &alpha);
+    shows(&mut terminal, &placeholder_screen("Alpha", RUNNING));
+    terminal.resize(3, 4).unwrap();
+    shows_too_small(&mut terminal, 3, 4);
+    terminal.send("\x14").unwrap();
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+    assert_eq!(
+        settled_sizes(&package, "Alpha"),
+        ["24 80", "29 120", "30 120"]
+    );
+    terminal.resize(ROWS, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    terminal.send("z").unwrap();
+    received_by(&package, "Alpha", b"z");
+    // The other client takes control back with its own take-control key,
+    // and prefix+x exits from the placeholder.
+    other.send("\x14").unwrap();
+    shows(&mut terminal, &placeholder_screen("Alpha", RUNNING));
+    // Its grant resized Alpha back to its host, after its restoration.
+    attached_ready(&mut other);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// A headless [`watched`] session `title` whose daemon has the
+/// `CLIMON2_DAEMON_HOLD` test hook at `hold`: its full session ID.
+fn held_headless(package: &Package, title: &str, hold: &Path) -> String {
+    let script = watched(title);
+    let mut command = package.command("c2");
+    command.args(["exec", "--headless", "/bin/bash", "-c", &script]);
+    command.env("CLIMON2_DAEMON_HOLD", hold);
+    command.env("CLIMON2_DAEMON_CLOCK", clock(package, None));
+    // As small as `headless` creates its sessions.
+    let mut created = Terminal::spawn(command, 24, 80).unwrap();
+    assert_eq!(created.wait_exit(TIMEOUT).unwrap(), 0);
+    created.screen().trim().to_owned()
+}
+
+/// Holds every frame the session daemon would read, through its
+/// `CLIMON2_DAEMON_HOLD` hook at `hold`, once it has said it holds them.
+fn hold(hold: &Path) {
+    fs::write(hold, b"").unwrap();
+    let held = hold.with_extension("held");
+    let deadline = Instant::now() + TIMEOUT;
+    while !held.exists() {
+        assert!(Instant::now() < deadline, "the daemon never held its input");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// CTL-05 (Monitor: restoring): while a restoration is in progress (the
+/// hand-back's restoration applied, its Ready not yet accepted, because
+/// the daemon holds every frame it would read), the top row says
+/// Restoring, typed keys reach no session and are never kept for later,
+/// and a host resize reaches no session; the background controller gets
+/// nothing either. The monitor's stop makes the order deterministic: the
+/// hand-back's records wait in its socket, flushed in the daemon pass that
+/// answers the departing client, before the hold begins. Once the daemon
+/// reads again, the restoration becomes ready, the session is sized to the
+/// host as it is then, and keys reach it.
+/// It holds the daemon with the `CLIMON2_DAEMON_HOLD` test hook, which
+/// release archives lack, so it returns early in archive mode.
+#[test]
+fn keys_and_resizes_during_a_restoration_reach_no_session() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    // Ready is held for as long as the test holds the daemon.
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"operation_ms": 120_000}}),
+    );
+    let gate = package.isolation.home().join("hold");
+    // After an empty start Alpha, the first to appear, is the initial
+    // selection; Held comes after it.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    let restoring = held_headless(&package, "Held", &gate);
+    terminal.send("a").unwrap();
+    received_by(&package, "Alpha", b"a");
+    // Rows, both Running: Held, newer, then Alpha.
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Held");
+    enter_on(&mut terminal, "Held");
+    ready_at(&mut terminal, "Held", RUNNING, "29 120");
+    let other = attach(&package, &restoring);
+    shows(&mut terminal, &placeholder_screen("Held", RUNNING));
+
+    let monitor = monitor_process(&package).0;
+    stop(monitor);
+    detach(other);
+    hold(&gate);
+    kill(Pid::from_raw(monitor), Signal::SIGCONT).unwrap();
+    let held = session_top_row(
+        usize::from(COLS),
+        "Held",
+        &[RUNNING, "Restoring", SESSIONS_HINT],
+    );
+    whole_frame_shows(&terminal, "Restoring", |screen| {
+        let mut rows = screen.lines();
+        rows.next() == Some(held.as_str())
+            && rows
+                .nth(1)
+                .is_some_and(|row| row.starts_with("SIZE 30 120"))
+    });
+    terminal.send("k").unwrap();
+    terminal.resize(40, 100).unwrap();
+    let wide = session_top_row(100, "Held", &[RUNNING, "Restoring", SESSIONS_HINT]);
+    top_row_is(&mut terminal, &wide);
+    assert_eq!(
+        settled_sizes(&package, "Held"),
+        ["24 80", "29 120", "30 120"]
+    );
+    assert_eq!(settled_sizes(&package, "Alpha"), ["24 80", "29 120"]);
+
+    fs::remove_file(&gate).unwrap();
+    ready_on(&mut terminal, 100, ("Held", RUNNING), "39 100");
+    terminal.send("z").unwrap();
+    received_by(&package, "Held", b"z");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Held"));
+    enter_on(&mut terminal, "Alpha");
+    // Alpha, background throughout, is sized only now that it is selected.
+    sized_to(&package, "Alpha", &["24 80", "29 120", "39 100"]);
+    ready_on(&mut terminal, 100, ("Alpha", RUNNING), "39 100");
+    terminal.send("y").unwrap();
+    received_by(&package, "Alpha", b"ay");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Bash that titles its session `name`, then runs each of `steps` once
+/// `$HOME/<name>.<n>` exists, `n` counting from 1, giving up after two
+/// minutes.
+fn stepped(name: &str, steps: &[&str]) -> String {
+    let mut script = format!("printf '\\033]2;{name}\\007'");
+    for (step, action) in (1..).zip(steps) {
+        script.push_str(&format!(
+            "\nuntil [ -e \"$HOME/{name}.{step}\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; {action}"
+        ));
+    }
+    script
+}
+
+/// Lets the session [`stepped`] named `name` take its step `step`.
+fn step(package: &Package, name: &str, step: u32) {
+    fs::write(package.isolation.home().join(format!("{name}.{step}")), b"").unwrap();
+}
+
+/// A root OSC 7501 program status report of `state`, as bash prints it.
+fn report(state: &str) -> String {
+    format!("printf '\\033]7501;state={state}\\033\\\\'")
+}
+
+/// Waits until the rows of the open selector are exactly `rows`, over the
+/// screen `beneath` it.
+fn lists(terminal: &mut Terminal, beneath: &str, rows: &[(&str, &str)]) {
+    let expected = with_selector(beneath, rows);
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| screen == expected)
+        .unwrap_or_else(|_| panic!("expected:\n{expected}\nshown:\n{}", terminal.screen()));
+}
+
+/// A host showing the top row `top` above a blank canvas.
+fn beneath(top: &str) -> String {
+    centred_below(top, ROWS, COLS, &[])
+}
+
+/// Waits until the open selector highlights exactly the host row `row`.
+fn highlights(terminal: &Terminal, row: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    while highlighted_rows(terminal) != [row] {
+        assert!(
+            Instant::now() < deadline,
+            "highlighted {:?}, not {row}",
+            highlighted_rows(terminal)
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07
+/// (Monitor) and DSC-05 (Monitor, reorder case), with real sessions whose
+/// daemons' status clocks stand at known times: rows show the effective
+/// status the daemon reports, Needs attention, Running and Idle, and sort by
+/// group, then by the daemon's change time, newest first. A command that
+/// exits 0 shows Succeeded; one that exits 143 shows Failed (exit 143) and
+/// one killed by SIGTERM Failed (signal 15), each after the status rows by
+/// its terminal status time, and each stays once its session has ended. A
+/// hidden change (working under pending attention) moves nothing, even with
+/// its daemon's clock moved past a newer attention row's time. A status
+/// change that moves the highlighted row keeps the highlight on it. The
+/// daemons' status clock is a test hook, which release archives lack, so
+/// this returns early in archive mode.
+#[test]
+fn real_sessions_show_their_effective_status_and_final_outcomes_in_order() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    let mut clocks = BTreeMap::new();
+    let sessions: [(&str, u64, &[&str]); 7] = [
+        (
+            "attention",
+            1000,
+            &[
+                &report("idle"),
+                &format!("{}; printf '\\033]2;attention 2\\007'", report("working")),
+            ],
+        ),
+        ("waiting", 1500, &[&report("idle")]),
+        ("running", 2000, &[&report("working"), &report("clear")]),
+        ("idle", 3000, &[]),
+        ("succeeded", 4000, &["exit 0"]),
+        ("exit 143", 5000, &["exit 143"]),
+        ("signal", 6000, &["kill -TERM $$"]),
+    ];
+    for (name, millis, steps) in sessions {
+        let at = clock(&package, Some(millis));
+        headless_on(&package, &stepped(name, steps), "finish", &at);
+        clocks.insert(name, at);
+    }
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection acquires signal, the first row (#266).
+    let selected = beneath(&controlled("signal", "Idle"));
+    shows(&mut terminal, &selected);
+    terminal.send("\x1ds").unwrap();
+    lists(
+        &mut terminal,
+        &selected,
+        &[
+            ("Idle", "signal"),
+            ("Idle", "exit 143"),
+            ("Idle", "succeeded"),
+            ("Idle", "idle"),
+            ("Idle", "running"),
+            ("Idle", "waiting"),
+            ("Idle", "attention"),
+        ],
+    );
+    for name in ["attention", "waiting", "running"] {
+        step(&package, name, 1);
+    }
+    lists(
+        &mut terminal,
+        &selected,
+        &[
+            ("Needs attention", "waiting"),
+            ("Needs attention", "attention"),
+            ("Running", "running"),
+            ("Idle", "signal"),
+            ("Idle", "exit 143"),
+            ("Idle", "succeeded"),
+            ("Idle", "idle"),
+        ],
+    );
+    for name in ["succeeded", "exit 143", "signal"] {
+        step(&package, name, 1);
+    }
+    let finals = [
+        ("Failed (signal 15)", "signal"),
+        ("Failed (exit 143)", "exit 143"),
+        ("Succeeded", "succeeded"),
+    ];
+    let mut rows = vec![
+        ("Needs attention", "waiting"),
+        ("Needs attention", "attention"),
+        ("Running", "running"),
+        ("Idle", "idle"),
+    ];
+    rows.extend(finals);
+    let ended = beneath(&session_top_row(
+        usize::from(COLS),
+        "signal",
+        &["Failed (signal 15)", "Ended", SESSIONS_HINT],
+    ));
+    lists(&mut terminal, &ended, &rows);
+    // Past waiting's attention time, any status the hidden change caused
+    // would move the row above it. The hidden change comes before the title
+    // change on the same connection, so any such status has arrived once the
+    // title shows.
+    fs::write(&clocks["attention"], (T0 + 2500).to_string()).unwrap();
+    step(&package, "attention", 2);
+    rows[1] = ("Needs attention", "attention 2");
+    lists(&mut terminal, &ended, &rows);
+
+    // The selector opened on whichever row was first then; Up without
+    // wrapping brings the highlight to the top.
+    terminal.send("\x1b[A".repeat(rows.len())).unwrap();
+    highlights(&terminal, 3);
+    terminal.send("\x1b[B".repeat(3)).unwrap();
+    highlights(&terminal, 6);
+    step(&package, "running", 2);
+    let mut reordered = vec![
+        ("Needs attention", "waiting"),
+        ("Needs attention", "attention 2"),
+        ("Idle", "idle"),
+        ("Idle", "running"),
+    ];
+    reordered.extend(finals);
+    lists(&mut terminal, &ended, &reordered);
+    highlights(&terminal, 5);
+    terminal.send("\x1dx").unwrap();
+    // Its many frames can outgrow the oracle's recent bytes, so only the
+    // title itself is checked.
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// A wire UTC time `seconds` into 2027-01-15T08:00.
+fn utc(seconds: u32) -> String {
+    format!("2027-01-15T08:00:{seconds:02}.000Z")
+}
+
+/// A wire Status of `state` changed at `changed_at`, with the attention
+/// episode exactly when the state carries one.
+fn wire_status(state: &str, changed_at: &str) -> Value {
+    let episode = matches!(state, "needs_attention" | "acknowledged").then_some("1");
+    json!({"state": state, "changed_at": changed_at, "episode_id": episode})
+}
+
+/// A wire normal exit with `code`.
+fn exited(code: u32) -> Value {
+    json!({"kind": "exit", "code": code})
+}
+
+/// The Open's success, selecting `title-v1` and, with `status`,
+/// `status-v1`.
+fn opened_with(status: bool) -> Act {
+    let mut selected = vec!["daemon-wire-v1", "monitor-v1", "title-v1"];
+    selected.extend(status.then_some("status-v1"));
+    Act::Send(
+        RESPONSE,
+        json!({
+            "request_id": "$open", "outcome": "ok", "error": null,
+            "result": {
+                "kind": "opened",
+                "connection_id": "00112233-4455-4677-8899-aabbccddeeff",
+                "selected_capabilities": selected,
+            },
+        }),
+    )
+}
+
+/// Initial metadata titled `title`, with `status` exactly when `status-v1`
+/// is selected, and the command's `result` once it is known.
+fn initial_metadata(title: &str, status: Option<Value>, result: Option<Value>) -> Act {
+    Act::Send(
+        INITIAL_METADATA,
+        json!({
+            "title": {"available": true, "value": title},
+            "status": {"available": status.is_some(), "value": status},
+            "progress": {"available": false, "value": null},
+            "command_result": result,
+        }),
+    )
+}
+
+/// A fake daemon serving `acts` after a client's Open.
+fn serving(acts: Vec<Act>) -> Answer {
+    Answer::Serve(std::sync::Arc::new(acts))
+}
+
+/// A fake daemon whose Open selects `status-v1` and whose Initial metadata
+/// reports `title`, `status` and `result`, then `after`.
+fn with_status(title: &str, status: Value, result: Option<Value>, after: Vec<Act>) -> Answer {
+    let mut acts = vec![
+        opened_with(true),
+        initial_metadata(title, Some(status), result),
+    ];
+    acts.extend(after);
+    serving(acts)
+}
+
+/// `00..ff` as the last byte of a fake session ID.
+fn fake_id(suffix: u8) -> &'static str {
+    format!("0d5c0000-0000-4000-8000-0000000000{suffix:02x}").leak()
+}
+
+/// DSC-01 (Monitor, status order and initial-selection case) and DSC-05
+/// (Monitor, reorder case), with fake daemons reporting exact statuses and
+/// times: rows order by group, then by the daemon's change time, newest
+/// first, then by ascending full session ID on a tie, never by creation
+/// (each fake was created the later, the lower it should sort) or by when
+/// the monitor heard it. A client whose Initial metadata is delayed shows
+/// Starting in the not-connected group until it arrives, and the startup
+/// progress, `Connecting to 9 sessions (8 ready)`, shows until then (#266).
+/// Initial selection then takes the first eligible row, the oldest created
+/// and the last started, and acquires it, never moving the open selector's
+/// highlight. The highlighted row keeps the highlight while a delayed row
+/// moves in above it and while its own status change moves it.
+#[test]
+fn rows_order_by_status_group_daemon_change_time_and_full_session_id() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"start_ms": 120_000, "operation_ms": 120_000}}),
+    );
+    let home = package.isolation.home().to_owned();
+    let (idle_go, delayed_go) = (home.join("idle.go"), home.join("delayed.go"));
+    let fakes = [
+        (
+            0xa9,
+            with_status(
+                "attention new",
+                wire_status("needs_attention", &utc(2)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa8,
+            with_status(
+                "attention old",
+                wire_status("needs_attention", &utc(1)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa7,
+            with_status(
+                "acknowledged",
+                wire_status("acknowledged", &utc(1)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa5,
+            with_status("running low", wire_status("running", &utc(5)), None, vec![]),
+        ),
+        (
+            0xa6,
+            with_status(
+                "running high",
+                wire_status("running", &utc(5)),
+                None,
+                vec![],
+            ),
+        ),
+        (
+            0xa4,
+            with_status(
+                "idle",
+                wire_status("idle", &utc(9)),
+                None,
+                vec![
+                    Act::Await(idle_go.clone()),
+                    Act::Send(
+                        STATUS_CHANGED,
+                        json!({"status": wire_status("running", &utc(10))}),
+                    ),
+                ],
+            ),
+        ),
+        (
+            0xa3,
+            with_status(
+                "failed",
+                wire_status("failed", &utc(3)),
+                Some(exited(3)),
+                vec![],
+            ),
+        ),
+        (
+            0xa2,
+            with_status(
+                "succeeded",
+                wire_status("completed", &utc(8)),
+                Some(exited(0)),
+                vec![],
+            ),
+        ),
+        (
+            0xa1,
+            serving(vec![
+                opened_with(true),
+                Act::Await(delayed_go.clone()),
+                initial_metadata("delayed", Some(wire_status("running", &utc(6))), None),
+            ]),
+        ),
+    ];
+    let ear = Ear::default();
+    let daemons: Vec<_> = (1..)
+        .zip(fakes)
+        .map(|(second, (suffix, answer))| {
+            let created = format!("2026-01-01T00:00:{second:02}.000Z");
+            FakeDaemon::start(&package, fake_id(suffix), &created, answer, &ear)
+        })
+        .collect();
+    let mut terminal = outer(&package, "c2 monitor");
+    // Collection waits for the delayed client's Initial metadata, showing
+    // its progress: every client was started for the first pass.
+    let collecting = empty_monitor(
+        ROWS,
+        COLS,
+        &[
+            "Connecting to 9 sessions (8 ready)",
+            "Press Ctrl+] then x to exit.",
+        ],
+    );
+    shows(&mut terminal, &collecting);
+    terminal.send("\x1ds").unwrap();
+    let mut rows = vec![
+        ("Needs attention", "attention new"),
+        ("Needs attention", "attention old"),
+        ("Acknowledged", "acknowledged"),
+        ("Running", "running low"),
+        ("Running", "running high"),
+        ("Idle", "idle"),
+        ("Failed (exit 3)", "failed"),
+        ("Succeeded", "succeeded"),
+        // Until its Initial metadata, nothing reported its title either.
+        ("Starting", "fake 0d5c0000-0000-4000-8000-0000000000a1"),
+    ];
+    lists(&mut terminal, &collecting, &rows);
+    // The selector opened on whichever row was first then; Up without
+    // wrapping brings the highlight to the top.
+    terminal.send("\x1b[A".repeat(rows.len())).unwrap();
+    highlights(&terminal, 3);
+    terminal.send("\x1b[B".repeat(5)).unwrap();
+    highlights(&terminal, 8);
+
+    fs::write(&delayed_go, b"").unwrap();
+    rows.pop();
+    rows.insert(3, ("Running", "delayed"));
+    // Collection over, initial selection takes the first eligible row,
+    // neither the newest created nor the first connected, and acquires it,
+    // which no fake ever grants; the open selector stays open over it.
+    let selected = beneath(&session_top_row(
+        usize::from(COLS),
+        "attention new",
+        &["Needs attention", "Acquiring", SESSIONS_HINT],
+    ));
+    lists(&mut terminal, &selected, &rows);
+    highlights(&terminal, 9);
+
+    fs::write(&idle_go, b"").unwrap();
+    rows.remove(6);
+    rows.insert(3, ("Running", "idle"));
+    lists(&mut terminal, &selected, &rows);
+    highlights(&terminal, 6);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(daemons);
+    package.assert_clean();
+}
+
+/// Not-connected rows (confirmed 2026-11-08), final rows (derived) and
+/// STA-07 (Monitor, disconnection case), with fake daemons: rows with no
+/// current status and no final outcome (Unavailable without `status-v1` or
+/// uncertain, Disconnected) sort after every status and final row, newest
+/// condition first; the monitor's own session is never listed (owner
+/// decision on #110). A connection lost without final
+/// evidence shows Disconnected there, by when it was lost, never its stale
+/// Running nor a fabricated outcome. Final rows without a status time (no
+/// `status-v1`), from the Initial metadata or a later Command final, sort
+/// by when the monitor learned them, between finals whose daemon times are
+/// newer and older.
+#[test]
+fn not_connected_rows_and_untimed_finals_sort_by_when_the_monitor_recorded_them() {
+    let package = Package::new();
+    without_introduction(&package);
+    // The acquisition initial selection starts is never granted, nor timed
+    // out while the test runs.
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"operation_ms": 120_000}}),
+    );
+    let home = package.isolation.home().to_owned();
+    let (lost_go, late_go) = (home.join("lost.go"), home.join("late.go"));
+    let ear = Ear::default();
+    let created = "2026-01-01T00:00:00.000Z";
+    let own = fake_id(0xc0);
+    let start = |suffix: u8, answer: Answer| {
+        FakeDaemon::start(&package, fake_id(suffix), created, answer, &ear)
+    };
+    let mut daemons = vec![start(0xc0, Answer::Hello(own))];
+    let mut terminal = outer(&package, &format!("CLIMON2_SESSION_ID={own} c2 monitor"));
+    terminal
+        .wait_for_text("No sessions to show.", TIMEOUT)
+        .unwrap();
+    // After the empty start, the first eligible arrival is the one-time
+    // initial selection (#266); no later arrival moves it.
+    daemons.push(start(
+        0xc1,
+        with_status("idle", wire_status("idle", &utc(1)), None, vec![]),
+    ));
+    let selected = beneath(&session_top_row(
+        usize::from(COLS),
+        "idle",
+        &["Idle", "Acquiring", SESSIONS_HINT],
+    ));
+    shows(&mut terminal, &selected);
+
+    let without = vec![opened_with(false), initial_metadata("without", None, None)];
+    daemons.extend([
+        start(
+            0xc2,
+            with_status(
+                "lost",
+                wire_status("running", &utc(7)),
+                None,
+                vec![Act::Await(lost_go.clone()), Act::Close],
+            ),
+        ),
+        start(
+            0xc3,
+            with_status(
+                "fail new",
+                wire_status("failed", &utc(4)),
+                Some(exited(6)),
+                vec![],
+            ),
+        ),
+        start(
+            0xc4,
+            with_status(
+                "fail old",
+                wire_status("failed", "2001-01-01T00:00:00.000Z"),
+                Some(exited(4)),
+                vec![],
+            ),
+        ),
+        start(0xc5, serving(without)),
+    ]);
+    let mut rows = vec![
+        ("Running", "lost"),
+        ("Idle", "idle"),
+        ("Failed (exit 6)", "fail new"),
+        ("Failed (exit 4)", "fail old"),
+        ("Unavailable", "without"),
+    ];
+    terminal.send("\x1ds").unwrap();
+    lists(&mut terminal, &selected, &rows);
+
+    daemons.push(start(0xc6, Answer::Silent));
+    let silent = format!("fake {}", fake_id(0xc6));
+    rows.insert(4, ("Unavailable", &silent));
+    lists(&mut terminal, &selected, &rows);
+
+    fs::write(&lost_go, b"").unwrap();
+    rows.remove(0);
+    rows.insert(3, ("Disconnected", "lost"));
+    lists(&mut terminal, &selected, &rows);
+
+    let late = vec![
+        opened_with(false),
+        initial_metadata("late metadata", None, Some(exited(5))),
+    ];
+    daemons.push(start(0xc7, serving(late)));
+    rows.insert(2, ("Failed (exit 5)", "late metadata"));
+    lists(&mut terminal, &selected, &rows);
+
+    let command = vec![
+        opened_with(false),
+        initial_metadata("late command", None, None),
+        Act::Await(late_go.clone()),
+        Act::Send(
+            COMMAND_FINAL,
+            json!({"command_result": {"kind": "signal", "number": 9, "name": "SIGKILL"}, "status": null}),
+        ),
+    ];
+    daemons.push(start(0xc8, serving(command)));
+    rows.insert(4, ("Unavailable", "late command"));
+    lists(&mut terminal, &selected, &rows);
+    fs::write(&late_go, b"").unwrap();
+    rows.remove(4);
+    rows.insert(2, ("Failed (signal 9)", "late command"));
+    lists(&mut terminal, &selected, &rows);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(daemons);
     package.assert_clean();
 }
