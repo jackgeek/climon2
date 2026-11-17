@@ -817,23 +817,28 @@ impl Monitor {
         }
     }
 
-    /// Control and display go to the session's terminal, everything else to
-    /// its row; the command's final result and the end of the client to
-    /// both. What the row announces goes to the toasts, with whether the
-    /// monitor viewed the session before the event changed it.
+    /// Control and display go to the session's terminal, a confirmed
+    /// Delete's end dismisses its row (#117), and every other event goes to
+    /// [`Monitor::client`].
     fn report(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
         match event {
             ClientEvent::Presentation(presentation) => self.present(id, presentation),
             ClientEvent::Removed => self.dismiss(id),
-            event => {
-                let viewed = self.viewed() == Some(id);
-                if let Some(presentation) = ending(&event) {
-                    self.present(id, presentation);
-                }
-                if let Some(news) = self.registry.client(id, event, now) {
-                    self.announce(id, news, viewed);
-                }
-            }
+            event => self.client(id, event, now),
+        }
+    }
+
+    /// Any other client event goes to the session's row, and the command's
+    /// final result and the end of the client to its terminal too. What
+    /// the row announces goes to the toasts, with whether the monitor
+    /// viewed the session before the event changed it.
+    fn client(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
+        let viewed = self.viewed() == Some(id);
+        if let Some(presentation) = ending(&event) {
+            self.present(id, presentation);
+        }
+        if let Some(news) = self.registry.client(id, event, now) {
+            self.announce(id, news, viewed);
         }
     }
 
