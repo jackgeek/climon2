@@ -2989,11 +2989,10 @@ fn async_updates_clear_the_highlight_and_enter_pins_the_highlighted_session() {
 /// initial selection, and Alpha then Gamma appear above it. A session lost
 /// while its row is highlighted (Gamma's daemon killed) turns Disconnected
 /// and moves below the connected rows, and the highlight moves with it.
-/// Enter there acquires nothing, neither that session (Enter on
-/// Disconnected rows is #116's) nor Alpha, which the loss moved into the
-/// highlighted row's old place: the selector stays open over Beta. Up twice
-/// then highlights Alpha, and Enter acquires exactly Alpha. No selector key
-/// reached a session.
+/// Enter there acquires nothing, neither that session, which it selects
+/// read-only (#116), nor Alpha, which the loss moved into the highlighted
+/// row's old place. Reopened, the selector's Enter on Alpha acquires
+/// exactly Alpha. No selector key reached a session.
 #[test]
 fn enter_pins_the_highlighted_session_while_it_is_lost() {
     let package = Package::new();
@@ -3020,11 +3019,14 @@ fn enter_pins_the_highlighted_session_while_it_is_lost() {
         ("Disconnected", "Gamma"),
     ];
     boxed_as(&terminal, ROWS, &listing(&lost), &[7]);
-    // Up after Enter shows that Enter was read and left the selector open.
-    terminal.send("\r\x1b[A").unwrap();
-    boxed_as(&terminal, ROWS, &listing(&lost), &[6]);
-    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
-    terminal.send("\x1b[A\r").unwrap();
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Gamma read-only", |screen| {
+        screen.lines().next().is_some_and(|top| {
+            top.starts_with("Gamma ") && top.contains(&format!(" | {NOT_CONTROLLING} "))
+        })
+    });
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Alpha");
     ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
     terminal.send("z").unwrap();
     received_by(&package, "Alpha", b"z");
@@ -6092,9 +6094,10 @@ fn killed_and_ended_sessions_stay_read_only_and_are_never_retried() {
 
     support::kill_session(&package, &ended);
     terminal.send("\x1ds").unwrap();
-    // The selector opens on its first row, the final one.
+    // The final row lists first, and the selector opens on the selected
+    // row, Lost, below it (#113).
     shows_row(&mut terminal, "║Failed (signal 1) Ended");
-    terminal.send("\r").unwrap();
+    terminal.send("\x1b[A\r").unwrap();
     whole_frame_shows(&terminal, "Ended read-only", |screen| {
         let lines: Vec<_> = screen.lines().collect();
         if lines.is_empty() {
