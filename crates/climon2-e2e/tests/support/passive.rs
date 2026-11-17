@@ -64,11 +64,11 @@ pub const CLEANUP_UNKNOWN: u64 = 3;
 pub const REQUEST: u64 = size_of::<climon2_core::native::Request>() as u64;
 pub const TOKEN: u64 = size_of::<climon2_core::native::Bytes>() as u64;
 /// What monitor Open requires, and what the spec's monitor requests besides
-/// (an unknown family too).
+/// (an unknown family too), less `status-v1`: a real daemon reports status
+/// on its own clock, which only the status suites (#95) control.
 pub const REQUIRED: [&str; 2] = ["daemon-wire-v1", "monitor-v1"];
-pub const OPTIONAL: [&str; 6] = [
+pub const OPTIONAL: [&str; 5] = [
     "title-v1",
-    "status-v1",
     "notification-v1",
     "progress-v1",
     "focus-v1",

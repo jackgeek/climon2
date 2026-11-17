@@ -157,10 +157,10 @@ until process exit, and the same pointer on every call:
 
 - `release`: the version folder name, compiled in (`CARGO_PKG_VERSION`). A copy
   placed in another version's folder still reports its own release.
-- `capabilities`: `daemon-wire-v1`, `monitor-v1`, `title-v1` and `focus-v1`,
-  exactly the families the library relays (#93 and #94,
-  `src/library/families.rs`). `status-v1` joins with #95, and
-  `notification-v1` and `progress-v1` with #98.
+- `capabilities`: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`
+  and `focus-v1`, exactly the families the library relays (#93, #94 and
+  #95, `src/library/families.rs`). `notification-v1` and `progress-v1` join
+  with #98.
 - `requirements`: provisional bounded values until the measurement job (#121)
   records qualified ones. Each equals its default `monitor.limits` reservation
   where one exists, plus 1 MiB of instance-local allocation, so a
@@ -176,7 +176,8 @@ until process exit, and the same pointer on every call:
   | `load_descriptors` | 4 | `resources.descriptors_per_load` |
 
 - `functions`: all eleven entries; the instance lifecycle below (#85),
-  passive monitor connections (#93), and control and display (#94). Failed calls report library
+  passive monitor connections (#93), control and display (#94), and status,
+  viewing and acknowledgement (#95). Failed calls report library
   origin, a stable error code and a static message (so error text outlives
   every borrower), zero their nonnull output structs (`run` keeps its report),
   and `notification` writes -1. A null handle or output pointer, the one
@@ -307,9 +308,9 @@ start no workers: an instance's connection runs on its owner thread, inside
 `submit` validates and copies a request once (`src/library/request.rs`),
 without daemon I/O or waiting, reading only the active member: a known tag
 (`CM1_OPEN` to `CM1_FOCUS`, else `CM1_INVALID_ARGUMENT`), reserved zero, a
-nonzero ID (`CM1_INVALID_REQUEST_ID`), then the operation. Open, Leave and
-the control requests below (#94) are accepted; Set viewing, Acknowledge and
-Kill are `CM1_UNSUPPORTED_OPERATION` (`unsupported_operation`). A monitor Open has
+nonzero ID (`CM1_INVALID_REQUEST_ID`), then the operation. Open, Leave,
+the control requests below (#94) and Set viewing and Acknowledge (#95) are
+accepted; Kill is `CM1_UNSUPPORTED_OPERATION` (`unsupported_operation`). A monitor Open has
 zero geometry and reserved fields; each token list is null and zero, or a
 pointer and a count; tokens are nonempty UTF-8, each named once across both
 lists. A required family the library does not relay is
@@ -338,8 +339,8 @@ every required family and nothing unrequested.
 
 Records are Responses (opened: the connection GUID's canonical bytes and the
 selected tokens; left; a known final command result), the Initial metadata
-(the title unavailable unless `title-v1` is selected; status and progress
-unavailable; the command result), Title changes (only after the Initial
+(the title unavailable unless `title-v1` is selected, the status unless
+`status-v1` is (#95); progress unavailable; the command result), Title changes (only after the Initial
 metadata, only with `title-v1`) and diagnostics. A frame over
 `metadata_record_bytes` (type byte included) or a title over `title_bytes`
 fails the connection (`resource_limit`); nothing is truncated. While the
@@ -428,6 +429,30 @@ rejected, failed or, when lost or late, indeterminate. Only a confirmed
 departure can report a detached attachment. Every connection is closed.
 Sends never raise `SIGPIPE`: Linux sends with `MSG_NOSIGNAL`, macOS sets
 `SO_NOSIGPIPE`.
+
+### Status, viewing and acknowledgement (#95)
+
+With `status-v1` selected, the Initial metadata's status is available and
+each Status changed after it is delivered as a `CM1_STATUS` record whatever
+the role holds (passive, background or revoked), with the daemon's state,
+episode and stored change time copied exactly (`src/library/records.rs`),
+inline, so a status record is charged its record alone. The status is final
+exactly when the command's result is known: a final status without the
+result, a working status with it, a Status changed before the Initial
+metadata, without `status-v1` or after the final result, or a Command final
+whose status presence differs from the selection fail the connection with
+transport `invalid_record` (`src/library/stream.rs`). The Command final's
+final status reaches `CM1_FINAL`; without `status-v1` it stays unavailable.
+
+Set viewing (a 0/1 flag, reserved bytes zero) and Acknowledge name the
+authority like the control requests and follow their rules; without
+`status-v1` selected both are `unsupported_capability`, locally and never
+sent. The daemon judges period, restoration, readiness and the latest
+viewing (`not_ready`, `not_viewing`, copied with daemon origin). Set
+viewing's success must report the viewing it asked for and maps to
+`CM1_VIEWING_RESULT` (changed, value, zero bytes); Acknowledge's to
+`CM1_ACKNOWLEDGEMENT` (changed, zero for the explicit no-change success).
+Timeouts, losses and cancellation are as for the control requests.
 
 Loaders open the absolute `<executable home>/<version>/<library file>` with
 eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
