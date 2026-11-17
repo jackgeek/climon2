@@ -39,7 +39,7 @@
 
 use super::{abi::hex, probe};
 use climon2_core::{
-    protocol::{self, ClientMessage},
+    protocol::{self, HelloRequest},
     wire::{FrameLimit, read_frame},
 };
 use serde_json::{Map, Value, json};
@@ -279,7 +279,7 @@ impl Serving {
         let Ok(request) = protocol::read_frame(stream) else {
             return Next::Close;
         };
-        let protocol = ClientMessage::from_frame(request).ok();
+        let protocol = HelloRequest::from_frame(&request).ok();
         self.record(json!({ "hello": format!("{protocol:?}") }));
         let reply = self.script["hello"].clone();
         if let Some(path) = reply["after"].as_str() {

@@ -1,5 +1,5 @@
 //! Passive monitor connections (#86): monitor Open, core metadata, Leave and
-//! validation, beside the private protocol that still serves attach and kill.
+//! validation.
 use super::{
     assert_closed, assert_fatal, assert_killed, assert_rejected, committed_kill, counter, encoded,
     exited, frame,
@@ -9,7 +9,7 @@ use super::{
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{self, ClientMessage},
+    protocol::read_frame,
     wire::{
         Acknowledge, AuthorityIds, Available, ControlRecord, FatalError, Focus, Frame, Geometry,
         GrantReason, Input, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage,
@@ -99,8 +99,8 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
     probe
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
-    crate::send(&mut probe, ClientMessage::Hello { protocol: 1 });
-    let reply = protocol::read_frame(&mut probe).unwrap();
+    crate::send_hello(&mut probe);
+    let reply = read_frame(&mut probe).unwrap();
     assert_eq!(reply.type_code(), 0x01);
     let expected = format!(
         concat!(
@@ -415,11 +415,14 @@ fn padded_open(bytes: usize) -> Vec<u8> {
     raw_frame(0x30, &body)
 }
 
-/// COM-02 (Contract): revision-1 traffic that breaks the framing or strict
-/// JSON rules, sends a server, private or unknown type, or does not increase
-/// its request ID fails with exactly the documented connection-fatal code,
-/// then the connection closes. The first frame after hello is judged as
-/// revision 1 when its type is. A stream ending inside a frame is
+/// COM-01 (Contract after retirement) and COM-02 (Contract): revision-1
+/// traffic that breaks the framing or strict JSON rules, sends a server or
+/// unknown type, or does not increase its request ID fails with exactly
+/// the documented connection-fatal code, then the connection closes. Every
+/// frame after hello is revision 1, the first one too: its length is judged
+/// under the revision-1 frame limit, and a retired private type (Attach
+/// `0x10`, Kill `0x16`, a type-only Detach `0x12`, the smallest frame) or a
+/// second hello is `unknown_message_type` whenever it is sent. A stream ending inside a frame is
 /// `truncated_frame`; one ending between frames just closes. Other
 /// connections and the session go on.
 #[test]
@@ -427,7 +430,8 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     let (session, controlling) = controlled();
     let valid =
         r#""revision":1,"required_capabilities":[],"optional_capabilities":[],"mode":"monitor""#;
-    let first_frames: [(Vec<u8>, &str); 8] = [
+    let hello = raw_frame(0x01, br#"{"protocol":1}"#);
+    let first_frames: [(Vec<u8>, &str); 14] = [
         (raw_frame(0x30, b"{"), "invalid_json"),
         (
             raw_frame(0x30, b"{\"request_id\":\"1\xff\"}"),
@@ -461,15 +465,21 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
         ),
         (raw_frame(0x40, b"{}"), "wrong_direction"),
         (raw_frame(0x4d, b"{}"), "wrong_direction"),
+        (vec![0, 0, 0, 0], "invalid_frame_length"),
+        (vec![0, 0x10, 0, 1], "frame_too_large"),
+        (
+            raw_frame(0x10, br#"{"cols":80,"rows":24}"#),
+            "unknown_message_type",
+        ),
+        (raw_frame(0x16, b"{}"), "unknown_message_type"),
+        (raw_frame(0x12, b""), "unknown_message_type"),
+        (hello.clone(), "unknown_message_type"),
     ];
     for (bytes, code) in first_frames {
         let mut stream = peer(&session);
         stream.write_all(&bytes).unwrap();
         assert_fatal(&mut stream, code);
     }
-    let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
-    let mut private_hello = Vec::new();
-    protocol::write_frame(&mut private_hello, &hello).unwrap();
     let after_open: [(Vec<u8>, &str); 8] = [
         (vec![0, 0, 0, 0], "invalid_frame_length"),
         (vec![0, 0x10, 0, 1], "frame_too_large"),
@@ -479,7 +489,7 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
             raw_frame(0x10, br#"{"cols":80,"rows":24}"#),
             "unknown_message_type",
         ),
-        (private_hello, "unknown_message_type"),
+        (hello, "unknown_message_type"),
         (
             raw_frame(0x37, br#"{"request_id":"1"}"#),
             "invalid_request_id",
@@ -532,8 +542,8 @@ fn a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal() {
 
 /// COM-02 (Contract, fragmented and coalesced I/O): partial reads and writes
 /// never define messages. Hello, Open and Leave written at once, then the
-/// peer's half-close, are each answered in order, the first frame after hello
-/// selecting revision 1; the stream ends after the Leave response, so a frame
+/// peer's half-close, are each answered in order, every frame after hello
+/// being revision 1; the stream ends after the Leave response, so a frame
 /// sent after Leave is not served. An Open written in pieces, each consumed
 /// before the next is sent, is answered once whole.
 #[test]
@@ -544,8 +554,7 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
     let mut bytes = Vec::new();
-    let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
-    protocol::write_frame(&mut bytes, &hello).unwrap();
+    bytes.extend(raw_frame(0x01, br#"{"protocol":1}"#));
     bytes.extend(encoded(
         &open(1, &[], &["title-v1"], Mode::Monitor).to_frame(),
     ));
@@ -553,10 +562,7 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     bytes.extend(encoded(&open(3, &[], &[], Mode::Monitor).to_frame()));
     coalesced.write_all(&bytes).unwrap();
     coalesced.shutdown(Shutdown::Write).unwrap();
-    assert_eq!(
-        protocol::read_frame(&mut coalesced).unwrap().type_code(),
-        0x01
-    );
+    assert_eq!(read_frame(&mut coalesced).unwrap().type_code(), 0x01);
     opened(&frame(&mut coalesced), "1");
     assert_eq!(body(&frame(&mut coalesced), 0x41), UNSET_TITLE);
     assert_eq!(

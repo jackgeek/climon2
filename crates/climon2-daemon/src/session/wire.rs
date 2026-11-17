@@ -1,5 +1,5 @@
-//! Daemon wire revision 1 on the session loop, beside the private protocol:
-//! passive monitor connections, ordinary interactive attachments and
+//! Daemon wire revision 1 on the session loop, the only protocol after the
+//! frozen hello: passive monitor connections, ordinary interactive attachments and
 //! standalone Kills, their requests, their control and terminal records and
 //! their core metadata: the title, the effective status, notifications and
 //! progress.
@@ -222,6 +222,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// An interactive Open attaches and is granted at once, under the leave
     /// and takeover policy every attachment shares; its admission answers it.
+    /// A refused one has no effects, and its stream ends.
     fn attach(
         &mut self,
         id: u64,
@@ -234,13 +235,19 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             self.reject_role(id, request_id, error);
             return Ok(());
         };
+        let effects = match self.control.attach(ConnectionId(id), host) {
+            Ok(effects) => effects,
+            Err(code) => {
+                self.reject_role(id, request_id, refusal(code));
+                return Ok(());
+            }
+        };
         let attachment = Attachment {
             open: Some(request_id),
             held: None,
         };
         let opened = self.opened_with(selected, Role::Attachment(attachment));
         self.opened.insert(id, opened);
-        let effects = self.control.attach(ConnectionId(id), host);
         self.effects(effects)
     }
 
@@ -260,15 +267,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn admitted(&mut self, id: u64) {
         if let Some(request_id) = self.open_request(id) {
             self.report_opened(id, request_id);
-        }
-    }
-
-    /// An interactive Open refused with `code`, because the session is
-    /// terminating or no new control period and restoration can be issued:
-    /// it has no effects, and its stream ends.
-    pub(super) fn refused(&mut self, id: u64, code: OperationalCode) {
-        if let Some(request_id) = self.open_request(id) {
-            self.reject_role(id, request_id, refusal(code));
         }
     }
 
@@ -628,8 +626,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.opened.get_mut(&id)?.role.attachment_mut()
     }
 
-    /// The authority under which an interactive attachment receives
-    /// Display, or `None` for a private connection.
+    /// The authority under which an attachment receives Display, from its
+    /// grant until its revocation, or `None`.
     pub(super) fn display_authority(&self, id: u64) -> Option<Authority> {
         let attachment = self.opened.get(&id)?.role.attachment()?;
         attachment.held.map(|held| held.authority)
@@ -665,8 +663,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// Records the authority an interactive attachment now holds; false for
-    /// a private connection.
+    /// Records the authority an attachment now holds; false for a
+    /// connection that is no longer one.
     fn hold(&mut self, id: u64, authority: Authority, geometry: TerminalSize) -> bool {
         let Some(attachment) = self.attachment_mut(id) else {
             return false;

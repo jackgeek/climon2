@@ -11,7 +11,7 @@ use super::{
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{ClientMessage, HANGUP_GRACE},
+    protocol::HANGUP_GRACE,
     wire::{self, CommandResult, Input, Leave, Mode, ServerMessage, StatusState},
 };
 use climon2_platform::process;
@@ -251,10 +251,7 @@ impl Departure {
                 fatal(&mut attached, &raw_frame(0x37, body), "invalid_json");
             }
             Self::RepeatedHello => {
-                let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
-                let mut bytes = Vec::new();
-                climon2_core::protocol::write_frame(&mut bytes, &hello).unwrap();
-                fatal(&mut attached, &bytes, "unknown_message_type");
+                fatal(&mut attached, &crate::hello_bytes(), "unknown_message_type");
             }
             Self::Terminated => unsafe {
                 libc::kill(session.pid as i32, libc::SIGTERM);
