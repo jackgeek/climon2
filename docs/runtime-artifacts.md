@@ -1,7 +1,9 @@
 # Executables and dynamic libraries
 
-This diagram covers every climon2-owned executable target and dynamic library,
-including development fixtures. Arrows run from consumer to consumed artifact;
+This diagram covers the climon2 executables and dynamic libraries that run when
+a user types `c2` followed by a command, and the artifacts those calls
+ultimately invoke. It omits installation and development or test-only
+executables. Arrows run from consumer to consumed artifact;
 labels distinguish execution, communication, and loading.
 Solid relationships exist today; dashed relationships are planned.
 The current executable relationships apply on macOS and x86_64 GNU/Linux;
@@ -15,7 +17,6 @@ consumption relationship.
 flowchart TB
     subgraph runtime["Shipped runtime"]
         launcher["c2 / climon2<br/>same launcher executable"]
-        installer["install<br/>built as climon2-install"]
         subgraph version["Installed version v; versions coexist"]
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
@@ -39,50 +40,6 @@ flowchart TB
         library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
-    end
-
-    subgraph development["Development and test-only executables"]
-        xtask["xtask"]
-        cargo(["Cargo build/test tooling<br/>external"])
-        tests(["Cargo test harnesses<br/>generated executables"])
-        cli_fixture["climon2-cli-fixture"]
-        daemon_fixture["climon2-daemon-fixture"]
-        terminal_fixture["climon2-fixture"]
-        tui_fixture["climon2-tui-fixture"]
-        library_host["climon2-library-host"]
-        library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
-        second_library[["Second-release fixture library<br/>test-only cdylib of release 0.0.97"]]
-        second_daemon["climon2-second-release-daemon<br/>second-release fixture's session daemon, release 0.0.97"]
-        owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
-        measure["climon2-measure<br/>PERF-01 measurement harness and its sessions' workload"]
-        terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
-
-        xtask -->|"runs builds and tests"| cargo
-        xtask -->|"install: runs verified production payload"| installer
-        xtask -->|"runs runtime probes"| cli
-        xtask -->|"loads through the shared loader in release checks"| library
-        cargo -->|"runs"| tests
-        tests -->|"uses directly or as a session command"| cli_fixture
-        tests -->|"uses directly or as a session command"| daemon_fixture
-        tests -->|"uses directly or as a session command"| terminal_fixture
-        tests -->|"uses directly or as a session command"| tui_fixture
-        tests -->|"runs as the Library-layer host"| library_host
-        library_host -->|"loads through the shared loader; calls through the C ABI"| library
-        library_host -->|"hello probes for a session's state"| daemon
-        library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
-        library -->|"allocates through its exported glibc malloc family; x86-64 GNU/Linux tests only"| library_host
-        tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
-        tests -->|"loads through the shared loader in release-check tests"| second_library
-        library_host -->|"loads beside the release under test through the shared loader"| second_library
-        cli -->|"starts 0.0.97 sessions from the 0.0.97 folder"| second_daemon
-        second_library -->|"daemon wire revision 1: passive monitor connections"| second_daemon
-        xtask -->|"measure: runs through Cargo"| measure
-        xtask -->|"qualify: runs the packaged tests on the candidate archive and every workspace test"| cargo
-        measure -->|"installs the candidate archive, then runs its climon2 for exec --headless, monitor, attach and kill"| launcher
-        measure -->|"reads the embedded requirements through the shared loader"| library
-        daemon -->|"runs as the measured sessions' workload"| measure
-        tests -->|"execs registered terminal roots through"| owned_exec
-        owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
     style source_monitor stroke-dasharray: 5 5

@@ -12,7 +12,12 @@ Features are incomplete if they are not tested by automated testing.
 
 When executable or dynamic-library artifacts, their consumption relationships,
 or their architecture decisions change, update `docs/runtime-artifacts.md`.
-Show consumption relationships rather than installation arrows.
+Its diagram shows only the runtime artifacts that execute when a user types `c2`
+followed by a command, and the climon2 executables and libraries those calls
+ultimately invoke, with their consumption relationships. Never add installation
+(the installer or install arrows) or development and test-only executables
+(xtask, Cargo tooling, fixtures, test harnesses, stand-in or second-release
+libraries) to it.
 When workspace crates, their consumption relationships, or their architecture
 decisions change, update `docs/crate-relationships.md`; include all workspace
 crates and omit third-party crates. Keep current and planned relationships
