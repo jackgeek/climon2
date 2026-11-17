@@ -1,16 +1,64 @@
 # Workspace crate consumption
 
-This diagram includes every climon2 workspace crate, including test tooling and
-`xtask`, but excludes third-party crates. Arrows run from consumer to consumed
+Two diagrams cover every climon2 workspace crate, including test tooling and
+`xtask`, but exclude third-party crates. Arrows run from consumer to consumed
 crate. Solid arrows are normal Cargo dependencies; dotted arrows labelled
-`dev` are dev-dependencies used by tests. Dashed arrows labelled `planned` are
-not implemented. Runtime execution and communication are shown separately in
-the [artifact diagram](runtime-artifacts.md).
+`dev` are dev-dependencies used by tests. Runtime execution and communication
+are shown separately in the [artifact diagram](runtime-artifacts.md).
+
+## Shipped crates
+
+Only the crates that ship, and the normal dependencies between them.
 
 ```mermaid
 flowchart TB
-    subgraph shipped["Shipped crates"]
-        launcher["climon2-launcher"]
+    launcher["climon2-launcher"]
+    cli["climon2-cli"]
+    discovery["climon2-discovery"]
+    client["climon2-client"]
+    daemon["climon2-daemon"]
+    install["climon2-install"]
+    monitor["climon2-monitor"]
+    platform["climon2-platform"]
+    core["climon2-core"]
+    vt["climon2-vt"]
+
+    cli --> core
+    cli --> discovery
+    cli --> platform
+    discovery --> core
+    discovery --> platform
+    client --> core
+    client --> platform
+    daemon --> core
+    daemon --> platform
+    daemon --> vt
+    install --> core
+    monitor --> core
+    monitor --> discovery
+    monitor --> platform
+    monitor --> vt
+    platform --> core
+```
+
+## Development and test-only crates
+
+Every edge that starts or ends at a development or test-only crate. Shipped
+crates appear only where such an edge touches them; the edges between them are
+in the diagram above and are not repeated here.
+
+```mermaid
+flowchart TB
+    subgraph development["Development and test-only crates"]
+        test_term["climon2-test-term"]
+        e2e["climon2-e2e"]
+        fixtures["climon2-fixtures"]
+        xtask["xtask"]
+        second["climon2-second-release"]
+        measure["climon2-measure"]
+    end
+
+    subgraph shipped["Shipped crates (edges between them above)"]
         cli["climon2-cli"]
         discovery["climon2-discovery"]
         client["climon2-client"]
@@ -19,33 +67,6 @@ flowchart TB
         monitor["climon2-monitor"]
         platform["climon2-platform"]
         core["climon2-core"]
-        vt["climon2-vt"]
-
-        cli --> core
-        cli --> discovery
-        cli --> platform
-        discovery --> core
-        discovery --> platform
-        client --> core
-        client --> platform
-        daemon --> core
-        daemon --> platform
-        daemon --> vt
-        install --> core
-        monitor --> core
-        monitor --> discovery
-        monitor --> platform
-        monitor --> vt
-        platform --> core
-    end
-
-    subgraph development["Development and test-only crates"]
-        test_term["climon2-test-term"]
-        e2e["climon2-e2e"]
-        fixtures["climon2-fixtures"]
-        xtask["xtask"]
-        second["climon2-second-release"]
-        measure["climon2-measure"]
     end
 
     cli -.->|"dev"| test_term
@@ -79,7 +100,6 @@ flowchart TB
     measure --> core
     measure --> platform
     measure --> test_term
-
 ```
 
 The launcher has no workspace crate dependencies. Cycles through
