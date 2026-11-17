@@ -35,13 +35,26 @@ pub(crate) fn relieve<K: Clone + Ord>(
     budgets: Budgets,
 ) {
     for terminal in terminals.values_mut() {
-        while exceeds(terminal.history_bytes(), budgets.per_session) && terminal.shorten() {}
+        within(terminal, budgets.per_session);
     }
     for key in order(caches) {
-        while pressed(terminals, fixed, budgets)
-            && terminals.get_mut(&key).is_some_and(Terminal::shorten)
-        {}
+        yielded(terminals, &key, fixed, budgets);
     }
+}
+
+/// Shortens `terminal`'s history until it is within its own `budget` or
+/// only its newest page is left.
+fn within(terminal: &mut Terminal, budget: usize) {
+    while exceeds(terminal.history_bytes(), budget) && terminal.shorten() {}
+}
+
+/// `key`'s cache yields history while the aggregate budgets are
+/// [`pressed`], until the pressure is gone or only its newest page is
+/// left.
+fn yielded<K: Ord>(terminals: &mut BTreeMap<K, Terminal>, key: &K, fixed: usize, budgets: Budgets) {
+    while pressed(terminals, fixed, budgets)
+        && terminals.get_mut(key).is_some_and(Terminal::shorten)
+    {}
 }
 
 /// Whether the histories together, or `fixed` bytes and every model,
