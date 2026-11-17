@@ -2495,7 +2495,6 @@ const SESSIONS_HINT: &str = "Ctrl+] then s: sessions";
 /// The status a selected session shows: its daemon's status clock never
 /// advances (#107), and the control the monitor holds once input may go.
 const STATUS: &str = "Idle";
-const CONTROLLING: &str = "Controlling";
 /// The status of a session that reported a root OSC 7501 `working`
 /// ([`working`]), or that accepted typed input on a clock that never
 /// advances.
@@ -2509,6 +2508,7 @@ const RUNNING: &str = "Running";
 fn working(script: &str) -> String {
     format!("{}; {script}", report("working"))
 }
+const CONTROLLING: &str = "Controlling";
 
 /// The top row with a session selected, as #108 lays it out (owner
 /// decision, 2026-11-14): the label from the left, then fixed slots at the
@@ -2521,6 +2521,16 @@ fn session_top_row(cols: usize, label: &str, fields: &[&str]) -> String {
     }
     let width = cols - slots.chars().count();
     format!("{label:<width$}{slots}")
+}
+
+/// The top row of `label`'s session, selected and controlled by the
+/// monitor, showing `status`, with the default prefix's hint.
+fn controlled(label: &str, status: &str) -> String {
+    session_top_row(
+        usize::from(COLS),
+        label,
+        &[status, CONTROLLING, SESSIONS_HINT],
+    )
 }
 
 /// Waits until a whole frame's top row is exactly `expected`.
@@ -2971,12 +2981,13 @@ fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
     attach.wait_for_text("VISIBLE", TIMEOUT).unwrap();
     // The whole frame, since a host read can split it after its top row:
     // only the placeholder (#110), never the cached screen.
-    shows(&mut terminal, &placeholder_screen("Taken", STATUS));
+    shows(&mut terminal, &placeholder_screen("Taken", RUNNING));
     assert!(!terminal.cursor().visible);
     fs::write(package.isolation.home().join("change"), b"").unwrap();
     attach.wait_for_text("CHANGED", TIMEOUT).unwrap();
 
-    select(&mut terminal, "Taken", 0);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Taken");
     top_row_is(&mut terminal, &controlling);
     assert_eq!(terminal.row(1).trim_end(), "CHANGED");
     assert_eq!(terminal.row(2).trim_end(), "");
@@ -3537,16 +3548,16 @@ fn received_by(package: &Package, title: &str, expected: &[u8]) {
 /// canvas shows only once applied, and Controlling means its Ready was
 /// accepted, so the frame shows the restoration and keys typed now reach
 /// the session.
-fn ready_at(terminal: &mut Terminal, label: &str, size: &str) {
-    ready_on(terminal, COLS, label, size);
+fn ready_at(terminal: &mut Terminal, label: &str, status: &str, size: &str) {
+    ready_on(terminal, COLS, (label, status), size);
 }
 
 /// [`ready_at`] on a host `cols` wide.
-fn ready_on(terminal: &mut Terminal, cols: u16, label: &str, size: &str) {
+fn ready_on(terminal: &mut Terminal, cols: u16, (label, status): (&str, &str), size: &str) {
     let top = session_top_row(
         usize::from(cols),
         label,
-        &[RUNNING, CONTROLLING, SESSIONS_HINT],
+        &[status, CONTROLLING, SESSIONS_HINT],
     );
     let line = format!("SIZE {size}");
     whole_frame_shows(terminal, &line, |screen| {
@@ -3667,27 +3678,26 @@ fn placeholder_screen(label: &str, status: &str) -> String {
 fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     let package = Package::new();
     without_introduction(&package);
-    let alpha = headless(&package, &watched("Alpha"), "finish");
-    headless(&package, &watched("Beta"), "finish");
+    // After an empty start Alpha, the first to appear, is selected while
+    // it is the only row; Beta comes after it.
     let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    // Its row, once listed, is the only one the selector can highlight.
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
-    let controlling = |label| {
-        session_top_row(
-            usize::from(COLS),
-            label,
-            &[RUNNING, CONTROLLING, SESSIONS_HINT],
-        )
-    };
-    // Rows list newest first: Beta, then Alpha.
-    select_as(&mut terminal, RUNNING, "Alpha", 1);
-    top_row_is(&mut terminal, &controlling("Alpha"));
+    select(&mut terminal, "Alpha", 0);
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    headless(&package, &watched("Beta"), "finish");
     first_row_starts(&terminal, "RAW");
     terminal.send("a").unwrap();
     received_by(&package, "Alpha", b"a");
-    select_as(&mut terminal, RUNNING, "Beta", 0);
-    top_row_is(&mut terminal, &controlling("Beta"));
+    // Rows, both Running: Beta, newer, then Alpha.
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Beta");
+    enter_on(&mut terminal, "Beta");
+    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
     first_row_starts(&terminal, "RAW");
     terminal.send("b").unwrap();
     received_by(&package, "Beta", b"b");
@@ -3696,11 +3706,11 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     listed_as(&package, "Alpha", &attached);
 
     terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Alpha");
+    shows_row(&mut terminal, &format!("║{RUNNING} Alpha"));
     retitle(&package, "Alpha", "Alpha background");
-    listed_with(&terminal, RUNNING, "Alpha background");
-    terminal.send("\x1b[B\r").unwrap();
-    top_row_is(&mut terminal, &controlling("Alpha background"));
+    shows_row(&mut terminal, &format!("║{RUNNING} Alpha background"));
+    enter_on(&mut terminal, "Alpha background");
+    top_row_is(&mut terminal, &controlled("Alpha background", RUNNING));
     first_row_starts(&terminal, "RAW");
     terminal.send("c").unwrap();
     received_by(&package, "Alpha", b"ac");
@@ -3736,7 +3746,7 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     assert_eq!(settled_sizes(&package, "Beta"), ["24 80", "29 120"]);
 
     terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Alpha background");
+    shows_row(&mut terminal, &format!("║{RUNNING} Alpha background"));
     terminal.send("\x14").unwrap();
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
@@ -3755,15 +3765,14 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
     // The attached client sized Alpha 30 by 120; the grant's resize brings
     // it back, and its restoration.
-    ready_at(&mut terminal, "Alpha revoked", "29 120");
+    ready_at(&mut terminal, "Alpha revoked", RUNNING, "29 120");
     terminal.send("\x14d").unwrap();
     received_by(&package, "Alpha", b"ac\x14d");
     // Beta, in the background all along, received nothing more: once
     // selected, what it receives next follows anything sent before.
     terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Beta");
-    terminal.send("\r").unwrap();
-    top_row_is(&mut terminal, &controlling("Beta"));
+    enter_on(&mut terminal, "Beta");
+    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
     first_row_starts(&terminal, "RAW");
     terminal.send("e").unwrap();
     received_by(&package, "Beta", b"be");
@@ -3823,15 +3832,10 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
     // Rows list in status order: Running Alpha, then Unavailable Paused.
-    select_as(&mut terminal, RUNNING, "Alpha", 0);
-    top_row_is(
-        &mut terminal,
-        &session_top_row(
-            usize::from(COLS),
-            "Alpha",
-            &[RUNNING, CONTROLLING, SESSIONS_HINT],
-        ),
-    );
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Alpha");
+    enter_on(&mut terminal, "Alpha");
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
     terminal.send("a").unwrap();
     received_by(&package, "Alpha", b"a");
 
@@ -3884,22 +3888,19 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
         &serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false}),
     );
     terminal.send("\x14").unwrap();
-    top_row_is(
-        &mut terminal,
-        &session_top_row(
-            usize::from(COLS),
-            "Slow",
-            &[RUNNING, CONTROLLING, SESSIONS_HINT],
-        ),
-    );
-    ready_at(&mut terminal, "Slow", "29 120");
+    top_row_is(&mut terminal, &controlled("Slow", RUNNING));
+    ready_at(&mut terminal, "Slow", RUNNING, "29 120");
     // The take-control key and keys typed before reached no session.
     terminal.send("s").unwrap();
     received_by(&package, "Slow", b"s");
 
     kill(Pid::from_raw(paused), Signal::SIGCONT).unwrap();
     terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Alpha");
+    // Every session reported `working`; once Paused's resumed daemon is
+    // reached too, the rows stay put.
+    for label in ["Slow", "Paused", "Alpha"] {
+        listed_with(&terminal, RUNNING, label);
+    }
     enter_on(&mut terminal, "Alpha");
     first_row_starts(&terminal, "RAW");
     terminal.send("z").unwrap();
@@ -3925,23 +3926,21 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
 fn promotion_keeps_a_background_model_without_selection_resize_or_input() {
     let package = Package::new();
     without_introduction(&package);
-    let promoted = headless(&package, &watched("Promoted"), "finish");
-    let other = attach(&package, &promoted);
-    headless(&package, &watched("Other"), "finish");
+    // After an empty start Other, the first to appear, is selected while
+    // it is the only row; Promoted, attached elsewhere, comes after it.
     let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Other"), "finish");
+    // Its row, once listed, is the only one the selector can highlight.
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
-    // Rows list newest first: Other, then Promoted.
-    select_as(&mut terminal, RUNNING, "Other", 0);
-    let selected = session_top_row(
-        usize::from(COLS),
-        "Other",
-        &[RUNNING, CONTROLLING, SESSIONS_HINT],
-    );
-    top_row_is(&mut terminal, &selected);
+    select(&mut terminal, "Other", 0);
+    top_row_is(&mut terminal, &controlled("Other", RUNNING));
+    let promoted = headless(&package, &watched("Promoted"), "finish");
+    let other = attach(&package, &promoted);
     terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Promoted");
+    shows_row(&mut terminal, &format!("║{RUNNING} Promoted"));
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
 
@@ -3952,22 +3951,17 @@ fn promotion_keeps_a_background_model_without_selection_resize_or_input() {
     say(&package, "Promoted");
     terminal.send("o").unwrap();
     received_by(&package, "Other", b"o");
-    assert_eq!(terminal.row(0), selected);
+    top_row_is(&mut terminal, &controlled("Other", RUNNING));
     assert_eq!(settled_sizes(&package, "Promoted"), ["24 80", "30 120"]);
 
-    select_as(&mut terminal, RUNNING, "Promoted", 1);
-    top_row_is(
-        &mut terminal,
-        &session_top_row(
-            usize::from(COLS),
-            "Promoted",
-            &[RUNNING, CONTROLLING, SESSIONS_HINT],
-        ),
-    );
+    // Rows, both Running: Promoted, newer, then Other.
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Promoted");
+    top_row_is(&mut terminal, &controlled("Promoted", RUNNING));
     first_row_starts(&terminal, "RAW SAID");
     sized_to(&package, "Promoted", &["24 80", "30 120", "29 120"]);
     // The resize brings a restoration, which closes input until it is ready.
-    ready_at(&mut terminal, "Promoted", "29 120");
+    ready_at(&mut terminal, "Promoted", RUNNING, "29 120");
     terminal.send("p").unwrap();
     received_by(&package, "Promoted", b"p");
     received_by(&package, "Other", b"o");
@@ -3991,28 +3985,26 @@ const TIMED_OUT: &str = "Taken | the session daemon did not answer in time";
 fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     let package = Package::new();
     without_introduction(&package);
-    headless(&package, &watched("Alpha"), "finish");
-    let taken = headless(&package, &watched("Taken"), "finish");
-    let mut other = attach(&package, &taken);
+    // After an empty start Alpha, the first to appear, is selected while
+    // it is the only row; Taken, attached elsewhere, comes after it.
     let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    // Its row, once listed, is the only one the selector can highlight.
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
-    // Rows list newest first: Taken, then Alpha.
-    select_as(&mut terminal, RUNNING, "Alpha", 1);
-    top_row_is(
-        &mut terminal,
-        &session_top_row(
-            usize::from(COLS),
-            "Alpha",
-            &[RUNNING, CONTROLLING, SESSIONS_HINT],
-        ),
-    );
+    select(&mut terminal, "Alpha", 0);
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    let taken = headless(&package, &watched("Taken"), "finish");
+    let mut other = attach(&package, &taken);
     first_row_starts(&terminal, "RAW");
     terminal.send("a").unwrap();
     received_by(&package, "Alpha", b"a");
+    // Rows, both Running: Taken, newer, then Alpha.
     terminal.send("\x1ds").unwrap();
     listed_with(&terminal, RUNNING, "Taken");
+    highlight_on(&mut terminal, "Taken");
     let daemon = daemon_of(&package, &taken);
     stop(daemon);
     terminal.send("\r").unwrap();
@@ -4039,9 +4031,8 @@ fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     other.wait_for_text("RAW SAID", TIMEOUT).unwrap();
     assert!(terminal.row(0).starts_with(TIMED_OUT));
     terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Alpha");
-    // Running Alpha now lists above Disconnected Taken.
-    terminal.send("\r").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING:<12} Alpha"));
+    enter_on(&mut terminal, "Alpha");
     first_row_starts(&terminal, "RAW");
     terminal.send("z").unwrap();
     received_by(&package, "Alpha", b"az");
@@ -4072,7 +4063,7 @@ fn the_take_control_key_acquires_on_a_too_small_host() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     select_as(&mut terminal, RUNNING, "Alpha", 0);
-    ready_at(&mut terminal, "Alpha", "29 120");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
     let mut other = attach(&package, &alpha);
     shows(&mut terminal, &placeholder_screen("Alpha", RUNNING));
     terminal.resize(3, 4).unwrap();
@@ -4084,7 +4075,7 @@ fn the_take_control_key_acquires_on_a_too_small_host() {
         ["24 80", "29 120", "30 120"]
     );
     terminal.resize(ROWS, COLS).unwrap();
-    ready_at(&mut terminal, "Alpha", "29 120");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
     terminal.send("z").unwrap();
     received_by(&package, "Alpha", b"z");
     // The other client takes control back with its own take-control key,
@@ -4137,8 +4128,13 @@ fn hold(hold: &Path) {
 /// answers the departing client, before the hold begins. Once the daemon
 /// reads again, the restoration becomes ready, the session is sized to the
 /// host as it is then, and keys reach it.
+/// It holds the daemon with the `CLIMON2_DAEMON_HOLD` test hook, which
+/// release archives lack, so it returns early in archive mode.
 #[test]
 fn keys_and_resizes_during_a_restoration_reach_no_session() {
+    if archive() {
+        return;
+    }
     let package = Package::new();
     without_introduction(&package);
     // Ready is held for as long as the test holds the daemon.
@@ -4147,19 +4143,25 @@ fn keys_and_resizes_during_a_restoration_reach_no_session() {
         serde_json::json!({"deadlines": {"operation_ms": 120_000}}),
     );
     let gate = package.isolation.home().join("hold");
-    headless(&package, &watched("Alpha"), "finish");
-    let restoring = held_headless(&package, "Held", &gate);
+    // After an empty start Alpha, the first to appear, is selected while
+    // it is the only row; Held comes after it.
     let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    // Its row, once listed, is the only one the selector can highlight.
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
-    // Rows list newest first: Held, then Alpha.
-    select_as(&mut terminal, RUNNING, "Alpha", 1);
-    ready_at(&mut terminal, "Alpha", "29 120");
+    select(&mut terminal, "Alpha", 0);
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    let restoring = held_headless(&package, "Held", &gate);
     terminal.send("a").unwrap();
     received_by(&package, "Alpha", b"a");
-    select_as(&mut terminal, RUNNING, "Held", 0);
-    ready_at(&mut terminal, "Held", "29 120");
+    // Rows, both Running: Held, newer, then Alpha.
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Held");
+    enter_on(&mut terminal, "Held");
+    ready_at(&mut terminal, "Held", RUNNING, "29 120");
     let other = attach(&package, &restoring);
     shows(&mut terminal, &placeholder_screen("Held", RUNNING));
 
@@ -4191,15 +4193,15 @@ fn keys_and_resizes_during_a_restoration_reach_no_session() {
     assert_eq!(settled_sizes(&package, "Alpha"), ["24 80", "29 120"]);
 
     fs::remove_file(&gate).unwrap();
-    ready_on(&mut terminal, 100, "Held", "39 100");
+    ready_on(&mut terminal, 100, ("Held", RUNNING), "39 100");
     terminal.send("z").unwrap();
     received_by(&package, "Held", b"z");
     terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Alpha");
-    terminal.send("\x1b[B\r").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Held"));
+    enter_on(&mut terminal, "Alpha");
     // Alpha, background throughout, is sized only now that it is selected.
     sized_to(&package, "Alpha", &["24 80", "29 120", "39 100"]);
-    ready_on(&mut terminal, 100, "Alpha", "39 100");
+    ready_on(&mut terminal, 100, ("Alpha", RUNNING), "39 100");
     terminal.send("y").unwrap();
     received_by(&package, "Alpha", b"ay");
     terminal.send("\x1dx").unwrap();
