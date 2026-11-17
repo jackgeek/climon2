@@ -16,7 +16,8 @@
 //! - `open` and `leave`: the actions after the library's Open, and after
 //!   each Leave; `leaves`, a list of action lists, overrides `leave` for the
 //!   first Leaves in turn; `input`, `resize`, `acquire`, `ready` and
-//!   `focus`: the actions after each of those requests (#94); `kill`: the
+//!   `focus`: the actions after each of those requests (#94); `viewing` and
+//!   `acknowledge` after Set viewing and Acknowledge (#95); `kill`: the
 //!   actions after a Kill (#96);
 //! - `auxiliary`: a script of its own (its `hello` and actions) for a
 //!   second connection, accepted once the first one is and served beside
@@ -329,6 +330,8 @@ impl Serving {
                 0x32 => "resize",
                 0x33 => "acquire",
                 0x34 => "ready",
+                0x35 => "viewing",
+                0x36 => "acknowledge",
                 0x37 => "leave",
                 0x38 => "kill",
                 0x39 => "focus",

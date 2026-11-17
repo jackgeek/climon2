@@ -28,7 +28,7 @@ use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use introduction::KeyIntroduction;
 use keys::Action;
-use registry::{ClientEvent, Registry};
+use registry::{ClientEvent, Registry, Report};
 use router::{Key, Routed, Router};
 use screen::{Scene, Screen, Session};
 use selector::Selector;
@@ -468,7 +468,7 @@ fn revealed(covered_before: bool, covered_after: bool) -> bool {
 /// the command's final result, and control ends with the client.
 fn ending(event: &ClientEvent) -> Option<Presentation> {
     match event {
-        ClientEvent::Final => Some(Presentation::Final),
+        ClientEvent::Report(Report::Final(_)) => Some(Presentation::Final),
         ClientEvent::Ended | ClientEvent::Unavailable(_) => Some(Presentation::Ended),
         _ => None,
     }
@@ -486,14 +486,12 @@ fn terminal<'a>(
         .or_insert_with(|| Terminal::new(model))
 }
 
-/// The selected row as the top row shows it: its label, its status (or
-/// Unavailable until status reaches the monitor, #95 and #107), its control,
-/// any error, and what its terminal shows.
+/// The selected row as the top row shows it: its label, its row status
+/// (#107), its control, any error, and what its terminal shows.
 fn selected<'a>(row: &'a registry::View, terminal: Option<&'a Terminal>) -> Session<'a> {
-    let status = Some(row.status).filter(|status| !status.is_empty());
     Session {
         label: &row.label,
-        status: status.unwrap_or("Unavailable"),
+        status: &row.status,
         control: terminal
             .map_or(terminal::Control::NotControlling, Terminal::control)
             .label(),

@@ -11,9 +11,10 @@ executables of one release is not frozen. The library boundary is
 
 This is the #74 walking skeleton of spec #73, with its key introduction and
 help (#105), session discovery, passive clients and the basic selector
-(#106), selection, control and painting of the selected session (#108), and
-the input router that sends typed keys to it (#109). Nothing is selected
-automatically yet (#107).
+(#106), row statuses, final outcomes and status order (#107), selection,
+control and painting of the selected session (#108), and the input router
+that sends typed keys to it (#109). Nothing is selected automatically yet
+(initial selection, #266).
 
 ## Startup, before the host terminal changes
 
@@ -181,18 +182,34 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   keyed by full session ID: the discovery outcome and metadata, the connection
   status with the time the monitor entered it, the latest nonempty daemon
   title and whether the row is the monitor's own session
-  (`CLIMON2_SESSION_ID`). A live session with no client and not the monitor's
+  (`CLIMON2_SESSION_ID`), and from its client the latest daemon status
+  (`status-v1`: state and the daemon's stored change time) and the final
+  outcome (exit code or signal), with the time it sorts by: the daemon's
+  terminal status change time when it reported one, otherwise when the
+  monitor learned it. A final outcome survives disconnection and is never
+  replaced; a daemon status outlives its connection only as stale detail,
+  which neither labels nor sorts the row. A live session with no client and not the monitor's
   own gets exactly one client request. Discovery never changes a client's
   connection. A session proven gone (stale) drops its row unless a client
   was ever connected to it, and a stale session nobody knew adds no row; a
   row that was connected stays, with its history (owner decision on #106).
-  The status column is This monitor, Starting, Unavailable (uncertain,
-  failed, or connected without `status-v1`), Disconnected (its connection
-  ended), or empty for a connected row with `status-v1`,
-  whose effective status arrives with #107. The label is the latest nonempty
-  title, otherwise the command and arguments joined by spaces, with control
-  characters escaped, never a session ID. Rows list newest created first, then
-  ascending full session ID.
+  The status column is the effective status, Needs attention,
+  Acknowledged, Running or Idle; Succeeded for exit zero; Failed with the
+  exact code or signal, `Failed (exit 143)` or `Failed (signal 15)`; or, for
+  a row with no current status and no final outcome, This monitor,
+  Starting (also a client opened with `status-v1` until its Initial
+  metadata), Unavailable (uncertain, failed, or connected without
+  `status-v1`) or Disconnected (its connection ended). The library rejects
+  a final status without its result (`invalid_record`, owner decision on
+  #95), so no row shows a failure whose result is unavailable. The label is
+  the latest nonempty title, otherwise the command and arguments joined by
+  spaces, with control characters escaped, never a session ID. Rows list by
+  group (needs attention, acknowledged, running, idle, failed, completed,
+  then every not-connected row), within a group newest time first (the
+  daemon's change time; for a final row its time above; for a
+  not-connected row when the monitor recorded it entering its condition),
+  then ascending full session ID. Only the daemon's effective change time
+  moves a row, never when the monitor heard it.
 - **The client supervisor** (`supervisor.rs`) has its own thread. It loads
   each release once through `climon2_platform::library::Loader` on a worker
   thread (at most `scheduling.loads` at once; a session waiting on its release
@@ -210,7 +227,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   empty (so one whose descriptor lookup failed still ends), releases every
   delivery at once (`supervisor/client.rs`), and reports Open's outcome
   (with whether `status-v1` was selected), titles from Initial metadata and
-  `CM1_TITLE`, and the end. A refused release (its loader `Failure` kept for
+  `CM1_TITLE`, the status or final outcome from Initial metadata,
+  `CM1_STATUS` and `CM1_FINAL`, and the end. A refused release (its loader `Failure` kept for
   #116's retry), a failed create, Open, notification lookup or drain, a run
   that returns without terminal evidence, or a client that ends before
   opening makes the row Unavailable; one that ends after opening,
@@ -235,7 +253,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   Escape closes it when the next key arrives (the router has no timer); a
   cursor key split across reads anywhere never closes it, and the key after
   the Escape is routed once it has closed (#109, INP-02). Opening it never resizes an application or
-  acquires anything. Enter (a typed CR) on a connected row not known to be
+  acquires anything. Rows that reorder while it is open keep the highlight
+  on the same row. Enter (a typed CR) on a connected row not known to be
   final selects that session, closes the selector and acquires it (below);
   on any other row it does nothing yet. While rows exist, nothing is
   selected and the selector is closed, the body reads `No session selected.`
@@ -387,7 +406,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | EXT-03 (Fault, empty monitor): a render failure, or a failed wait for host input, releases the host before its one diagnostic, 125 | `debug_hook_render_failure_restores_the_host_before_its_diagnostic`, `debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic` (e2e) |
 | Spec #73 host terminal; TRM-04 (Monitor, empty monitor): SIGWINCH repaints without leftovers, erasing or showing the cursor | `resizing_the_host_redraws_the_monitor_at_the_new_size` (e2e) |
 | Spec #73 exit: content-free general log | `installed_monitor_logs_content_free_records_to_its_general_log` (e2e) |
-| DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor, Linux maps), HDL-01 (Monitor rows): sessions created after an empty start appear unasked, one passive client and library log each, reused across passes; never attached or controlled; Unavailable without `status-v1`; titles and command fallback; exactly the version's `libclimon2_client.so` | `sessions_appear_as_they_are_created_each_with_one_passive_client` (e2e) |
+| DSC-03 (Monitor), CTL-01 (Monitor), COM-01 (Monitor), LIB-01 (Monitor, Linux maps), HDL-01 (Monitor rows): sessions created after an empty start appear unasked, one passive client and library log each, reused across passes; never attached or controlled; the daemon's Idle status, never a fabricated one; titles and command fallback; exactly the version's `libclimon2_client.so` | `sessions_appear_as_they_are_created_each_with_one_passive_client` (e2e) |
 | DSC-04 (Monitor, Fault): malformed and oversized metadata, mismatched hello, silent probe, inaccessible discovery, uncertain disappearance; no metadata deleted, no client torn down; a stale session nobody knew adds no row and gets no client (owner decision on #106) | `uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients` (e2e) |
 | DSC-01 (Monitor, start order): bounded starts newest created first, ascending ID ties, each after the previous one failed, as the fake daemons heard them | `clients_start_one_at_a_time_newest_first_with_ascending_id_ties` (e2e) |
 | DSC-03 (Monitor, cadence): immediate first pass, each later pass a second after the previous one ended, no overlap, the selector opened during a pass | `discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap` (e2e) |
@@ -397,7 +416,14 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Client supervisor: terminal evidence before Open's response makes the row Unavailable with its message, or a stated reason when it is empty | `terminal_evidence_before_open_says_why_the_session_is_unavailable` (`src/supervisor.rs`) |
 | Own-session scenario (confirmed 2026-11-08), DSC-06 (Monitor), HDL-01 (Monitor rows), CTL-01 (controlled elsewhere), TRM-06 (wide labels), SEL-01 (cell-safe clipping) | `the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear` (e2e) |
 | SEL-01 (Monitor, basic cases): border, columns, highlight, Up/Down without wrap, Escape, no application resize or acquisition | `the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing` (e2e) |
-| DSC-01/DSC-03 (pure registry supplement): one client request per live session, newest-first order | `live_sessions_need_one_client_each_and_list_newest_first` (`src/registry.rs`) |
+| DSC-03 (pure registry supplement): one client request per live session; rows tied on their entry time in ascending full session ID | `live_sessions_need_one_client_each` (`src/registry.rs`) |
+| DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07 (Monitor, hidden change), DSC-05 (Monitor, reorder case): real sessions at known daemon clock times show Needs attention, Running, Idle, Failed (signal 15), Failed (exit 143) and Succeeded in group and daemon-time order, finals kept after their sessions end; working under pending attention moves nothing, even with its daemon clock moved past a newer attention row's time; a reorder keeps the highlighted row | `real_sessions_show_their_effective_status_and_final_outcomes_in_order` (e2e) |
+| DSC-01 (Monitor, status order: every status group, a tied change time broken by ascending full session ID, never creation order, delayed Initial metadata Starting until it arrives), DSC-05 (Monitor, reorder case: a row moving in above the highlight, and the highlighted row's own status change) | `rows_order_by_status_group_daemon_change_time_and_full_session_id` (e2e, Fault peers) |
+| Not-connected rows (confirmed 2026-11-08), final rows without a status time (derived), STA-07 (Monitor, disconnection case): This monitor, Unavailable (no `status-v1`, uncertain) and Disconnected after every status and final row, newest condition first; a lost connection never shows its stale status or a fabricated outcome; untimed finals from Initial metadata and Command final sort by when learned, between newer and older daemon times | `not_connected_rows_and_untimed_finals_sort_by_when_the_monitor_recorded_them` (e2e, Fault peers) |
+| DSC-01 status order, STA-07 (pure supplement): group, newest daemon change time, ascending full session ID; only a new change time moves a row; stale status of a disconnected row | `rows_order_by_group_then_newest_daemon_change_then_session_id` (`src/registry.rs`) |
+| COM-06 labels, final rows (pure supplement): exact exit and signal labels, daemon time or learned time, finals surviving disconnection, later statuses and repeats | `final_outcomes_are_labelled_exactly_and_sort_by_their_time` (`src/registry.rs`) |
+| Not-connected rows (pure supplement): every not-connected label in the disconnected group by entry time | `not_connected_rows_sort_by_when_they_entered_their_condition` (`src/registry.rs`) |
+| STA-07, COM-06 (pure supplement over native records): Initial metadata status or final outcome, `CM1_STATUS` states and exact times, `CM1_FINAL` exit apart from signal; nothing for final, unknown or unreadable values | `the_initial_metadata_reports_its_status_or_final_outcome`, `status_records_keep_their_state_and_exact_change_time`, `command_final_reports_its_exact_result` (`src/supervisor/client.rs`) |
 | Own-session scenario (pure supplement) | `the_own_session_is_this_monitor_and_never_needs_a_client` (`src/registry.rs`) |
 | DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
 | Stale rows (owner decision on #106): a session proven gone drops its row unless it was ever connected | `a_session_proven_gone_drops_its_row_unless_it_was_ever_connected` (`src/registry.rs`) |
@@ -411,7 +437,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | TRM-04 (Monitor, too-small cases): 3 rows and 4 columns too small, 4 rows and 5 columns enough; the session reads its size while too small and was never resized; recovery; prefix+x still exits | `a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers` (e2e) |
 | Top-row key hints (#108): none with `monitor.show_key_hints` false | `without_key_hints_the_top_row_shows_no_hint` (e2e) |
 | Spec #73 Enter, never exposing cached output; CTL-05 (revoked): a revoked session's cache is never painted; its screen changes while revoked, and Enter takes control again and paints only the new restoration | `a_revoked_session_shows_no_cached_output_until_enter_takes_control_again` (e2e) |
-| #94 rule for #108: a finished session's view freezes at Command final; Enter does not acquire a final row | `a_finished_session_keeps_its_last_screen_and_cannot_be_acquired` (e2e) |
+| #94 rule for #108 and COM-06 (Monitor labels, #107): a finished session's view freezes at Command final, its top row showing `Failed (exit 3)` after its connection closes; Enter does not acquire a final row | `a_finished_session_keeps_its_last_screen_and_cannot_be_acquired` (e2e) |
 | CTL-05, COM-05 (pure supplement): Ready only after the apply; applied, Ready accepted and painted distinct, input needs all three; only Ready for the applied restoration counts | `ready_applied_and_painted_stay_distinct_and_input_needs_all_three`, `only_ready_accepted_for_the_applied_restoration_opens_input` (`src/terminal.rs`) |
 | TRM-04, COM-05 (pure supplement): staged restorations replace the model whole once applied; superseded ones never become current; a cache is never shown | `a_restoration_replaces_the_model_whole_only_once_applied`, `a_cache_from_an_earlier_period_is_never_shown` (`src/terminal.rs`) |
 | Carried from #76 (owner decision 2026-11-13): a Display at a geometry the model lacks marks it stale until the next restoration | `a_display_at_a_geometry_the_model_lacks_marks_it_stale_until_restored` (`src/terminal.rs`) |
@@ -455,8 +481,10 @@ screens, HLP-02 over the selector (#113), selector
 search and footer (#113), Enter on a row that is not connected, is final or
 is this monitor (read-only selection and its placeholders), the revoked
 placeholder and take-control key (#110), the label marquee and synchronized
-updates (#112), underline styles other than single, status order and
-initial selection (#107), resource admission and fairness, including newest-first starts
+updates (#112), underline styles other than single, initial selection
+(#266, moved from #107) and the CTL-03 status-value case for background,
+covered and revoked rows (#266, moved there from #107 by the owner),
+resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), passive retry
 (#116), the fail-stop after an unconfirmed shutdown (#118), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.

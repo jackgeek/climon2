@@ -1,6 +1,9 @@
 # Set viewing — `0x35`
 
-**Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91));
+the [client library](../../../GLOSSARY.md#sessions) sends it ([#95](https://github.com/jackgeek/climon2/issues/95)),
+and the [client executable](../../../GLOSSARY.md#sessions)'s ordinary attach
+uses it ([#102](https://github.com/jackgeek/climon2/issues/102)). Owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) reports per-[attachment](../../../GLOSSARY.md#attachment-and-control)
 [viewing](../../../GLOSSARY.md#status-and-attention) to the
 [session daemon](../../../GLOSSARY.md#sessions), as current

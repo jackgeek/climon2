@@ -12,12 +12,16 @@ over a selector. The basic [selector](../GLOSSARY.md#attachment-and-control) of
 [#106](https://github.com/jackgeek/climon2/issues/106) is implemented: prefix+s
 overlays the captionless double border with status and title columns and a
 reversed highlight, Up and Down move it without wrapping, and Escape closes
-it, without resizing an application or acquiring anything. Rows list newest
-created first, connected rows show Unavailable without `status-v1` and no
-status otherwise, and not-connected rows show Starting, Unavailable, This
-monitor or Disconnected; a row never seen connected is dropped once its
-session is proven gone. Its keys come from the input router of
-[#109](https://github.com/jackgeek/climon2/issues/109) (INP-02), which uses no timer (owner decision on #109): a lone Escape is
+it, without resizing an application or acquiring anything. Rows show the
+effective status their daemons report (Needs attention, Acknowledged,
+Running, Idle), Succeeded or Failed with the exact exit code or signal, or a
+not-connected label (Starting, Unavailable, This monitor or Disconnected),
+and list in the status order of the
+[session-status mechanics](session-status.md#reporting-ordering-and-initial-selection)
+([#107](https://github.com/jackgeek/climon2/issues/107)); a row never seen
+connected is dropped once its session is proven gone. Its keys come from the
+input router of [#109](https://github.com/jackgeek/climon2/issues/109)
+(INP-02), which uses no timer (owner decision on #109): a lone Escape is
 classified by the byte after it, so a cursor key split across host reads,
 even right after its Escape, never closes the selector, and Escape closes it
 when the next key arrives, which is then routed as itself (Escape followed by
@@ -25,8 +29,9 @@ a key in one read behaves the same). The same holds for the key
 introduction. Bytes bound for the selected session, a lone Escape included,
 go to it at once. Enter selects the highlighted row
 ([#108](https://github.com/jackgeek/climon2/issues/108)). Nothing else this
-document specifies is implemented: no search or separator, status order,
-key-hint footer, Delete, toasts or bell.
+document specifies is implemented: no search or separator, initial selection
+([#266](https://github.com/jackgeek/climon2/issues/266)), key-hint footer,
+Delete, toasts or bell.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a
 primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and

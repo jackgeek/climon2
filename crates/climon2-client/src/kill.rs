@@ -5,10 +5,13 @@
 //! alone, whatever the command's status; a failure reads as it did before
 //! #100.
 
-use crate::embedded::{Embedded, NativeError, Startup, Stream, own_library};
-use climon2_core::{SessionId, diagnostics::default_filter, metadata::SessionMetadata, native};
-use climon2_platform::{logging::library_log_name, terminal::Signals};
-use std::{io, path::Path, ptr, time::SystemTime};
+use crate::{
+    embedded::{Embedded, NativeError, Session, Stream, session_instance},
+    polling::interrupted,
+};
+use climon2_core::{SessionId, metadata::SessionMetadata, native};
+use climon2_platform::terminal::Signals;
+use std::{io, path::Path, ptr};
 
 /// How long one wait for the library lasts before signals are checked again.
 const POLL_MS: i32 = 25;
@@ -29,16 +32,6 @@ enum Failure {
     Error(String),
 }
 
-/// What kill mode tells the library about the session besides its metadata.
-pub(crate) struct Session<'a> {
-    /// Where the metadata was read.
-    pub(crate) metadata: &'a Path,
-    /// The client's own session log, beside which the library writes its own.
-    pub(crate) log: &'a Path,
-    /// The client's `CLIMON2_LOG` filter, if one was given.
-    pub(crate) filter: Option<&'a str>,
-}
-
 /// Kills the session `metadata` describes. A library that is missing, of
 /// another release or faulty fails before any connection; HUP, TERM or INT
 /// while waiting end it at once as `Interrupted`.
@@ -57,21 +50,10 @@ pub(crate) fn run(
 /// An instance of this release's library for the session, with the Kill
 /// submitted.
 fn start(metadata: &SessionMetadata, session: &Session, home: &Path) -> io::Result<Embedded> {
-    let (library, release) = own_library()?;
-    let socket = Path::new(metadata.socket_path.as_str());
-    let log = library_log_name(SystemTime::now(), std::process::id())?;
-    let startup = Startup {
-        session: metadata.session_id.bytes(),
-        release,
-        metadata: session.metadata.to_owned(),
-        home: home.to_owned(),
-        runtime: socket.parent().unwrap_or(socket).to_owned(),
-        settings: native::Settings::default(),
-        log: session.log.with_file_name(log),
-        filter: session.filter.unwrap_or(default_filter()).to_owned(),
-    };
-    let instance = Embedded::start(library, startup)?;
-    instance.submit(&request()).map(|()| instance)
+    let instance = session_instance(metadata, session, home)?;
+    // The first request of a fresh instance always finds room.
+    instance.submit(&request())?;
+    Ok(instance)
 }
 
 /// The only request: public ID 1, a Kill of the instance's session that
@@ -100,12 +82,6 @@ fn answer(instance: &Embedded, signals: &Signals) -> io::Result<Option<Answer>> 
         stream = instance.turn(&mut keep, POLL_MS)?;
     }
     Ok(answer)
-}
-
-fn interrupted(signals: &Signals) -> io::Result<()> {
-    signals
-        .termination_signal()
-        .map_or(Ok(()), |_| Err(io::ErrorKind::Interrupted.into()))
 }
 
 /// The Kill's Response, the only one a Kill-only instance delivers.
