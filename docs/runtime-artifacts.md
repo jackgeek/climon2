@@ -31,14 +31,12 @@ flowchart TB
         cli -->|"starts for exec and exec --headless"| daemon
         cli -->|"exec (not --headless) / attach / kill: session version"| client
         cli -->|"hello probes for discovery"| daemon
-        client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
         cli -->|"monitor / mon: execs own version"| monitor
         monitor -->|"hello probes for discovery"| daemon
         monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
-        client -.->|"loads same-release library through the shared loader; versioned C interface planned"| library
-        library -->|"daemon wire revision 1: passive monitor connections"| daemon
-        library -.->|"daemon wire revision 1: control and display; planned"| daemon
+        client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
+        library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
     end
@@ -106,16 +104,16 @@ process/image ids), session membership and environment markers remain
 additional ownership evidence. Commands that explicitly close inherited
 descriptors keep only that additional evidence.
 
-**Current (#75, #85, #93):** every release builds and ships the client library in
+**Current (#75, #85, #93, #94):** every release builds and ships the client library in
 its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS
 and `libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib
 artifact of `climon2-client`. Each exports only the frozen
 `climon2_client_get_interface` bootstrap and implements the bootstrap,
 description and local instance lifecycle of
 [native revision 1](protocol/monitor-client/core-v1.md), and its instances
-open passive monitor connections to session daemons over
-[daemon wire revision 1](protocol/daemon-client/core-v1.md); control and
-display arrive with #94. The library host fixture drives those instances
+open passive monitor connections or interactive attachments to session
+daemons over [daemon wire revision 1](protocol/daemon-client/core-v1.md) and
+relay control and display (#94). The library host fixture drives those instances
 through the function table, with the test-hooks library's fault injection,
 as the Library layer's instrumented host. It also serves a clearly labelled
 fake daemon peer that the library under test connects to, and probes real
@@ -131,8 +129,9 @@ unwinder statically, because no unwinding leaves it, so it needs only glibc's
 libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
 release isolation; release checks enforce each rule. The monitor loads it
-(#106), and so does test tooling: the library host fixture and xtask's release
-checks; the client executable's loading remains planned. Cargo's ordinary
+(#106), the client executable loads it for ordinary attach (#101) and kill
+mode (#100), and test tooling loads it: the library host fixture and xtask's
+release checks. Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`,
 `climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
 libraries; the CLI's and the monitor's hello probes for discovery come from
@@ -149,14 +148,21 @@ new sessions, and background clients never take control. Native client crashes
 can terminate the entire monitor. Ratatui draws the permanent top row, the
 body and the basic [selector](../GLOSSARY.md#attachment-and-control).
 
+**Current (#108):** Enter acquires the selected session through its client,
+which relays its control, restorations and display. The monitor parses them
+into its own allocation-bounded `climon2-vt` model per session and paints the
+selected one from `climon2-vt`'s read-only views, below the top row at the
+session's effective geometry; it submits Ready and Resize through the client.
+Session bytes never go directly to the host, and the daemon alone answers
+session queries.
+
 **Planned:** background clients relay negotiated plugin data, and the rest of
 the monitor's terminal integration is agreed, unimplemented.
-The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
-selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with read-only
-Rust views for Ratatui, which `climon2-vt` provides (#83) but the monitor does
-not use yet. Session bytes never go directly to the host;
-daemon query authority stays unique. Monitor-mode daemon presentation uses
+The [agreed terminal contract](protocol/terminal-integration.md), implemented
+for selection and painting (#108), selects exact ordered terminal
+bytes/control/restoration through existing in-process record queues and
+monitor-owned `climon2-vt` models, with read-only Rust views for Ratatui.
+Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
 [promotion](../GLOSSARY.md#attachment-and-control); session daemons already
 serialize it so. Optional core Focus is not
@@ -198,12 +204,25 @@ size, to check that its limits hold one session's model beside the parser
 (#167). It chooses no new executable/library or consumption arrow, and does
 not sandbox trusted native code.
 
-The client executable will also load its same-release library for ordinary
-operations.
+**Current (#100, #101, #102):** for ordinary attach and in kill mode the
+client executable loads the library in its own version folder,
+`<executable home>/<version>/`, through the shared loader, whatever
+`current`, the working directory or search paths name, and drives one
+instance through the C ABI: an interactive Open and the bridge's Input,
+Resize, Acquire, Ready, Set viewing, Acknowledge and Leave for attach, or
+one Kill; the library speaks
+daemon wire revision 1 to the session daemon. The library instance writes
+its diagnostics to a log file of its own in the session-log directory,
+beside the client's,
+`<climon2 home>/logs/<session-id>/library-<UTC second>-<pid>.log`, since
+spec #73 places each instance's library log in its session's log. A missing,
+other-release or faulty library fails before any connection. The client
+executable no longer speaks the private post-hello protocol, which session
+daemons still serve until its deletion.
 
 **Current (#84):** one validated loader for client libraries is part of
-`climon2-platform`, not a separate artifact; the monitor loads through it
-(#106), and the client executable will. The library host and xtask's release
+`climon2-platform`, not a separate artifact; the monitor (#106) and the client
+executable (#100, #101) load through it. The library host and xtask's release
 checks load the client library through it too, from a version folder of an
 executable home. The [client library stand-in](../GLOSSARY.md#testing),
 `crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests,
@@ -211,7 +230,9 @@ through `climon2_fixtures::stand_in`, into a test-only library, exact or with
 one defect: xtask's release-check tests
 load it through the same release checks as the real library, and
 `climon2-platform`'s loader tests load it, as the faulty library, through the
-loader. It is never shipped.
+loader. The client executable's tests put it beside the executable as the
+faulty library, and, with its `RECORD_STARTUP` probe, to record the limits
+the executable passes (#101). It is never shipped.
 
 **Current (#97):** the [second-release fixture](../GLOSSARY.md#testing) is
 two test-only artifacts of the `climon2-second-release` crate, both release
@@ -222,11 +243,15 @@ main that serves only 0.0.97 and gives its session's command
 `CLIMON2_SECOND_RELEASE_DAEMON`. The mixed-release Library-layer tests package
 both with this build's other executables as a 0.0.97 release and install it
 with the real installer in a sibling version folder, so that folder's CLI
-starts 0.0.97 sessions served by the fixture's daemon. One library host loads
+starts 0.0.97 sessions served by the fixture's daemon, and its client
+executable, this build's, kills them through that folder's 0.0.97 library
+(#100). One library host loads
 both releases' libraries through the shared loader, and each release's
 instances open passive monitor connections to their own release's daemons.
-xtask's tests run the release checks on the library as 0.0.97's. Neither is
-ever shipped. The developer accepted this fixture on 2026-11-15
+xtask's tests run the release checks on the library as 0.0.97's. The
+packaged controlled-versions test runs this build's client executable from a
+0.0.97 folder beside that library, so that it attaches to a 0.0.97 session
+(#101). Neither is ever shipped. The developer accepted this fixture on 2026-11-15
 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
@@ -244,7 +269,7 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-The monitor's loading is current (#106); the client executable's is planned. Complete interface
+The monitor's loading is current (#106), as is the client executable's for attach and kill (#100, #101). Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication is

@@ -13,8 +13,8 @@ at `Geometry::LARGEST`, to check that its limits hold one session's model
 The [#63 terminal contract](../../docs/protocol/terminal-integration.md) has
 the monitor paint each session with Ratatui from
 [read-only views](#read-only-views) of its model (#83). They are Rust types,
-not a native cross-release cell schema, and the monitor does not paint from
-them yet (#108, #112). The daemon remains the sole query authority; the
+not a native cross-release cell schema; the monitor paints its selected
+session from them (#108). The daemon remains the sole query authority; the
 monitor never forwards parser replies or session bytes directly to its host.
 
 **Implemented ([#89](https://github.com/jackgeek/climon2/issues/89)):** the
@@ -45,9 +45,8 @@ host Direct/Derived presentation below is unchanged.
   reach the host, in order. `titles` lists each change of the application's
   own title in order, one per change even within one read, by value: `None`
   is unset (the default title shows, including after `ESC c`), and an
-  unchanged title is not listed again. The body cap ignores a title sequence
-  longer than 4,096 bytes, so with its `2;` the longest OSC 0/2 title is
-  4,094 bytes. `focus_enabled` says a token of this feed turned focus
+  unchanged title is not listed again. The body cap ignores a title longer than
+  4,096 bytes; an OSC 0/2 title's `0;` or `2;` does not count against it. `focus_enabled` says a token of this feed turned focus
   reporting (mode 1004) on and it is still on, however the tokens were split
   across reads.
 - `Vt::feed_observed(bytes, now, observe) -> Fed`: `Vt::feed`, calling
@@ -259,6 +258,7 @@ monitor's evidence.
 | LIM-03 Contract: history grows only before output that could fill it, by every chunk one token could fill (a long repeat, released line feeds: at the bound and one past it), never past its configured rows, and is not shown over the alternate screen | `history_grows_only_before_output_that_could_fill_it`, `one_token_admits_every_history_chunk_it_could_fill`, `history_never_grows_past_its_configured_rows`, `the_alternate_screen_shows_no_history` |
 | LIM-03 Contract: history shows at most `history_rows` rows, all of them at the limit and not the oldest one past it | `history_shows_its_rows_at_the_limit_and_not_the_oldest_one_past_it` |
 | LIM-03 Contract: the largest limits never overflow the accounting | `the_largest_limits_never_overflow_the_accounting` |
+| LIM-01 (derived release-constant title bound): an OSC 0 or 2 title of 4,096 UTF-8 bytes, its `0;` or `2;` not counted, is kept and reported whole, and one of 4,097 is dropped; another OSC's parameter counts against its 4,096-byte body | `tests/tokenizer.rs`: `a_title_may_carry_the_whole_body_after_its_selector`; `tests/live.rs`: `application_title_changes_are_reported_in_order_by_value` |
 | LIM-03 Contract: wide characters at the bound and one past it | `wide_characters_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: combining marks at the bound and one past it | `combining_marks_are_accepted_at_the_bound_and_rejected_one_byte_past_it` |
 | LIM-03 Contract: auxiliary cell data (underline colour) at the bound and one past it, invalid bytes included; colours changed between cells keep no more than charged | `underline_coloured_cells_are_accepted_at_the_bound_and_rejected_one_byte_past_it`, `cells_under_changing_underline_colours_keep_no_more_than_they_were_charged` |

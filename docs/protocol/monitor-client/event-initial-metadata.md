@@ -4,8 +4,8 @@
 [client library](../../../GLOSSARY.md#sessions) delivers this barrier for
 [passive monitor connections](../../../GLOSSARY.md#attachment-and-control)
 ([#93](https://github.com/jackgeek/climon2/issues/93)): the title by
-selection, status and progress unavailable until their families are relayed,
-and the command result.**
+selection, the status by selection ([#95](https://github.com/jackgeek/climon2/issues/95)), progress unavailable until
+its family is relayed, and the command result.**
 The [session daemon](../../../GLOSSARY.md#sessions), through the
 [client](../../../GLOSSARY.md#sessions), supplies the
 [monitor](../../../GLOSSARY.md#sessions) an atomic initial report.

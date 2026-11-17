@@ -107,7 +107,13 @@ takes control from any current
 included,
 and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
-ends its stream. Once the command's result is final (see
+ends its stream. Once the session has issued its last
+[control period](../../../GLOSSARY.md#attachment-and-control) or
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), an
+interactive Open, which needs a new one of each, is rejected with
+`resource_limit` without effects and ends its stream; a monitor-mode Open
+needs neither and is still served
+([#90](https://github.com/jackgeek/climon2/issues/90)). Once the command's result is final (see
 [Command final](event-command-final.md#implemented-behavior)), every
 rejection of a first-role Open carries that result as `known_final`; a
 later Open on a connection that already has a role is `invalid_state`

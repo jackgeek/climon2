@@ -3,8 +3,14 @@
 **Status: agreed revision-1 specification. The
 [client library](../../../GLOSSARY.md#sessions) admits monitor-mode
 [Open](request-open.md) and [Leave](request-detach.md)
-([#93](https://github.com/jackgeek/climon2/issues/93)); every other
-[request](../TERMS.md#request) reports `CM1_UNSUPPORTED_OPERATION`. See its
+([#93](https://github.com/jackgeek/climon2/issues/93)), interactive Open,
+[Acquire](request-take-control.md), [Input](request-input.md),
+[Resize](request-resize.md), [Ready](request-ready.md) and
+[Focus](request-focus.md) ([#94](https://github.com/jackgeek/climon2/issues/94)),
+[Set viewing](request-viewing.md) and [Acknowledge](request-acknowledge.md)
+([#95](https://github.com/jackgeek/climon2/issues/95)), and
+[Kill](request-kill.md) ([#96](https://github.com/jackgeek/climon2/issues/96)).
+See its
 [implemented behavior](core-v1.md#implemented-behavior). The caller is not
 implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) submits a

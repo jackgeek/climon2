@@ -62,6 +62,21 @@ fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
 renaming the same archive binary, never by rebuilding/substituting it.
+The archive's session daemon has no controllable status clock
+(`CLIMON2_DAEMON_CLOCK`), so the monitor's real-session status order case
+returns early in archive mode, and its other real-session cases expect the
+status the daemon's own heuristic settles on (a session whose title changed
+needs attention ten quiet seconds later) instead of the frozen clock's Idle.
+The monitor's real-session scenarios of #108-#110 and #266 do not depend on
+that clock, so they run against the archive too: each of their sessions
+reports a root OSC 7501 `working` at start, which holds its status at Running
+on any clock (explicit detection; typed input's user work returns to it), a
+session that must stay Idle reports `clear` instead, and a scenario with
+several sessions starts the monitor empty, so the first session to appear
+is the initial selection whatever the statuses. Only the restoration
+scenario (`keys_and_resizes_during_a_restoration_reach_no_session`), which
+holds the daemon with its `CLIMON2_DAEMON_HOLD` test hook, also returns
+early in archive mode.
 
 From release two, set `CLIMON2_E2E_PREVIOUS_ARCHIVE` to the actual published
 previous release archive for that platform as well. The compatibility gate starts its real
@@ -128,6 +143,26 @@ the library sent, so a replay or an early Open shows. Ordering uses trigger
 files and observable completion, never sleeps; every peer wait is bounded and
 an expired wait is recorded.
 
+`tests/control.rs` and `tests/control_faults.rs` (#94) drive control and
+display the same way: interactive Open, Acquire, Input, Resize, Ready and
+Focus under the authority the host last drained, against real sessions
+whose application (the fixture's `raw` and `echo-until` actions) writes
+back every input byte unchanged, and against the fake peer for holds,
+losses, mismatches and records out of authority.
+
+`tests/status.rs` and `tests/status_faults.rs` (#95) drive status, Set
+viewing and Acknowledge the same way. `status.rs` starts its real sessions
+with the daemon's controllable status clock (`CLIMON2_DAEMON_CLOCK`, a test
+hook): the host's `clock` step sets it and waits for the daemon to
+acknowledge the turn that read it, so each status change happens at an
+exact, hand-computed time. Release archives have no hooks, so those cases
+return early in archive mode. The passive suites leave `status-v1` out of
+their Opens, because a real daemon reports status on its own clock.
+`status.rs` also watches ordinary `climon2 attach` clients acknowledge
+attention (#102): the host runs in a thread beside the test's terminals,
+its `await_file` step waits for a file the test creates once a client has
+attached or taken control, and its `touch` step tells the test when to act.
+
 `tests/mixed.rs` (#97) runs two releases in one host process. Each test
 installs, in its own executable home and with the real installer, the
 [second-release fixture](../../GLOSSARY.md#testing) as release 0.0.97 in a
@@ -154,6 +189,13 @@ bash 5 outer terminals (section 6.1 of
 the actual exit statuses and ends with `assert_clean()`. Ordering uses
 acknowledgement files and observable completion, never sleeps.
 
+Since #101 the installed client executable attaches through its own release's
+client library over daemon wire revision 1, not the private post-hello
+protocol. These continuity scenarios and the packaged attach, kill,
+leave-policy and termination scenarios run unchanged on it: together they are
+the COM-01 Monitor parity case, the evidence that gates deleting the private
+protocol.
+
 ## Specification mapping
 
 Each test also has a specification doc comment in `tests/packaged.rs`, for
@@ -176,7 +218,7 @@ sessions in `tests/headless.rs`.
 | #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
 | ADR 0001/#19/#25 missing version-matched client after Ready, version/log diagnostic, startup owner cleanup | `missing_installed_client_after_ready_is_diagnostic_and_cleans_command` |
 | #21.17–20 crash mid-install/recovery while real client remains usable | `debug_hook_mid_install_crash_recovers_without_stranding_live_client` |
-| ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
+| ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff; each wrapper execs a real client kept as `climon2-client` in a folder of its session's release beside that release's library, the second-release fixture's 0.0.97 for the new version (#101) | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
 | ADRs 0001/0002/0005/#26/#39 actual previous/current archive compatibility, no fabricated previous release | `actual_previous_release_remains_live_across_current_archive_install` |
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
@@ -201,7 +243,7 @@ sessions in `tests/headless.rs`.
 | LIB-03, LIB-04 and LIB-05 Library: create, run, shutdown, drain to terminal evidence, release, destroy and join; wrong-thread run and destroy, repeated run, busy destroy and release; terminal evidence apart from the cleanup report; every object released through the library | `installed_library_instance_runs_create_run_shutdown_drain_release_destroy_join` |
 | LIB-03 Library: failed creates return no handles and leave no descriptor: null arguments, mismatched release, generation, native paths (non-UTF-8 kept, `PATH_MAX` bound) | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` |
 | LIB-03 Library: client keys, log path and `CLIMON2_LOG` filter | `installed_library_create_rejects_invalid_settings_and_diagnostics_without_handles` |
-| LIB-03 Library: limits it cannot honour, each at its bound (`drain_payload_bytes` must hold a `metadata_record_bytes` record), never raised or lowered; no descriptor left for the notification and waker descriptors or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
+| LIB-03 Library: limits it cannot honour, each at its bound (`drain_payload_bytes` must hold a `metadata_record_bytes` record and a `chunk_bytes` Display), never raised or lowered; no descriptor left for the notification and waker descriptors or for the log file (`CM1_RESOURCE_LIMIT`, no log file), one more is enough | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` |
 | LIB-03 Library and Fault: copies survive unmapped caller memory; lossless native paths; two instances' homes, settings and logs stay their own | `installed_library_instances_keep_their_own_copies_paths_settings_and_logs` |
 | LIB-03 Library and Fault: environment, working directory, signals and standard streams unchanged | `installed_library_leaves_environment_cwd_signals_and_streams_unchanged` |
 | LIB-04 Library and Fault, Linux `eventfd`: borrowed descriptor, counted once; a scheduled race in which polling sees the stream end while the handle is used before shutdown and after the end, every call succeeding with the same descriptor | `installed_library_notification_descriptor_is_borrowed_and_safe_to_poll_racing_the_end` |
@@ -212,7 +254,7 @@ sessions in `tests/headless.rs`.
 | LIB-03 Library: successive instances on one owner thread whose startups differ only in the home's length differ by exactly that many bytes, current and peak | `installed_library_charges_successive_instances_only_for_their_own_differences` |
 | LIB-04 Fault: the failure diagnostic only within `event_bytes`, at and one under the bound | `installed_library_queues_the_failure_diagnostic_only_within_event_bytes` |
 | LIB-05 Fault: injected panic at the bootstrap and `create` | `installed_library_contains_a_panic_at_the_bootstrap_or_create` |
-| LIB-05 and LIB-04 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
+| LIB-05, LIB-04 and REC-01 Fault: injected panic at `submit`, `notification`, `snapshot`, `drain`, `shutdown` and `run` stops the instance, with no retry from `shutdown` on; a delivery held past terminal evidence alone keeps communication and destroy busy | `installed_library_contains_a_panic_in_a_running_instance_and_stops_it` |
 | LIB-04 and LIB-05 Fault: injected panic at `release_delivery`, `release_communication`, `release_control` and `destroy` keeps the object | `installed_library_contains_a_panic_in_a_release_and_keeps_the_object` |
 | LIB-05 Fault (`worker` hook): worker completion apart from terminal evidence | `installed_library_reports_worker_completion_apart_from_terminal_evidence` |
 | LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
@@ -232,21 +274,74 @@ no worker that could stall. Open
 | COM-01 Library: daemon frames one byte over `wire_frame_bytes` rejected before any role, for good | `installed_library_rejects_a_daemon_whose_frames_exceed_wire_frame_bytes` (`passive.rs`) |
 | COM-01 and COM-02 Library: an Open naming no family registers passively and selects none, an empty selection being null and zero | `installed_library_opens_naming_no_family_and_selects_none` (`passive.rs`) |
 | LIB-05 Library and Fault: an instance stalled by its fake daemon never stops another registering with a real daemon; `submit`, `drain`, `snapshot` and `release_delivery` return at once | `installed_library_instance_stalled_by_its_daemon_never_stops_another` (`passive.rs`) |
-| COM-01 Fault: missing support (frozen tokens only, no `monitor-v1`, malformed limits, an unadvertised required family), another session, release or protocol in hello or metadata, an unserved or unreadable socket or metadata, a reply that is not a hello, or none within `start_ms`: rejected before any Open is sent, with retry permanent or passive | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role` (`passive_faults.rs`) |
+| COM-01 and REC-01 Fault: missing support (frozen tokens only, no `monitor-v1`, malformed limits, an unadvertised required family), another session, release or protocol in hello or metadata, an unserved or unreadable socket or metadata, a reply that is not a hello, or none within `start_ms`: rejected before any Open is sent, with retry permanent or passive | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role` (`passive_faults.rs`) |
 | COM-01 Fault: optional families intersect three ways; a selection the request does not allow fails | `installed_library_selects_only_families_both_sides_support` (`passive_faults.rs`) |
 | COM-02 Fault: invalid JSON, wrong direction, unknown type, zero, oversized and truncated frames, uncorrelated or mismatched responses, out-of-order or unselected records, a title or record one byte over its limit, and a daemon Fatal each fail the connection with their origin and code; nothing after the failing frame is delivered, and nothing stays counted once run returns | `installed_library_fails_the_connection_on_traffic_revision_one_forbids` (`passive_faults.rs`) |
-| COM-03 Fault: deadlines answer `timeout` (indeterminate); lost answers fabricate nothing and leave unanswered IDs to the caller's ledger; failed and indeterminate Leaves; refused and failed Opens with their retry; no retry once the caller's Leave is sent or the final result is known; best-effort diagnostics; nothing replayed; nothing outstanding once run returns | `installed_library_reports_lost_and_late_answers_truthfully_without_replay` (`passive_faults.rs`) |
+| COM-03 and REC-01 Fault: deadlines answer `timeout` (indeterminate); lost answers fabricate nothing and leave unanswered IDs to the caller's ledger; failed and indeterminate Leaves; refused and failed Opens with their retry (transport loss passive, missing support permanent); no retry once the caller's Leave is sent; a close after an Initial metadata that knew the final result a clean stop (stopped, no error, retry none); best-effort diagnostics; nothing replayed; nothing outstanding once run returns | `installed_library_reports_lost_and_late_answers_truthfully_without_replay` (`passive_faults.rs`) |
 | COM-01 and COM-03 Fault: a known final result in a rejection, charged its copies, with retry none | `installed_library_reports_a_known_final_result_and_never_retries` (`passive_faults.rs`) |
 | EXT-01 and EXT-02 Fault: shutdown's Leave lost, late or rejected; a rejected explicit Leave keeps the registration; shutdown during an Open, or during hello (the Open `cancelled`, never sent); Leave before any Open or while another is unanswered | `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
 | LIB-04 and LIB-05 Fault: a panic inside a running connection leaves no descriptor or operation counted | `installed_library_panic_in_a_connection_leaves_nothing_counted` (`passive_faults.rs`) |
 | LIB-05 Fault: the library never raises `SIGPIPE` in an embedder that left it at its default | `installed_library_never_raises_sigpipe_in_its_embedder` (`passive_faults.rs`) |
 | COM-02 Fault: titles at `title_bytes` and records at `metadata_record_bytes` accepted whole; a signal command result mapped | `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
-| COM-02 Library (unknown tags, nonzero reserved fields, inactive storage ignored) and COM-03 Library (invalid and closed rejections synchronous, no ID consumed, no buffer retained, `cancelled` for work shutdown never ran) | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing` (`passive_admission.rs`) |
+| COM-02 Library (unknown tags, nonzero reserved fields, inactive storage ignored) and COM-03 Library (invalid and closed rejections synchronous, no ID consumed, no buffer retained, a Kill's required list checked as an Open's, `cancelled` for work shutdown never ran) | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing` (`passive_admission.rs`) |
 | COM-03 Library: `request_records`, `request_bytes`, `operations`, `event_records` and `event_bytes` at the limit and one past; full rejections consume no ID | `installed_library_bounds_requests_by_every_queue_limit` (`passive_admission.rs`) |
 | LIB-04 Library: one delivery allowed, `queue_full` while it is outstanding, its records unchanged and charged until released | `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`) |
 | LIB-04 Fault: deliveries stop before `drain_payload_bytes`, which always holds a whole record | `installed_library_batches_records_within_drain_payload_bytes` (`passive_admission.rs`) |
 | COM-02 and LIB-04 Fault: frames split bytewise or coalesced; daemon records wait while the event queue is full, never dropped or overrunning it | `installed_library_holds_daemon_records_while_the_event_queue_is_full` (`passive_admission.rs`) |
 | LIB-04 Fault: each record charged its header twice (the `cm1_record` and the library's copy) and the bytes it owns once | `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`) |
+
+### Library layer: control and display (`tests/control*.rs`, #94)
+
+`control.rs` runs real session daemons through the packaged CLI;
+`control_faults.rs` the host's fake daemon peer. A script names the
+authority the host drained last (`$period`, `$restoration`) or the one
+before it.
+
+| Scenario | Named test |
+|---|---|
+| COM-04 Library (Input `00 ff 41`, NUL and invalid UTF-8 reach the raw application, whose echo returns as exact Display bytes), COM-05 Library (Response, Initial metadata, attach grant, Restoration begin, Display, complete under one authority), COM-02/COM-03 Library acceptance of interactive Open, Ready and Input, EXT-01 Library (attached shutdown: release Display, Leave confirmed, attachment detached); with `chunk_bytes` 16, every Display at most 16 bytes and the stream healthy | `installed_library_attaches_and_relays_binary_input_and_display_unchanged` (`control.rs`) |
+| CTL-05 Library: superseded restoration (`stale_restoration`), revoked (`not_controller`) and stale period (`stale_period`), new restorations and periods `not_ready` until Ready, no rejected byte reaching the application; Resize accepted, Acquire by an attachment, `stale_generation` never sent | `installed_library_stale_authority_never_re_enables_input` (`control.rs`) |
+| FOC-01 Library: no duplicate focus, `not_ready` before readiness, stale period rejected, the new period resynchronized after Ready | `installed_library_focus_has_no_duplicates_and_resynchronizes_on_new_readiness` (`control.rs`) |
+| CTL-02 Library: Acquire, no-change re-acquisition, switching between monitors (takeover under the exact held authority), the last acquisition winning, background control kept until another client's takeover | `installed_library_acquisition_switches_and_takeover_keep_the_last_accepted` (`control.rs`) |
+| COM-05 and COM-06 Library: a command that exits while an attached instance controls: `CM1_FINAL` (exit 0, status unavailable), then the release Display and Control revoked `session_ending`, then the close: a clean stop, no error, retry none, Leave not required | `installed_library_relays_the_command_final_before_the_release_and_session_ending` (`control.rs`) |
+| CTL-04 and EXT-01 Library (Leave racing a promotion, real daemon): the promoted registration's one Leave delivers the successor grant, its restoration and the release, then Leave confirmed with the attachment detached; the session stays detached | `installed_library_leave_racing_a_promotion_leaves_as_the_attachment` (`control.rs`) |
+| CTL-04 and COM-05 Library: the newest registration promoted with a background successor grant and canonical restoration, Ready without selection, the next promoted after it; fresh periods per grant | `installed_library_promotes_the_newest_registration_with_a_canonical_restoration` (`control.rs`) |
+| COM-02/COM-03 Library control cases, local rejection: malformed control requests `invalid_argument` (generation zero inside an authority, Input over `chunk_bytes` included), Input at `chunk_bytes`, at and one past `request_bytes` | `installed_library_rejects_malformed_control_requests_locally` (`control_faults.rs`) |
+| COM-02/COM-03 Library control cases, `cancelled`: every control request queued behind an Open is cancelled by shutdown, never sent | `installed_library_cancels_queued_control_requests_on_shutdown` (`control_faults.rs`) |
+| COM-02/COM-03 Library control cases, stale generation and state: `stale_generation`, `unsupported_capability` without `focus-v1`, `invalid_state` while leaving, `unsupported_limit` over the request frame ceiling, none sent; interactive Open without `monitor-v1` | `installed_library_rejects_stale_and_unsupported_control_requests_locally` (`control_faults.rs`) |
+| COM-02/COM-03 Library control cases, `timeout` and lost responses for every command and interactive Open, never replayed | `installed_library_times_out_or_loses_control_requests_without_replay` (`control_faults.rs`) |
+| COM-02 Library control cases, answers: each success's own result, daemon rejections, mismatched, partial and known-final answers `invalid_record` | `installed_library_maps_control_answers_and_refuses_mismatched_results` (`control_faults.rs`) |
+| COM-03 and CTL-05 Library and Fault: empty, unheld and late Display, early or second grant, foreign, repeated or older begin or Geometry, unheld complete or revocation `invalid_record`; a Display at `chunk_bytes` one record, one past it two (`chunk_bytes` and one byte), both streams healthy | `installed_library_refuses_presentation_records_out_of_authority` (`control_faults.rs`) |
+| CTL-04 Library and Fault (Leave racing a promotion), COM-05 Library and Fault (Command final first, Geometry, `session_ending` revocation, then the close as a clean stop with retry none, a fresh instance seeing only its own records) | `installed_library_resolves_a_promotion_racing_leave_and_fresh_attempts_stand_alone` (`control_faults.rs`) |
+| COM-03 Library and Fault, Command final (minimal, #94): `CM1_FINAL` exit or signal with its name, status unavailable, the close a clean stop with retry none (inside a frame still `truncated_frame`; meeting a Leave, indeterminate); second, after a known result (agreeing or contradicting), early or with a status `invalid_record` | `installed_library_relays_one_command_final_after_the_initial_metadata` (`control_faults.rs`) |
+| COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
+| COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
+| LIB-04 Fault, control and screen records: each charged its header twice and only a Display's bytes beside it; Control revoked (`session_ending`) delivered with its reserved field zero | `installed_library_charges_presentation_records_only_the_display_bytes_they_own` (`control_faults.rs`) |
+
+### Library layer: termination (`tests/termination*.rs`, #96)
+
+| Scenario | Named test |
+|---|---|
+| COM-06 Library (exit zero, exit 143 and signal 15 from real daemons: one Command final each, of its own kind, status unavailable) and REC-01 Library (the daemon's close after it a clean stop, retry none) | `installed_library_relays_each_real_command_final_apart_from_signals` (`termination.rs`) |
+| COM-03 Kill and DEL-02 Library (a Kill alongside a passive Open and a Kill-only instance, each on its own connection, answered OK with SIGHUP and complete cleanup only after the hang-up grace, the metadata and socket gone; a second Kill while the first is pending `invalid_state`, never sent), COM-06 Library (exactly one Command final of the same result) and REC-01 Library (retry none) | `installed_library_kills_a_real_session_only_after_termination_and_cleanup` (`termination.rs`) |
+| COM-03 Kill, DEL-02 and REC-01 Library: on an opened role, a Kill whose hello a stopped daemon never answers is rejected `timeout` within `kill_ms`, unsent, with no diagnostic; the role stays open and its Leave is confirmed after the daemon resumes; the session is never terminated | `installed_library_keeps_a_real_role_when_its_kill_cannot_reach_the_daemon` (`termination.rs`) |
+| REC-01 Library: transport loss (the real daemon killed) fails the role with `io_error`, retry passive; startup naming another session than its real metadata is `invalid_configuration`, permanent; a contained panic (`panic:receive`, hooked library only) is `internal_error`, retry passive | `installed_library_classifies_real_failures_for_retry` (`termination.rs`) |
+| REC-01 Library: a stopped daemon fails an Open with `timeout`, retry passive; destroy busy while handles are held; a fresh instance and generation open only after destroy and join | `installed_library_recovers_only_through_a_fresh_instance_after_join` (`termination.rs`) |
+| COM-06 and REC-01 Fault (beside #94's Command final cases in `control_faults.rs`): exit 0 and exit 143 as Command final records of their raw values, then a clean stop; a contradictory second Command final `invalid_record` (retry none); a close without final evidence (failed, passive) or meeting the caller's Leave (indeterminate) | `installed_library_relays_each_command_final_once_and_closure_invents_nothing` (`termination_faults.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Fault: a Kill-only instance's Kill sent once (wire ID 1, revision 1), `monitor-v1` not needed; confirmed, known-final, partial (known and unknown result), revisionless, lost, late (`kill_ms`), mismatched, uncorrelated, non-answer and Fatal answers with their retry; refused unsent for an unadvertised family, an oversized frame, a lost or silent hello; a second pending Kill `invalid_state`; `cancelled` before execution or after a hello shutdown overtook; a Kill under way answered after shutdown; never replayed, nothing counted once run returns | `installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it` (`termination_faults.rs`) |
+| COM-06 and COM-03 Fault: a partial termination on a failed Open, Leave or Acquire `invalid_record`, the request unanswered (the Leave indeterminate, retry none; the others retry passive) | `installed_library_refuses_a_partial_termination_on_any_other_request` (`termination_faults.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Fault, Kill on an opened role (the fake daemon's second connection): lost (`io_error`) and late (`timeout`) answers indeterminate, a partial termination (failed) and a known final result (rejected) carried, an unadvertised family and a lost hello rejected unsent, a second pending Kill `invalid_state`; never a diagnostic, the role reading on to its own Command final and clean stop, or to a close without final evidence (retry passive, or none once the partial termination knew the result); the auxiliary connection carries one Kill at most | `installed_library_keeps_an_opened_role_through_each_kill_failure` (`termination_faults.rs`) |
+
+### Library layer: status, viewing and acknowledgement (`tests/status*.rs`, #95)
+
+| Scenario | Named test |
+|---|---|
+| STA-07 Library (idle at the daemon's start in every Initial metadata, running at the first sample, needs_attention episode 1 ten seconds later; a fresh instance's Initial metadata keeps that episode and time; the final status only with Command final, completed, no Status after it), CTL-03 Library status case (the same status reaches a passive registration, an attachment revoked by takeover and a background controller) and STA-08 Library (viewing false from a background controller before Ready) | `installed_library_relays_status_to_every_role_and_keeps_its_identity_across_instances` (`status.rs`) |
+| Derived client-executable scenario (#102), STA-08 ordinary-attach case against a real daemon: pending attention stays pending while the session's own ready client only shows it; an explicit `climon2 attach` acknowledges it once ready (same episode); new agent work requests episode 2, which the viewing attached client does not acknowledge; the first client's take-control key acknowledges it once ready | `ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready` (`status.rs`) |
+| STA-08 Library: viewing true and Acknowledge `not_ready` before Ready, viewing false accepted during restoration; `not_viewing` until viewing true; viewing changed then unchanged; explicit no-change Acknowledge; Status acknowledged (same episode and time) before the changed success, then no change; viewing false leaves the status; `not_controller` after takeover; a new period starts not viewing; accepted Input clears acknowledged attention, its Status first. COM-03 Library: `stale_generation` locally | `installed_library_sets_viewing_and_acknowledges_attention_through_a_real_daemon` (`status.rs`) |
+| COM-03 Library and Fault (viewing and acknowledgement cases): malformed requests `invalid_argument`, queued requests `cancelled` by shutdown; STA-08 Fault: `unsupported_capability` without `status-v1` and `stale_generation`, none sent | `installed_library_rejects_viewing_and_acknowledgement_it_cannot_send` (`status_faults.rs`) |
+| STA-08 Library and Fault and COM-03 Library and Fault: wire bodies sent once; viewing and acknowledgement results mapped, no-change explicit, Status before a changed acknowledgement; daemon rejections (`stale_period`, `stale_restoration`, `not_ready`, `not_viewing`) kept; contradicting or mismatched results `invalid_record`; held answers `timeout` (indeterminate), closed connections no fabricated Response, nothing replayed | `installed_library_maps_viewing_and_acknowledgement_answers_without_replay` (`status_faults.rs`) |
+| STA-07 Library and Fault, CTL-03 Fault: every state, episode and exact time mapped, the final status in `CM1_FINAL` (completed, failed) and in a knowing Initial metadata, a status record charged its record alone; early, unselected or post-final Status, availability against the selection, final status without the result or working status with it, Command final without status, final state or stray episode `invalid_record` | `installed_library_relays_status_records_by_the_reference_rules` (`status_faults.rs`) |
 
 ### Library layer: mixed releases (`tests/mixed.rs`, #97)
 
@@ -324,6 +419,11 @@ earlier run would, so they open on the empty state.
 | HLP-02 (empty monitor) the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` |
 | HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the key introduction, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` |
 | HLP-02 (empty monitor) a doubled prefix reaches the key introduction as one literal prefix: with Ctrl+M as the prefix, Enter Enter continues, the prefix and Space reach nothing, prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` |
+| INP-01, INP-02, TRM-02, COM-04 (typed), EXT-03 (Ctrl+C) typed bytes reach the selected session exactly, identically when split into ten reads; prefix rules, replies and reports applied; cursor and keypad keys follow the application's modes; a lone Escape reaches the session at once and its key's rest follows; keys read with prefix+x arrive before exit | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` |
+| INP-01 (live and too-small screens) global actions work; input that cannot reach the session is discarded, never buffered | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` |
+| INP-02, HLP-02 (Escape) a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives; Escape then a key in one read closes it and the key reaches the session (many frames: only the title itself is checked afterwards) | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` |
+| Spec #73 exit (owner decision on #109) a stuck session's unanswered key, read with prefix+x, holds exit no longer than the operation and shutdown deadlines | `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` |
+| COM-03 (queue full), COM-04 (chunks) a refusal is shown with the bytes not sent; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between `Granted` and `Ready`; daemon

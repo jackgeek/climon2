@@ -1,8 +1,13 @@
 # Daemon-client post-hello boundary
 
 **Current:** a [session daemon](../../../GLOSSARY.md#sessions) speaks two
-post-hello protocols. The version-matched private protocol is implemented and
-serves ordinary attach and [kill](../../../GLOSSARY.md#attachment-and-control).
+post-hello protocols. The version-matched private protocol is implemented for
+ordinary attach and [kill](../../../GLOSSARY.md#attachment-and-control), but
+this release's [client executable](../../../GLOSSARY.md#sessions) no longer
+uses it: it attaches and kills through its own
+[client library](../../../GLOSSARY.md#sessions) over revision 1
+([#100](https://github.com/jackgeek/climon2/issues/100),
+[#101](https://github.com/jackgeek/climon2/issues/101)).
 [Daemon wire revision 1](core-v1.md), owned by
 [#67](https://github.com/jackgeek/climon2/issues/67), freezes a separate portable
 core contract; it is implemented for
@@ -91,7 +96,7 @@ limits/deadlines/policy. The
 [agreed lifecycle contract](../../monitor-lifecycle.md) owns recovery,
 concurrent truthful shutdown, run-local selector removal and
 [headless-session](../../../GLOSSARY.md#sessions) zero-client lifetime. Only the
-headless lifetime is implemented, on the current private protocol; none of these
+headless lifetime is implemented, for attachments of either protocol; none of these
 amendments changes a wire schema. Native declarations are agreed in #71; the
 [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
 not executed conformance evidence.

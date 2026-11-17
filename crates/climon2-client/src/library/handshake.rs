@@ -1,22 +1,21 @@
 //! Before any role takes effect: the session metadata, the frozen hello and
 //! the daemon's revision-1 support must all agree with this instance's
-//! session, release and Open. Each refusal says whether retrying can help:
+//! session, release and first role. Each refusal says whether retrying can help:
 //! an unreachable or silent daemon can recover; another session, another
 //! release or missing support cannot.
 
 use super::{
     RELEASE,
     failure::{Failed, Fault, require},
-    families,
+    families::{self, Role},
     link::{Link, TIMEOUT, remaining},
-    request::Open,
 };
 use climon2_core::{
     SessionId,
     hello::{Advertised, HelloExtensions},
     metadata::SessionMetadata,
     protocol::{self, ClientMessage, HelloReply, PROTOCOL_VERSION, ServerMessage},
-    wire::{Advertisement, Frame, FrameLimit, Requested},
+    wire::{Advertisement, Frame, FrameLimit},
 };
 use std::{
     fs::File,
@@ -84,7 +83,7 @@ pub(super) struct Peer {
 
 /// The socket the session's metadata names, once the metadata is this
 /// session's, at this release.
-pub(super) fn socket(expected: &Expected) -> Result<PathBuf, Failed> {
+fn socket(expected: &Expected) -> Result<PathBuf, Failed> {
     let mut bytes = Vec::new();
     File::open(expected.metadata)
         .and_then(|file| file.take(expected.bytes).read_to_end(&mut bytes))
@@ -100,19 +99,26 @@ fn agree(found: &str, expected: &str, refusal: Failed) -> Result<(), Failed> {
     require(found == expected, refusal)
 }
 
-/// Connects and exchanges the frozen hello before `deadline`, then checks
-/// the daemon's identity and its support for `open`.
-pub(super) fn hello(
-    socket: &Path,
+/// Reads the session's metadata, connects and exchanges the frozen hello
+/// before `deadline`, then checks the daemon's identity and its support
+/// for `role`.
+pub(super) fn connect(
     expected: &Expected,
-    open: &Open,
+    role: Role,
     deadline: Instant,
 ) -> Result<(Link, Peer), Failed> {
-    let timeout = remaining(deadline).ok_or(Failed::passive(TIMEOUT))?;
-    let mut link = Link::connect(socket, timeout).map_err(Failed::passive)?;
+    let mut link = reach(expected, deadline)?;
     let reply = exchange(&mut link, deadline)?;
-    let peer = peer(&reply, expected, open)?;
+    let peer = peer(&reply, expected, role)?;
     Ok((link, peer))
+}
+
+/// A connection to the socket the session's metadata names, before
+/// `deadline`.
+fn reach(expected: &Expected, deadline: Instant) -> Result<Link, Failed> {
+    let socket = socket(expected)?;
+    let timeout = remaining(deadline).ok_or(Failed::passive(TIMEOUT))?;
+    Link::connect(&socket, timeout).map_err(Failed::passive)
 }
 
 fn exchange(link: &mut Link, deadline: Instant) -> Result<Frame, Failed> {
@@ -128,10 +134,10 @@ fn exchange(link: &mut Link, deadline: Instant) -> Result<Frame, Failed> {
     link.exchange(limit, deadline).map_err(Failed::passive)
 }
 
-fn peer(frame: &Frame, expected: &Expected, open: &Open) -> Result<Peer, Failed> {
+fn peer(frame: &Frame, expected: &Expected, role: Role) -> Result<Peer, Failed> {
     identity(&reply(frame)?, expected.session)?;
     let advertisement = advertisement(frame)?;
-    supported(advertisement, &open.requested, expected.wire_frame_bytes)
+    supported(advertisement, role, expected.wire_frame_bytes)
 }
 
 /// The frozen reply: a hello frame with its required fields.
@@ -160,16 +166,13 @@ fn advertisement(frame: &Frame) -> Result<Advertisement, Failed> {
     }
 }
 
-/// The families the Open needs, and frames this instance can receive.
+/// The families the role needs, and frames this instance can receive.
 fn supported(
     advertisement: Advertisement,
-    requested: &Requested,
+    role: Role,
     wire_frame_bytes: u32,
 ) -> Result<Peer, Failed> {
-    require(
-        families::supports(&advertisement, requested),
-        UNSUPPORTED_FAMILY,
-    )?;
+    require(families::supports(&advertisement, role), UNSUPPORTED_FAMILY)?;
     let limits = advertisement.limits();
     let server = limits.max_server_frame_bytes.get();
     require(server <= wire_frame_bytes, UNFIT_FRAMES)?;

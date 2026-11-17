@@ -1,6 +1,13 @@
 # Final command result
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements it
+([#94](https://github.com/jackgeek/climon2/issues/94),
+[#96](https://github.com/jackgeek/climon2/issues/96)), with the final status
+exactly when `status-v1` is selected
+([#95](https://github.com/jackgeek/climon2/issues/95)), as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the caller
+is not implemented.**
 The [session daemon](../../../GLOSSARY.md#sessions) reports an authoritative final
 command result through its [client](../../../GLOSSARY.md#sessions) to the
 [monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
