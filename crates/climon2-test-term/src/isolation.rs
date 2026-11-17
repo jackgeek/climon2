@@ -6,7 +6,10 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -129,6 +132,20 @@ fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
     })
 }
 
+/// The user's login shell from the password database, looked up once with
+/// the reentrant `getpwuid_r`. A command without `SHELL` makes portable-pty
+/// call `getpwuid`, whose static buffer parallel test threads overwrite, so a
+/// spawn could see another account's shell (for example `/usr/bin/nologin`).
+fn login_shell() -> &'static Path {
+    static SHELL: OnceLock<PathBuf> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map_or_else(|| PathBuf::from("/bin/sh"), |user| user.shell)
+    })
+}
+
 pub struct Isolation {
     directory: TempDir,
     id: String,
@@ -181,6 +198,7 @@ impl Isolation {
         );
         command.env("TERM", "xterm-256color");
         command.env("LANG", "en_US.UTF-8");
+        command.env("SHELL", login_shell());
         if let Some(profile) = env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }
