@@ -357,6 +357,12 @@ impl Monitor {
             return Ok(());
         }
         self.screen.exiting(waiting)?;
+        self.resized(host)
+    }
+
+    /// One wait for host input during exit: a resize resizes the exit
+    /// screen, and anything else is ignored.
+    fn resized(&mut self, host: &mut Host) -> io::Result<()> {
         if let Event::Resize(size) = host.next()? {
             self.screen.resize(size);
         }
