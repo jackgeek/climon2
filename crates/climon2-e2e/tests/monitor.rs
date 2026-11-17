@@ -5536,10 +5536,15 @@ fn not_connected_rows_and_untimed_finals_sort_by_when_the_monitor_recorded_them(
     let package = Package::new();
     without_introduction(&package);
     // The acquisition initial selection starts is never granted, nor timed
-    // out while the test runs.
+    // out while the test runs. Nor is lost's client retried: each retry its
+    // fake daemon accepts would lose it again and re-record when, so on a
+    // slow host lost could sort as newer than rows the test adds after it.
     limits_config(
         &package,
-        serde_json::json!({"deadlines": {"operation_ms": 120_000}}),
+        serde_json::json!({
+            "deadlines": {"operation_ms": 120_000},
+            "retry": {"initial_ms": 120_000, "cap_ms": 120_000},
+        }),
     );
     let home = package.isolation.home().to_owned();
     let (lost_go, late_go) = (home.join("lost.go"), home.join("late.go"));
