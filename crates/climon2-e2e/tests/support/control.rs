@@ -22,7 +22,6 @@ pub const REVOKED: u64 = 8;
 pub const RESTORATION_BEGIN: u64 = 9;
 pub const DISPLAY: u64 = 10;
 pub const RESTORATION_COMPLETE: u64 = 11;
-pub const FINAL: u64 = 12;
 pub const GEOMETRY: u64 = 13;
 pub const ATTACH: u64 = 1;
 pub const TAKE_CONTROL: u64 = 2;
@@ -97,6 +96,8 @@ pub fn focus(id: u64, generation: u64, which: (&str, &str), value: u64) -> Value
 pub struct Session {
     pub terminal: Terminal,
     pub id: String,
+    /// The session daemon's process.
+    pub pid: u32,
     metadata: PathBuf,
     socket: PathBuf,
     end: PathBuf,
@@ -104,23 +105,31 @@ pub struct Session {
 
 impl Session {
     pub fn start(package: &Package, root: &Path) -> Self {
-        Self::running(package, root, &["echo-until", "END"])
+        Self::running(package, root, &["echo-until", "END"], &[])
     }
 
     /// A session whose application only waits for the `end` file after
     /// `ECHO-READY`, whoever controls it.
     pub fn idle(package: &Package, root: &Path) -> Self {
-        Self::running(package, root, &[])
+        Self::running(package, root, &[], &[])
     }
 
-    fn running(package: &Package, root: &Path, then: &[&str]) -> Self {
+    /// A session whose application only waits for the `end` file after
+    /// `ECHO-READY`, then follows `then` (#96): for example `exit 143`,
+    /// `kill-self TERM` or `await-file` of a file never created.
+    pub fn ending(package: &Package, root: &Path, then: &[&str]) -> Self {
+        Self::running(package, root, &[], then)
+    }
+
+    fn running(package: &Package, root: &Path, before: &[&str], then: &[&str]) -> Self {
         let end = root.join("end");
         let mut command = package.command("climon2");
         command.args(["exec", "climon2-fixture", "raw", "print", "\x1b[?1004h"]);
         command.args(["print", "ECHO-READY"]);
-        command.args(then);
+        command.args(before);
         command.arg("await-file");
         command.arg(&end);
+        command.args(then);
         let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
         terminal.wait_for_text("ECHO-READY", TIMEOUT).unwrap();
         let metadata = package.metadata();
@@ -133,6 +142,7 @@ impl Session {
                 .join("sessions")
                 .join(format!("{id}.pty")),
             socket: PathBuf::from(metadata.socket_path.as_str()),
+            pid: metadata.daemon_pid,
             id,
             end,
         }
@@ -165,6 +175,12 @@ impl Session {
 
     pub fn socket(&self) -> &str {
         self.socket.to_str().unwrap()
+    }
+
+    /// Whether the daemon's cleanup removed the session's metadata and
+    /// socket (#96).
+    pub fn cleaned_up(&self) -> bool {
+        !self.metadata.exists() && !self.socket.exists()
     }
 
     /// Lets the application exit 0 once its input held `END`.
@@ -316,25 +332,6 @@ pub fn drained(report: &Value, steps: &[Value], label: &str) -> Vec<Value> {
         .as_array()
         .unwrap()
         .clone()
-}
-
-/// A `CM1_FINAL` record of `generation`: its command result, with status
-/// unavailable, since `status-v1` is never selected.
-pub fn assert_final(record: &Value, generation: u64, command: Value) {
-    assert_header(record, FINAL, generation);
-    assert_eq!(record["final"]["command_result"], command, "{record:#}");
-    assert_eq!(
-        record["final"]["status"],
-        json!({ "available": 0, "reserved": 0 }),
-        "{record:#}"
-    );
-}
-
-/// An exit or signal command result as the native record carries it,
-/// with no signal name.
-pub fn command_result(kind: u64, value: u64) -> Value {
-    let unnamed = json!({ "present": 0, "reserved": 0, "value": { "null": true, "length": 0 } });
-    json!({ "kind": kind, "value": value, "signal_name": unnamed })
 }
 
 /// The tags of `records`.

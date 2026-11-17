@@ -16,7 +16,12 @@
 //! - `open` and `leave`: the actions after the library's Open, and after
 //!   each Leave; `leaves`, a list of action lists, overrides `leave` for the
 //!   first Leaves in turn; `input`, `resize`, `acquire`, `ready` and
-//!   `focus`: the actions after each of those requests (#94).
+//!   `focus`: the actions after each of those requests (#94); `kill`: the
+//!   actions after a Kill (#96);
+//! - `auxiliary`: a script of its own (its `hello` and actions) for a
+//!   second connection, accepted once the first one is and served beside
+//!   it, as a Kill on an opened instance needs (#96); the report has its
+//!   frames under `auxiliary`.
 //!
 //! An action is `{"send": {"type": n, "json": value}}` (a JSON body in which
 //! the string `"$open"`, `"$leave"` or another request kind's name is that
@@ -51,7 +56,8 @@ use std::{
 
 const DEFAULT_SESSION: &str = "0123456789abcdef0123456789abcdef";
 
-/// One fake daemon, serving one connection on its own thread.
+/// One fake daemon, serving one connection on its own thread, and an
+/// auxiliary one on another if its script names one.
 pub struct Peer {
     pub metadata: PathBuf,
     pub session: String,
@@ -59,7 +65,12 @@ pub struct Peer {
     /// Set once the scenario is over: a peer never connected stops waiting.
     over: Arc<AtomicBool>,
     thread: Option<JoinHandle<Value>>,
+    /// The auxiliary connection's thread, once the first connection is
+    /// accepted.
+    auxiliary: Auxiliary,
 }
+
+type Auxiliary = Arc<Mutex<Option<JoinHandle<Value>>>>;
 
 impl Peer {
     pub fn start(root: &Path, name: &str, release: &str, script: &Value) -> Self {
@@ -93,6 +104,7 @@ impl Peer {
         let received = Arc::new(Mutex::new(Vec::new()));
         let over = Arc::new(AtomicBool::new(false));
         let waiting = Arc::clone(&over);
+        let auxiliary = Auxiliary::default();
         let serving = Serving {
             script: script.clone(),
             guid,
@@ -101,9 +113,16 @@ impl Peer {
             ids: Map::new(),
             closed: false,
         };
+        let spawned = Arc::clone(&auxiliary);
         let thread = thread::Builder::new()
             .name(format!("peer-{name}"))
-            .spawn(move || serving.serve(&listener, &waiting))
+            .spawn(move || {
+                let first = accept(&listener, &waiting);
+                if first.is_some() {
+                    *spawned.lock().unwrap() = serving.auxiliary(&listener, &waiting);
+                }
+                serving.serve(first)
+            })
             .expect("the fake daemon starts");
         Self {
             metadata,
@@ -111,6 +130,7 @@ impl Peer {
             received,
             over,
             thread: Some(thread),
+            auxiliary,
         }
     }
 
@@ -128,19 +148,30 @@ impl Peer {
         self.frames() >= count
     }
 
-    /// Everything the connection carried, once the library closed it.
+    /// Everything the connection carried, once the library closed it,
+    /// with the auxiliary connection's report if the script names one.
     pub fn report(mut self) -> Value {
         self.over.store(true, Ordering::SeqCst);
         let thread = self.thread.take().expect("reported once");
-        let deadline = probe::deadline();
-        while !thread.is_finished() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(5));
+        let mut report = joined(thread).unwrap_or_else(
+            || json!({ "finished": false, "frames": *self.received.lock().unwrap() }),
+        );
+        if let Some(auxiliary) = self.auxiliary.lock().unwrap().take() {
+            report["auxiliary"] = joined(auxiliary).unwrap_or(json!({ "finished": false }));
         }
-        if !thread.is_finished() {
-            return json!({ "finished": false, "frames": *self.received.lock().unwrap() });
-        }
-        thread.join().expect("the fake daemon ends")
+        report
     }
+}
+
+/// A serving thread's report, once it ends within the probe deadline.
+fn joined(thread: JoinHandle<Value>) -> Option<Value> {
+    let deadline = probe::deadline();
+    while !thread.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    thread
+        .is_finished()
+        .then(|| thread.join().expect("the fake daemon ends"))
 }
 
 fn merge(base: &mut Value, overrides: &Value) {
@@ -184,8 +215,32 @@ enum Next {
 }
 
 impl Serving {
-    fn serve(mut self, listener: &UnixListener, over: &AtomicBool) -> Value {
-        let Some(mut stream) = accept(listener, over) else {
+    /// The script's auxiliary connection, served on a thread of its own
+    /// once accepted: the next connection after the first.
+    fn auxiliary(
+        &self,
+        listener: &UnixListener,
+        over: &Arc<AtomicBool>,
+    ) -> Option<JoinHandle<Value>> {
+        let serving = Self {
+            script: self.script.get("auxiliary")?.clone(),
+            guid: self.guid.clone(),
+            release: self.release.clone(),
+            received: Arc::default(),
+            ids: Map::new(),
+            closed: false,
+        };
+        let listener = listener.try_clone().expect("the fake daemon's socket");
+        let over = Arc::clone(over);
+        let thread = thread::Builder::new()
+            .name("peer-auxiliary".to_owned())
+            .spawn(move || serving.serve(accept(&listener, &over)))
+            .expect("the auxiliary connection's server starts");
+        Some(thread)
+    }
+
+    fn serve(mut self, accepted: Option<UnixStream>) -> Value {
+        let Some(mut stream) = accepted else {
             return json!({ "accepted": false, "frames": [] });
         };
         let next = self.hello(&mut stream);
@@ -275,6 +330,7 @@ impl Serving {
                 0x33 => "acquire",
                 0x34 => "ready",
                 0x37 => "leave",
+                0x38 => "kill",
                 0x39 => "focus",
                 _ => "other",
             };
