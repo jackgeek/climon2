@@ -12,36 +12,14 @@ Features are incomplete if they are not tested by automated testing.
 
 When executable or dynamic-library artifacts, their consumption relationships,
 or their architecture decisions change, update `docs/runtime-artifacts.md`.
-Its diagram shows only the runtime artifacts that execute when a user types `c2`
-followed by a command, and the climon2 executables and libraries those calls
-ultimately invoke, with their consumption relationships. Never add installation
-(the installer or install arrows) or development and test-only executables
-(xtask, Cargo tooling, fixtures, test harnesses, stand-in or second-release
-libraries) to it.
 When workspace crates, their consumption relationships, or their architecture
-decisions change, update `docs/crate-relationships.md`. Include all workspace
-crates and omit third-party crates. It holds two diagrams:
+decisions change, update `docs/crate-relationships.md`: include every workspace
+crate, omit third-party crates, and derive current edges from
+`cargo metadata --no-deps --format-version 1`, not memory.
 
-- **Shipped crates:** only crates that ship, and only the normal dependencies
-  between them. Never show development or test-only crates or dev-dependencies
-  here.
-- **Development and test-only crates:** every edge that starts or ends at a
-  development or test-only crate, including shipped crates' dev-dependencies on
-  them. Show a shipped crate only when such an edge touches it, inside the
-  shipped subgraph, and never draw an edge between two shipped crates.
-
-Every workspace crate belongs to exactly one group; a new crate that ships goes
-in the first diagram, and one used only for development or tests goes in the
-second. A planned crate goes in the diagram of the group it will join. Derive
-current edges from `cargo metadata --no-deps --format-version 1`, not memory,
-and make sure each workspace-crate edge appears in exactly one diagram.
-Below each diagram, keep a table with one row per crate in that group,
-describing its purpose; the development table describes only development and
-test-only crates. Add, remove or reword rows whenever a crate is added,
-removed, renamed or changes purpose.
-
-Keep current and planned relationships distinct in the crate and artifact
-diagrams and preserve their README links.
+In both documents, the sentence above each diagram states its scope; keep every
+diagram within it. Keep current and planned relationships distinct and preserve
+the README links.
 
 ## Agent skills
 
