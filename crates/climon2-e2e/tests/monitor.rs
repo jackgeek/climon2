@@ -250,10 +250,23 @@ fn preferences_file(package: &Package) -> PathBuf {
 
 /// Saves Don't show again in the test's climon2 home, as an earlier run
 /// would, so the monitor opens on its empty state without the key
-/// introduction.
+/// introduction, and configures the [`PATIENT`] deadlines.
 fn without_introduction(package: &Package) {
     fs::write(preferences_file(package), SUPPRESSED).unwrap();
+    limits_config(package, json!({}));
 }
+
+/// Deadlines a loaded host meets: a gate runs eight suites at once, and
+/// every test of a suite starts its sessions together, so a client's start
+/// or one operation can take longer than the defaults allow (10 s and 5 s).
+/// A test about a deadline sets that deadline itself ([`limits_config`]).
+const PATIENT: [(&str, u32); 5] = [
+    ("load_ms", 60_000),
+    ("start_ms", 60_000),
+    ("operation_ms", 60_000),
+    ("restoration_stall_ms", 60_000),
+    ("delivery_stall_ms", 60_000),
+];
 
 /// The climon2 home holds the choice `suppressed` exactly as a release saves
 /// it, readable and writable only by its owner, and nothing else a save could
@@ -2187,8 +2200,19 @@ impl Drop for FakeDaemon {
     }
 }
 
-/// Writes `config.jsonc` with these `monitor.limits` values.
-fn limits_config(package: &Package, limits: serde_json::Value) {
+/// Writes `config.jsonc` with these `monitor.limits` values, and the
+/// [`PATIENT`] deadlines that `limits` does not set.
+fn limits_config(package: &Package, mut limits: serde_json::Value) {
+    let deadlines = limits
+        .as_object_mut()
+        .unwrap()
+        .entry("deadlines")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .unwrap();
+    for (name, milliseconds) in PATIENT {
+        deadlines.entry(name).or_insert(json!(milliseconds));
+    }
     fs::write(
         config_file(package),
         serde_json::json!({"monitor": {"limits": limits}}).to_string(),
@@ -4049,6 +4073,11 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
 fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     let package = Package::new();
     without_introduction(&package);
+    // Each time a dialog covers or uncovers Keys the monitor reports its
+    // focus and viewing, and cancelling acknowledges: some forty operations
+    // in all, which a loaded daemon may not have answered yet. The default
+    // sixteen would then refuse the typed keys, visibly, as specified.
+    limits_config(&package, json!({"queues": {"operations": 64}}));
     // After an empty start Keys, the first to appear, is the initial
     // selection; Other comes after it.
     let mut terminal = outer(&package, "c2 monitor");
@@ -4908,6 +4937,8 @@ const TIMED_OUT: &str = "Taken | the session daemon did not answer in time";
 fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     let package = Package::new();
     without_introduction(&package);
+    // Taken's Acquire times out at the default operation deadline.
+    limits_config(&package, json!({"deadlines": {"operation_ms": 5000}}));
     // After an empty start Alpha, the first to appear, is the initial
     // selection; Taken, attached elsewhere, comes after it.
     let mut terminal = outer(&package, "c2 monitor");
