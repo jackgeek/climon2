@@ -67,6 +67,12 @@ The archive's session daemon has no controllable status clock
 returns early in archive mode, and its other real-session cases expect the
 status the daemon's own heuristic settles on (a session whose title changed
 needs attention ten quiet seconds later) instead of the frozen clock's Idle.
+The monitor's real-session scenarios of #108 and #109 do not depend on that
+clock: each of their sessions reports a root OSC 7501 `working` at start,
+which holds its status at Running on any clock (explicit detection; typed
+input's user work returns to it), a session that must stay Idle reports
+`clear` instead, and a scenario with several sessions waits for each row's
+status before moving the highlight.
 
 From release two, set `CLIMON2_E2E_PREVIOUS_ARCHIVE` to the actual published
 previous release archive for that platform as well. The compatibility gate starts its real
