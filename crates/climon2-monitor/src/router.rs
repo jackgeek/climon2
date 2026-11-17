@@ -74,8 +74,6 @@ pub(crate) struct Router {
     /// The Escape that began the current sequence already reached the
     /// application.
     released: bool,
-    /// The latest pasted bytes, to find the paste's end marker.
-    recent: [u8; MARKER],
     /// Pasted bytes not routed yet: the last few of a read may begin the
     /// end marker.
     pasted: Vec<u8>,
@@ -91,11 +89,19 @@ enum Scan {
     /// A control sequence after `ESC` and its introducer (`[` or `O`): its
     /// bytes so far, or none while an overlong one is skipped.
     Sequence(u8, Option<Vec<u8>>),
+    /// Bytes that are data until their end, never keys.
+    Data(Data),
+}
+
+/// Data the scan passes over until its end.
+#[derive(Debug)]
+enum Data {
     /// An OSC, DCS, APC or PM string, which only a host reply sends; true just
     /// after an Escape inside it.
     Text(bool),
-    /// A bracketed paste, until its end marker.
-    Paste,
+    /// A bracketed paste, until its end marker: how many of the marker's
+    /// bytes the latest pasted bytes match.
+    Paste(usize),
 }
 
 /// What the scan finds.
@@ -114,8 +120,7 @@ const BEL: u8 = 0x07;
 /// final byte, never forwarded.
 const SEQUENCE_BYTES: usize = 64;
 const PASTE_START: &[u8] = b"200~";
-const PASTE_END: &[u8; MARKER] = b"\x1b[201~";
-const MARKER: usize = 6;
+const PASTE_END: &[u8] = b"\x1b[201~";
 /// The final bytes of the cursor keys that DECCKM changes.
 const CURSOR: &[u8] = b"ABCDHF";
 /// Each application keypad key's final byte, and what the key sends in
@@ -158,7 +163,6 @@ impl Router {
             pending: false,
             scan: Scan::Ground,
             released: false,
-            recent: [0; MARKER],
             pasted: Vec::new(),
         }
     }
@@ -169,7 +173,7 @@ impl Router {
         for &byte in bytes {
             self.scan(byte, &mut tokens);
         }
-        self.paste_data(MARKER - 1, &mut tokens);
+        self.paste_data(PASTE_END.len() - 1, &mut tokens);
         self.route(tokens)
     }
 
@@ -242,16 +246,15 @@ impl Router {
             Scan::Ground => self.ground(byte, tokens),
             Scan::Escape => self.escaped(byte, tokens),
             Scan::Sequence(introducer, body) => self.sequence(introducer, body, byte, tokens),
-            data => self.data(data, byte, tokens),
+            Scan::Data(data) => self.data(data, byte, tokens),
         }
     }
 
     /// A byte of a host reply's string or of a paste.
-    fn data(&mut self, data: Scan, byte: u8, tokens: &mut Vec<Token>) {
-        if let Scan::Text(escaped) = data {
-            self.text(escaped, byte, tokens);
-        } else {
-            self.pasted(byte, tokens);
+    fn data(&mut self, data: Data, byte: u8, tokens: &mut Vec<Token>) {
+        match data {
+            Data::Text(escaped) => self.text(escaped, byte, tokens),
+            Data::Paste(matched) => self.pasted(matched, byte, tokens),
         }
     }
 
@@ -270,7 +273,7 @@ impl Router {
             b'[' | b'O' => self.scan = Scan::Sequence(byte, Some(Vec::new())),
             b']' | b'P' | b'_' | b'^' => {
                 self.released = false;
-                self.scan = Scan::Text(false);
+                self.scan = Scan::Data(Data::Text(false));
             }
             _ => {
                 if !std::mem::take(&mut self.released) {
@@ -332,8 +335,7 @@ impl Router {
             csi(body)
         };
         if token == Some(Token::Paste(Paste::Start)) {
-            self.scan = Scan::Paste;
-            self.recent = [0; MARKER];
+            self.scan = Scan::Data(Data::Paste(0));
         }
         let released = std::mem::take(&mut self.released);
         tokens.extend(token.map(|token| rest(token, released)));
@@ -345,20 +347,25 @@ impl Router {
         match (escaped, byte) {
             (_, BEL) | (true, b'\\') => {}
             (true, _) => self.escaped(byte, tokens),
-            (false, _) => self.scan = Scan::Text(byte == ESC),
+            (false, _) => self.scan = Scan::Data(Data::Text(byte == ESC)),
         }
     }
 
-    /// Pasted bytes are data until the end marker, which ends the paste.
-    fn pasted(&mut self, byte: u8, tokens: &mut Vec<Token>) {
-        self.recent.rotate_left(1);
-        self.recent[MARKER - 1] = byte;
+    /// Pasted bytes are data until the end marker, which ends the paste. A
+    /// byte that breaks a partial match can only begin a new one, as the
+    /// marker's Escape, which occurs only at its start.
+    fn pasted(&mut self, matched: usize, byte: u8, tokens: &mut Vec<Token>) {
+        let matched = if byte == PASTE_END[matched] {
+            matched + 1
+        } else {
+            usize::from(byte == ESC)
+        };
         self.pasted.push(byte);
-        if self.recent != *PASTE_END {
-            self.scan = Scan::Paste;
+        if matched < PASTE_END.len() {
+            self.scan = Scan::Data(Data::Paste(matched));
             return;
         }
-        self.pasted.truncate(self.pasted.len() - MARKER);
+        self.pasted.truncate(self.pasted.len() - PASTE_END.len());
         self.paste_data(0, tokens);
         tokens.push(Token::Paste(Paste::End));
     }
@@ -876,6 +883,19 @@ mod tests {
             router.read(b"\x1b[201~z"),
             [data(b"[201x"), END, bytes(b"z")]
         );
+    }
+
+    /// INP-03 (pure input-router supplement): only the whole end marker
+    /// ends a paste, the first paste or a later one: pasted text that
+    /// begins like the marker without its Escape, or a pasted Escape
+    /// straight before the marker, stays pasted.
+    #[test]
+    fn only_the_whole_end_marker_ends_a_paste() {
+        let mut router = router("Ctrl+]");
+        let paste = b"\x1b[200~[201~x\x1b\x1b[201~y";
+        let routed = [START, data(b"[201~x\x1b"), END, bytes(b"y")];
+        assert_eq!(router.read(paste), routed);
+        assert_eq!(router.read(paste), routed);
     }
 
     /// INP-02 (pure input-router supplement): a sequence that a control

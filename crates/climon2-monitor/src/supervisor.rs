@@ -289,7 +289,7 @@ impl State {
     fn settle_input(&mut self) {
         let bound = Duration::from_millis(self.context.limits.operation_ms.into());
         let deadline = Instant::now() + bound;
-        while self.input_pending() && Instant::now() < deadline {
+        while self.input_pending() && before(deadline) {
             self.internals();
             self.poll();
         }
@@ -670,9 +670,7 @@ impl State {
     fn shut_down(mut self) {
         self.waiting.clear();
         let deadline = Instant::now() + self.context.shutdown;
-        while !self.instances.is_empty()
-            && deadline.checked_duration_since(Instant::now()).is_some()
-        {
+        while !self.instances.is_empty() && before(deadline) {
             let live = self
                 .instances
                 .values()
@@ -688,6 +686,11 @@ impl State {
             );
         }
     }
+}
+
+/// Whether `deadline` has not passed yet.
+fn before(deadline: Instant) -> bool {
+    deadline.checked_duration_since(Instant::now()).is_some()
 }
 
 /// Whether a lane of `bound` has room beside the `used` slots it holds.
