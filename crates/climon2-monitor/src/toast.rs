@@ -7,7 +7,9 @@
 //! everything after them.
 //! One toast shows at a time, yellow, bottom-right in a four-row lane below
 //! the selector, its border drawn clockwise, its label held, faded, and its
-//! border erased clockwise. A toast covering the selected session's canvas
+//! border erased clockwise. The hold, and the toast's one bell, start once
+//! the frame showing its full title has been written to the host (owner
+//! decision on #115, 2026-11-17). A toast covering the selected session's canvas
 //! stops it counting as viewed (`lib.rs`), and prefix+j and Enter dismiss a
 //! toast covering their target (owner decision on #114).
 use crate::{
@@ -59,6 +61,9 @@ struct Content {
 struct Shown {
     content: Content,
     began: Instant,
+    /// How long after it began the frame showing its full title finished
+    /// writing to the host: its hold starts then.
+    titled: Option<Duration>,
     /// How long after it began it was dismissed.
     dismissed: Option<Duration>,
 }
@@ -120,16 +125,16 @@ impl Toasts {
 
     /// Advances to `now` in `area`, the rows below the top row: a toast
     /// that has disappeared goes, and the next one begins drawing if none
-    /// shows and it fits. Returns whether one began, for the bell.
-    pub(crate) fn frame(&mut self, now: Instant, area: Rect) -> bool {
+    /// shows and it fits.
+    pub(crate) fn frame(&mut self, now: Instant, area: Rect) {
         self.shown = self.shown.take().filter(|shown| !shown.ended(now));
         if self.shown.is_some() {
-            return false;
+            return;
         }
         let next = self.waiting.front().cloned();
         let next = next.or_else(|| self.more.then(more));
         let Some(content) = next.filter(|content| place(content, area).is_some()) else {
-            return false;
+            return;
         };
         if self.waiting.pop_front().is_none() {
             self.more = false;
@@ -137,9 +142,26 @@ impl Toasts {
         self.shown = Some(Shown {
             content,
             began: now,
+            titled: None,
             dismissed: None,
         });
-        true
+    }
+
+    /// Whether the frame drawn at `now` in `area` is the first to show the
+    /// shown toast's full title: once it has been written to the host, the
+    /// hold starts and the bell rings ([`Toasts::titled`]).
+    pub(crate) fn titling(&self, now: Instant, area: Rect) -> bool {
+        let shown = self.shown.as_ref().filter(|_| self.rect(area).is_some());
+        shown.is_some_and(|shown| shown.titled.is_none() && shown.text(now) == Text::Shown)
+    }
+
+    /// The frame showing the shown toast's full title finished writing to
+    /// the host at `at`: its hold starts then, once.
+    pub(crate) fn titled(&mut self, at: Instant) {
+        if let Some(shown) = &mut self.shown {
+            let after = at.saturating_duration_since(shown.began);
+            shown.titled.get_or_insert(after);
+        }
     }
 
     /// The cells the shown toast occupies in `area`, if one shows there.
@@ -180,8 +202,8 @@ impl Toasts {
         }
     }
 
-    /// Dismisses the shown toast at `now`: its text fades, or, while its
-    /// border is still drawing, what was drawn is erased at once.
+    /// Dismisses the shown toast at `now`: its text fades, or, before its
+    /// title has been shown, what was drawn is erased at once.
     fn dismiss(&mut self, now: Instant) {
         if let Some(shown) = &mut self.shown {
             let at = now.saturating_duration_since(shown.began);
@@ -195,15 +217,27 @@ impl Toasts {
         let Some((shown, rect)) = shown.zip(self.rect(area)) else {
             return;
         };
-        let elapsed = now.saturating_duration_since(shown.began);
-        let look = look(elapsed, schedule(shown.dismissed), perimeter(rect));
+        let look = look(shown.elapsed(now), shown.schedule(), perimeter(rect));
         draw(&shown.content, rect, &look, buffer);
     }
 }
 
 impl Shown {
+    fn elapsed(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.began)
+    }
+
+    fn schedule(&self) -> Schedule {
+        schedule(self.titled, self.dismissed)
+    }
+
     fn ended(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.began) >= schedule(self.dismissed).end
+        self.elapsed(now) >= self.schedule().end
+    }
+
+    /// How its text shows at `now`.
+    fn text(&self, now: Instant) -> Text {
+        text(self.elapsed(now), &self.schedule())
     }
 }
 
@@ -239,19 +273,25 @@ struct Schedule {
     end: Duration,
 }
 
-/// The schedule of a toast dismissed when `dismissed` says: drawn, held,
-/// faded and erased in turn; dismissed while drawing, it erases what was
-/// drawn at once, as fast as it drew it; dismissed while held, its text
-/// fades at once. Dismissed later, it was already disappearing.
-fn schedule(dismissed: Option<Duration>) -> Schedule {
-    match dismissed {
-        Some(at) if at < DRAW => Schedule {
+/// The schedule of a toast whose full title was shown when `titled` says
+/// and that was dismissed when `dismissed` says: drawn, its title shown
+/// until it has been, held from then, faded and erased in turn. Dismissed
+/// before its title was shown, it erases what was drawn at once, as fast as
+/// it drew it; dismissed while held, its text fades at once. Dismissed
+/// later, it was already disappearing.
+fn schedule(titled: Option<Duration>, dismissed: Option<Duration>) -> Schedule {
+    match (titled, dismissed) {
+        (Some(titled), dismissed) => fading(dismissed.unwrap_or(Duration::MAX).min(titled + HOLD)),
+        (None, Some(at)) => Schedule {
             fade: at,
             erase: at,
-            end: at * 2,
+            end: at + at.min(DRAW),
         },
-        Some(at) => fading(at.min(DRAW + HOLD)),
-        None => fading(DRAW + HOLD),
+        (None, None) => Schedule {
+            fade: Duration::MAX,
+            erase: Duration::MAX,
+            end: Duration::MAX,
+        },
     }
 }
 
@@ -289,17 +329,23 @@ struct Look {
 fn look(elapsed: Duration, schedule: Schedule, perimeter: usize) -> Look {
     let drawn = share(perimeter, elapsed.min(schedule.erase), DRAW);
     let erased = share(perimeter, elapsed.saturating_sub(schedule.erase), ERASE);
-    let text = if !(DRAW..schedule.erase).contains(&elapsed) {
+    Look {
+        border: erased.min(drawn)..drawn,
+        text: text(elapsed, &schedule),
+        filled: elapsed < schedule.erase,
+    }
+}
+
+/// How a toast's text shows `elapsed` after it began, by `schedule`: from
+/// when its border is drawn until it fades, then faded until its border
+/// starts erasing.
+fn text(elapsed: Duration, schedule: &Schedule) -> Text {
+    if !(DRAW..schedule.erase).contains(&elapsed) {
         Text::Hidden
     } else if elapsed < schedule.fade {
         Text::Shown
     } else {
         Text::Faded
-    };
-    Look {
-        border: erased.min(drawn)..drawn,
-        text,
-        filled: elapsed < schedule.erase,
     }
 }
 
@@ -422,12 +468,22 @@ mod tests {
         Rect::new(0, 1, cols, rows - 1)
     }
 
-    /// The label of each toast shown, in turn, until none is left.
+    /// Whether a toast begins in the frame at `now`.
+    fn begins(toasts: &mut Toasts, now: Instant) -> bool {
+        let before = toasts.shown.as_ref().map(|shown| shown.began);
+        toasts.frame(now, area(120, 30));
+        let after = toasts.shown.as_ref().map(|shown| shown.began);
+        after.is_some() && after != before
+    }
+
+    /// The label of each toast shown, in turn, until none is left, each
+    /// title written as soon as it is drawn.
     fn shown_in_turn(toasts: &mut Toasts, start: Instant) -> Vec<String> {
         let mut labels = Vec::new();
         let mut now = start;
-        while toasts.frame(now, area(120, 30)) {
+        while begins(toasts, now) {
             labels.push(toasts.shown.as_ref().unwrap().content.label.clone());
+            toasts.titled(now + DRAW);
             now += ms(3100);
         }
         labels
@@ -489,9 +545,11 @@ mod tests {
         assert_eq!(finals.waiting[0].hint, None);
     }
 
-    /// The label of the toast shown at `now`, if one began then.
+    /// The label of the toast shown at `now`, if one began then; its title
+    /// is written as soon as it is drawn.
     fn began(toasts: &mut Toasts, now: Instant) -> Option<String> {
-        let began = toasts.frame(now, area(120, 30));
+        let began = begins(toasts, now);
+        toasts.titled(now + DRAW);
         began.then(|| toasts.shown.as_ref().unwrap().content.label.clone())
     }
 
@@ -550,12 +608,13 @@ mod tests {
     }
 
     /// NOT-02 (pure supplement): the accepted timings, at each boundary and
-    /// one before it: the border draws clockwise for 400 ms with no text,
-    /// the text then holds for 2,000 ms, fades for 300 ms, and the border
-    /// erases clockwise for 400 ms, the inside blank until it starts.
+    /// one before it, for a title written as soon as it is drawn: the
+    /// border draws clockwise for 400 ms with no text, the text then holds
+    /// for 2,000 ms, fades for 300 ms, and the border erases clockwise for
+    /// 400 ms, the inside blank until it starts.
     #[test]
     fn a_toast_draws_holds_fades_and_erases_on_time() {
-        let at = |millis| look(ms(millis), schedule(None), 20);
+        let at = |millis| look(ms(millis), schedule(Some(DRAW), None), 20);
         let look_of = |border: Range<usize>, text, filled| Look {
             border,
             text,
@@ -572,7 +631,68 @@ mod tests {
         assert_eq!(at(2720), look_of(1..20, Text::Hidden, false));
         assert_eq!(at(3099), look_of(19..20, Text::Hidden, false));
         assert_eq!(at(3100), look_of(20..20, Text::Hidden, false));
-        assert_eq!(schedule(None).end, ms(3100));
+        assert_eq!(schedule(Some(DRAW), None).end, ms(3100));
+    }
+
+    /// NOT-02 (pure supplement; owner decision on #115, 2026-11-17): the
+    /// hold starts when the frame first showing the full title has been
+    /// written, however late: until then the title stays, and the toast
+    /// never ends. Only that first frame is titling, never one before the
+    /// border is drawn, a later one, a redraw or a resize, nor one where
+    /// the toast does not fit or none shows; a later write never moves
+    /// the hold.
+    #[test]
+    fn the_hold_starts_when_the_title_has_been_written() {
+        let mut toasts = Toasts::new(None);
+        let start = Instant::now();
+        let host = area(120, 30);
+        assert!(!toasts.titling(start + DRAW, host));
+        toasts.announce(&id(1), News::Final, "Build".to_owned(), false);
+        toasts.frame(start, host);
+        assert!(!toasts.titling(start + ms(399), host));
+        assert!(toasts.titling(start + DRAW, host));
+        assert!(!toasts.titling(start + DRAW, area(12, 30)));
+        let late = start + ms(5000);
+        toasts.frame(late, host);
+        let shown = toasts.shown.as_ref().unwrap();
+        assert_eq!(shown.text(late), Text::Shown);
+        assert!(toasts.titling(late, host));
+        toasts.titled(late);
+        toasts.titled(late + ms(1000));
+        assert!(!toasts.titling(late + ms(1), host));
+        assert!(!toasts.titling(late + ms(1), area(100, 20)));
+        let shown = toasts.shown.as_ref().unwrap();
+        assert_eq!(shown.titled, Some(ms(5000)));
+        assert_eq!(shown.text(late + ms(1999)), Text::Shown);
+        assert_eq!(shown.text(late + HOLD), Text::Faded);
+        assert_eq!(shown.text(late + ms(2300)), Text::Hidden);
+        toasts.frame(late + ms(2699), host);
+        assert!(toasts.shown.is_some());
+        toasts.frame(late + ms(2700), host);
+        assert!(toasts.shown.is_none());
+    }
+
+    /// NOT-02 (pure supplement; owner decision on #115, 2026-11-17): a
+    /// toast dismissed before its title was shown never titles, so never
+    /// rings: dismissed while drawing, or once drawn but before the frame
+    /// with its title was written, it erases what was drawn, as fast as it
+    /// drew it.
+    #[test]
+    fn a_toast_dismissed_before_its_title_never_titles() {
+        let host = area(120, 30);
+        let start = Instant::now();
+        for (dismissed, end) in [(200, 400), (450, 850)] {
+            let mut toasts = Toasts::new(None);
+            toasts.announce(&id(1), News::Final, "Build".to_owned(), false);
+            toasts.frame(start, host);
+            toasts.dismiss(start + ms(dismissed));
+            for later in [dismissed, 400.max(dismissed), 600] {
+                assert!(!toasts.titling(start + ms(later), host), "{later}");
+            }
+            assert_eq!(toasts.shown.as_ref().unwrap().schedule().end, ms(end));
+        }
+        let titled = schedule(Some(ms(400)), Some(ms(450)));
+        assert_eq!(titled, fading(ms(450)));
     }
 
     /// NOT-02 (pure supplement): an early dismissal while the border draws
@@ -581,7 +701,7 @@ mod tests {
     /// erases changes nothing.
     #[test]
     fn an_early_dismissal_erases_only_what_was_drawn() {
-        let drawing = schedule(Some(ms(200)));
+        let drawing = schedule(None, Some(ms(200)));
         assert_eq!(
             drawing,
             Schedule {
@@ -590,7 +710,7 @@ mod tests {
                 end: ms(400),
             }
         );
-        let at = |millis| look(ms(millis), schedule(Some(ms(200))), 20);
+        let at = |millis| look(ms(millis), schedule(None, Some(ms(200))), 20);
         assert_eq!(at(199).border, 0..9);
         assert_eq!(at(200).border, 0..10);
         assert_eq!(at(300).border, 5..10);
@@ -600,16 +720,17 @@ mod tests {
                 .iter()
                 .all(|look| look.text == Text::Hidden)
         );
-        assert_eq!(schedule(Some(ms(399))).end, ms(798));
-        assert_eq!(schedule(Some(ms(400))), fading(ms(400)));
-        assert_eq!(schedule(Some(ms(1000))).end, ms(1700));
-        let held = |millis| look(ms(millis), schedule(Some(ms(1000))), 20);
+        let titled = |dismissed| schedule(Some(DRAW), Some(ms(dismissed)));
+        assert_eq!(schedule(None, Some(ms(399))).end, ms(798));
+        assert_eq!(titled(400), fading(ms(400)));
+        assert_eq!(titled(1000).end, ms(1700));
+        let held = |millis| look(ms(millis), titled(1000), 20);
         assert_eq!(held(999).text, Text::Shown);
         assert_eq!(held(1000).text, Text::Faded);
         assert_eq!(held(1300).text, Text::Hidden);
-        assert_eq!(schedule(Some(ms(2399))).end, ms(3099));
+        assert_eq!(titled(2399).end, ms(3099));
         for late in [2400, 2900, 5000] {
-            assert_eq!(schedule(Some(ms(late))), schedule(None));
+            assert_eq!(titled(late), schedule(Some(DRAW), None));
         }
     }
 
@@ -629,11 +750,11 @@ mod tests {
                 false,
             );
         }
-        assert!(toasts.frame(start, area(120, 30)));
+        assert!(begins(&mut toasts, start));
         toasts.dismiss(start + ms(100));
         toasts.dismiss(start + ms(150));
-        assert!(!toasts.frame(start + ms(199), area(120, 30)));
-        assert!(toasts.frame(start + ms(200), area(120, 30)));
+        assert!(!begins(&mut toasts, start + ms(199)));
+        assert!(begins(&mut toasts, start + ms(200)));
         assert_eq!(toasts.shown.as_ref().unwrap().content.label, "E2");
     }
 
@@ -685,8 +806,10 @@ mod tests {
         let mut toasts = Toasts::new(None);
         toasts.announce(&id(1), News::Final, "Build".to_owned(), false);
         let start = Instant::now();
-        assert!(!toasts.frame(start, area(12, 30)));
-        assert!(toasts.frame(start, area(13, 30)));
+        toasts.frame(start, area(12, 30));
+        assert!(toasts.shown.is_none());
+        toasts.frame(start, area(13, 30));
+        assert!(toasts.shown.is_some());
     }
 
     /// The text rows of `buffer`.
@@ -720,7 +843,8 @@ mod tests {
         let mut toasts = Toasts::new(Some("C-] then j".to_owned()));
         toasts.announce(&id(1), News::Attention(1), "Long label".to_owned(), false);
         let start = Instant::now();
-        assert!(toasts.frame(start, area(20, 6)));
+        toasts.frame(start, area(20, 6));
+        toasts.titled(start + DRAW);
         let (_, early) = drawn(&toasts, start, 100);
         assert_eq!(
             early[1..],
