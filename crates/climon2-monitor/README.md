@@ -591,9 +591,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   application's own markers (`ESC [ 200 ~`, `ESC [ 201 ~`) only if the
   application had bracketed paste on then, and otherwise as the payload
   alone. A prefix pending when a paste begins reaches that target as one
-  literal prefix first; with no target taking input, or a modal open (it
-  owns the paste and discards it until #113's search), the prefix and the
-  paste are discarded. The supervisor submits a paste's parts as input in
+  literal prefix first; with no target taking input the prefix and the
+  paste are discarded. An open modal owns a paste and discards the prefix:
+  the selector's search takes the paste as one line (#113), the key
+  introduction discards it. A paste a modal covers part-way is cut (below),
+  and the search ignores the rest of it, which it never saw begin. The supervisor submits a paste's parts as input in
   chunks of at most `transfer.chunk_bytes`, its markers in chunks of their
   own; once the library refuses one (owner decision
   on #111), the top row's error slot says `Paste truncated`, the rest of
@@ -623,8 +625,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   selected session's canvas below the top row, within its geometry and the
   host, begins a gesture the application owns; one anywhere else (the top
   row, a margin, any report while a modal is open or nothing takes input)
-  begins a gesture the monitor keeps, and the selector does nothing with it
-  yet (#113). Every later report of a gesture, until its release, goes to
+  begins a gesture the monitor keeps; while the selector is open, its
+  reports go to the selector (#113), and otherwise nowhere. Every later report of a gesture, until its release, goes to
   its owner, at the nearest application cell when it strays, or is
   discarded, with the rest of the gesture, once its owner stops taking
   input. Motion and the wheel outside a gesture go where they land. An
@@ -914,7 +916,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Operational limits `ui.search_bytes` (Monitor): typed and pasted text at the limit taken, one byte past (single- and multi-byte) refused visibly, nothing reaching the session | `search_text_past_its_byte_limit_is_refused_visibly` (e2e) |
 | SEL-02 (Contract, pure supplement): `SkimMatcherV2` ordered-subsequence matching over status, space and label, ignoring case beyond ASCII; editing, control characters and invalid UTF-8; paste as one line; `ui.search_bytes` at 4096 and 4097 bytes, single- and multi-byte, typed and pasted; the search line keeps its cursor in view | `search_matches_ordered_subsequences_of_status_and_label`, `search_ignores_unicode_case_and_matches_wide_text`, `typing_backspace_and_cursor_keys_edit_at_the_cursor`, `control_characters_and_invalid_bytes_insert_nothing`, `typing_past_the_search_limit_is_refused`, `a_paste_is_inserted_as_one_line`, `a_paste_past_the_search_limit_is_refused_whole`, `the_search_line_keeps_the_cursor_in_view` (`src/search.rs`) |
 | SEL-01, SEL-02, DSC-05 (pure supplement): layout, footer variants and reclaimed row, navigation and scrolling, highlight rules for edits and live updates, opening, mouse, paste and refusals, search cursor, the smallest boxes, input other than keys, pastes and mouse reports | `the_selector_draws_search_separator_and_two_columns`, `the_footer_names_the_actual_bindings_and_its_row_is_reclaimed_without_hints`, `navigation_moves_without_wrapping_and_keeps_the_highlight_in_view`, `search_edits_keep_a_matching_highlight_or_take_the_first_match`, `a_highlighted_row_that_leaves_or_stops_matching_is_unhighlighted_for_good`, `opening_highlights_the_selected_session_or_the_first_row`, `clicks_highlight_rows_or_cancel_outside_and_the_wheel_scrolls`, `pastes_fill_the_search_and_refusals_show_in_the_footer`, `the_selector_takes_keys_pastes_and_mouse_reports_only`, `search_edits_and_reopening_scroll_back_to_the_start`, `the_search_cursor_follows_the_text`, `the_selector_draws_only_what_fits`, `help_lists_every_selector_key_with_the_actual_prefix` (`src/selector.rs`) |
-| INP-05 (pure supplement, #113): clicks and wheel notches whatever the modifiers; the host cell from 0 | `left_presses_click_and_wheel_notches_scroll_with_any_modifiers` (`src/mouse.rs`) |
+| INP-05 (pure supplement): SGR mouse reports parsed; clicks and wheel notches whatever the modifiers | `sgr_reports_parse_and_malformed_ones_do_not`, `left_presses_click_and_wheel_notches_scroll_with_any_modifiers` (`src/mouse.rs`) |
 | DSC-03 (pure registry supplement): one client request per live session; rows tied on their entry time in ascending full session ID | `live_sessions_need_one_client_each` (`src/registry.rs`) |
 | DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07 (Monitor, hidden change), DSC-05 (Monitor, reorder case): real sessions at known daemon clock times show Needs attention, Running, Idle, Failed (signal 15), Failed (exit 143) and Succeeded in group and daemon-time order, finals kept after their sessions end; working under pending attention moves nothing, even with its daemon clock moved past a newer attention row's time; a reorder keeps the highlighted row | `real_sessions_show_their_effective_status_and_final_outcomes_in_order` (e2e) |
 | DSC-01 (Monitor, status order: every status group, a tied change time broken by ascending full session ID, never creation order, delayed Initial metadata Starting until it arrives; initial-selection case, #266: the startup progress `Connecting to 9 sessions (8 ready)` until the delayed Initial metadata, then the first eligible row, neither the newest created nor the first started, selected and acquired under the open selector), DSC-05 (Monitor, reorder case: a row moving in above the highlight, and the highlighted row's own status change) | `rows_order_by_status_group_daemon_change_time_and_full_session_id` (e2e, Fault peers) |
