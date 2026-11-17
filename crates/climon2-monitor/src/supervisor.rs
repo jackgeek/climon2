@@ -18,7 +18,10 @@
 mod client;
 mod owner;
 
-use crate::registry::ClientEvent;
+use crate::{
+    registry::ClientEvent,
+    terminal::{Presentation, Request},
+};
 use client::{Client, Drain, Stop};
 use climon2_core::{
     SessionId, Timestamp, VersionName, config::Lanes, keys::ControlKey, layout::HomeLayout,
@@ -80,6 +83,7 @@ pub(crate) struct Context {
 
 enum Command {
     Start(Box<SessionMetadata>),
+    Request(SessionId, Request),
     Shutdown,
 }
 
@@ -111,6 +115,12 @@ impl Supervisor {
     /// Asks for a passive client for `metadata`'s session.
     pub(crate) fn start_client(&self, metadata: SessionMetadata) {
         let _ = self.commands.send(Command::Start(Box::new(metadata)));
+    }
+
+    /// Submits `request` through `id`'s client. Its answer, or why it could
+    /// not be submitted, is reported as [`Presentation::Answered`].
+    pub(crate) fn request(&self, id: SessionId, request: Request) {
+        let _ = self.commands.send(Command::Request(id, request));
     }
 
     /// Shuts every client down, waiting at most `deadlines.shutdown_ms` (and
@@ -211,6 +221,11 @@ impl Phase {
 
 struct Instance {
     phase: Phase,
+    /// Accepted requests awaiting their answers, by request ID: at most
+    /// [`State::ledger`].
+    pending: BTreeMap<u64, Request>,
+    /// The next request ID; Open is 1.
+    next: u64,
     /// Tells the owner its handles are released, so it may destroy.
     released: Sender<()>,
     owner: JoinHandle<()>,
@@ -224,6 +239,9 @@ struct State {
     waiting: BTreeMap<(Reverse<Timestamp>, SessionId), SessionMetadata>,
     releases: BTreeMap<VersionName, Release>,
     instances: BTreeMap<SessionId, Instance>,
+    /// The most requests one instance's pending ledger holds: every request
+    /// its library may have accepted, queued or under way.
+    ledger: usize,
 }
 
 /// What scheduling does for one waiting session.
@@ -236,7 +254,10 @@ enum Step {
 impl State {
     fn new(context: Context, report: Sender<(SessionId, ClientEvent)>) -> Self {
         let (internal, internals) = mpsc::channel();
+        let limits = context.limits;
+        let accepted = limits.request_records as usize + limits.operations as usize;
         Self {
+            ledger: accepted,
             context: Arc::new(context),
             report,
             internal,
@@ -262,11 +283,24 @@ impl State {
     fn commands(&mut self, commands: &Receiver<Command>) -> bool {
         loop {
             match commands.try_recv() {
-                Ok(Command::Start(metadata)) => self.wait(*metadata),
-                Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return false,
-                Err(TryRecvError::Empty) => return true,
+                Ok(command) => {
+                    if !self.command(command) {
+                        return false;
+                    }
+                }
+                Err(error) => return error == TryRecvError::Empty,
             }
         }
+    }
+
+    /// Acts on one command; false for shutdown.
+    fn command(&mut self, command: Command) -> bool {
+        match command {
+            Command::Start(metadata) => self.wait(*metadata),
+            Command::Request(id, request) => self.submit(&id, request),
+            Command::Shutdown => return false,
+        }
+        true
     }
 
     fn wait(&mut self, metadata: SessionMetadata) {
@@ -275,6 +309,56 @@ impl State {
             metadata.session_id.clone(),
         );
         self.waiting.insert(key, metadata);
+    }
+
+    /// Submits `request` through an open client and remembers it until its
+    /// answer; anything else is answered at once with why not.
+    fn submit(&mut self, id: &SessionId, request: Request) {
+        if let Err(why) = self.submit_one(id, request) {
+            self.tell(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, Err(why))),
+            );
+        }
+    }
+
+    /// Submits one request and enters it in the pending ledger once the
+    /// library accepts it. A request refused, here or by the library,
+    /// consumes no request ID.
+    fn submit_one(&mut self, id: &SessionId, request: Request) -> Result<(), String> {
+        let capacity = self.ledger;
+        let open = self
+            .instances
+            .get_mut(id)
+            .and_then(|instance| match instance.phase {
+                Phase::Open(live) => Some((live, instance)),
+                _ => None,
+            });
+        let Some((live, instance)) = open else {
+            return Err("the session's client is not connected".to_owned());
+        };
+        if instance.pending.len() >= capacity {
+            return Err("too many requests are awaiting their answers".to_owned());
+        }
+        let request_id = instance.next;
+        live.client.submit(request_id, request)?;
+        instance.next += 1;
+        instance.pending.insert(request_id, request);
+        Ok(())
+    }
+
+    /// A request's answer goes to the session's terminal as its request.
+    fn answer(&mut self, id: &SessionId, request_id: u64, answer: Result<(), String>) {
+        let pending = self
+            .instances
+            .get_mut(id)
+            .map(|instance| &mut instance.pending);
+        if let Some(request) = pending.and_then(|pending| pending.remove(&request_id)) {
+            self.report(
+                id,
+                ClientEvent::Presentation(Presentation::Answered(request, answer)),
+            );
+        }
     }
 
     fn internals(&mut self) {
@@ -379,6 +463,8 @@ impl State {
                 let phase = Phase::Creating;
                 let instance = Instance {
                     phase,
+                    pending: BTreeMap::new(),
+                    next: client::OPEN_ID + 1,
                     released,
                     owner,
                 };
@@ -448,6 +534,7 @@ impl State {
     fn event(&mut self, id: &SessionId, event: ClientEvent) {
         match event {
             ClientEvent::Unavailable(why) => self.fail(id, why),
+            ClientEvent::Answer(request_id, answer) => self.answer(id, request_id, answer),
             event => self.report(id, event),
         }
     }
@@ -594,6 +681,9 @@ mod tests {
     //! busy while either remains), and records what an independent observer
     //! needs: each destroy's result and when its owner thread exits.
     use super::{client::OPEN_ID, owner::GENERATION, *};
+    use crate::registry::{Final, Outcome, Report};
+    use crate::terminal::{Authority, Request as Asked};
+    use climon2_core::protocol::TerminalSize;
     use climon2_core::{
         native::{
             Bytes, Call, Communication, Control, Created, Delivery, Drained, Error, Instance,
@@ -620,6 +710,13 @@ mod tests {
         drain_fails: bool,
         /// Run ignores shutdown until the test lets it go.
         stalls: bool,
+        /// After Open, one delivery of control and display records.
+        presents: bool,
+        /// The first this many requests after Open are refused at submit,
+        /// synchronously, as full.
+        refused_submits: u32,
+        /// Requests after Open are accepted and never answered.
+        silent: bool,
         /// Run sends Open's success only once the test lets it go (or
         /// shutdown asks), so the instance holds its start slot until then.
         opens_late: bool,
@@ -636,17 +733,27 @@ mod tests {
         OwnerExited,
     }
 
+    /// A request the fake accepted: tag, request ID and its arguments' words
+    /// (generation; or generation, period, restoration; plus columns and rows).
+    type Submitted = (u32, u64, Vec<u64>);
+
     #[derive(Default)]
     struct World {
         scripts: BTreeMap<[u8; 16], Script>,
         seen: Vec<([u8; 16], Seen)>,
         unstalled: BTreeSet<[u8; 16]>,
+        submitted: Vec<([u8; 16], Submitted)>,
+        /// Instances whose notification descriptor was looked up: the
+        /// supervisor does so as it learns of their handles.
+        looked_up: BTreeSet<[u8; 16]>,
     }
 
     static WORLD: Mutex<World> = Mutex::new(World {
         scripts: BTreeMap::new(),
         seen: Vec::new(),
         unstalled: BTreeSet::new(),
+        submitted: Vec::new(),
+        looked_up: BTreeSet::new(),
     });
     static CHANGED: Condvar = Condvar::new();
     const WAIT: Duration = Duration::from_secs(20);
@@ -712,6 +819,8 @@ mod tests {
         /// Run returned or terminal evidence was drained: the stream is over.
         over: bool,
         outstanding: usize,
+        /// Requests after Open refused at submit so far.
+        refused: u32,
         communication: bool,
         control: bool,
     }
@@ -875,6 +984,9 @@ mod tests {
         let shutdown = || fake.state().shutdown;
         wait_while(|world| fake.script.opens_late && !let_go(world) && !shutdown());
         fake.push(Item::Delivery(opened()));
+        if fake.script.presents {
+            fake.push(Item::Delivery(presentation()));
+        }
         wait_while(|world| !(shutdown() && (!fake.script.stalls || let_go(world))));
     }
 
@@ -898,11 +1010,166 @@ mod tests {
         call
     }
 
-    extern "C" fn submit(_communication: *mut Communication, request: *const Request) -> Call {
+    extern "C" fn submit(communication: *mut Communication, request: *const Request) -> Call {
         // SAFETY: the supervisor passes a complete request.
         let request = unsafe { &*request };
-        assert_eq!((request.tag, request.request_id), (native::OPEN, OPEN_ID));
+        if request.tag == native::OPEN {
+            assert_eq!(request.request_id, OPEN_ID);
+            return success();
+        }
+        let fake = fake(communication);
+        {
+            let mut state = fake.state();
+            if state.refused < fake.script.refused_submits {
+                state.refused += 1;
+                return failure(native::FULL, b"full", b"the request queue is full");
+            }
+        }
+        // SAFETY: the tag names the active member.
+        let words = unsafe {
+            match request.tag {
+                native::ACQUIRE => vec![request.args.generation],
+                native::READY => authority_words(request.args.authority),
+                _ => {
+                    let resize = request.args.resize;
+                    let mut words = authority_words(resize.authority);
+                    words.extend([
+                        u64::from(resize.geometry.cols),
+                        u64::from(resize.geometry.rows),
+                    ]);
+                    words
+                }
+            }
+        };
+        changed(&mut world(), |world| {
+            world
+                .submitted
+                .push((fake.id, (request.tag, request.request_id, words)));
+        });
+        if fake.script.silent {
+            return success();
+        }
+        // Ready is refused; anything else accepted, after an answer to a
+        // request never made.
+        let refused = request.tag == native::READY;
+        fake.push(Item::Delivery(vec![
+            answer(99, false),
+            answer(request.request_id, refused),
+        ]));
         success()
+    }
+
+    fn authority_words(authority: native::Authority) -> Vec<u64> {
+        vec![
+            authority.generation,
+            authority.period,
+            authority.restoration_id,
+        ]
+    }
+
+    fn record(tag: u32) -> Record {
+        // SAFETY: an all-zero record is a valid plain value.
+        let mut record: Record = unsafe { std::mem::zeroed() };
+        record.tag = tag;
+        record.generation = GENERATION;
+        record
+    }
+
+    /// A command's answer: accepted, or rejected as stale.
+    fn answer(request_id: u64, refused: bool) -> Record {
+        let mut answer = record(native::RESPONSE);
+        // SAFETY: an all-zero response is a valid plain value.
+        let mut response: native::Response = unsafe { std::mem::zeroed() };
+        response.request_id = request_id;
+        response.outcome = if refused {
+            native::REJECTED
+        } else {
+            native::OK
+        };
+        response.error = no_error();
+        if refused {
+            response.error.message = bytes_of(b"stale");
+        }
+        answer.data.response = response;
+        answer
+    }
+
+    static DISPLAYED: &[u8] = b"\0hi";
+
+    /// Initial metadata that knows the command's result, then a grant (in
+    /// generation 7), a restoration with its bytes, two Geometry records (one
+    /// too wide for any session, one with no columns), a revocation, a Command
+    /// final by signal 15 and a status record with no known state, which
+    /// reports nothing.
+    fn presentation() -> Vec<Record> {
+        let geometry = |cols, rows| native::Geometry { cols, rows };
+        let mut metadata = record(native::INITIAL_METADATA);
+        // SAFETY: an all-zero metadata record is a valid plain value.
+        let mut initial: native::Metadata = unsafe { std::mem::zeroed() };
+        initial.title.state = native::VALUE;
+        initial.title.value = bytes_of(b"T");
+        initial.command_result.present = 1;
+        initial.command_result.value.kind = native::EXIT;
+        metadata.data.metadata = initial;
+        let mut granted = record(native::GRANTED);
+        granted.generation = 7;
+        granted.data.granted = native::Granted {
+            period: 2,
+            restoration_id: 3,
+            geometry: geometry(80, 24),
+            reason: native::TAKE_CONTROL,
+            reserved: 0,
+        };
+        let mut begun = record(native::RESTORATION_BEGIN);
+        begun.data.restoration = native::Restoration {
+            period: 2,
+            restoration_id: 4,
+            geometry: geometry(100, 30),
+        };
+        let barrier = native::Barrier {
+            period: 2,
+            restoration_id: 4,
+        };
+        let mut display = record(native::DISPLAY);
+        display.data.display = native::Display {
+            authority: barrier,
+            bytes: bytes_of(DISPLAYED),
+        };
+        let mut complete = record(native::RESTORATION_COMPLETE);
+        complete.data.barrier = barrier;
+        let reshaped = |cols| {
+            let mut changed = record(native::GEOMETRY);
+            changed.data.geometry = native::GeometryEvent {
+                period: 2,
+                geometry: geometry(cols, 5),
+            };
+            changed
+        };
+        let mut ended = record(native::FINAL);
+        // SAFETY: an all-zero Command final is a valid plain value.
+        let mut known: native::Final = unsafe { std::mem::zeroed() };
+        known.command_result.kind = native::SIGNAL;
+        known.command_result.value = 15;
+        ended.data.r#final = known;
+        let mut revoked = record(native::REVOKED);
+        revoked.data.revoked = native::Revoked {
+            period: 2,
+            restoration_id: 4,
+            reason: native::SESSION_ENDING,
+            reserved: 0,
+        };
+        vec![
+            metadata,
+            granted,
+            begun,
+            display,
+            complete,
+            reshaped(70_000),
+            reshaped(0),
+            revoked,
+            ended,
+            record(native::STATUS),
+        ]
     }
 
     extern "C" fn drain(communication: *mut Communication, out: *mut Drained) -> Call {
@@ -989,6 +1256,9 @@ mod tests {
         };
         // SAFETY: the supervisor passes an output integer.
         unsafe { *out = descriptor };
+        changed(&mut world(), |world| {
+            world.looked_up.insert(fake.id);
+        });
         call
     }
 
@@ -1065,6 +1335,12 @@ mod tests {
     /// A supervisor over `load` in its own climon2 home, logging to that
     /// home's monitor log.
     fn supervisor(starts: u32, shutdown_ms: u64, load: Load) -> Supervised {
+        let limits = climon2_core::config::Limits::default().library();
+        limited(starts, shutdown_ms, load, limits)
+    }
+
+    /// [`supervisor`] with the instance limits `limits`.
+    fn limited(starts: u32, shutdown_ms: u64, load: Load, limits: native::Limits) -> Supervised {
         let directory = tempfile::tempdir().unwrap();
         let home = HomeLayout::resolve(Some(directory.path().as_os_str()), Path::new("/")).unwrap();
         let log = climon2_platform::logging::LogFile::monitor(directory.path()).unwrap();
@@ -1074,7 +1350,7 @@ mod tests {
             runtime: directory.path().join("run"),
             escape: ControlKey::from_byte(0x1d).unwrap(),
             take_control: None,
-            limits: climon2_core::config::Limits::default().library(),
+            limits,
             filter: "info".into(),
             lanes: Lanes {
                 loads: 1,
@@ -1200,7 +1476,7 @@ mod tests {
     #[test]
     fn a_failed_drain_ends_its_client_cleanly_and_frees_its_start_slot() {
         let why = a_failure_ends_cleanly_and_frees_its_start_slot(
-            5,
+            11,
             Script {
                 drain_fails: true,
                 ..Script::default()
@@ -1274,6 +1550,268 @@ mod tests {
         assert_eq!(loads.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    fn geometry(cols: u16, rows: u16) -> climon2_vt::Geometry {
+        climon2_vt::Geometry::for_host(cols, rows).unwrap()
+    }
+
+    fn presented(presentation: Presentation) -> ClientEvent {
+        ClientEvent::Presentation(presentation)
+    }
+
+    /// A final outcome without a terminal status time (no `status-v1`).
+    fn ended(outcome: Outcome) -> ClientEvent {
+        ClientEvent::Report(Report::Final(Final {
+            outcome,
+            changed: None,
+        }))
+    }
+
+    /// Client supervisor (#108): control and display records reach the
+    /// session's terminal as the library delivered them: each grant and
+    /// beginning with its record's generation, period, restoration and
+    /// effective geometry (one too wide for any session clamped to 500
+    /// columns, one with no columns dropped), Display's exact bytes, a
+    /// revocation, and the command's final result from the Initial metadata
+    /// and from Command final; unread records add nothing.
+    #[test]
+    fn control_and_display_records_reach_the_terminal_as_delivered() {
+        let id = session(5, 1);
+        script(
+            &id,
+            Script {
+                presents: true,
+                ..Script::default()
+            },
+        );
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let authority = |generation, restoration| Authority {
+            generation,
+            period: 2,
+            restoration,
+        };
+        let expected = [
+            ClientEvent::Opened { status: false },
+            ClientEvent::Report(Report::Title(Some("T".into()))),
+            ended(Outcome::Exit(0)),
+            presented(Presentation::Granted(authority(7, 3), geometry(80, 24))),
+            presented(Presentation::Begin(
+                authority(GENERATION, 4),
+                geometry(100, 30),
+            )),
+            presented(Presentation::Display(DISPLAYED.to_vec())),
+            presented(Presentation::Complete),
+            presented(Presentation::Geometry(geometry(500, 5))),
+            presented(Presentation::Revoked),
+            ended(Outcome::Signal(15)),
+        ];
+        for event in expected {
+            assert_eq!(next(&supervisor), (id.clone(), event));
+        }
+        supervisor.stop();
+        assert_eq!(
+            supervisor.reports.try_iter().collect::<Vec<_>>(),
+            [(id, ClientEvent::Ended)]
+        );
+    }
+
+    /// Client supervisor (#108): Acquire, Ready and Resize are submitted with
+    /// increasing request IDs after Open's and their native arguments, and each
+    /// answer reaches the terminal as its own request, accepted or refused with
+    /// why; an answer to no request adds nothing, and a request for a session
+    /// without an open client is refused at once.
+    #[test]
+    fn requests_are_submitted_in_order_and_answered_as_themselves() {
+        let id = session(6, 1);
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        supervisor.request(id.clone(), Asked::Acquire);
+        let refused = presented(Presentation::Answered(
+            Asked::Acquire,
+            Err("the session's client is not connected".into()),
+        ));
+        assert_eq!(next(&supervisor), (id.clone(), refused));
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(&supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        let held = Authority {
+            generation: 1,
+            period: 5,
+            restoration: 6,
+        };
+        let size = TerminalSize {
+            cols: 120,
+            rows: 29,
+        };
+        let requests = [
+            Asked::Acquire,
+            Asked::Ready(held),
+            Asked::Resize(held, size),
+        ];
+        for request in requests {
+            supervisor.request(id.clone(), request);
+            let answer = if matches!(request, Asked::Ready(_)) {
+                Err("stale".to_owned())
+            } else {
+                Ok(())
+            };
+            let answered = presented(Presentation::Answered(request, answer));
+            assert_eq!(next(&supervisor), (id.clone(), answered));
+        }
+        supervisor.stop();
+        assert_eq!(
+            submitted(&id),
+            [
+                (native::ACQUIRE, 2, vec![GENERATION]),
+                (native::READY, 3, vec![1, 5, 6]),
+                (native::RESIZE, 4, vec![1, 5, 6, 120, 29]),
+            ]
+        );
+    }
+
+    /// Client supervisor (#108): a request for a session whose client has
+    /// published its handles but not yet opened is refused at once as not
+    /// connected, submits nothing and consumes no request ID; once Open
+    /// succeeds, the same request is submitted as the first after Open's.
+    /// The request is sent once the supervisor has looked up the client's
+    /// descriptor, which it does as the client becomes Opening.
+    #[test]
+    fn a_request_before_the_client_opens_is_refused_as_not_connected() {
+        let id = session(14, 1);
+        script(
+            &id,
+            Script {
+                opens_late: true,
+                ..Script::default()
+            },
+        );
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let published = guid(&id);
+        until(|world| world.looked_up.contains(&published));
+        supervisor.request(id.clone(), Asked::Acquire);
+        let refused = presented(Presentation::Answered(
+            Asked::Acquire,
+            Err("the session's client is not connected".into()),
+        ));
+        assert_eq!(next(&supervisor), (id.clone(), refused));
+        let_go(&id);
+        assert_eq!(
+            next(&supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        supervisor.request(id.clone(), Asked::Acquire);
+        let accepted = presented(Presentation::Answered(Asked::Acquire, Ok(())));
+        assert_eq!(next(&supervisor), (id.clone(), accepted));
+        supervisor.stop();
+        assert_eq!(
+            submitted(&id),
+            [(native::ACQUIRE, OPEN_ID + 1, vec![GENERATION])]
+        );
+    }
+
+    /// What the fake accepted from `id`'s instance, in order.
+    fn submitted(id: &SessionId) -> Vec<Submitted> {
+        let id = guid(id);
+        let world = world();
+        let accepted = world.submitted.iter().filter(|(seen, _)| *seen == id);
+        accepted.map(|(_, submitted)| submitted.clone()).collect()
+    }
+
+    /// An open client for `id` under `script`, whose pending ledger holds at
+    /// most two requests: one queued record and one operation.
+    fn opened_with(id: &SessionId, script_of: Script) -> Supervised {
+        script(id, script_of);
+        let mut limits = climon2_core::config::Limits::default().library();
+        limits.request_records = 1;
+        limits.operations = 1;
+        let supervised = limited(1, 20_000, fake_library(), limits);
+        let supervisor = &supervised.supervisor;
+        supervisor.start_client(metadata(id, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(supervisor),
+            (id.clone(), ClientEvent::Opened { status: false })
+        );
+        supervised
+    }
+
+    /// Client supervisor (#108; core-v1 "Submit", operational limits "Queues and
+    /// transfers"): a request the library refuses at submit is answered at once
+    /// with why, leaves nothing in the pending ledger and consumes no request
+    /// ID. More refusals than the ledger holds still leave room, and the next
+    /// accepted request takes the next unused ID.
+    #[test]
+    fn a_request_refused_at_submit_is_not_pending_and_consumes_no_id() {
+        let id = session(7, 1);
+        let script = Script {
+            refused_submits: 3,
+            ..Script::default()
+        };
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = opened_with(&id, script);
+        let full = presented(Presentation::Answered(
+            Asked::Acquire,
+            Err("full: the request queue is full".into()),
+        ));
+        for _ in 0..3 {
+            supervisor.request(id.clone(), Asked::Acquire);
+            assert_eq!(next(&supervisor), (id.clone(), full.clone()));
+        }
+        supervisor.request(id.clone(), Asked::Acquire);
+        let accepted = presented(Presentation::Answered(Asked::Acquire, Ok(())));
+        assert_eq!(next(&supervisor), (id.clone(), accepted));
+        supervisor.stop();
+        assert_eq!(
+            submitted(&id),
+            [(native::ACQUIRE, OPEN_ID + 1, vec![GENERATION])]
+        );
+    }
+
+    /// Client supervisor (#108; core-v1 "bounded pending ledger"): the ledger
+    /// holds at most the requests the instance may have accepted (its queued
+    /// request records plus its operations); one more is refused at once, never
+    /// submitted, and consumes no request ID.
+    #[test]
+    fn the_pending_ledger_is_bounded_by_the_requests_the_library_may_hold() {
+        let id = session(8, 1);
+        let script = Script {
+            silent: true,
+            ..Script::default()
+        };
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = opened_with(&id, script);
+        for _ in 0..3 {
+            supervisor.request(id.clone(), Asked::Acquire);
+        }
+        let refused = presented(Presentation::Answered(
+            Asked::Acquire,
+            Err("too many requests are awaiting their answers".into()),
+        ));
+        assert_eq!(next(&supervisor), (id.clone(), refused));
+        supervisor.stop();
+        let acquire = |request_id| (native::ACQUIRE, request_id, vec![GENERATION]);
+        assert_eq!(submitted(&id), [acquire(OPEN_ID + 1), acquire(OPEN_ID + 2)]);
+    }
+
     const UNCONFIRMED: &str = "client shutdown unconfirmed at its deadline";
 
     /// A loader that refuses release 0.0.1 and loads the fake library for
@@ -1301,8 +1839,8 @@ mod tests {
     /// session has been scheduled, so its report proves the third was held.
     #[test]
     fn client_starts_never_exceed_the_start_lane() {
-        let [first, second, third] = [session(6, 1), session(6, 2), session(6, 3)];
-        let [refused, marker] = [session(6, 4), session(6, 5)];
+        let [first, second, third] = [session(12, 1), session(12, 2), session(12, 3)];
+        let [refused, marker] = [session(12, 4), session(12, 5)];
         for id in [&first, &second] {
             let opens_late = Script {
                 opens_late: true,
@@ -1349,7 +1887,7 @@ mod tests {
     /// released and destroyed.
     #[test]
     fn terminal_evidence_before_open_says_why_the_session_is_unavailable() {
-        let [named, silent] = [session(7, 1), session(7, 2)];
+        let [named, silent] = [session(13, 1), session(13, 2)];
         for (id, message) in [(&named, &b"daemon refused"[..]), (&silent, b"")] {
             let ends = Script {
                 ends_unopened: Some(message),

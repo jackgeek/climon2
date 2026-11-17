@@ -30,13 +30,16 @@ descriptors, drains and releases every delivery, and on exit requests
 shutdown of every instance and waits up to `deadlines.shutdown_ms` for each to
 end, its handles to be released and its owner to be joined. An instance
 unconfirmed by then is reported and left, never destroyed, to process exit:
-the monitor does not claim it joined. The client executable loads its own
-version folder's library through it and drives ordinary attach
-([#101](https://github.com/jackgeek/climon2/issues/101)), with its viewing and
-acknowledgement ([#102](https://github.com/jackgeek/climon2/issues/102)), and
-kill ([#100](https://github.com/jackgeek/climon2/issues/100)) through the
-function table; test tooling uses it too. The monitor's admission, recovery,
-acquisition and fail-stop remain unimplemented. The
+the monitor does not claim it joined. It acquires the session selected with
+Enter and submits Ready and Resize through that instance
+([#108](https://github.com/jackgeek/climon2/issues/108)). The client
+executable loads its own version folder's library through it and drives
+ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)),
+with its viewing and acknowledgement
+([#102](https://github.com/jackgeek/climon2/issues/102)), and kill
+([#100](https://github.com/jackgeek/climon2/issues/100)) through the
+function table; test tooling uses it too. The monitor's admission, recovery
+and fail-stop remain unimplemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in

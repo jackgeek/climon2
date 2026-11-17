@@ -1,11 +1,16 @@
 //! One instance's caller handles and what draining them reports: the only
 //! place the supervisor reads the client library's records.
-use crate::registry::{ClientEvent, Final, Outcome, Report, State, Status};
+use super::owner::GENERATION;
+use crate::{
+    registry::{ClientEvent, Final, Outcome, Report, State, Status},
+    terminal::{Authority, Presentation, Request},
+};
 use climon2_core::{
     SessionId,
     native::{self, Bytes, Call, Communication, Control, Drained},
 };
 use climon2_platform::library::Functions;
+use climon2_vt::Geometry;
 use std::{mem::MaybeUninit, time::SystemTime};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -47,9 +52,9 @@ type Reader = fn(&SessionId, &native::Record) -> Vec<ClientEvent>;
 /// What the supervisor reads from each record kind; every other kind is
 /// ignored until a later ticket needs it.
 // SAFETY (every reader): the tag names the active member.
-const READERS: [(u32, Reader); 6] = [
-    (native::RESPONSE, |id, record| {
-        response(id, record).into_iter().collect()
+const READERS: [(u32, Reader); 12] = [
+    (native::RESPONSE, |_, record| {
+        vec![response(unsafe { &record.data.response })]
     }),
     (native::INITIAL_METADATA, |_, record| {
         initial(unsafe { &record.data.metadata })
@@ -69,9 +74,32 @@ const READERS: [(u32, Reader); 6] = [
             .into_iter()
             .collect()
     }),
-    (native::DIAGNOSTIC, |id, record| {
-        diagnostic(id, record).into_iter().collect()
+    (native::GRANTED, |_, record| {
+        let granted = unsafe { record.data.granted };
+        let authority = authority(record, granted.period, granted.restoration_id);
+        presented(geometry(granted.geometry).map(|at| Presentation::Granted(authority, at)))
     }),
+    (native::REVOKED, |_, _| {
+        presented(Some(Presentation::Revoked))
+    }),
+    (native::RESTORATION_BEGIN, |_, record| {
+        let begun = unsafe { record.data.restoration };
+        let authority = authority(record, begun.period, begun.restoration_id);
+        presented(geometry(begun.geometry).map(|at| Presentation::Begin(authority, at)))
+    }),
+    (native::DISPLAY, |_, record| {
+        let display = unsafe { record.data.display };
+        let bytes = unsafe { slice(display.bytes.data, display.bytes.length) };
+        presented(Some(Presentation::Display(bytes.to_vec())))
+    }),
+    (native::RESTORATION_COMPLETE, |_, _| {
+        presented(Some(Presentation::Complete))
+    }),
+    (native::GEOMETRY, |_, record| {
+        let changed = unsafe { record.data.geometry };
+        presented(geometry(changed.geometry).map(Presentation::Geometry))
+    }),
+    (native::DIAGNOSTIC, diagnostic),
 ];
 
 impl Client {
@@ -88,6 +116,13 @@ impl Client {
     pub(super) fn shutdown(&self) {
         // SAFETY: a live control handle.
         unsafe { (self.functions.shutdown)(self.control) };
+    }
+
+    /// Submits `request` as `request_id` under the opened generation.
+    pub(super) fn submit(&self, request_id: u64, request: Request) -> Result<(), String> {
+        let request = native_request(request_id, request);
+        // SAFETY: a live communication handle and a complete request.
+        checked(unsafe { (self.functions.submit)(self.communication, &request) })
     }
 
     /// Takes one delivery, reads it and releases it at once.
@@ -140,6 +175,71 @@ fn read(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
         .iter()
         .find(|(tag, _)| *tag == record.tag)
         .map_or_else(Vec::new, |(_, reader)| reader(id, record))
+}
+
+/// The native request for `request`.
+fn native_request(request_id: u64, request: Request) -> native::Request {
+    let (tag, args) = match request {
+        Request::Acquire => (
+            native::ACQUIRE,
+            native::RequestArgs {
+                generation: GENERATION,
+            },
+        ),
+        Request::Ready(held) => (
+            native::READY,
+            native::RequestArgs {
+                authority: native_authority(held),
+            },
+        ),
+        Request::Resize(held, size) => (
+            native::RESIZE,
+            native::RequestArgs {
+                resize: native::Resize {
+                    authority: native_authority(held),
+                    geometry: native::Geometry {
+                        cols: size.cols.into(),
+                        rows: size.rows.into(),
+                    },
+                },
+            },
+        ),
+    };
+    native::Request {
+        tag,
+        reserved: 0,
+        request_id,
+        args,
+    }
+}
+
+fn native_authority(held: Authority) -> native::Authority {
+    native::Authority {
+        generation: held.generation,
+        period: held.period,
+        restoration_id: held.restoration,
+    }
+}
+
+fn authority(record: &native::Record, period: u64, restoration: u64) -> Authority {
+    Authority {
+        generation: record.generation,
+        period,
+        restoration,
+    }
+}
+
+/// An effective session geometry; the library reports only positive ones.
+fn geometry(geometry: native::Geometry) -> Option<Geometry> {
+    let narrow = |value: u32| u16::try_from(value).unwrap_or(u16::MAX);
+    Geometry::for_host(narrow(geometry.cols), narrow(geometry.rows))
+}
+
+fn presented(presentation: Option<Presentation>) -> Vec<ClientEvent> {
+    presentation
+        .map(ClientEvent::Presentation)
+        .into_iter()
+        .collect()
 }
 
 /// The Initial metadata's title, then its final outcome when the command
@@ -205,11 +305,16 @@ fn changed(at: native::Utc) -> Option<SystemTime> {
 }
 
 /// Monitor Open's response: opened, with whether `status-v1` was selected,
-/// or refused with why.
-fn response(_: &SessionId, record: &native::Record) -> Option<ClientEvent> {
-    // SAFETY: the tag names the active member.
-    let response = unsafe { record.data.response };
-    (response.request_id == OPEN_ID).then(|| opened(&response))
+/// or refused with why. Any other request's answer is matched to its
+/// request by the supervisor.
+fn response(response: &native::Response) -> ClientEvent {
+    if response.request_id == OPEN_ID {
+        return opened(response);
+    }
+    let answer = (response.outcome == native::OK)
+        .then_some(())
+        .ok_or_else(|| text(response.error.message));
+    ClientEvent::Answer(response.request_id, answer)
 }
 
 fn opened(response: &native::Response) -> ClientEvent {
@@ -234,11 +339,11 @@ fn title(title: native::Title) -> ClientEvent {
     ClientEvent::Report(Report::Title(value))
 }
 
-fn diagnostic(id: &SessionId, record: &native::Record) -> Option<ClientEvent> {
+fn diagnostic(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
     // SAFETY: the tag names the active member.
     let error = unsafe { record.data.diagnostic };
     tracing::warn!(session = %id, code = %text(error.code), message = %text(error.message), "client diagnostic");
-    None
+    Vec::new()
 }
 
 /// A call's success, or its code and message, copied before any other call.

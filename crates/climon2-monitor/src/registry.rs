@@ -3,6 +3,7 @@
 //! with the time the monitor observed them; it decides which sessions need a
 //! client and what each row shows. Rows are keyed by full session ID, which
 //! is never shown.
+use crate::terminal::Presentation;
 use climon2_core::{SessionId, metadata::SessionMetadata};
 use std::{cmp::Reverse, collections::BTreeMap, time::SystemTime};
 use unicode_width::UnicodeWidthChar;
@@ -28,6 +29,10 @@ pub(crate) enum ClientEvent {
     Ended,
     /// What the daemon reported about its session.
     Report(Report),
+    /// Control and display, for the session's terminal: never row state.
+    Presentation(Presentation),
+    /// A request's answer, matched to its request by the supervisor.
+    Answer(u64, Result<(), String>),
 }
 
 /// What a daemon reports about its session over a connected client.
@@ -218,6 +223,7 @@ impl Row {
             ClientEvent::Unavailable(why) => self.connect(Connection::Unavailable(why), now),
             ClientEvent::Ended => self.connect(Connection::Disconnected, now),
             ClientEvent::Report(report) => self.learn(report, now),
+            ClientEvent::Presentation(_) | ClientEvent::Answer(..) => {}
         }
     }
 
@@ -309,6 +315,14 @@ impl Registry {
         if let Some(row) = self.rows.get_mut(id) {
             row.apply(event, now);
         }
+    }
+
+    /// Whether Enter on `id` selects and acquires it: connected and not
+    /// known to be final.
+    pub(crate) fn acquirable(&self, id: &SessionId) -> bool {
+        self.rows.get(id).is_some_and(|row| {
+            matches!(row.connection, Connection::Connected { .. }) && row.ended.is_none()
+        })
     }
 
     /// Records whether the latest pass reached every entry.
@@ -706,6 +720,46 @@ mod tests {
         }
         registry.client(&key, titled(Some("t")), at(9));
         assert_eq!(registry.rows()[0].since, at(5));
+    }
+
+    /// Enter (spec #73, Session registry; #108, pure supplement): only a
+    /// connected row not known to be final, with or without `status-v1`, is
+    /// acquired; Starting, Unavailable, Disconnected, This monitor, final
+    /// and unknown rows are not, and control and display change nothing.
+    #[test]
+    fn only_connected_rows_not_known_to_be_final_are_acquirable() {
+        let mut registry = Registry::new(Some(OWN.parse().unwrap()));
+        let sessions = [1, 2, 3, 4, 5, 6].map(|suffix| {
+            let created = format!("2026-11-13T10:00:0{suffix}.000Z");
+            metadata(&id(suffix), &created, "cmd", &[])
+        });
+        for session in &sessions {
+            registry.discovered(session.clone(), Found::Live, at(1));
+        }
+        let own = metadata(OWN, "2026-11-13T10:00:00.000Z", "bash", &[]);
+        registry.discovered(own, Found::Live, at(1));
+        let key = |index: usize| sessions[index].session_id.clone();
+        registry.client(&key(0), ClientEvent::Opened { status: false }, at(2));
+        registry.client(&key(1), ClientEvent::Opened { status: true }, at(2));
+        registry.client(&key(2), ClientEvent::Opened { status: true }, at(2));
+        registry.client(&key(2), ended(Outcome::Exit(0), None), at(3));
+        registry.client(&key(3), ClientEvent::Unavailable("no".into()), at(2));
+        registry.client(&key(4), ClientEvent::Opened { status: false }, at(2));
+        registry.client(&key(4), ClientEvent::Ended, at(3));
+        for event in [
+            ClientEvent::Presentation(Presentation::Revoked),
+            ClientEvent::Answer(2, Ok(())),
+        ] {
+            registry.client(&key(0), event, at(4));
+        }
+        let acquirable: Vec<_> = (0..6)
+            .map(|index| registry.acquirable(&key(index)))
+            .collect();
+        assert_eq!(acquirable, [true, true, false, false, false, false]);
+        assert!(!registry.acquirable(&OWN.parse().unwrap()));
+        assert!(!registry.acquirable(&id(7).parse().unwrap()));
+        let first = registry.rows().into_iter().find(|row| row.id == key(0));
+        assert_eq!(first.map(|row| row.since), Some(at(2)));
     }
 
     /// TRM-06 label cases: the latest nonempty title, otherwise command and
