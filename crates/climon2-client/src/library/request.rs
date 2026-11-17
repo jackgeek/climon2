@@ -31,6 +31,20 @@ pub(super) struct Submitted {
     pub(super) bytes: u64,
 }
 
+impl Submitted {
+    /// The bytes of its Input, which `snapshot` counts as accepted (#99);
+    /// none for any other request.
+    pub(super) fn input(&self) -> u64 {
+        match &self.operation {
+            Operation::Command(Command {
+                act: Act::Held(_, Held::Input(bytes)),
+                ..
+            }) => bytes.len() as u64,
+            _ => 0,
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum Operation {
     Open(Open),

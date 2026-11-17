@@ -83,7 +83,8 @@ host Direct/Derived presentation below is unchanged.
 - `Vt::grant(&mut presentation) -> (phase A, Restoration)` takes the
   snapshot point; `Vt::produce(&mut restoration, &mut presentation, budget)
   -> Chunk { bytes, done }` yields whole history rows up to about `budget`
-  bytes, then the screen suffix. Commit `RestoreEnd` after the `done` chunk.
+  bytes, then the screen suffix. Commit Restoration complete after the `done`
+  chunk.
 - `Vt::canonical(&mut presentation) -> (phase A, Restoration)` takes the
   snapshot point of a canonical restoration, produced the same way: the
   session at its own geometry for a fresh terminal of exactly that size,
@@ -97,7 +98,7 @@ host Direct/Derived presentation below is unchanged.
   geometry, so live output for it stays Direct; a monitor-mode connection
   parses each restoration into a fresh model.
 - `Vt::derive(&mut presentation)`: the live update for a Derived controller
-  after `RestoreEnd`; empty when nothing changed.
+  after Restoration complete; empty when nothing changed.
 - `Vt::present(&mut presentation, host_cols, host_rows)`: after a ready
   controller's resize, the repaint (or nothing, Direct to Direct) that must
   precede further live output.

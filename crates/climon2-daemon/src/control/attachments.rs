@@ -299,17 +299,12 @@ pub(super) enum Departure {
 }
 
 impl Departure {
+    /// A departing controller's presentation is released when it detaches;
+    /// a lost one has nothing left to release it to. A non-controlling
+    /// attachment was released when it was revoked.
     fn of_controller(self, conn: ConnectionId) -> Vec<Effect> {
         match self {
-            Self::Detach => vec![Effect::Release { conn }, Effect::AcceptDetach { conn }],
-            Self::Lost => Vec::new(),
-        }
-    }
-
-    /// A non-controlling attachment was released when it was revoked.
-    fn of_other(self, conn: ConnectionId) -> Vec<Effect> {
-        match self {
-            Self::Detach => vec![Effect::AcceptDetach { conn }],
+            Self::Detach => vec![Effect::Release { conn }],
             Self::Lost => Vec::new(),
         }
     }
@@ -417,14 +412,10 @@ impl Attachments {
         if self.controller.conn() == conn {
             return self.hand_back(departure, grants);
         }
-        let effects = match self.position(conn) {
-            Some(index) => {
-                self.others.remove(index);
-                departure.of_other(conn)
-            }
-            None => Vec::new(),
-        };
-        (Open::Attached(self), effects)
+        if let Some(index) = self.position(conn) {
+            self.others.remove(index);
+        }
+        (Open::Attached(self), Vec::new())
     }
 
     /// The most recently controlling remaining attachment is granted at

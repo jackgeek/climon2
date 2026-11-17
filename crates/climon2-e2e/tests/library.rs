@@ -39,7 +39,8 @@ fn version_folder(library: &Path) -> &str {
 /// absolute path with eager local resolution, which returns revision 1's
 /// immutable description. Its release text is exactly the version folder name,
 /// it advertises exactly the families it relays (#93: core, passive monitor
-/// entry and titles; #94: focus; #95: status), its requirements are present and within the
+/// entry and titles; #94: focus; #95: status; #98: notifications and
+/// progress, so every revision-1 family), its requirements are present and within the
 /// default reservations, and a second bootstrap returns the same description.
 /// A second load of the version shares the first, and the process has loaded
 /// that one client library file.
@@ -64,8 +65,9 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
         description["capabilities"],
         json!({
             "null": false,
-            "count": 5,
-            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1", "status-v1", "focus-v1"],
+            "count": 7,
+            "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1", "status-v1",
+                       "notification-v1", "progress-v1", "focus-v1"],
         })
     );
     assert_within_default_reservations(&description["requirements"]);
