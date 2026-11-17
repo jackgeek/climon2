@@ -114,11 +114,11 @@ reports this advertisement as valid, absent or malformed, and
 The [session daemon](../../../GLOSSARY.md#sessions) sends it through
 [`climon2-core`](../../../crates/climon2-core/README.md), after the frozen
 tokens and `state`: `daemon-wire-v1`, `monitor-v1`, `title-v1`,
-`status-v1` and `focus-v1`, with `max_request_frame_bytes` and `max_server_frame_bytes` both
+`status-v1`, `notification-v1`, `progress-v1`
+([#98](https://github.com/jackgeek/climon2/issues/98)) and `focus-v1`, with `max_request_frame_bytes` and `max_server_frame_bytes` both
 1,048,576, the release constant from the
 [operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).
-It advertises only the families it implements; `notification-v1` and
-`progress-v1` follow with their implementations. The
+It advertises only the families it implements, which are now all seven. The
 [post-hello boundary](post-hello.md#after-hello) explains that every frame
 after hello is then a revision-1 frame.
 Existing optional-field behavior and required fields remain frozen;

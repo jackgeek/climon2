@@ -33,16 +33,19 @@ acquire and inherit control
 ([#89](https://github.com/jackgeek/climon2/issues/89)),
 `status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)), with
 output-driven status detection from [OSC](../TERMS.md#osc) 7501 program status and OSC 133
-shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)), and
+shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)),
+`notification-v1` and `progress-v1` from OSC 9, OSC 99, OSC 777 and OSC 9;4
+([#98](https://github.com/jackgeek/climon2/issues/98)), and
 keeps that traffic within its [bounds](#implemented-bounds) with counters
 that never wrap ([#90](https://github.com/jackgeek/climon2/issues/90)): the
 [hello advertisement](hello-reply.md#revision-1-advertisement), framing and
 validation with their connection-fatal codes, Open in both modes, Leave,
 Input, Resize, Ready, Set viewing, Acknowledge, Acquire, Focus, Kill,
 Response, Fatal error, Initial metadata (the title, the status and a known
-command result; progress reported unavailable), Title changed, Status
-changed, Control granted and revoked, Restoration begin and complete,
-Display, Geometry and
+command result; progress when selected), Title changed, Status
+changed, [Notification](event-notification.md#implemented-behavior),
+[Progress changed](event-progress-changed.md#implemented-behavior), Control
+granted and revoked, Restoration begin and complete, Display, Geometry and
 [Command final](event-command-final.md#implemented-behavior) with the final
 status,
 with takeover,
@@ -53,13 +56,14 @@ and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentati
 of monitor-mode connections. Until it serves them, it
 rejects the other
 requests without effects, as each request's page describes. The
-notification and progress messages remain unimplemented. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 for `status-v1` ([#95](https://github.com/jackgeek/climon2/issues/95)),
 with Command final, and for standalone Kill
-([#96](https://github.com/jackgeek/climon2/issues/96)), and the
+([#96](https://github.com/jackgeek/climon2/issues/96)), and for
+`notification-v1` and `progress-v1`
+([#98](https://github.com/jackgeek/climon2/issues/98)), and the
 [client executable](../../../GLOSSARY.md#sessions) drives that library for
 ordinary attach and kill ([#100](https://github.com/jackgeek/climon2/issues/100),
 [#101](https://github.com/jackgeek/climon2/issues/101)). The
@@ -465,6 +469,13 @@ These choices explicitly normalize differences between
 the latter calls state 4 warning and ignores percentage for state 3.
 No full OSC 7501 root/child export or heartbeat is added; the
 [detector state machines](../../session-status.md) remain unchanged.
+
+The session daemon implements this normalization
+([#98](https://github.com/jackgeek/climon2/issues/98)); the
+[Notification](event-notification.md#implemented-behavior) and
+[Progress changed](event-progress-changed.md#implemented-behavior) pages give
+the exact sequences it accepts, the choices it makes where the references
+leave room, and its text, record and assembly bounds.
 
 ## Errors and bounded delivery
 

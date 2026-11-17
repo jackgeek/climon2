@@ -10,12 +10,18 @@ scrollback, terminal restoration and live presentation.
 climon2-daemon --session-id GUID --home CANONICAL_ABSOLUTE_HOME \
   --socket ABSOLUTE_SOCKET --version SEMVER --cli-pid PID \
   --lifetime ordinary|headless --readiness-fd FD --rows ROWS --cols COLS \
-  --scrollback-max-rows ROWS --cwd ABSOLUTE_CWD \
+  --scrollback-max-rows ROWS --assembly-records COUNT --assembly-bytes BYTES \
+  --assembly-ms MILLISECONDS --cwd ABSOLUTE_CWD \
   [--log FILTER] -- COMMAND [ARG...]
 ```
 
 Options are private, order-independent, unique and required except `--log`.
 `--scrollback-max-rows` sets the VT engine's retained normal-screen history.
+`--assembly-records`, `--assembly-bytes` and `--assembly-ms` are the
+notification assembly limits (`payload.assembly_records`,
+`payload.assembly_bytes` and `deadlines.assembly_ms` of `monitor.limits`)
+that `exec` validated, each in its setting's range; they stay fixed for the
+session's lifetime (#98).
 `--lifetime` is the session's startup policy, its
 [lifetime policy](../../GLOSSARY.md#sessions): `ordinary` for `c2 exec`,
 `headless` for `c2 exec --headless` (see the leave policy below). Any other
@@ -124,8 +130,11 @@ all be; unknown or unsupported optional ones are dropped) under a fresh
 connection GUID. Its success Response is followed by one Initial metadata
 record captured in the same loop step: the title by value when `title-v1` is
 selected (unavailable otherwise), the stored effective status when
-`status-v1` is selected (unavailable otherwise), progress explicitly
-unavailable, and the command's result once the daemon knows it (null before).
+`status-v1` is selected (unavailable otherwise), the retained progress when
+`progress-v1` is selected (unavailable otherwise), and the command's result
+once the daemon knows it (null before). `notification-v1` is selected only
+with `status-v1`: optional without it, it is dropped; required without it,
+the Open is rejected with `unsupported_capability`.
 Every later change of the application title that the VT reports
 (`Fed::titles`, one per change, by value) goes as a Title changed to each
 registration that selected `title-v1`, whatever the control state; titles are
@@ -281,8 +290,22 @@ attention. `A`, `C` and `D` retire the scope to idle heuristics with a fresh
 baseline; `A` excludes prompt rendering from heuristics until `B` or `C`;
 `B` only rebases. A full reset rebases heuristics and acts as `clear` in
 explicit or fallback detection; a soft reset is not a signal. The VT strips
-every OSC from host output. #98 adds notification signals through
-`Detector::request_attention`.
+every OSC from host output.
+
+Notifications and progress (#98) come from the same observed sequences
+(`status::signals`): OSC 9 text (a numbered first parameter is a control
+operation, OSC 9;4 progress included), OSC 777 `notify` and OSC 99 chunks
+(`status::notifications`). `status::assembly` assembles OSC 99 chunks under
+the exec-provided limits, discarding an assembly that passes a bound and
+expiring one at its fixed lifetime with a logged diagnostic and nothing
+completed, and makes text inert UTF-8 within the release-constant bounds
+(titles 4,096 bytes, bodies 8,192, records 16,384), ignoring oversized
+notifications. A completed notification requests attention through
+`Detector::notify`, so its Status changed, if any, precedes its Notification,
+which carries the pending episode. `status::progress` normalizes OSC 9;4
+against the cached number and reports only changes. Notification and
+Progress changed reach every connection that selected their family, in
+stream order with the status changes and whatever the control state.
 
 The daemon keeps the command's result as its wait status gives it
 (`core::wire::CommandResult`): a normal exit's raw status, or a signal's
@@ -533,6 +556,7 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | COM-03 (Contract, passive cases): Open, Leave and the rejections of a first role, a later Open or Kill, an early Leave or Acquire and every request that needs an attachment have their documented outcomes and effects, including during committed termination; a registration's Acquire converts it into an attachment that takes control, and is `session_terminating` during committed termination | `monitor_open_selects_supported_families_then_reports_initial_metadata`, `passive_requests_get_their_documented_outcomes`, `a_monitor_registers_and_leaves_during_committed_termination`, `requests_that_need_an_attachment_are_refused_and_the_stream_goes_on`, `a_registration_takes_control_only_by_its_own_acquire`, `a_committed_kill_overrides_succession` |
 | COM-03 (Contract, interactive cases): interactive Open, Input, Resize, Ready, Acquire, Focus and Leave have their documented results and rejections, without effects when rejected; a terminating session rejects new interactive work with `session_terminating` while Leave still works | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `interactive_open_selects_supported_families_and_rejects_without_effects`, `requests_on_an_interactive_attachment_get_their_documented_results`, `committed_termination_rejects_new_interactive_work_and_leave_still_works` |
 | COM-03 (Contract, Kill cases): a standalone Kill is answered only after the real hang-up grace, with its session metadata and socket removed and the command gone; a standalone Kill sent during the grace joins it without restarting it; a Kill's connection rejects a later Open or Kill, Leave and Acquire (`invalid_state`), Input, Resize and Ready (`not_attached`) and Focus (`unsupported_capability`); a Kill succeeds after a session failure once termination is confirmed, and fails with a partial result, keeping the result it knew, when its termination or cleanup did not complete | `a_standalone_kill_is_answered_after_termination_and_cleanup_and_later_kills_join_it`, `a_session_ending_without_final_evidence_sends_no_command_final`, `a_failed_kill_keeps_the_result_the_daemon_knew`, `a_failed_cleanup_fails_the_kill_but_keeps_the_confirmed_result`, `a_kill_succeeds_after_a_session_failure_once_termination_is_confirmed` |
+| COM-03 and STA-06 (Contract, family dependency): `notification-v1` needs `status-v1`: required without it the Open is `unsupported_capability`, optional without it it is not selected; with it, it is; Open with `progress-v1` reports progress none | `notification_v1_is_selected_only_with_status_v1`, `monitor_open_selects_supported_families_then_reports_initial_metadata` |
 | COM-04 (Contract): binary Input and Display carry `00 ff 41`, NUL and invalid UTF-8 unchanged, across Input requests and Display chunks | `binary_input_and_display_pass_unchanged` |
 | COM-05 (Contract, Initial metadata case): Initial metadata is captured atomically and title changes follow it gap-free, including around a burst; it carries a command result already known, and that connection's one Command final follows only as the session ends (#259) | `title_changes_follow_initial_metadata_by_value_whatever_the_control`, `a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata`, `a_known_result_reaches_later_opens_and_rejected_first_roles` |
 | COM-05 (Contract, interactive order): Response, Initial metadata, grant, Restoration begin, matching Display chunks and Restoration complete arrive in order under fragmented and coalesced I/O; a large restoration is produced as it drains, and completes before Command final when the command's output drained during it, as does the restoration of a monitor promoted after the drain; Geometry follows a Resize's acceptance | `interactive_open_is_granted_at_the_requested_geometry_in_the_documented_order`, `a_restoration_in_progress_when_the_drain_ends_completes_before_command_final`, `a_stalled_restoration_holds_command_final_only_until_its_reader_is_lost`, `ready_needs_the_complete_current_restoration`, `a_ready_controllers_resize_reports_the_actual_geometry_after_its_acceptance` |
@@ -563,8 +587,13 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | STA-04 (Contract, controllable clock): root `clear` and `error` start the 10,000 ms fallback quiet deadline; characters, title and resize each restart it a millisecond before it, never as agent work; it ends at exactly ten seconds of quiet without attention and heuristics resume; the user window stays independent | `error_and_clear_start_the_fallback_quiet_deadline` |
 | STA-04 (Contract, controllable clock): a full reset rebases heuristics, keeping an agent deadline, and acts as `clear` in explicit detection; a soft reset changes nothing; a shell boundary and a fresh root report end the grace; the command's exit during it is completed | `resets_reports_markers_and_the_final_exit_end_or_keep_detection_as_specified` |
 | STA-05 (Contract, controllable clock): `A`, `C` and `D` (with an exit status) retire the scope with no attention, final status or deadline left; prompt rendering after `A` is no activity while input and root reports still apply; `C` and `B` end the exclusion, `B` with a fresh baseline; observed sequences never reach host output | `shell_markers_retire_scopes_and_exclude_prompt_rendering` |
+| STA-06 (Contract) and CTL-03 (Contract, notifications and progress): OSC 9 text, completed OSC 99 and OSC 777 `notify` request attention and arrive in order with the episode; OSC 9;4 progress, incomplete OSC 99, auxiliary data alone, queries and other commands do not; every record reaches a passive registration, an attachment revoked by takeover and a background controller; a later Open's Initial metadata reports the retained progress | `notifications_and_progress_reach_every_subscribed_role_in_order` |
+| LIM-01 (Contract, exec-provided assembly limits, controllable clock): records, bytes (identifiers included) and lifetime limits from the daemon's arguments apply at the limit and one past | `exec_provided_assembly_limits_apply_at_the_limit_and_one_past` |
+| LIM-01 (Contract, release-constant bounds) and STA-06 (Contract, inert text): a 4,096-byte title and an 8,192-byte body of multi-byte characters split across OSC 99 chunks arrive whole, one byte more is ignored; base64 split inside a four-character group decodes once joined, and base64 that does not decode reports nothing; invalid UTF-8 is replaced; observed sequences never reach host output | `notification_titles_and_bodies_are_bounded_and_inert` |
+| STA-06 and LIM-01 (pure): OSC 9, OSC 777 and OSC 99 parsing; progress syntax and normalization against the cached number; assembly by identifier, auxiliary data, records, bytes (identifiers and base64 as received) and lifetime at the limit and one past; base64 joined and decoded once at completion; text and record bounds, in one OSC 99 chunk and after base64 decoding too; a notification requests attention and carries the pending episode | the `status::signals::tests` OSC 9, 777 and 99 tests, the 3 `status::progress::tests`, the 11 `status::assembly::tests` and the notification test of `status::tests` |
+| LIM-01 (pure, exec-provided assembly limits): the three assembly arguments are required and range-checked | the assembly test of `args::tests` in `src/args.rs` |
 | STA-03, STA-04 and STA-05 (pure, injected clock and random source): root-only report effects, coalescing and remembered working; the fallback grace's restarts, exact expiry, independence from input and its ends; full resets; shell boundaries, prompt exclusion and what they keep; no signal after the final status | 9 further `status::tests` unit tests and `a_final_result_stops_observation_and_rejects_late_events` in `src/status.rs` |
-| STA-03 and STA-05 (pure, upstream validation): root reports of each state, queries, child reports, malformed pairs, unknown states, every limit at the bound and one past, base64 text values, and OSC 133 markers | the 6 `status::signals::tests` unit tests in `src/status/signals.rs` |
+| STA-03 and STA-05 (pure, upstream validation): root reports of each state, queries, child reports, malformed pairs, unknown states, every limit at the bound and one past, base64 text values, and OSC 133 markers | the first 6 `status::signals::tests` unit tests in `src/status/signals.rs` |
 | CTL-05 (Contract and Fault, stale authority from a raw peer): Input, Resize and Ready under an earlier period or a superseded restoration are `stale_period` or `stale_restoration`; Ready needs the complete current restoration; late authority never re-enables input | `stale_and_superseded_authority_is_rejected_and_never_re_enables_input`, `ready_needs_the_complete_current_restoration` |
 | INP-03 (Contract): bracketed-paste bytes reach the application exactly; an open application paste is closed when admission ends; a focus report never lands inside a paste that earlier Input requests carry | `bracketed_paste_is_exact_and_an_open_paste_is_closed_when_admission_ends`, `focus_reports_follow_the_input_accepted_before_them` |
 | TRM-02 (Contract): the daemon alone answers session queries; titles stay inert text and title-looking output stays text | `session_queries_are_answered_by_the_daemon_alone`, `titles_reach_an_attachment_as_inert_text` |

@@ -6,9 +6,12 @@
 allocation, queued and delivered records, deliveries, workers and descriptors.
 It tracks no shared-release allocation. Queued
 [requests](../TERMS.md#request) and outstanding operations are measured
-([#93](https://github.com/jackgeek/climon2/issues/93)); input and display
-measurements stay zero until Input and Display arrive
-([#94](https://github.com/jackgeek/climon2/issues/94)). Instance allocation
+([#93](https://github.com/jackgeek/climon2/issues/93)). The monotonic
+counters count Input bytes as `submit` accepts them, Display bytes and
+records as they are drained and deliveries as they are released; none
+wraps: once one would pass its maximum, snapshot fails with
+`CM1_RESOURCE_LIMIT`
+([#99](https://github.com/jackgeek/climon2/issues/99)). Instance allocation
 is measured at the library's allocator: every block allocated while working
 for the instance, its diagnostics, workers, requests, records and connection
 included, from creation until the block is freed

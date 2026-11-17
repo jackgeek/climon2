@@ -21,7 +21,8 @@
 //!   an Acquire or Ready result), and `"$stale_period"` and
 //!   `"$stale_restoration"` the one before it (#94);
 //! - `run`, on the owner thread; `wait_run` for its report;
-//! - `drain`, `until` `{"records": n}`, `{"tag": t}`, `{"response": id}`,
+//! - `drain`, `until` `{"records": n}`, `{"tag": t}` (with `"count": n`,
+//!   `n` records of that tag), `{"response": id}`,
 //!   `{"display": hex}` (the Display bytes drained in this step contain
 //!   them), `{"all": [until, ...]}` or `"terminal"` (default: once),
 //!   releasing each delivery unless `keep`, and stopping at the first failed
@@ -38,6 +39,8 @@
 //!   test creates `path`, so later steps follow what the test does outside
 //!   the host, such as attaching an ordinary client (#102);
 //! - `await_peer` until it received `frames` frames;
+//! - `limit_descriptors` so that exactly `free` more descriptors can be
+//!   created in the host, until `restore_descriptors` (#99);
 //! - `destroy` on the owner thread, ahead of `finish` (#96);
 //! - `finish`: run's report, drains to terminal evidence, handle releases,
 //!   destroy and join.
@@ -84,6 +87,8 @@ struct Instance {
 struct World<'a> {
     setup: &'a Setup,
     instances: BTreeMap<String, Instance>,
+    /// The descriptor limit before `limit_descriptors`, until restored.
+    descriptors: Option<libc::rlimit>,
 }
 
 pub fn script(setup: &Setup) -> Value {
@@ -94,6 +99,7 @@ pub fn script(setup: &Setup) -> Value {
     let mut world = World {
         setup,
         instances: BTreeMap::new(),
+        descriptors: None,
     };
     let steps = setup.input["steps"].as_array().expect("steps");
     let started = Instant::now();
@@ -139,6 +145,15 @@ impl World<'_> {
             "clock" => return clock(step),
             "await_file" => return await_file(step),
             "probe" => return hello_state(Path::new(step["socket"].as_str().expect("a socket"))),
+            "limit_descriptors" => {
+                let free = step["free"].as_u64().expect("a count") as usize;
+                self.descriptors = Some(probe::limit_descriptors(free));
+                return json!("limited");
+            }
+            "restore_descriptors" => {
+                probe::restore_descriptors(self.descriptors.take().expect("a limit"));
+                return json!("restored");
+            }
             _ => {}
         }
         let instance = self.instances.get_mut(&name).expect("a created instance");
@@ -310,7 +325,8 @@ fn wait_run(instance: &mut Instance) -> Value {
 }
 
 /// Whether the drains so far meet `until`: terminal evidence, `records`
-/// records, a record of `tag`, or, by default, one drain.
+/// records, `count` records (default one) of `tag`, or, by default, one
+/// drain.
 fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bool {
     if until == "terminal" {
         return terminal;
@@ -324,7 +340,9 @@ fn met(until: &Value, drains: &[Value], records: &[Value], terminal: bool) -> bo
         return records.len() as u64 >= count;
     }
     if let Some(tag) = until["tag"].as_u64() {
-        return records.iter().any(|record| record["tag"] == tag);
+        let count = until["count"].as_u64().unwrap_or(1);
+        let tagged = records.iter().filter(|record| record["tag"] == tag);
+        return tagged.count() as u64 >= count;
     }
     if let Some(id) = until["response"].as_u64() {
         return records

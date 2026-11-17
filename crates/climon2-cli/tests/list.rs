@@ -332,7 +332,16 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
         .arg(isolation.home());
     let pending = daemon::spawn(command, |command, fd| {
         command
-            .args(["--scrollback-max-rows", "10000"])
+            .args([
+                "--scrollback-max-rows",
+                "10000",
+                "--assembly-records",
+                "32",
+                "--assembly-bytes",
+                "65536",
+                "--assembly-ms",
+                "5000",
+            ])
             .arg("--readiness-fd")
             .arg(fd.to_string())
             .arg("--")

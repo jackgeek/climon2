@@ -237,7 +237,17 @@ impl Daemon {
         }
         let pending = daemon::spawn(command, |command, fd| {
             command
-                .args(["--scrollback-max-rows", "10000", "--readiness-fd"])
+                .args([
+                    "--scrollback-max-rows",
+                    "10000",
+                    "--assembly-records",
+                    "32",
+                    "--assembly-bytes",
+                    "65536",
+                    "--assembly-ms",
+                    "5000",
+                    "--readiness-fd",
+                ])
                 .arg(fd.to_string())
                 .args(["--", "/bin/cat"]);
         })

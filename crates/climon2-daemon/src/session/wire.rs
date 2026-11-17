@@ -1,7 +1,8 @@
 //! Daemon wire revision 1 on the session loop, the only protocol after the
 //! frozen hello: passive monitor connections, ordinary interactive attachments and
 //! standalone Kills, their requests, their control and terminal records and
-//! their core metadata: the title and the effective status.
+//! their core metadata: the title, the effective status, notifications and
+//! progress.
 use super::{Session, delivery::Delivery};
 use crate::{
     connection::{Connection, frame_limit},
@@ -17,10 +18,11 @@ use climon2_core::{
         Acknowledge, ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available,
         Cleanup, CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked,
         Counter, Display, Error, Failure, Families, Family, Focus, FocusBytes, Frame, FrameLimits,
-        Geometry, GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Open,
-        OperationalCode, Outcome, PartialCleanup, PartialTermination, Ready, Rejection, Request,
-        Resize, Response, RestorationBegin, RestorationComplete, RevocationReason, SetViewing,
-        Status, StatusChanged, Success, TitleChanged,
+        Geometry, GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Notification,
+        Open, OperationalCode, Outcome, PartialCleanup, PartialTermination, Progress,
+        ProgressChanged, Ready, Rejection, Request, Resize, Response, RestorationBegin,
+        RestorationComplete, RevocationReason, SetViewing, Status, StatusChanged, Success,
+        TitleChanged,
     },
 };
 use std::{collections::BTreeSet, io, num::NonZeroU32};
@@ -49,6 +51,8 @@ pub(super) fn advertisement() -> Advertisement {
             Family::MonitorV1,
             Family::TitleV1,
             Family::StatusV1,
+            Family::NotificationV1,
+            Family::ProgressV1,
             Family::FocusV1,
         ],
         limits,
@@ -303,12 +307,15 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             self.vt.application_title().map(str::to_owned)
         });
         let status = available(&opened.selected, Family::StatusV1, || self.status.status());
+        let progress = available(&opened.selected, Family::ProgressV1, || {
+            self.progress.current()
+        });
         let success = Success::Opened {
             connection_id: fresh_connection_id(),
             selected_capabilities: tokens(&opened.selected),
         };
         self.respond(id, request_id, Outcome::Ok(success));
-        let metadata = initial_metadata(title, status, self.command_result.clone());
+        let metadata = initial_metadata(title, status, progress, self.command_result.clone());
         self.send_wire(id, &metadata.to_frame());
     }
 
@@ -550,11 +557,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// The turn's timer and sample work, after the command's output was
-    /// read; a sample reads the viewport only when one is due.
+    /// read; a sample reads the viewport only when one is due. Notification
+    /// assemblies past their lifetime end.
     pub(super) fn observe_status(&mut self) {
         let vt = &self.vt;
         let changed = self.status.poll(&self.moment, || super::sample(vt));
         self.report_status(changed);
+        self.assembler.expire(self.moment.monotonic);
     }
 
     /// A changed effective status reaches every connection that selected
@@ -566,9 +575,20 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let frame = StatusChanged::new(status)
             .expect("the final status goes only with Command final")
             .to_frame();
-        for id in self.subscribers(Family::StatusV1) {
-            self.send_wire(id, &frame);
-        }
+        self.broadcast(Family::StatusV1, &frame);
+    }
+
+    /// A notification reaches every connection that selected
+    /// `notification-v1`, which needs `status-v1`, in order and whatever
+    /// the control state.
+    pub(super) fn report_notification(&mut self, notification: Notification) {
+        self.broadcast(Family::NotificationV1, &notification.to_frame());
+    }
+
+    /// Changed progress reaches every connection that selected
+    /// `progress-v1`, in order and whatever the control state.
+    pub(super) fn report_progress(&mut self, progress: Progress) {
+        self.broadcast(Family::ProgressV1, &ProgressChanged { progress }.to_frame());
     }
 
     /// The control a request under `(requested, needs)` has, or its
@@ -804,19 +824,21 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// in order and whatever the control state.
     pub(super) fn titles(&mut self, titles: Vec<Option<String>>) {
         for title in titles {
-            let frame = TitleChanged { title }.to_frame();
-            for id in self.subscribers(Family::TitleV1) {
-                self.send_wire(id, &frame);
-            }
+            self.broadcast(Family::TitleV1, &TitleChanged { title }.to_frame());
         }
     }
 
-    fn subscribers(&self, family: Family) -> Vec<u64> {
-        self.opened
+    /// Sends `frame` to every connection that selected `family`.
+    fn broadcast(&mut self, family: Family, frame: &Frame) {
+        let subscribers: Vec<u64> = self
+            .opened
             .iter()
             .filter(|(_, opened)| opened.selected.contains(&family))
             .map(|(id, _)| *id)
-            .collect()
+            .collect();
+        for id in subscribers {
+            self.send_wire(id, frame);
+        }
     }
 
     /// An identifiable but impermissible request: `invalid_state`, and the
@@ -993,17 +1015,36 @@ fn select(
         .iter()
         .map(|token| supported(token))
         .collect();
-    let required = required.ok_or_else(|| {
-        error(
-            OperationalCode::UnsupportedCapability,
-            UNSUPPORTED_CAPABILITY,
-        )
-    })?;
+    let required = required.ok_or_else(unsupported_capability)?;
     let optional = optional
         .tokens()
         .iter()
         .filter_map(|token| supported(token));
-    Ok(required.into_iter().chain(optional).collect())
+    let selected = required.iter().copied().chain(optional).collect();
+    dependencies(&required, selected)
+}
+
+/// `notification-v1` needs `status-v1`: without it, an optional
+/// `notification-v1` is not selected, and a required one rejects the
+/// request.
+fn dependencies(
+    required: &[Family],
+    mut selected: BTreeSet<Family>,
+) -> Result<BTreeSet<Family>, Error> {
+    if !selected.contains(&Family::StatusV1) {
+        selected.remove(&Family::NotificationV1);
+    }
+    let satisfied = required.iter().all(|family| selected.contains(family));
+    satisfied
+        .then_some(selected)
+        .ok_or_else(unsupported_capability)
+}
+
+fn unsupported_capability() -> Error {
+    error(
+        OperationalCode::UnsupportedCapability,
+        UNSUPPORTED_CAPABILITY,
+    )
 }
 
 fn supported(token: &str) -> Option<Family> {
@@ -1030,14 +1071,15 @@ fn available<T>(
 }
 
 /// The title by value when `title-v1` is selected (an available `None` is
-/// unset), the effective status when `status-v1` is, progress explicitly
-/// unavailable, and the command's result once known.
+/// unset), the effective status when `status-v1` is, the retained progress
+/// when `progress-v1` is, and the command's result once known.
 fn initial_metadata(
     title: Available<Option<String>>,
     status: Available<Status>,
+    progress: Available<Progress>,
     command_result: Option<CommandResult>,
 ) -> InitialMetadata {
-    InitialMetadata::new(title, status, Available::Unavailable, command_result)
+    InitialMetadata::new(title, status, progress, command_result)
         .expect("the final status agrees with the known result")
 }
 
