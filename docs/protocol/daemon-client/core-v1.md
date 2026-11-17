@@ -60,7 +60,6 @@ requests without effects, as each request's page describes. The
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 for `status-v1` ([#95](https://github.com/jackgeek/climon2/issues/95)),
-<<<<<<< HEAD
 with Command final, and for standalone Kill
 ([#96](https://github.com/jackgeek/climon2/issues/96)), and for
 `notification-v1` and `progress-v1`
@@ -68,13 +67,6 @@ with Command final, and for standalone Kill
 [client executable](../../../GLOSSARY.md#sessions) drives that library for
 ordinary attach and kill ([#100](https://github.com/jackgeek/climon2/issues/100),
 [#101](https://github.com/jackgeek/climon2/issues/101)). The
-=======
-with Command final and for standalone Kill
-([#96](https://github.com/jackgeek/climon2/issues/96)), and for
-`notification-v1` and `progress-v1`
-([#98](https://github.com/jackgeek/climon2/issues/98)); no other
-[client](../../../GLOSSARY.md#sessions) does yet. The
->>>>>>> origin/feature/monitor-impl
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 
