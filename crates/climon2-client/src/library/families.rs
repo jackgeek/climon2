@@ -25,12 +25,24 @@ fn advertised(advertisement: &Advertisement, token: &str) -> bool {
     relayed(token).is_some_and(|family| advertisement.supports(family))
 }
 
-/// Whether the daemon advertises everything an Open requires: `monitor-v1`
-/// for monitor mode, whatever the caller lists, and every required family.
-pub(super) fn supports(advertisement: &Advertisement, mode: Mode, requested: &Requested) -> bool {
-    (mode != Mode::Monitor || advertisement.supports(Family::MonitorV1))
-        && requested
-            .required()
+/// A first role, with the families it requires.
+#[derive(Clone, Copy)]
+pub(super) enum Role<'a> {
+    /// An Open: `monitor-v1` for monitor mode, whatever the caller lists,
+    /// and every required family.
+    Open(Mode, &'a Requested),
+    /// A Kill: every required family; core support is implicit (#96).
+    Kill(&'a Families),
+}
+
+/// Whether the daemon advertises everything `role` requires.
+pub(super) fn supports(advertisement: &Advertisement, role: Role) -> bool {
+    let (monitor, required) = match role {
+        Role::Open(mode, requested) => (mode == Mode::Monitor, requested.required()),
+        Role::Kill(required) => (false, required),
+    };
+    (!monitor || advertisement.supports(Family::MonitorV1))
+        && required
             .tokens()
             .iter()
             .all(|token| advertised(advertisement, token))

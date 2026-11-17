@@ -16,8 +16,12 @@ Every invocation writes its own session log,
 `<home>/logs/<session-id>/client-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log`, created
 `0600` with `create_new` and `O_NOFOLLOW`. No client truncates, deletes, shares
 or reopens another client's log, so concurrent and later clients of one session
-never collide; a collision would be an ordinary I/O failure. Failures after the
-log exists carry the ` (logs: <session-log directory>)` suffix.
+never collide; a collision would be an ordinary I/O failure. In kill mode the
+client library instance writes its own diagnostics beside it, in
+`<home>/logs/<session-id>/library-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log` (the
+client's pid), which the library creates the same way, under the client's
+`CLIMON2_LOG` filter or the default. Failures after the log exists carry the
+` (logs: <session-log directory>)` suffix, the directory holding both.
 
 The operation comes from the `CLIMON2_CLIENT_STARTUP` startup envelope (core
 `startup_envelope`, at most 4096 bytes), which the CLI sets: `attach` with the
@@ -25,15 +29,73 @@ exact validated client settings, or `kill`. A present envelope is used exactly
 or rejected. Without one, a directly started client reads and validates the
 `client` section of `config.jsonc` and attaches.
 
-Connection, hello write, and complete hello reply share one real two-second
-deadline. Peers must have the effective UID and hello must match session,
-protocol, metadata version, and the capability for the operation (`attach` or
-`kill`); a missing capability fails before any request is sent.
+In attach mode, connection, hello write, and complete hello reply share one
+real two-second deadline. Peers must have the effective UID and hello must
+match session, protocol, metadata version, and the `attach` capability; a
+missing capability fails before any request is sent.
 
-**Kill mode** opens no terminal and no attachment: it sends `Kill` and waits for
-`Terminated`. Confirmed termination returns 0 whatever the command's status; an
-`Error`, a refusal or a lost connection is a failure, and HUP/TERM/INT while
-waiting return 128+signal. The CLI bounds the whole operation.
+**Kill mode** (#100) opens no terminal and no attachment, and goes through
+this release's own [client library](#client-library-libclimon2_clientdylib-libclimon2_clientso)
+instead of the private post-hello protocol (`src/kill.rs`, `src/embedded.rs`).
+The executable loads `<executable home>/<version>/<library file>`, beside
+itself, through the shared loader (`climon2_platform::library`), with eager,
+local resolution; its release is the version folder it runs from, which the
+library must describe. `current`, the working directory and search paths never
+choose the library, and no other version's library is ever loaded. A missing,
+other-release or faulty library, or an executable outside a version folder,
+fails with status 125 and the loader's diagnostic before any connection.
+
+The executable then creates one instance on an owner thread of its own
+(generation 1, the session's metadata, home and socket directory, no client
+keys, its own log file and the client's filter, the fixed limits below),
+submits one Kill (public
+ID 1, requiring nothing beyond core support) and drains until the instance's
+stream ends. The library sends the Kill on its own hello-validated connection
+over daemon wire revision 1 and gives it one definitive outcome. A confirmed
+termination returns 0 whatever the command's status. Every failure is status
+125 with the diagnostic kill gave before #100 (owner decision on #100):
+- a Kill sent and then outliving `kill_ms`, or never answered:
+  `termination of session <id> was not confirmed`, the CLI's message for its
+  own ten-second bound;
+- a hello the daemon leaves unanswered, which fails at the frozen two-second
+  hello deadline and never sends the Kill: `session <id> did not respond`;
+- a connection that cannot be made, closes (also inside a frame) or fails,
+  during the hello or after the Kill (the library's transport `io_error` or
+  `truncated_frame`): `lost connection to session <id>`;
+- anything else, such as a refusal or a partial termination: the library's
+  message, which for a daemon error, even one coded `io_error`, is the
+  daemon's own.
+
+HUP/TERM/INT while waiting return
+128+signal at once, without waiting for the Kill's answer; the daemon finishes
+a committed termination anyway. Otherwise the executable releases its handles,
+and the owner thread destroys the instance and is joined. The CLI still bounds
+the whole operation.
+
+The executable never reads `monitor.limits`; every instance it creates gets
+this fixed `cm1_limits` table (`embedded::LIMITS`), the operational-limits
+per-client defaults except `restoration_total_ms` at its maximum:
+
+| Field | Value |
+|---|---|
+| `client_bytes` | 67,108,864 |
+| `request_bytes` / `request_records` | 262,144 / 64 |
+| `event_bytes` / `event_records` | 1,048,576 / 1,024 |
+| `progress_bytes` / `progress_records` | 65,536 / 32 |
+| `deliveries` / `operations` | 8 / 16 |
+| `chunk_bytes` | 65,536 |
+| `drain_records` / `drain_payload_bytes` | 64 / 65,536 |
+| `wire_frame_bytes` | 1,048,576 |
+| `metadata_record_bytes` | 16,384 |
+| `title_bytes` / `notification_title_bytes` / `notification_body_bytes` | 4,096 / 4,096 / 8,192 |
+| `max_workers` | 2 |
+| `operation_ms` / `kill_ms` | 5,000 / 10,000 |
+| `restoration_stall_ms` / `restoration_total_ms` | 5,000 / 3,600,000 |
+| `delivery_stall_ms` / `leave_ms` / `cleanup_ms` / `start_ms` | 5,000 / 5,000 / 10,000 / 10,000 |
+| `reserved` | 0 |
+
+Kill mode's tests observe `kill_ms` and an accepted table; the fields only
+ordinary attach uses are not exercised until attach moves onto the library.
 
 **Attach mode**: raw mode begins only after the daemon accepts Attach. A
 controller waits for Granted, writes the restoration and live backlog, drains
@@ -430,12 +492,21 @@ private target directory and checks.
 | LIB-05 Library and Fault: a stalled instance never stops another; `submit`, `drain` and release return at once | `installed_library_instance_stalled_by_its_daemon_never_stops_another` (`passive.rs`) |
 | COM-01 Fault: missing support, mismatched identity, unreachable or silent daemons rejected before any Open is sent; families intersect | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role`, `installed_library_selects_only_families_both_sides_support` (`climon2-e2e/tests/passive_faults.rs`) |
 | COM-02 Fault: forbidden, malformed, truncated, oversized and out-of-order traffic fails the connection with its origin and code; limits exactly met are accepted | `installed_library_fails_the_connection_on_traffic_revision_one_forbids`, `installed_library_accepts_records_exactly_at_their_limits` (`passive_faults.rs`) |
-| COM-03, EXT-01 and EXT-02 Fault: timeouts, lost answers without fabrication or replay, refusals and their retry, known final results, shutdown and explicit Leave evidence | `installed_library_reports_lost_and_late_answers_truthfully_without_replay`, `installed_library_reports_a_known_final_result_and_never_retries`, `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
+| COM-03, EXT-01, EXT-02 and REC-01 Fault: timeouts, lost answers without fabrication or replay, refusals and their retry, known final results (a later close a clean stop), shutdown and explicit Leave evidence | `installed_library_reports_lost_and_late_answers_truthfully_without_replay`, `installed_library_reports_a_known_final_result_and_never_retries`, `installed_library_shutdown_leaves_once_and_reports_unconfirmed_departures` (`passive_faults.rs`) |
 | LIB-04 and LIB-05 Fault: a panic inside a running connection leaves no descriptor or operation counted | `installed_library_panic_in_a_connection_leaves_nothing_counted` (`passive_faults.rs`) |
 | LIB-05 Fault: no `SIGPIPE` in an embedder that left it at its default | `installed_library_never_raises_sigpipe_in_its_embedder` (`passive_faults.rs`) |
 | COM-02 and COM-03 Library: native admission, every queue limit at and one past its bound, no ID consumed by a rejection | `installed_library_admits_only_valid_requests_and_rejections_cost_nothing`, `installed_library_bounds_requests_by_every_queue_limit` (`climon2-e2e/tests/passive_admission.rs`) |
 | LIB-04 Library: delivery lifetimes and limits | `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`) |
 | LIB-04 Fault: drain batching, a full event queue holding daemon records, per-record charges | `installed_library_batches_records_within_drain_payload_bytes`, `installed_library_holds_daemon_records_while_the_event_queue_is_full`, `installed_library_charges_each_record_its_header_and_the_bytes_it_owns` (`passive_admission.rs`), `installed_library_charges_presentation_records_only_the_display_bytes_they_own` (`control_faults.rs`) |
+| COM-06 and REC-01 Library: exit zero, exit 143 and a signal from real daemons each arrive as one Command final of their own kind; the daemon's close then stops cleanly, retry none | `installed_library_relays_each_real_command_final_apart_from_signals` (`climon2-e2e/tests/termination.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Library: a Kill alongside a passive Open and a Kill-only instance succeed only after the real hang-up grace and cleanup, on their own connections; a second pending Kill `invalid_state`; one Command final of the same result | `installed_library_kills_a_real_session_only_after_termination_and_cleanup` (`termination.rs`) |
+| COM-03 Kill, DEL-02 and REC-01 Library: a Kill that cannot reach a stopped daemon is rejected `timeout` and leaves the opened role, whose Leave is later confirmed | `installed_library_keeps_a_real_role_when_its_kill_cannot_reach_the_daemon` (`termination.rs`) |
+| REC-01 Library: transport loss and a contained panic call for passive retry, another session's startup for permanent | `installed_library_classifies_real_failures_for_retry` (`termination.rs`) |
+| REC-01 Library: startup failure calls for passive retry; destroy is busy until handles are released; a fresh instance and generation open only after destroy and join | `installed_library_recovers_only_through_a_fresh_instance_after_join` (`termination.rs`) |
+| COM-06 and REC-01 Fault: exit 0 and 143 as Command final records, a contradictory repeat, closure without final evidence or meeting a Leave (beside #94's Command final cases) | `installed_library_relays_each_command_final_once_and_closure_invents_nothing` (`climon2-e2e/tests/termination_faults.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Fault: confirmed, known-final, partial, refused, lost, late, malformed and Fatal Kill answers; refusals before sending; one pending Kill; cancellation and shutdown; never replayed | `installed_library_reports_each_kill_outcome_truthfully_and_never_replays_it` (`termination_faults.rs`) |
+| COM-06 and COM-03 Fault: a partial termination on any request but a Kill is `invalid_record`; a Leave so answered stays indeterminate | `installed_library_refuses_a_partial_termination_on_any_other_request` (`termination_faults.rs`) |
+| COM-03 Kill, DEL-02, COM-06 and REC-01 Fault: each Kill failure on an opened role only answers its request; the role reads on to its own end | `installed_library_keeps_an_opened_role_through_each_kill_failure` (`termination_faults.rs`) |
 | DOC-01 exported interface: only the bootstrap is exported, from the real release library and from a defective stand-in | `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`), `release_checks_reject_extra_exports` (`xtask/src/library.rs`) |
 | DOC-01 layout case on x86-64 GNU/Linux and both macOS architectures | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
 | #75 risk proof: `cargo test` builds the hooked library as a sibling artifact without nested builds (ELF on Linux, Mach-O on macOS); the plain library is the release build | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`); plain: `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
@@ -494,12 +565,31 @@ no worker that could stall. Open
 - `lost_session_while_stdout_is_blocked_ends_within_the_closing_deadline`
 - `pending_detach_while_stdout_is_blocked_ends_within_the_bound`
 
-`tests/termination.rs` covers kill mode:
-`confirmed_termination_is_silent_success_whatever_the_command_status`,
-`a_daemon_error_or_lost_connection_is_a_failed_kill`,
-`kill_needs_the_kill_capability_and_never_sends_a_request_without_it`,
-`a_kill_capable_session_without_attach_refuses_attach_mode` and
-`a_signal_while_waiting_for_confirmation_is_the_signal_status`.
+`tests/termination.rs` covers kill mode through the library (#100). Each test
+installs the client executable and the workspace's hooked client library in a
+private version folder and answers as a revision-1 peer whose frames it
+writes by hand from the wire reference:
+
+| Scenario | Named test |
+|---|---|
+| LIB-01 executable case and COM-01 Fault (Kill parity): a confirmed termination (exit 143, complete cleanup) is silent status 0, through the library beside the executable; one Kill, wire ID 1, revision 1, requiring nothing | `confirmed_termination_is_silent_success_whatever_the_command_status` |
+| LIB-01 executable case: stand-ins describing this release in the folder `current` names, the working directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` are never loaded | `the_library_beside_the_executable_is_used_whatever_current_cwd_and_search_paths` |
+| LIB-02 executable case: a missing library, another release's, one without a bootstrap and one with an incomplete function table, and an executable outside a version folder, fail with 125 and the loader's diagnostic before anything connects | `a_missing_wrong_release_or_faulty_library_fails_before_any_connection` |
+| COM-01 Fault (Kill parity) and COM-03 Fault, executable case: a refusal (also one coded `io_error`) and a partial termination give the daemon's message, a connection closed during the hello or after the Kill `lost connection to session <id>`, a Kill outliving `kill_ms` the CLI's unconfirmed message, each with 125; the Kill is never sent again | `a_refused_partial_lost_or_unconfirmed_kill_is_a_failed_kill` |
+| COM-01 and COM-03 Fault, executable case: a hello the daemon accepts but never answers fails at the two-second hello deadline, not `kill_ms`, with `session <id> did not respond`, and the Kill is never sent | `a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill` |
+| The library's diagnostics land in its own `library-<second>-<pid>.log` beside the client's session log, under the client's `CLIMON2_LOG` filter (its creation record by default, none under `warn`) | `the_library_logs_into_its_own_file_beside_the_clients_session_log` |
+| COM-01 Fault, executable case: a daemon of this release without daemon wire revision 1 is refused before any request | `kill_needs_daemon_wire_revision_1_and_never_sends_a_request_without_it` |
+| COM-01 Fault (Kill parity), executable case: SIGTERM while waiting is status 143 at once, silently | `a_signal_while_waiting_for_confirmation_is_the_signal_status` |
+| Attach mode (private protocol) refuses a session without `attach` | `a_kill_capable_session_without_attach_refuses_attach_mode` |
+
+Against real daemons, `climon2 kill` through the CLI and the packaged
+launcher is unchanged: `kill_terminates_a_detached_session_silently_after_cleanup`,
+`kill_while_attached_gives_the_client_the_signal_status` and
+`an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper`
+(`climon2-cli/tests/exec.rs`, whose private installation now carries the
+library), and `installed_kill_ends_detached_and_attached_sessions` with the
+other packaged kills (`climon2-e2e`), including a 0.0.97 session killed from
+the second-release fixture's folder (`climon2-e2e/tests/mixed.rs`).
 `tests/scaffold.rs` covers the frozen invocation `attach --metadata <absolute
 path>`: `invocations_outside_the_frozen_contract_are_one_line_usage_failures_without_stdout`
 (no arguments, a missing or relative path, another flag or operation, or an

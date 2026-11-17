@@ -14,9 +14,13 @@ partly implemented. Packaged
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
 local instance lifecycle
 ([#85](https://github.com/jackgeek/climon2/issues/85)), passive monitor
-connections ([#93](https://github.com/jackgeek/climon2/issues/93)) and control
-and display ([#94](https://github.com/jackgeek/climon2/issues/94)), which the
-monitor loads (#106). The Library layer's
+connections ([#93](https://github.com/jackgeek/climon2/issues/93)), control
+and display ([#94](https://github.com/jackgeek/climon2/issues/94)), and
+Command final and Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
+which the monitor loads (#106); the client executable loads its own release's
+library for `climon2 kill`
+([#100](https://github.com/jackgeek/climon2/issues/100)), the LIB-01 and LIB-02
+executable cases. The Library layer's
 [second-release fixture](../GLOSSARY.md#testing)
 ([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
 libraries in one process, against sessions of each release's own daemon, for

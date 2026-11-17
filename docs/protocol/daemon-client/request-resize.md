@@ -58,4 +58,9 @@ geometry policy as an ordinary attach. A ready controller then receives
 readiness, a changed host instead replaces the current restoration within
 the same period: a new [Restoration begin](event-restoration-begin.md)
 reports the new restoration ID and geometry, and the superseded restoration
-gets no completion.
+gets no completion. A Resize whose applied size would need such a new
+restoration, before readiness or, for a monitor-mode controller, at a new
+effective geometry, is rejected with `resource_limit` without effects once
+the session has issued its last restoration ID
+([#90](https://github.com/jackgeek/climon2/issues/90)); its size is not
+recorded.

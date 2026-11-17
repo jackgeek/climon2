@@ -1,12 +1,11 @@
 # Final command result
 
 **Status: agreed revision-1 specification. The
-[client library](../../../GLOSSARY.md#sessions) delivers it with minimal
-handling ([#94](https://github.com/jackgeek/climon2/issues/94)), status
-unavailable, as its [implemented behavior](core-v1.md#implemented-behavior)
-details; exit and signal detail, repeats and evidence that survives
-disconnection belong to [#96](https://github.com/jackgeek/climon2/issues/96);
-the caller is not implemented.**
+[client library](../../../GLOSSARY.md#sessions) implements it without
+terminal status ([#94](https://github.com/jackgeek/climon2/issues/94),
+[#96](https://github.com/jackgeek/climon2/issues/96)), as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the caller
+is not implemented.**
 The [session daemon](../../../GLOSSARY.md#sessions) reports an authoritative final
 command result through its [client](../../../GLOSSARY.md#sessions) to the
 [monitor](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

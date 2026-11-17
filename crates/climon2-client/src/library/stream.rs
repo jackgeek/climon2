@@ -11,8 +11,8 @@ use super::{
     families::{self, Selection},
     link::fatal,
     records::{
-        Answer, Command, Done, Event, Initial, Metadata, Outcome, Presentation, Response, Screen,
-        Title,
+        Answer, Command, Done, Ending, Event, Initial, Metadata, Outcome, Presentation, Response,
+        Screen, Title,
     },
     request::{Act, Held},
 };
@@ -20,7 +20,7 @@ use climon2_core::{
     native,
     wire::{
         self, AuthorityIds, Available, ControlRecord, Counter, Families, Family, Frame, FrameLimit,
-        KnownResult, Mode, Requested, ServerMessage, Success,
+        KnownResult, Mode, PartialTermination, Requested, ServerMessage, Success,
     },
 };
 use std::time::Instant;
@@ -41,11 +41,11 @@ const REPEATED: Fault = Fault::transport(
     "a Command final follows a known final result",
 );
 const EMPTY_DISPLAY: Fault = Fault::transport("invalid_record", "a Display carries no bytes");
-const MISMATCHED: Fault = Fault::transport(
+pub(super) const MISMATCHED: Fault = Fault::transport(
     "invalid_record",
     "a response's result does not belong to its request",
 );
-const UNCORRELATED: Fault = Fault::transport(
+pub(super) const UNCORRELATED: Fault = Fault::transport(
     "invalid_request_id",
     "a response names no unanswered request",
 );
@@ -285,7 +285,9 @@ impl Effect {
         match self {
             Self::Record(Event::Metadata(Metadata::Initial(initial))) => initial.command.is_some(),
             Self::Record(Event::Metadata(Metadata::Final(_))) => true,
-            Self::Opened(response, _) => matches!(response.answer, Some(Answer::KnownFinal(_))),
+            Self::Opened(response, _) => {
+                matches!(response.answer, Some(Answer::Ending(Ending::KnownFinal(_))))
+            }
             _ => false,
         }
     }
@@ -583,9 +585,15 @@ impl Stream {
         self.selected.is_some() && !self.synchronized
     }
 
+    /// A request's answer. It stays unanswered when its answer breaks the
+    /// wire's rules: a Leave whose answer is invalid is unconfirmed, never
+    /// not required (#96).
     fn respond(&mut self, response: wire::Response) -> Result<Effect, Fault> {
-        let sent = self.answered(response.request_id)?;
-        Verdict::from(response.outcome).and_then(|verdict| self.resolve(sent, verdict))
+        let index = self.answered(response.request_id)?;
+        let sent = self.pending[index].sent.clone();
+        let effect = self.resolve(sent, Verdict::from(response.outcome))?;
+        self.pending.remove(index);
+        Ok(effect)
     }
 
     fn resolve(&mut self, sent: Sent, verdict: Verdict) -> Result<Effect, Fault> {
@@ -596,14 +604,13 @@ impl Stream {
         }
     }
 
-    fn answered(&mut self, request_id: Counter) -> Result<Sent, Fault> {
+    /// Where the unanswered request a response names waits.
+    fn answered(&self, request_id: Counter) -> Result<usize, Fault> {
         require(!self.awaiting_metadata(), UNEXPECTED)?;
-        let index = self
-            .pending
+        self.pending
             .iter()
             .position(|pending| pending.wire == request_id.get())
-            .ok_or(UNCORRELATED)?;
-        Ok(self.pending.remove(index).sent)
+            .ok_or(UNCORRELATED)
     }
 
     fn opened(&mut self, id: u64, sent: &Requested, verdict: Verdict) -> Result<Effect, Fault> {
@@ -634,8 +641,10 @@ impl Stream {
                 connection_id,
                 selected_capabilities,
             }) => self.selected(&connection_id, &selected_capabilities, sent),
-            Carried::KnownFinal(result) => Ok(Answer::KnownFinal(Command::from(&result))),
-            Carried::Success(_) => Err(MISMATCHED),
+            Carried::KnownFinal(result) => {
+                Ok(Answer::Ending(Ending::KnownFinal(Command::from(&result))))
+            }
+            Carried::Success(_) | Carried::Termination(_) => Err(MISMATCHED),
         }
     }
 
@@ -754,7 +763,7 @@ fn answered(id: u64, expects: Expects, verdict: Verdict) -> Result<Effect, Fault
     let answer = carried
         .map(|carried| match carried {
             Carried::Success(success) => expects.answer(success),
-            Carried::KnownFinal(_) => Err(MISMATCHED),
+            Carried::KnownFinal(_) | Carried::Termination(_) => Err(MISMATCHED),
         })
         .transpose()?;
     Ok(Effect::Answered(Response {
@@ -764,35 +773,38 @@ fn answered(id: u64, expects: Expects, verdict: Verdict) -> Result<Effect, Fault
     }))
 }
 
-/// What a response may carry: an operation's result, or a rejection's
-/// known final command result.
+/// What a response may carry: an operation's result, a rejection's known
+/// final command result, or a failed or indeterminate Kill's partial
+/// termination (#96). Whether it belongs to its request is the resolver's
+/// to say.
 #[derive(Debug)]
-enum Carried {
+pub(super) enum Carried {
     Success(Success),
     KnownFinal(wire::CommandResult),
+    Termination(PartialTermination),
 }
 
 /// A response's outcome, the result it carries and, for a non-success, the
 /// retry its error calls for.
-struct Verdict {
-    outcome: Outcome,
-    carried: Option<Carried>,
-    retry: Retry,
+pub(super) struct Verdict {
+    pub(super) outcome: Outcome,
+    pub(super) carried: Option<Carried>,
+    pub(super) retry: Retry,
 }
 
 impl Verdict {
-    fn from(outcome: wire::Outcome) -> Result<Self, Fault> {
+    pub(super) fn from(outcome: wire::Outcome) -> Self {
         match outcome {
-            wire::Outcome::Ok(success) => Ok(Self {
+            wire::Outcome::Ok(success) => Self {
                 outcome: Outcome::Ok,
                 carried: Some(Carried::Success(success)),
                 retry: Retry::None,
-            }),
-            wire::Outcome::Rejected(rejection) => Ok(Self::of(
+            },
+            wire::Outcome::Rejected(rejection) => Self::of(
                 Outcome::Rejected,
                 &rejection.error,
                 rejection.known_final.map(Carried::KnownFinal),
-            )),
+            ),
             wire::Outcome::Failed(failure) => Self::failure(Outcome::Failed, &failure),
             wire::Outcome::Indeterminate(failure) => {
                 Self::failure(Outcome::Indeterminate, &failure)
@@ -809,14 +821,13 @@ impl Verdict {
         }
     }
 
-    /// A failed or indeterminate outcome keeps a known result of its own
-    /// operation; a Kill's partial termination belongs to no request here.
-    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Result<Self, Fault> {
-        let carried = match failure.known() {
-            None => None,
-            Some(KnownResult::Operation(success)) => Some(Carried::Success(success.clone())),
-            Some(KnownResult::Termination(_)) => return Err(MISMATCHED),
-        };
-        Ok(Self::of(outcome, failure.error(), carried))
+    /// A failed or indeterminate outcome keeps what it knows of its
+    /// operation.
+    fn failure(outcome: fn(Fault) -> Outcome, failure: &wire::Failure) -> Self {
+        let carried = failure.known().map(|known| match known {
+            KnownResult::Operation(success) => Carried::Success(success.clone()),
+            KnownResult::Termination(termination) => Carried::Termination(termination.clone()),
+        });
+        Self::of(outcome, failure.error(), carried)
     }
 }
