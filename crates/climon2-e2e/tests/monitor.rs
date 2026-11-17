@@ -7069,7 +7069,7 @@ fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
         "Deep",
         &[RUNNING, "History", SESSIONS_HINT],
     );
-    whole_frame_shows(&terminal, "the oldest row kept", |screen| {
+    let oldest_kept = |screen: &str| {
         let lines: Vec<_> = screen.lines().collect();
         let oldest = lines
             .get(2)
@@ -7079,7 +7079,19 @@ fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
             && oldest
                 .and_then(|number| number.parse::<u32>().ok())
                 .is_some_and(|number| number > 1000)
-    });
+    };
+    // A loaded host can take longer than one wait to work through 8,000
+    // notches, so each wait only needs the view to keep scrolling.
+    let shown = std::cell::RefCell::new(String::new());
+    while !oldest_kept(&shown.borrow()) {
+        whole_frame_shows(&terminal, "the oldest row kept", |screen| {
+            let moved = screen != *shown.borrow();
+            if moved {
+                screen.clone_into(&mut shown.borrow_mut());
+            }
+            moved
+        });
+    }
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
