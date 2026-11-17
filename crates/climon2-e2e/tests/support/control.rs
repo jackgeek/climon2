@@ -138,17 +138,20 @@ impl Session {
         text: &str,
     ) -> Self {
         let go = go.to_str().unwrap();
-        let before = ["await-file", go, "print", text];
-        Self::running(package, root, &before, &[], Some(clock))
+        Self::running(
+            package,
+            root,
+            &["await-file", go, "print", text],
+            &[],
+            Some(clock),
+        )
     }
 
     /// A clocked session (see [`Session::clocked`]) whose application,
     /// after `ECHO-READY`, waits for the `work` file and then prints `MORE`,
     /// new agent work for the status heuristic (#102).
     pub fn clocked_working(package: &Package, root: &Path, clock: &Path, work: &Path) -> Self {
-        let work = work.to_str().unwrap();
-        let before = ["await-file", work, "print", "MORE"];
-        Self::running(package, root, &before, &[], Some(clock))
+        Self::clocked_printing(package, root, clock, work, "MORE")
     }
 
     fn running(
