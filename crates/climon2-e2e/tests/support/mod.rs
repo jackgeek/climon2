@@ -376,11 +376,25 @@ pub fn scripted(package: &Package, launcher: &str, args: &[&str]) -> Output {
 /// the deadline is killed and reaped, and the test fails.
 #[allow(dead_code)]
 pub fn scripted_to(package: &Package, launcher: &str, args: &[&str], stdout: Stdio) -> Output {
+    scripted_with(package, launcher, args, stdout, &[])
+}
+
+/// Like [`scripted_to`], with `env` set over the isolated environment for
+/// the CLI and everything it starts.
+#[allow(dead_code)]
+pub fn scripted_with(
+    package: &Package,
+    launcher: &str,
+    args: &[&str],
+    stdout: Stdio,
+    env: &[(&str, &Path)],
+) -> Output {
     let isolated = package.command(launcher);
     let mut cli = process_command(package.executable_home().join(launcher))
         .args(args)
         .env_clear()
         .envs(isolated.iter_full_env_as_str())
+        .envs(env.iter().copied())
         .current_dir(package.isolation.home())
         .stdin(Stdio::null())
         .stdout(stdout)

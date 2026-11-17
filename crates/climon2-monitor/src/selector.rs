@@ -1,10 +1,13 @@
 //! The basic selector (selector document, "Selector"; #106): prefix+s
 //! overlays a captionless double-bordered list of every row, with status and
 //! title columns and a distinct highlight. Up and Down move the highlight
-//! without wrapping, and Escape closes. Opening it never resizes an
-//! application or acquires anything. Search, its separator, the footer and
-//! Enter arrive with #108 and #113.
-use crate::registry::{View, clip};
+//! without wrapping, Escape closes and Enter chooses (#108). Its keys come
+//! from the input router (#109). Opening it never resizes an application or
+//! acquires anything. Search, its separator and the footer arrive with #113.
+use crate::{
+    registry::{View, clip},
+    router::Key,
+};
 use climon2_core::SessionId;
 use ratatui::{
     buffer::Buffer,
@@ -12,7 +15,6 @@ use ratatui::{
     style::Style,
     widgets::{Block, BorderType, Clear, Widget},
 };
-use std::ops::RangeInclusive;
 use unicode_width::UnicodeWidthStr;
 
 /// A key the selector acts on, decoded from typed bytes.
@@ -21,18 +23,8 @@ pub(crate) enum Move {
     Up,
     Down,
     Close,
-}
-
-/// Where typed bytes stand in an escape sequence.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum Sequence {
-    #[default]
-    Ground,
-    Escape,
-    /// After ESC [ or ESC O: arrow keys end here.
-    Introduced,
-    /// Any other control sequence, skipped to its final byte.
-    Skipping,
+    /// Enter: choose the highlighted row.
+    Choose,
 }
 
 #[derive(Default)]
@@ -40,7 +32,6 @@ pub(crate) struct Selector {
     open: bool,
     /// The highlighted row's identity, kept while rows reorder.
     highlight: Option<SessionId>,
-    sequence: Sequence,
 }
 
 impl Selector {
@@ -51,7 +42,6 @@ impl Selector {
             return;
         }
         self.open = true;
-        self.sequence = Sequence::Ground;
         self.highlight = rows.first().map(|row| row.id.clone());
     }
 
@@ -59,29 +49,20 @@ impl Selector {
         self.open
     }
 
-    /// Decodes one typed byte, acting on any key it completes.
-    pub(crate) fn key(&mut self, byte: u8, rows: &[View]) {
-        if let Some(found) = self.decode(byte) {
-            self.act(found, rows);
-        }
+    pub(crate) fn close(&mut self) {
+        self.open = false;
     }
 
-    /// The end of one host read: an Escape with nothing after it in the same
-    /// read is a bare Escape. The full input router (#109) replaces this.
-    pub(crate) fn read_ended(&mut self, rows: &[View]) {
-        if self.sequence == Sequence::Escape {
-            self.sequence = Sequence::Ground;
-            self.act(Move::Close, rows);
+    /// Acts on one key; Enter returns the highlighted row's identity for the
+    /// caller to select.
+    pub(crate) fn key(&mut self, key: &Key, rows: &[View]) -> Option<SessionId> {
+        match decode(key)? {
+            Move::Choose => self.highlighted(rows).map(|index| rows[index].id.clone()),
+            found => {
+                self.act(found, rows);
+                None
+            }
         }
-    }
-
-    fn decode(&mut self, byte: u8) -> Option<Move> {
-        let rule = RULES
-            .iter()
-            .find(|rule| rule.from.contains(&self.sequence) && rule.bytes.contains(&byte))
-            .expect("the last rules cover every byte in every state");
-        self.sequence = rule.next;
-        rule.found
     }
 
     /// The highlighted row's index in `rows`, if it is there.
@@ -93,7 +74,7 @@ impl Selector {
     fn act(&mut self, found: Move, rows: &[View]) {
         let index = self.highlighted(rows);
         let target = match (found, index) {
-            (Move::Close, _) => {
+            (Move::Close | Move::Choose, _) => {
                 self.open = false;
                 return;
             }
@@ -157,57 +138,23 @@ fn line_at(buffer: &mut Buffer, area: Rect, text: &str, highlighted: bool) {
     buffer.set_string(area.x, area.y, clip(text, usize::from(area.width)), style);
 }
 
-/// One transition of the escape decoder: in a `from` state, a byte in
-/// `bytes` moves to `next`, completing `found`. The first matching rule
-/// applies.
-struct Rule {
-    from: &'static [Sequence],
-    bytes: RangeInclusive<u8>,
-    next: Sequence,
-    found: Option<Move>,
+/// The selector's move for `key`, if it has one: a bare Escape, the Up and
+/// Down cursor keys, or Enter.
+fn decode(key: &Key) -> Option<Move> {
+    match key {
+        Key::Escape => Some(Move::Close),
+        Key::Cursor(last) => vertical(*last),
+        Key::Bytes(bytes) if bytes == b"\r" => Some(Move::Choose),
+        _ => None,
+    }
 }
 
-const ANY: &[Sequence] = &[
-    Sequence::Ground,
-    Sequence::Escape,
-    Sequence::Introduced,
-    Sequence::Skipping,
-];
-const SEQUENCE: &[Sequence] = &[Sequence::Introduced, Sequence::Skipping];
-
-const RULES: [Rule; 8] = [
-    rule(ANY, 0x1b..=0x1b, Sequence::Escape, None),
-    rule(&[Sequence::Escape], b'['..=b'[', Sequence::Introduced, None),
-    rule(&[Sequence::Escape], b'O'..=b'O', Sequence::Introduced, None),
-    rule(
-        &[Sequence::Introduced],
-        b'A'..=b'A',
-        Sequence::Ground,
-        Some(Move::Up),
-    ),
-    rule(
-        &[Sequence::Introduced],
-        b'B'..=b'B',
-        Sequence::Ground,
-        Some(Move::Down),
-    ),
-    // A final byte ends any other control sequence.
-    rule(SEQUENCE, 0x40..=0x7e, Sequence::Ground, None),
-    rule(SEQUENCE, 0x00..=0xff, Sequence::Skipping, None),
-    rule(ANY, 0x00..=0xff, Sequence::Ground, None),
-];
-
-const fn rule(
-    from: &'static [Sequence],
-    bytes: RangeInclusive<u8>,
-    next: Sequence,
-    found: Option<Move>,
-) -> Rule {
-    Rule {
-        from,
-        bytes,
-        next,
-        found,
+/// Up or Down, by the cursor key's final byte.
+fn vertical(last: u8) -> Option<Move> {
+    match last {
+        b'A' => Some(Move::Up),
+        b'B' => Some(Move::Down),
+        _ => None,
     }
 }
 
@@ -224,7 +171,7 @@ mod tests {
                 id: format!("00000000-0000-4000-8000-0000000000{index:02x}")
                     .parse()
                     .unwrap(),
-                status,
+                status: (*status).to_owned(),
                 label: (*label).to_owned(),
                 since: SystemTime::UNIX_EPOCH,
             })
@@ -261,11 +208,17 @@ mod tests {
             .collect()
     }
 
-    fn typed(selector: &mut Selector, bytes: &[u8], rows: &[View]) {
-        for &byte in bytes {
-            selector.key(byte, rows);
+    const UP: Key = Key::Cursor(b'A');
+    const DOWN: Key = Key::Cursor(b'B');
+
+    fn typed(selector: &mut Selector, keys: &[Key], rows: &[View]) {
+        for key in keys {
+            selector.key(key, rows);
         }
-        selector.read_ended(rows);
+    }
+
+    fn enter() -> Key {
+        Key::Bytes(b"\r".to_vec())
     }
 
     /// SEL-01 basic cases (pure supplement): a captionless double border one
@@ -273,7 +226,7 @@ mod tests {
     /// labels clipped by display cell, and the first row highlighted.
     #[test]
     fn the_selector_draws_a_captionless_double_border_with_two_columns() {
-        let rows = rows(&[("Starting", "Alpha"), ("This monitor", "日本語ラベル")]);
+        let rows = rows(&[("Starting", "Alpha"), ("Disconnected", "日本語ラベル")]);
         let mut selector = Selector::default();
         selector.open(&rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 6));
@@ -284,7 +237,7 @@ mod tests {
                 "                        ",
                 " ╔════════════════════╗ ",
                 " ║Starting     Alpha  ║ ",
-                " ║This monitor 日本語 ║ ",
+                " ║Disconnected 日本語 ║ ",
                 " ╚════════════════════╝ ",
                 "                        ",
             ]
@@ -293,9 +246,9 @@ mod tests {
     }
 
     /// SEL-01 basic cases (pure supplement): Up and Down move the highlight
-    /// without wrapping, keeping it in view; Escape at the end of a read
-    /// closes, while arrow sequences never do; reopening highlights the first
-    /// row again.
+    /// without wrapping, keeping it in view; Escape closes, while other keys
+    /// (Left, a literal Escape byte, an SS3 keypad key) never do; reopening
+    /// highlights the first row again.
     #[test]
     fn up_and_down_move_without_wrapping_and_escape_closes() {
         let rows = rows(&[("", "a"), ("", "b"), ("", "c")]);
@@ -307,14 +260,20 @@ mod tests {
             selector.render(&rows, buffer.area, &mut buffer);
             (lines(&buffer)[2].clone(), highlighted(&buffer))
         };
-        typed(&mut selector, b"\x1b[A", &rows);
+        typed(&mut selector, &[UP], &rows);
         assert_eq!(view(&selector), (" ║ a    ║ ".to_owned(), vec![2]));
-        typed(&mut selector, b"\x1b[B\x1bOB\x1b[B\x1b[B", &rows);
+        typed(&mut selector, &[DOWN, DOWN, DOWN, DOWN], &rows);
         assert_eq!(view(&selector), (" ║ c    ║ ".to_owned(), vec![2]));
-        typed(&mut selector, b"\x1b[A", &rows);
+        typed(&mut selector, &[UP], &rows);
+        assert_eq!(view(&selector), (" ║ b    ║ ".to_owned(), vec![2]));
+        typed(
+            &mut selector,
+            &[Key::Cursor(b'D'), Key::Bytes(vec![0x1b]), Key::Keypad(b'M')],
+            &rows,
+        );
         assert_eq!(view(&selector), (" ║ b    ║ ".to_owned(), vec![2]));
         assert!(selector.is_open());
-        typed(&mut selector, b"\x1b", &rows);
+        typed(&mut selector, &[Key::Escape], &rows);
         assert!(!selector.is_open());
         selector.render(&rows, buffer.area, &mut buffer);
         assert!(lines(&buffer).iter().all(|line| line.trim().is_empty()));
@@ -337,13 +296,13 @@ mod tests {
         let mut selector = Selector::default();
         selector.open(&[]);
         assert_eq!(shown(&selector, &found), Vec::<u16>::new());
-        typed(&mut selector, b"\x1b[B", &found);
+        typed(&mut selector, &[DOWN], &found);
         assert_eq!(shown(&selector, &found), [2]);
 
-        typed(&mut selector, b"\x1b[B", &found);
+        typed(&mut selector, &[DOWN], &found);
         let without_b = [found[0].clone(), found[2].clone()];
         assert_eq!(shown(&selector, &without_b), Vec::<u16>::new());
-        typed(&mut selector, b"\x1b[A", &without_b);
+        typed(&mut selector, &[UP], &without_b);
         assert_eq!(shown(&selector, &without_b), [2]);
     }
 
@@ -356,7 +315,7 @@ mod tests {
         let rows = rows(&[("", "a"), ("", "b"), ("", "c")]);
         let mut selector = Selector::default();
         selector.open(&rows);
-        typed(&mut selector, b"\x1b[B\x1b[B", &rows);
+        typed(&mut selector, &[DOWN, DOWN], &rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 6));
         selector.render(&rows, buffer.area, &mut buffer);
         assert_eq!(
@@ -409,11 +368,37 @@ mod tests {
         let rows = rows(&[("", "a"), ("", "b"), ("", "c")]);
         let mut selector = Selector::default();
         selector.open(&rows);
-        typed(&mut selector, b"\x1b[B", &rows);
+        typed(&mut selector, &[DOWN], &rows);
         selector.open(&rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 7));
         selector.render(&rows, buffer.area, &mut buffer);
         assert_eq!(highlighted(&buffer), [3]);
         assert!(selector.is_open());
+    }
+
+    /// Spec #73 Enter (pure supplement, #108): a typed CR chooses the
+    /// highlighted row, leaving the selector to its caller; no other key
+    /// (a CR with more bytes, keypad Enter) chooses, and with no rows nothing
+    /// is chosen.
+    #[test]
+    fn enter_chooses_the_highlighted_row() {
+        let rows = rows(&[("", "A"), ("", "B")]);
+        let mut selector = Selector::default();
+        selector.open(&rows);
+        let keys = [
+            DOWN,
+            Key::Bytes(b"\r\r".to_vec()),
+            Key::Keypad(b'M'),
+            enter(),
+        ];
+        let chosen: Vec<_> = keys.iter().map(|key| selector.key(key, &rows)).collect();
+        assert_eq!(chosen[..3], [None, None, None]);
+        assert_eq!(chosen[3], Some(rows[1].id.clone()));
+        assert!(selector.is_open());
+        selector.close();
+        assert!(!selector.is_open());
+        let mut empty = Selector::default();
+        empty.open(&[]);
+        assert_eq!(empty.key(&enter(), &[]), None);
     }
 }
