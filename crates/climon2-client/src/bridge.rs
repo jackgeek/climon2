@@ -1,8 +1,11 @@
-use crate::transport::{Pending, Transport, invalid, poll, ready};
+use crate::{
+    attachment::{Attachment, Authority, Command, Ending, Event},
+    polling::{Pending, invalid, poll, ready},
+};
 use climon2_core::{
     SessionId,
     keys::{ClientSettings, ControlKey},
-    protocol::{ClientMessage, ServerMessage, TerminalSize},
+    protocol::TerminalSize,
 };
 use climon2_platform::terminal::{self, Signals};
 use std::{
@@ -23,9 +26,26 @@ const CONSERVATIVE_RESET: &[u8] = b"\x1b[?2026l\x1b[0m\x1b[?25h\
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Role {
-    Restoring,
-    Controlling,
+    /// Not ready yet: under the authority of a grant once one came, and
+    /// under none while the session is ending.
+    Restoring(Option<Authority>),
+    Controlling(Authority),
     Observing,
+}
+
+impl Role {
+    /// The authority Input and Resize go under, while the role holds one.
+    fn authority(self) -> Option<Authority> {
+        match self {
+            Self::Restoring(authority) => authority,
+            Self::Controlling(authority) => Some(authority),
+            Self::Observing => None,
+        }
+    }
+
+    fn controlling(self) -> bool {
+        matches!(self, Self::Controlling(_))
+    }
 }
 
 enum FilterAction {
@@ -252,34 +272,37 @@ fn set_flags(fd: &OwnedFd, flags: i32) -> io::Result<()> {
     Ok(())
 }
 
-/// Poll results that mean the peer hung up or failed.
-const HANGUP: i16 = libc::POLLHUP | libc::POLLERR;
-
 /// The most terminal input forwarded per read.
 const INPUT_CHUNK: usize = 32768;
 
-/// A poll timeout that reports readiness without waiting.
-const IMMEDIATELY: i32 = 0;
+/// While less output than this waits for the terminal, the bridge receives
+/// more: the end of the session is seen even while output is blocked, and
+/// what waits stays bounded by this plus one delivery.
+const DRAIN_AHEAD: usize = 65_536;
 
 struct Bridge {
-    transport: Transport,
+    attachment: Attachment,
     terminal: File,
     /// An owned duplicate of stdout: the same open-file description, so the same flags.
     stdout: File,
     signals: Signals,
     filter: InputFilter,
     takeover: Option<ControlKey>,
+    /// The terminal's size, which the placeholder fills.
     size: TerminalSize,
-    resize: Option<TerminalSize>,
+    /// The size the session last heard of.
+    told: TerminalSize,
     output: Pending,
     role: Role,
-    ready_period: Option<u64>,
+    /// A complete restoration, waiting for `Ready`.
+    restored: Option<Authority>,
+    /// The command's status, once its final result is known.
+    known: Option<u32>,
     pending_detach: bool,
-    /// Set by a detach request, a terminal message or connection loss: past it,
-    /// the result is unconfirmed, even while stdout is blocked.
+    /// Set by a detach request, the end of the session's stream or its
+    /// hang-up: past it, the result is unconfirmed, even while stdout is
+    /// blocked.
     closing: Option<Instant>,
-    /// Set once the session has hung up: nothing more is sent or read from the terminal.
-    hung_up: bool,
     /// The bridge's result, waiting for its farewell bytes to drain.
     ending: Option<io::Result<BridgeExit>>,
 }
@@ -290,33 +313,41 @@ pub enum BridgeExit {
     Detached,
 }
 
+/// What the bridge runs on: the opened attachment, the events that followed
+/// its Open's success, and the terminal's size at the Open.
+pub struct Opened {
+    pub attachment: Attachment,
+    pub backlog: Vec<Event>,
+    pub size: TerminalSize,
+}
+
 pub fn run(
-    transport: Transport,
+    opened: Opened,
     terminal: File,
     signals: Signals,
-    size: TerminalSize,
     id: &SessionId,
     settings: ClientSettings,
 ) -> io::Result<BridgeExit> {
     let stdout = File::from(io::stdout().as_fd().try_clone_to_owned()?);
     let _flags = Nonblocking::new(terminal.as_fd(), stdout.as_fd())?;
     let mut bridge = Bridge {
-        transport,
+        attachment: opened.attachment,
         terminal,
         stdout,
         signals,
         filter: InputFilter::new(settings),
         takeover: settings.take_control_key(),
-        size,
-        resize: None,
+        size: opened.size,
+        told: opened.size,
         output: Pending::default(),
-        role: Role::Restoring,
-        ready_period: None,
+        role: Role::Restoring(None),
+        restored: None,
+        known: None,
         pending_detach: false,
         closing: None,
-        hung_up: false,
         ending: None,
     };
+    bridge.events(opened.backlog);
     bridge.run().map_err(|error| {
         if error.kind() == io::ErrorKind::UnexpectedEof {
             io::Error::other(format!("lost connection to session {id}"))
@@ -390,39 +421,28 @@ impl Bridge {
 
     fn tick(&mut self) -> io::Result<Option<BridgeExit>> {
         self.resize()?;
+        self.send()?;
         let descriptors = self.poll()?;
-        self.observe_hangup(self.probe_hangup()?);
         self.exchange(&descriptors)
     }
 
-    /// While stdout is blocked the socket is not read, and macOS then reports no
-    /// hang-up for it either; one immediate probe per tick finds it. Otherwise
-    /// reading the socket finds the end of the session.
-    fn probe_hangup(&self) -> io::Result<bool> {
-        if self.output.empty() {
-            return Ok(false);
-        }
-        let mut probe = [descriptor(
-            self.transport.stream.as_raw_fd(),
-            libc::POLLIN,
-            true,
-        )];
-        poll(&mut probe, IMMEDIATELY)?;
-        Ok(reported(probe[0].revents, HANGUP))
-    }
-
-    fn observe_hangup(&mut self, hung_up: bool) {
-        if hung_up {
-            self.hung_up = true;
+    /// Offers the waiting commands. A stream that no longer accepts them
+    /// has hung up, even while blocked output keeps the bridge from
+    /// receiving its end; the command it holds keeps keys unread.
+    fn send(&mut self) -> io::Result<()> {
+        if self.attachment.send()? {
             self.close_within_deadline();
         }
+        Ok(())
     }
 
     fn exchange(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
         self.flush_output(descriptors[2].revents)?;
-        self.flush_socket(descriptors[0].revents)?;
         self.dispatch(descriptors)?.map_or_else(
-            || self.ready_after_drain(descriptors).map(|()| None),
+            || {
+                self.ready_after_drain(descriptors);
+                Ok(None)
+            },
             |exit| Ok(Some(exit)),
         )
     }
@@ -440,13 +460,14 @@ impl Bridge {
         })
     }
 
-    /// Once the bridge is ending, nothing more is read; it ends when stdout has drained.
+    /// Once the bridge is ending, nothing more is received or read; it ends
+    /// when stdout has drained.
     fn dispatch(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
+        if self.ending.is_none() {
+            self.receive()?;
+        }
         if self.ending.is_some() {
             return self.ended();
-        }
-        if let Some(code) = self.receive_ready(descriptors[0].revents)? {
-            return Ok(Some(code));
         }
         self.input_ready(descriptors[1].revents)
     }
@@ -458,21 +479,17 @@ impl Bridge {
         Ok(())
     }
 
-    fn flush_socket(&mut self, events: i16) -> io::Result<()> {
-        if reported(events, libc::POLLOUT) {
-            self.transport.flush()?;
+    /// Receives one delivery while little output waits.
+    fn receive(&mut self) -> io::Result<()> {
+        if self.draining() {
+            let events = self.attachment.receive()?;
+            self.events(events);
         }
         Ok(())
     }
 
-    /// The socket is polled for input only while output is empty. A hang-up seen
-    /// while waiting to write reads at most the next frame's header before the
-    /// probe parks the socket, so no frame is decoded until output has drained.
-    fn receive_ready(&mut self, events: i16) -> io::Result<Option<BridgeExit>> {
-        if reported(events, libc::POLLIN | HANGUP) {
-            return self.receive();
-        }
-        Ok(None)
+    fn draining(&self) -> bool {
+        self.output.backlog() < DRAIN_AHEAD
     }
 
     fn input_ready(&mut self, events: i16) -> io::Result<Option<BridgeExit>> {
@@ -482,31 +499,26 @@ impl Bridge {
         Ok(None)
     }
 
-    /// Socket, terminal input, stdout; each side waits while the other is backpressured.
+    /// The library, terminal input, stdout; each side waits while the other is
+    /// backpressured.
     fn descriptors(&self) -> [libc::pollfd; 3] {
-        let socket = self.socket_events();
         [
-            // Linux reports hang-up even with events=0; omit a parked socket entirely.
-            descriptor(self.transport.stream.as_raw_fd(), socket, socket != 0),
-            descriptor(
-                self.terminal.as_raw_fd(),
-                libc::POLLIN,
-                self.transport.outgoing.empty() && !self.pending_detach && !self.hung_up,
-            ),
+            descriptor(self.attachment.descriptor(), libc::POLLIN, self.listening()),
+            descriptor(self.terminal.as_raw_fd(), libc::POLLIN, self.reading()),
             descriptor(self.stdout.as_raw_fd(), libc::POLLOUT, !self.output.empty()),
         ]
     }
 
-    /// macOS reports POLLHUP for any requested event, so waiting to write to a
-    /// hung-up session would spin while stdout is blocked.
-    fn socket_events(&self) -> i16 {
-        let reading = if self.output.empty() { libc::POLLIN } else { 0 };
-        let writing = if self.hung_up || self.transport.outgoing.empty() {
-            0
-        } else {
-            libc::POLLOUT
-        };
-        reading | writing
+    /// The library's descriptor is readable from the end of its stream on,
+    /// so it is polled only until then, and while the bridge would receive.
+    fn listening(&self) -> bool {
+        self.ending.is_none() && self.draining()
+    }
+
+    /// Keys are read only once earlier commands were accepted, and never
+    /// after a detach or the end of the stream.
+    fn reading(&self) -> bool {
+        self.attachment.idle() && !self.pending_detach && self.ending.is_none()
     }
 
     fn resize(&mut self) -> io::Result<()> {
@@ -514,39 +526,34 @@ impl Bridge {
             return Ok(());
         }
         self.observe_resize()?;
-        self.send_resize()
+        self.send_resize();
+        Ok(())
     }
 
     fn observe_resize(&mut self) -> io::Result<()> {
         if self.signals.take_resize() {
             let size = terminal::size(&self.terminal)?;
-            self.resize = (size != self.size).then_some(size);
+            self.resized(size);
         }
         Ok(())
     }
 
-    /// One resize at a time, only after earlier messages left.
-    fn send_resize(&mut self) -> io::Result<()> {
-        if !self.transport.outgoing.empty() {
-            return Ok(());
-        }
-        if let Some(size) = self.resize.take() {
-            self.transport.send(&ClientMessage::Resize(size))?;
+    /// Only a changed size redraws a shown placeholder.
+    fn resized(&mut self, size: TerminalSize) {
+        if size != self.size {
             self.size = size;
             self.redraw();
         }
-        Ok(())
     }
 
-    fn receive(&mut self) -> io::Result<Option<BridgeExit>> {
-        match self.transport.receive() {
-            Ok(None) => Ok(None),
-            Ok(Some(message)) => self.message(message),
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                let reset = self.farewell(true);
-                self.finish(Err(error), reset)
-            }
-            Err(error) => Err(error),
+    /// One resize at a time, only after earlier commands were accepted and
+    /// only under an authority: the session hears an observer's size once
+    /// it holds control again.
+    fn send_resize(&mut self) {
+        let unheard = self.told != self.size && self.attachment.idle();
+        if let Some(authority) = self.role.authority().filter(|_| unheard) {
+            self.attachment.queue(Command::Resize(authority, self.size));
+            self.told = self.size;
         }
     }
 
@@ -556,25 +563,55 @@ impl Bridge {
         }
     }
 
-    fn message(&mut self, message: ServerMessage) -> io::Result<Option<BridgeExit>> {
-        if let Some(ending) = result(&message) {
-            let farewell = self.farewell(false);
-            return self.finish(ending, farewell);
+    fn events(&mut self, events: Vec<Event>) {
+        for event in events {
+            self.event(event);
         }
-        self.session_message(message).map(|()| None)
     }
 
-    /// The farewell is written before the terminal is restored, within the closing
-    /// deadline that a terminal message or connection loss starts (section 1.7.1).
-    fn finish(
-        &mut self,
-        ending: io::Result<BridgeExit>,
-        farewell: Vec<u8>,
-    ) -> io::Result<Option<BridgeExit>> {
+    fn event(&mut self, event: Event) {
+        match event {
+            Event::Display(bytes) => self.output.append(bytes),
+            Event::Known(status) => self.known = Some(status),
+            Event::Ended(ending) => self.end(ending),
+            other => self.presentation(other),
+        }
+    }
+
+    fn presentation(&mut self, event: Event) {
+        match event {
+            Event::Granted(authority) => self.enter(Role::Restoring(Some(authority))),
+            Event::Restored(authority) => self.restored = Some(authority),
+            other => self.revoked(other),
+        }
+    }
+
+    /// A takeover leaves this client observing; a session that is ending
+    /// takes control away without a placeholder. The Open's answer came
+    /// before the bridge, and never comes again.
+    fn revoked(&mut self, event: Event) {
+        if let Event::Revoked { ending } = event {
+            let role = if ending {
+                Role::Restoring(None)
+            } else {
+                Role::Observing
+            };
+            self.enter(role);
+        }
+    }
+
+    /// The farewell is written before the terminal is restored, within the
+    /// closing deadline that the stream's end starts (section 1.7.1). Only a
+    /// lost connection resets conservatively.
+    fn end(&mut self, ending: Ending) {
+        let ending = result(ending, self.known);
+        let lost = ending
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::UnexpectedEof);
+        let farewell = self.farewell(lost);
         self.output.append(farewell);
         self.ending = Some(ending);
         self.close_within_deadline();
-        self.ended()
     }
 
     fn ended(&mut self) -> io::Result<Option<BridgeExit>> {
@@ -584,24 +621,10 @@ impl Bridge {
         self.ending.take().transpose()
     }
 
-    fn session_message(&mut self, message: ServerMessage) -> io::Result<()> {
-        match message {
-            ServerMessage::Output(bytes) => {
-                self.output = Pending::new(bytes);
-                Ok(())
-            }
-            ServerMessage::RestoreEnd { period } => {
-                self.ready_period = Some(period);
-                Ok(())
-            }
-            other => role_after(other).map(|role| self.enter(role)),
-        }
-    }
-
     /// A new grant restores before input is ready; a revoked controller observes.
     fn enter(&mut self, role: Role) {
         self.role = role;
-        self.ready_period = None;
+        self.restored = None;
         self.filter.role_changed();
         if role == Role::Observing {
             self.output
@@ -612,7 +635,7 @@ impl Bridge {
     fn input(&mut self) -> io::Result<bool> {
         let mut bytes = [u8::default(); INPUT_CHUNK];
         match self.read_terminal(&mut bytes)? {
-            Some(count) => self.forward(&bytes[..count]),
+            Some(count) => Ok(self.forward(&bytes[..count])),
             // Another reader consumed what poll reported.
             None => Ok(true),
         }
@@ -620,57 +643,59 @@ impl Bridge {
 
     /// An empty read is the terminal hanging up (EOF, or EIO via `hangup_as_eof`).
     /// Keys typed while restoring are drained and dropped.
-    fn forward(&mut self, read: &[u8]) -> io::Result<bool> {
+    fn forward(&mut self, read: &[u8]) -> bool {
         if read.is_empty() {
-            return Ok(false);
+            return false;
         }
-        let actions = self.filter.feed(read, self.role == Role::Controlling);
-        if self.role != Role::Restoring {
-            self.perform(actions)?;
+        let actions = self.filter.feed(read, self.role.controlling());
+        if !matches!(self.role, Role::Restoring(_)) {
+            self.perform(actions);
         }
-        Ok(true)
+        true
     }
 
-    fn perform(&mut self, actions: Vec<FilterAction>) -> io::Result<()> {
+    fn perform(&mut self, actions: Vec<FilterAction>) {
         for action in actions {
-            self.act(action)?;
+            self.act(action);
         }
-        Ok(())
     }
 
-    fn act(&mut self, action: FilterAction) -> io::Result<()> {
+    fn act(&mut self, action: FilterAction) {
         match action {
-            FilterAction::Input(bytes) => self.transport.send(&ClientMessage::Input(bytes)),
+            FilterAction::Input(bytes) => self.send_input(bytes),
             FilterAction::Detach => self.detach(),
-            FilterAction::TakeControl => self.transport.send(&ClientMessage::TakeControl),
+            FilterAction::TakeControl => self.attachment.queue(Command::Acquire),
         }
     }
 
-    fn detach(&mut self) -> io::Result<()> {
-        self.transport.send(&ClientMessage::Detach)?;
+    /// Only a controller's keys become input, under its authority.
+    fn send_input(&mut self, bytes: Vec<u8>) {
+        if let Some(authority) = self.role.authority() {
+            self.attachment.queue(Command::Input(authority, bytes));
+        }
+    }
+
+    fn detach(&mut self) {
+        self.attachment.queue(Command::Leave);
         self.pending_detach = true;
         self.close_within_deadline();
-        Ok(())
     }
 
-    /// `Ready` waits until typed-ahead keys are drained. The restoration is
-    /// already written: frames, `RestoreEnd` included, are read only once output
-    /// has drained.
-    fn ready_after_drain(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<()> {
-        if reported(descriptors[1].revents, libc::POLLIN) {
-            return Ok(());
+    /// `Ready` waits until typed-ahead keys are drained and the restoration
+    /// has been written.
+    fn ready_after_drain(&mut self, descriptors: &[libc::pollfd; 3]) {
+        if reported(descriptors[1].revents, libc::POLLIN) || !self.output.empty() {
+            return;
         }
-        if let Some(period) = self.ready_period.take() {
-            self.ready(period)?;
+        if let Some(authority) = self.restored.take() {
+            self.ready(authority);
         }
-        Ok(())
     }
 
-    fn ready(&mut self, period: u64) -> io::Result<()> {
+    fn ready(&mut self, authority: Authority) {
         self.filter.role_changed();
-        self.transport.send(&ClientMessage::Ready { period })?;
-        self.role = Role::Controlling;
-        Ok(())
+        self.attachment.queue(Command::Ready(authority));
+        self.role = Role::Controlling(authority);
     }
 
     fn read_terminal(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
@@ -678,21 +703,13 @@ impl Bridge {
     }
 }
 
-/// The session's final answers end the bridge.
-fn result(message: &ServerMessage) -> Option<io::Result<BridgeExit>> {
-    match message {
-        ServerMessage::Exit { code } => Some(Ok(BridgeExit::Status(*code))),
-        ServerMessage::Detached => Some(Ok(BridgeExit::Detached)),
-        ServerMessage::Error { message } => Some(Err(invalid(message.clone()))),
-        _ => None,
-    }
-}
-
-fn role_after(message: ServerMessage) -> io::Result<Role> {
-    match message {
-        ServerMessage::Granted { .. } => Ok(Role::Restoring),
-        ServerMessage::Revoked => Ok(Role::Observing),
-        _ => Err(invalid("unexpected session message")),
+/// How the bridge ends with the stream: a detach, then the command's known
+/// status, then why the stream ended.
+fn result(ending: Ending, known: Option<u32>) -> io::Result<BridgeExit> {
+    match (ending, known) {
+        (Ending::Detached, _) => Ok(BridgeExit::Detached),
+        (_, Some(status)) => Ok(BridgeExit::Status(status)),
+        (ending, None) => Err(ending.error()),
     }
 }
 
@@ -725,13 +742,12 @@ fn descriptor(fd: i32, events: i16, active: bool) -> libc::pollfd {
 #[cfg(test)]
 mod tests {
     use super::{
-        BridgeExit, FilterAction, InputFilter, Role, placeholder_end, placeholder_lines,
-        placeholder_redraw, placeholder_start, result, role_after,
+        BridgeExit, FilterAction, InputFilter, placeholder_end, placeholder_lines,
+        placeholder_redraw, placeholder_start, result,
     };
-    use climon2_core::{
-        keys::{ClientSettings, ControlKey},
-        protocol::ServerMessage,
-    };
+    use crate::attachment::Ending;
+    use climon2_core::keys::{ClientSettings, ControlKey};
+    use std::io;
 
     fn actions(actions: Vec<FilterAction>) -> Vec<String> {
         actions
@@ -814,31 +830,26 @@ mod tests {
         );
     }
 
+    /// The end of the stream decides the result: a confirmed detach, then
+    /// the command's known status, then why the stream ended; a lost
+    /// connection stays unexpected EOF, which is named and resets the
+    /// terminal conservatively.
     #[test]
-    fn only_exit_detached_and_error_end_the_bridge() {
-        let ended = |message| result(&message).map(|ending| ending.map_err(|e| e.to_string()));
+    fn a_detach_then_a_known_status_then_the_failure_decide_the_result() {
+        let lost = || Ending::Failed(io::Error::new(io::ErrorKind::UnexpectedEof, "gone"));
         assert_eq!(
-            ended(ServerMessage::Exit { code: 3 }),
-            Some(Ok(BridgeExit::Status(3)))
+            result(Ending::Detached, Some(3)).unwrap(),
+            BridgeExit::Detached
         );
+        assert_eq!(result(lost(), Some(3)).unwrap(), BridgeExit::Status(3));
         assert_eq!(
-            ended(ServerMessage::Detached),
-            Some(Ok(BridgeExit::Detached))
+            result(Ending::Stopped, Some(0)).unwrap(),
+            BridgeExit::Status(0)
         );
-        let error = ServerMessage::Error {
-            message: "refused".into(),
-        };
-        assert_eq!(ended(error), Some(Err("refused".into())));
-        assert_eq!(ended(ServerMessage::Revoked), None);
-    }
-
-    #[test]
-    fn grants_restore_revocations_observe_and_anything_else_fails() {
-        let granted = ServerMessage::Granted { period: 1 };
-        assert_eq!(role_after(granted).unwrap(), Role::Restoring);
-        assert_eq!(role_after(ServerMessage::Revoked).unwrap(), Role::Observing);
-        let other = role_after(ServerMessage::Attached).unwrap_err();
-        assert_eq!(other.to_string(), "unexpected session message");
+        let error = result(lost(), None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        let error = result(Ending::Stopped, None).unwrap_err();
+        assert_eq!(error.to_string(), "session result not confirmed");
     }
 
     #[test]

@@ -307,9 +307,21 @@ fn exec_restores_a_waiting_alternate_screen_without_application_redraw() {
 
     let layout = Layout::private();
     let ready = layout.directory.path().join("tui-ready");
-    let client = layout.installation.version().join("climon2-client");
-    let real_client = layout.installation.version().join("climon2-client-real");
+    let version = layout.installation.version();
+    let client = version.join("climon2-client");
+    // The real client attaches through its own version folder's library
+    // (#101): it stays `climon2-client`, in a folder of its release beside
+    // that library.
+    let real_folder = layout
+        .directory
+        .path()
+        .join("real")
+        .join(version.file_name().unwrap());
+    fs::create_dir_all(&real_folder).unwrap();
+    let real_client = real_folder.join("climon2-client");
     fs::rename(&client, &real_client).unwrap();
+    let library = climon2_core::layout::client_library_name();
+    copy_executable(&version.join(&library), &real_folder.join(&library));
     fs::write(
         &client,
         "#!/bin/sh\nwhile [ ! -e \"$FIXTURE_TUI_READY\" ]; do /bin/sleep 0.01; done\nexec \"$FIXTURE_REAL_CLIENT\" \"$@\"\n",

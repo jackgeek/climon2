@@ -170,6 +170,13 @@ bash 5 outer terminals (section 6.1 of
 the actual exit statuses and ends with `assert_clean()`. Ordering uses
 acknowledgement files and observable completion, never sleeps.
 
+Since #101 the installed client executable attaches through its own release's
+client library over daemon wire revision 1, not the private post-hello
+protocol. These continuity scenarios and the packaged attach, kill,
+leave-policy and termination scenarios run unchanged on it: together they are
+the COM-01 Monitor parity case, the evidence that gates deleting the private
+protocol.
+
 ## Specification mapping
 
 Each test also has a specification doc comment in `tests/packaged.rs`, for
@@ -192,7 +199,7 @@ sessions in `tests/headless.rs`.
 | #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
 | ADR 0001/#19/#25 missing version-matched client after Ready, version/log diagnostic, startup owner cleanup | `missing_installed_client_after_ready_is_diagnostic_and_cleans_command` |
 | #21.17–20 crash mid-install/recovery while real client remains usable | `debug_hook_mid_install_crash_recovers_without_stranding_live_client` |
-| ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
+| ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff; each wrapper execs a real client kept as `climon2-client` in a folder of its session's release beside that release's library, the second-release fixture's 0.0.97 for the new version (#101) | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
 | ADRs 0001/0002/0005/#26/#39 actual previous/current archive compatibility, no fabricated previous release | `actual_previous_release_remains_live_across_current_archive_install` |
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |

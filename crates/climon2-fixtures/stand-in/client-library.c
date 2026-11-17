@@ -8,6 +8,11 @@
  * string literal. None of its eleven calls is implemented: each one aborts the
  * process, so a test process that survives proves nothing called them.
  *
+ * Probe: RECORD_STARTUP=<path string literal> makes create write the startup's
+ * limits to that file, one `<field> <value>` line each in header order, then
+ * fail with CM1_INTERNAL_ERROR instead of aborting, so a test sees exactly what
+ * a caller passes.
+ *
  * Release-check defects: EXTRA_EXPORT and HOOK_MARKER.
  * Loader defects: NO_BOOTSTRAP (no climon2_client_get_interface export),
  * UNSUPPORTED (refuses revision 1), BOOTSTRAP_STATUS=<code> (answers revision
@@ -20,6 +25,7 @@
  * OWNER_STACK_BYTES, WORKER_STACK_BYTES, WORKERS, INSTANCE_DESCRIPTORS and
  * REQUIREMENTS_RESERVED.
  */
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "client-v1.h"
@@ -52,7 +58,61 @@
 #define REQUIREMENTS_RESERVED 0
 #endif
 
+#ifdef RECORD_STARTUP
+static const uint8_t recorded_code[] = "internal_error";
+static const uint8_t recorded_message[] = "the stand-in recorded its startup";
+
+static void record(const cm1_limits *limits)
+{
+    FILE *file = fopen(RECORD_STARTUP, "w");
+    if (file == 0)
+        return;
+    fprintf(file, "client_bytes %llu\n", (unsigned long long)limits->client_bytes);
+    fprintf(file, "request_bytes %llu\n", (unsigned long long)limits->request_bytes);
+    fprintf(file, "event_bytes %llu\n", (unsigned long long)limits->event_bytes);
+    fprintf(file, "progress_bytes %llu\n", (unsigned long long)limits->progress_bytes);
+    fprintf(file, "drain_payload_bytes %llu\n", (unsigned long long)limits->drain_payload_bytes);
+    fprintf(file, "request_records %llu\n", (unsigned long long)limits->request_records);
+    fprintf(file, "event_records %llu\n", (unsigned long long)limits->event_records);
+    fprintf(file, "progress_records %llu\n", (unsigned long long)limits->progress_records);
+    fprintf(file, "deliveries %llu\n", (unsigned long long)limits->deliveries);
+    fprintf(file, "operations %llu\n", (unsigned long long)limits->operations);
+    fprintf(file, "chunk_bytes %llu\n", (unsigned long long)limits->chunk_bytes);
+    fprintf(file, "drain_records %llu\n", (unsigned long long)limits->drain_records);
+    fprintf(file, "wire_frame_bytes %llu\n", (unsigned long long)limits->wire_frame_bytes);
+    fprintf(file, "metadata_record_bytes %llu\n", (unsigned long long)limits->metadata_record_bytes);
+    fprintf(file, "title_bytes %llu\n", (unsigned long long)limits->title_bytes);
+    fprintf(file, "notification_title_bytes %llu\n", (unsigned long long)limits->notification_title_bytes);
+    fprintf(file, "notification_body_bytes %llu\n", (unsigned long long)limits->notification_body_bytes);
+    fprintf(file, "max_workers %llu\n", (unsigned long long)limits->max_workers);
+    fprintf(file, "operation_ms %llu\n", (unsigned long long)limits->operation_ms);
+    fprintf(file, "kill_ms %llu\n", (unsigned long long)limits->kill_ms);
+    fprintf(file, "restoration_stall_ms %llu\n", (unsigned long long)limits->restoration_stall_ms);
+    fprintf(file, "restoration_total_ms %llu\n", (unsigned long long)limits->restoration_total_ms);
+    fprintf(file, "delivery_stall_ms %llu\n", (unsigned long long)limits->delivery_stall_ms);
+    fprintf(file, "leave_ms %llu\n", (unsigned long long)limits->leave_ms);
+    fprintf(file, "cleanup_ms %llu\n", (unsigned long long)limits->cleanup_ms);
+    fprintf(file, "start_ms %llu\n", (unsigned long long)limits->start_ms);
+    fprintf(file, "reserved %llu\n", (unsigned long long)limits->reserved);
+    fclose(file);
+}
+
+static cm1_call stand_in_create(const cm1_startup *startup, cm1_created *out)
+{
+    record(&startup->limits);
+    cm1_call call = {
+        .code = CM1_INTERNAL_ERROR,
+        .error = {
+            .origin = CM1_ORIGIN_LIBRARY,
+            .code = {recorded_code, sizeof recorded_code - 1},
+            .message = {recorded_message, sizeof recorded_message - 1},
+        },
+    };
+    return call;
+}
+#else
 static cm1_call stand_in_create(const cm1_startup *startup, cm1_created *out) { abort(); }
+#endif
 static cm1_call stand_in_run(cm1_instance *instance, cm1_run_report *out) { abort(); }
 static cm1_call stand_in_destroy(cm1_instance *instance) { abort(); }
 static cm1_call stand_in_submit(cm1_communication *communication,
