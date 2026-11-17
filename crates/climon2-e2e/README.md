@@ -190,11 +190,12 @@ the actual exit statuses and ends with `assert_clean()`. Ordering uses
 acknowledgement files and observable completion, never sleeps.
 
 Since #101 the installed client executable attaches through its own release's
-client library over daemon wire revision 1, not the private post-hello
-protocol. These continuity scenarios and the packaged attach, kill,
-leave-policy and termination scenarios run unchanged on it: together they are
-the COM-01 Monitor parity case, the evidence that gates deleting the private
-protocol.
+client library over daemon wire revision 1, the only protocol session daemons
+speak after hello since #104 retired the version-private one. These
+continuity scenarios and the packaged attach, kill, leave-policy and
+termination scenarios run unchanged on it: together they are the COM-01
+Monitor parity case and, after the retirement, the COM-01 Contract after
+retirement case for `list`, `attach` and `kill`.
 
 ## Specification mapping
 
@@ -215,7 +216,7 @@ sessions in `tests/headless.rs`.
 | #19/#25/#26 owned daemon SIGKILL, lost-connection/log suffix, real list stale cleanup | `killed_installed_daemon_reports_logs_and_list_reclaims_stale_session` |
 | #19/#21.7 named pre-command panic/never-ready, real five-second startup deadline | `debug_hook_startup_panic_and_never_ready_report_and_clean_up` |
 | #25/#28 headers, general/session linking, CLI/client PID continuity, daemon parent PID, TRACE/WARN propagation | `installed_log_headers_links_and_filters_survive_exec_handoffs` |
-| #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
+| #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list; COM-01 (Contract after retirement): the peer that never sends a hello is closed at its deadline without a byte | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
 | ADR 0001/#19/#25 missing version-matched client after Ready, version/log diagnostic, startup owner cleanup | `missing_installed_client_after_ready_is_diagnostic_and_cleans_command` |
 | #21.17–20 crash mid-install/recovery while real client remains usable | `debug_hook_mid_install_crash_recovers_without_stranding_live_client` |
 | ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff; each wrapper execs a real client kept as `climon2-client` in a folder of its session's release beside that release's library, the second-release fixture's 0.0.97 for the new version (#101) | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
@@ -227,7 +228,7 @@ sessions in `tests/headless.rs`.
 
 | Scenario | Named test |
 |---|---|
-| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; requirements present and within the default `monitor.limits` reservations; exactly the relayed families (`daemon-wire-v1`, `monitor-v1`, `title-v1`); a second load of the version shares the first, and only that file is loaded | `installed_library_describes_revision_one_with_its_version_identity` |
+| LIB-01 Library: absolute exact-release load; release text is the version folder name; one stable description; requirements present and within the default `monitor.limits` reservations; exactly the relayed families, every revision-1 family since #98; a second load of the version shares the first, and only that file is loaded | `installed_library_describes_revision_one_with_its_version_identity` |
 | LIB-01 Library: with copies named by `current`, in the working directory and on ambient search paths (`LD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`), the absolute path maps the requested file and only it (the system loader's lookup, which no library change can alter); the library answers from its own image with its own folder's release, not `current`'s | `installed_library_loads_by_absolute_version_path_whatever_current_cwd_and_search_paths` |
 | LIB-02 Library: a version folder holding a copy that describes another release is refused as the wrong release, naming the compiled-in release; the copy stays loaded and the release it describes is not substituted; a folder without a library is a missing library and nothing loads | `installed_library_of_another_release_or_none_is_refused_without_substitution` |
 | LIB-01 Library, Linux: with `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` set, the library loads and all four stay as they were | `installed_library_loads_under_the_users_loader_environment` |
@@ -275,7 +276,7 @@ no worker that could stall. Open
 | COM-01 and COM-02 Library: an Open naming no family registers passively and selects none, an empty selection being null and zero | `installed_library_opens_naming_no_family_and_selects_none` (`passive.rs`) |
 | LIB-05 Library and Fault: an instance stalled by its fake daemon never stops another registering with a real daemon; `submit`, `drain`, `snapshot` and `release_delivery` return at once | `installed_library_instance_stalled_by_its_daemon_never_stops_another` (`passive.rs`) |
 | COM-01 and REC-01 Fault: missing support (frozen tokens only, no `monitor-v1`, malformed limits, an unadvertised required family), another session, release or protocol in hello or metadata, an unserved or unreadable socket or metadata, a reply that is not a hello, or none within `start_ms`: rejected before any Open is sent, with retry permanent or passive | `installed_library_rejects_an_open_the_session_cannot_honour_before_any_role` (`passive_faults.rs`) |
-| COM-01 Fault: optional families intersect three ways; a selection the request does not allow fails | `installed_library_selects_only_families_both_sides_support` (`passive_faults.rs`) |
+| COM-01 Fault: optional families intersect three ways (`progress-v1` offered, unadvertised `title-v1` and unrequested `focus-v1` not); a selection the request does not allow fails | `installed_library_selects_only_families_both_sides_support` (`passive_faults.rs`) |
 | COM-02 Fault: invalid JSON, wrong direction, unknown type, zero, oversized and truncated frames, uncorrelated or mismatched responses, out-of-order or unselected records, a title or record one byte over its limit, and a daemon Fatal each fail the connection with their origin and code; nothing after the failing frame is delivered, and nothing stays counted once run returns | `installed_library_fails_the_connection_on_traffic_revision_one_forbids` (`passive_faults.rs`) |
 | COM-03 and REC-01 Fault: deadlines answer `timeout` (indeterminate); lost answers fabricate nothing and leave unanswered IDs to the caller's ledger; failed and indeterminate Leaves; refused and failed Opens with their retry (transport loss passive, missing support permanent); no retry once the caller's Leave is sent; a close after an Initial metadata that knew the final result a clean stop (stopped, no error, retry none); best-effort diagnostics; nothing replayed; nothing outstanding once run returns | `installed_library_reports_lost_and_late_answers_truthfully_without_replay` (`passive_faults.rs`) |
 | COM-01 and COM-03 Fault: a known final result in a rejection, charged its copies, with retry none | `installed_library_reports_a_known_final_result_and_never_retries` (`passive_faults.rs`) |
@@ -342,6 +343,31 @@ before it.
 | COM-03 Library and Fault (viewing and acknowledgement cases): malformed requests `invalid_argument`, queued requests `cancelled` by shutdown; STA-08 Fault: `unsupported_capability` without `status-v1` and `stale_generation`, none sent | `installed_library_rejects_viewing_and_acknowledgement_it_cannot_send` (`status_faults.rs`) |
 | STA-08 Library and Fault and COM-03 Library and Fault: wire bodies sent once; viewing and acknowledgement results mapped, no-change explicit, Status before a changed acknowledgement; daemon rejections (`stale_period`, `stale_restoration`, `not_ready`, `not_viewing`) kept; contradicting or mismatched results `invalid_record`; held answers `timeout` (indeterminate), closed connections no fabricated Response, nothing replayed | `installed_library_maps_viewing_and_acknowledgement_answers_without_replay` (`status_faults.rs`) |
 | STA-07 Library and Fault, CTL-03 Fault: every state, episode and exact time mapped, the final status in `CM1_FINAL` (completed, failed) and in a knowing Initial metadata, a status record charged its record alone; early, unselected or post-final Status, availability against the selection, final status without the result or working status with it, Command final without status, final state or stray episode `invalid_record` | `installed_library_relays_status_records_by_the_reference_rules` (`status_faults.rs`) |
+
+### Library layer: notifications and progress (`tests/notifications.rs`, #98)
+
+| Scenario | Named test |
+|---|---|
+| STA-06 Library (a real daemon's OSC 9, OSC 99 and OSC 777 notifications as `CM1_NOTIFICATION` with source, identifier, title, body and episode, after the needs_attention Status; OSC 9;4 progress as `CM1_PROGRESS`, normal, indeterminate, then paused with the cached percentage, never requesting attention; progress in Initial metadata, none at first and retained for a later instance) and CTL-03 Library (notification and progress cases: the same records in the same order reach a passive registration, an attachment revoked by takeover and a background controller) | `installed_library_relays_notifications_and_progress_to_every_role` |
+| STA-06 Library: exact native mapping, notification text exactly at `notification_title_bytes` and `notification_body_bytes` with multi-byte characters, a body alone, no episode; progress states and percentages, an unknown percentage absent; a queued notification charged its record and text, progress its record alone | `installed_library_maps_notifications_and_progress_exactly_at_their_bounds` |
+| STA-06 Fault and LIM-01 Library: notification title or body one byte past its bound `resource_limit`, never truncated; a notification with neither title nor body, a notification or progress before the Initial metadata, progress without `progress-v1`, Initial metadata progress against the selection `invalid_record` | `installed_library_fails_the_connection_on_notification_and_progress_faults` |
+
+### Library layer: limits and accounting (`tests/limits.rs`, #99)
+
+| Scenario | Named test |
+|---|---|
+| LIM-05 and LIM-02 Library and Fault (`counters:` hook): each monotonic snapshot counter (accepted input, delivered display, drained records, released deliveries) reported at `u64::MAX`; one past it never wraps: later snapshots `CM1_RESOURCE_LIMIT`, output cleared, while submit, drain, release and shutdown go on | `installed_library_snapshot_counters_never_wrap_and_fail_explicitly` |
+| LIM-02 Library: Input bytes counted at acceptance, a rejected Input not at all; Display bytes counted when drained, split at `chunk_bytes`; drained records and released deliveries exactly the host's count; wire IDs start at one | `installed_library_counts_accepted_input_and_delivered_display` |
+| LIM-05 Library: public ID `u64::MAX` refused `queue_full` without being consumed, then accepted at the limit; every later ID `invalid_request_id` | `installed_library_public_request_ids_end_at_the_limit_without_wrapping` |
+| LIM-05 Library and Fault (`wire-ids:` hook): the Open takes wire ID `u64::MAX`; a Ready and a Leave past it rejected `resource_limit`, unsent; shutdown's unsendable Leave fails the stream with Leave failed, no retry | `installed_library_refuses_requests_past_the_last_wire_id_unsent` |
+| LIM-04 Library and Fault: no descriptor left at Open is library `resource_limit`, retry passive, nothing sent | `installed_library_reports_descriptor_exhaustion_explicitly` |
+| LIM-01 Library: the progress reserve one under the event allowance accepted, equal to it `unsupported_limit`, in bytes and records; `client_bytes` at the instance, both queues and one frame accepted, one under refused | `installed_library_create_rejects_limits_it_cannot_honour_and_exhausted_descriptors` (`instance.rs`) |
+| LIM-02 Library: submitted work's outcome room excludes the progress reserve: two Leaves at the limit, a third `queue_full` though the whole allowance holds it (records and bytes) | `installed_library_keeps_the_progress_reserve_from_submitted_work` |
+| LIM-02 Library and Fault: a Display at the ordinary limit, then a Command final queued into the reserve with nothing drained, and the next Display, one past, waiting until a release, in order | `installed_library_serves_protected_records_from_the_progress_reserve` |
+| LIM-01 Library and Fault: Displays within `restoration_stall_ms` keep a restoration alive past it and it completes; a stop fails with library `timeout` at the stall deadline; a restoration within `restoration_total_ms` completes and one past it fails the same way though no gap stalls; retry passive; once complete or revoked, the connection outlives the stall deadline with no Display and detaches cleanly | `installed_library_bounds_a_restoration_by_its_stall_and_total_deadlines` |
+| LIM-02 Fault: a delivery-deadline failure states the two records still undelivered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
+| LIM-01 and LIM-02 Library (earlier evidence): request, event, operation and delivery queues at the limit and one past; drains within `drain_payload_bytes`; daemon records wait, never dropped, while the event queue is full; drained-but-unreleased deliveries stay charged; frames and titles at and one past their limits; a stalled delivery fails `delivery_stalled`; shutdown stays callable with full queues | `installed_library_bounds_requests_by_every_queue_limit`, `installed_library_batches_records_within_drain_payload_bytes`, `installed_library_holds_daemon_records_while_the_event_queue_is_full`, `installed_library_holds_each_delivery_until_released` (`passive_admission.rs`), `installed_library_accepts_records_exactly_at_their_limits`, `installed_library_fails_the_connection_on_traffic_revision_one_forbids` (`passive_faults.rs`), `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
+| LIM-05 Library (earlier evidence): generation zero refused at create; requests naming another generation `stale_generation` | `installed_library_create_rejects_invalid_identity_and_paths_without_handles` (`instance.rs`), `installed_library_explicit_leave_departs_once_and_is_answered` (`passive.rs`) |
 
 ### Library layer: mixed releases (`tests/mixed.rs`, #97)
 
@@ -446,8 +472,8 @@ earlier run would, so they open on the empty state.
 | TRM-04 resizes to a narrower host, a too-small one and back under continuous output show only coherent frames, and the session gets every size sent and none while too small | `resizes_under_continuous_output_show_only_coherent_frames` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
-holds a packaged client between `Granted` and `Ready`; daemon
-`resize_before_ready_replaces_the_restoration_period`)
+holds a packaged client between Control granted and `Ready`; daemon
+`a_resize_before_ready_replaces_the_restoration_and_leaves_the_alternate_screen_once`)
 and the ambiguous selector (random GUIDs; CLI
 `a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
 client bridge (6.3) scenarios are mapped in those crates' test doc comments.
@@ -492,8 +518,8 @@ remain in those crates' READMEs and test doc comments. In particular:
   `issue19_readiness_uses_real_five_second_absolute_deadline` in platform
   `tests/daemon.rs`. There is no public packaged empty-readiness hook.
 - Actual stalled-producer/lossless 8 MiB backpressure:
-  `saturation_backpressures_pty_without_blocking_probes_or_losing_bytes` in
-  daemon `tests/lifecycle.rs`, and
+  `saturation_backpressures_the_pty_without_blocking_probes_or_losing_bytes` in
+  daemon `tests/revision1/terminal.rs`, and
   `bounded_output_backpressure_drains_every_byte_before_exit` /
   `input_backpressure_is_bounded_and_lossless` in client `tests/bridge.rs`.
   The public packaged PTY driver always drains, so this crate does not claim

@@ -22,8 +22,8 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | Interface | Status | Reference |
 |---|---|---|
 | [Client](../../GLOSSARY.md#sessions) to session daemon: [hello handshake](../../GLOSSARY.md#sessions) | Implemented and frozen | [Request](daemon-client/hello-request.md) and [reply](daemon-client/hello-reply.md). |
-| Client to session daemon: after hello | Private protocol still implemented in session daemons, but no longer used by this release's client executable; wire revision 1 agreed and partly implemented beside it: session daemons serve passive monitor connections, interactive attachments and standalone Kill, with the command's final result, heuristic `status-v1` status and acknowledgement, and monitors that acquire and inherit control with [canonical presentation](../../GLOSSARY.md#restoration-and-presentation), chosen by the first frame after hello | [Decision boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
-| Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed. The library implements its [compatibility check](monitor-client/request-hello.md) bootstrap and description ([#75](https://github.com/jackgeek/climon2/issues/75)) and the instance lifecycle of its [function table](TERMS.md#function-table) ([#85](https://github.com/jackgeek/climon2/issues/85)), opens [passive monitor connections](../../GLOSSARY.md#attachment-and-control) through monitor-mode Open, Leave and their records ([#93](https://github.com/jackgeek/climon2/issues/93)), takes control and relays display through interactive Open, Acquire, Input, Resize, Ready, Focus and the control, restoration, Display and Geometry records ([#94](https://github.com/jackgeek/climon2/issues/94)), relays status with Set viewing and Acknowledge ([#95](https://github.com/jackgeek/climon2/issues/95)), and relays Command final and Kill on its own auxiliary connection ([#96](https://github.com/jackgeek/climon2/issues/96)). The shared loader that finds, opens and validates libraries is implemented ([#84](https://github.com/jackgeek/climon2/issues/84)). The monitor loads libraries through it and opens one passive client per live session ([#106](https://github.com/jackgeek/climon2/issues/106)), and acquires the session selected with Enter, applying its restorations and submitting Ready and Resize ([#108](https://github.com/jackgeek/climon2/issues/108)), Input ([#109](https://github.com/jackgeek/climon2/issues/109), [#111](https://github.com/jackgeek/climon2/issues/111)) and Focus ([#111](https://github.com/jackgeek/climon2/issues/111)); its recovery and admission are not implemented. | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
+| Client to session daemon: after hello | Wire revision 1 only, agreed and partly implemented; the version-private protocol it replaced is retired ([#104](https://github.com/jackgeek/climon2/issues/104)). Session daemons serve passive monitor connections, interactive attachments and standalone Kill, with the command's final result, heuristic `status-v1` status and acknowledgement, `notification-v1` notifications and `progress-v1` progress ([#98](https://github.com/jackgeek/climon2/issues/98)), and monitors that acquire and inherit control with [canonical presentation](../../GLOSSARY.md#restoration-and-presentation) | [Post-hello boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
+| Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed. The library implements its [compatibility check](monitor-client/request-hello.md) bootstrap and description ([#75](https://github.com/jackgeek/climon2/issues/75)) and the instance lifecycle of its [function table](TERMS.md#function-table) ([#85](https://github.com/jackgeek/climon2/issues/85)), opens [passive monitor connections](../../GLOSSARY.md#attachment-and-control) through monitor-mode Open, Leave and their records ([#93](https://github.com/jackgeek/climon2/issues/93)), takes control and relays display through interactive Open, Acquire, Input, Resize, Ready, Focus and the control, restoration, Display and Geometry records ([#94](https://github.com/jackgeek/climon2/issues/94)), relays status with Set viewing and Acknowledge ([#95](https://github.com/jackgeek/climon2/issues/95)), and relays Command final and Kill on its own auxiliary connection ([#96](https://github.com/jackgeek/climon2/issues/96)), and relays notifications and progress ([#98](https://github.com/jackgeek/climon2/issues/98)). The shared loader that finds, opens and validates libraries is implemented ([#84](https://github.com/jackgeek/climon2/issues/84)). The monitor loads libraries through it and opens one passive client per live session ([#106](https://github.com/jackgeek/climon2/issues/106)), and acquires the session selected with Enter, applying its restorations and submitting Ready and Resize ([#108](https://github.com/jackgeek/climon2/issues/108)), Input ([#109](https://github.com/jackgeek/climon2/issues/109), [#111](https://github.com/jackgeek/climon2/issues/111)) and Focus ([#111](https://github.com/jackgeek/climon2/issues/111)); its recovery and admission are not implemented. | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading implemented: the client executable loads its own version folder's library through the shared loader and drives ordinary attach (interactive Open, Input, Resize, Acquire, Ready and Leave, requiring only `daemon-wire-v1`; [#101](https://github.com/jackgeek/climon2/issues/101)), with Set viewing and one Acknowledge after an explicit attach or takeover when `status-v1` is selected ([#102](https://github.com/jackgeek/climon2/issues/102)), and kill ([#100](https://github.com/jackgeek/climon2/issues/100)) through it, with a fixed `cm1_limits` table | [Library embedding](library-embedding.md). |
 | Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
 
@@ -262,8 +262,9 @@ The agreed revision interprets [OSC](TERMS.md#osc) 7501 program status,
 OSC 133 shell lifecycle, and OSC 9/99/777 notification/progress signals in daemon
 core before host-output filtering. The session daemon implements the OSC 7501
 and OSC 133 rows below, including the local capability reply
-([#92](https://github.com/jackgeek/climon2/issues/92)); the OSC 9/99/777 rows
-are planned, and none of this is a plugin contract. External sequence framing
+([#92](https://github.com/jackgeek/climon2/issues/92)), and the OSC 9/99/777
+rows ([#98](https://github.com/jackgeek/climon2/issues/98)); none of this is a
+plugin contract. External sequence framing
 and validation belong to their upstream references:
 
 | Program/daemon interaction | Direction | Reference and local policy |
@@ -285,9 +286,10 @@ The [notification](monitor-client/event-notification.md) and
 [progress](monitor-client/event-progress.md) interactions relay structured
 metadata through clients to subscribers, including background/noncontrolling
 ones. They are distinct from terminal display updates and do not authorize
-screen mirroring. Their exact daemon wire
-[schemas and capabilities](daemon-client/core-v1.md) are agreed, not implemented;
-native declarations are in [revision 1](monitor-client/core-v1.md). [UI](TERMS.md#ui) terminal behavior is now
+screen mirroring. Session daemons send their
+[wire records](daemon-client/core-v1.md) and the client library relays them as
+the native records of [revision 1](monitor-client/core-v1.md)
+([#98](https://github.com/jackgeek/climon2/issues/98)). [UI](TERMS.md#ui) terminal behavior is now
 specified in the [terminal contract](terminal-integration.md); selector layout
 is in the [selector specification](../monitor-selector.md), and lifecycle policy
 in the [lifecycle specification](../monitor-lifecycle.md). All are unimplemented.
@@ -369,8 +371,8 @@ Switching away retains a client and its existing control until
 neither application input nor monitor resize requests. A revoked client shows a
 [placeholder](../../GLOSSARY.md#attachment-and-control), not live screen mirroring,
 and must not automatically take control back. Core title/status data continues
-to flow regardless of control, as does planned structured notification/progress
-metadata; future plugin implementation remains deferred.
+to flow regardless of control, as does structured notification/progress
+metadata ([#98](https://github.com/jackgeek/climon2/issues/98)); future plugin implementation remains deferred.
 
 ## Shared in-process communication contract
 
@@ -615,10 +617,10 @@ contracts and remaining open decisions are distinguished below:
 
 | Owner | Agreed contract or unresolved details |
 |---|---|
-| [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), partly implemented: passive monitor connections ([#86](https://github.com/jackgeek/climon2/issues/86)), interactive attachments with optional core Focus ([#87](https://github.com/jackgeek/climon2/issues/87)), Command final with standalone Kill ([#88](https://github.com/jackgeek/climon2/issues/88)), heuristic `status-v1` with Set viewing and Acknowledge ([#91](https://github.com/jackgeek/climon2/issues/91)), and monitors that acquire and inherit control ([#89](https://github.com/jackgeek/climon2/issues/89)). No remaining schema decision is delegated back to #67. |
+| [Daemon wire #67](https://github.com/jackgeek/climon2/issues/67) | Agreed [wire revision 1](daemon-client/core-v1.md), partly implemented: passive monitor connections ([#86](https://github.com/jackgeek/climon2/issues/86)), interactive attachments with optional core Focus ([#87](https://github.com/jackgeek/climon2/issues/87)), Command final with standalone Kill ([#88](https://github.com/jackgeek/climon2/issues/88)), heuristic `status-v1` with Set viewing and Acknowledge ([#91](https://github.com/jackgeek/climon2/issues/91)), monitors that acquire and inherit control ([#89](https://github.com/jackgeek/climon2/issues/89)), and notifications and progress ([#98](https://github.com/jackgeek/climon2/issues/98)). No remaining schema decision is delegated back to #67. |
 | [Terminal integration #63](https://github.com/jackgeek/climon2/issues/63) | Agreed [terminal contract](terminal-integration.md), including canonical monitor geometry and optional core Focus; session daemons implement wire Focus ([#87](https://github.com/jackgeek/climon2/issues/87)) and canonical monitor-mode presentation ([#89](https://github.com/jackgeek/climon2/issues/89)); the monitor implements selection, painting, input, paste, mouse and focus ([#108](https://github.com/jackgeek/climon2/issues/108) to [#111](https://github.com/jackgeek/climon2/issues/111)), not the rest. Numeric transfer budgets and native declarations are agreed in #69/#71. |
 | [Lifecycle #61](https://github.com/jackgeek/climon2/issues/61) | Agreed [lifecycle contract](../monitor-lifecycle.md), not implemented: exponential passive recovery, concurrent truthful shutdown, bounded whole-process fail-stop and Delete/removal. Headless creation and lifetime are implemented. Numerical schedules remain #69; no general native-crash survival guarantee. |
-| [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md). Only its `monitor.limits` configuration is implemented: validated by the monitor and `exec` and reported by the monitor, not enforced ([#82](https://github.com/jackgeek/climon2/issues/82)). The monitor alone also refuses limits that cannot hold one session's mandatory current model and recent page ([#167](https://github.com/jackgeek/climon2/issues/167)); operating-system limits are left to admission ([#120](https://github.com/jackgeek/climon2/issues/120)). Not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
+| [Operational limits #69](https://github.com/jackgeek/climon2/issues/69) | Agreed [numerical specification](../monitor-operational-limits.md). Only its `monitor.limits` configuration is implemented: validated by the monitor and `exec` and reported by the monitor, not enforced ([#82](https://github.com/jackgeek/climon2/issues/82)), except that `exec` passes the notification assembly limits to the session daemon, which enforces them with the release-constant notification text and record bounds ([#98](https://github.com/jackgeek/climon2/issues/98)). The monitor alone also refuses limits that cannot hold one session's mandatory current model and recent page ([#167](https://github.com/jackgeek/climon2/issues/167)); operating-system limits are left to admission ([#120](https://github.com/jackgeek/climon2/issues/120)). Not implemented: configurable byte/record/object and aggregate budgets, progress/stall deadlines, fair admission, protected recent history, payload/transfer limits and measurement thresholds. |
 | [Interface schemas #71](https://github.com/jackgeek/climon2/issues/71) | Agreed [native revision 1](monitor-client/core-v1.md), header, operation/event schemas, ownership/cleanup calls, errors, limits/measurements and C examples. Declaration checks do not replace future real same/mixed-release compatibility/rejection evidence. |
 | [Linux integration #125](https://github.com/jackgeek/climon2/issues/125) | Agreed Linux loading in the [embedding design](library-embedding.md#artifact-and-dependency-lookup) and [native revision 1](monitor-client/core-v1.md). Every Linux release ships `libclimon2_client.so` as one self-contained library, and release checks enforce its single export, no [soname](TERMS.md#soname), [RPATH or RUNPATH](TERMS.md#rpath-and-runpath), and [glibc](TERMS.md#glibc)-only dependencies ([#75](https://github.com/jackgeek/climon2/issues/75)). Its notification descriptor is one close-on-exec, nonblocking `eventfd` ([#85](https://github.com/jackgeek/climon2/issues/85)). Not implemented: loading it by exact path, and Linux qualification alongside both macOS architectures. |
 
@@ -765,8 +767,8 @@ shutdown/handle release, notification and measurements are indexed in
 | [Hello request](daemon-client/hello-request.md) | Client -> daemon | Begin the frozen handshake. |
 | [Hello reply](daemon-client/hello-reply.md) | Daemon -> client | Identify the session and advertise support/state. |
 
-The [post-hello page](daemon-client/post-hello.md) distinguishes current private
-messages from the agreed wire revision.
+The [post-hello page](daemon-client/post-hello.md) states what follows hello:
+daemon wire revision 1 only.
 
 ### Daemon-client: wire revision 1, partly implemented
 
@@ -780,7 +782,9 @@ Session daemons implement Open in both modes, Leave for
 [passive monitor connections](../../GLOSSARY.md#attachment-and-control) and
 [attachments](../../GLOSSARY.md#attachment-and-control), Input, Resize,
 Ready, Acquire between attachments, Focus, standalone Kill, Response,
-Initial metadata (the title and a known command result), Title changed, the
+Initial metadata (the title and a known command result), Title changed,
+Notification and Progress changed
+([#98](https://github.com/jackgeek/climon2/issues/98)), the
 control and restoration records, Display, Geometry, Command final without
 status and Fatal error, and reject the other requests without effects until
 they serve them; each page states what is implemented. The other messages

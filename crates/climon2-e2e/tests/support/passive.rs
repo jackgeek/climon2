@@ -20,6 +20,8 @@ pub const UNSUPPORTED_OPERATION: u64 = 3;
 pub const INVALID_REQUEST_ID: u64 = 4;
 pub const FULL: u64 = 5;
 pub const CLOSED: u64 = 6;
+pub const UNSUPPORTED_LIMIT: u64 = 9;
+pub const RESOURCE_LIMIT: u64 = 10;
 /// `CM1_RELEASE_MISMATCH`.
 pub const RELEASE_MISMATCH: u64 = 14;
 pub const ORIGIN_LIBRARY: u64 = 1;
@@ -30,6 +32,16 @@ pub const REJECTED: u64 = 2;
 pub const FAILED: u64 = 3;
 pub const INDETERMINATE: u64 = 4;
 pub const UNAVAILABLE: u64 = 0;
+/// `CM1_PROGRESS_NONE` and the other progress states (#98).
+pub const PROGRESS_NONE: u64 = 1;
+pub const PROGRESS_NORMAL: u64 = 2;
+pub const PROGRESS_INDETERMINATE: u64 = 3;
+pub const PROGRESS_ERROR: u64 = 4;
+pub const PROGRESS_PAUSED: u64 = 5;
+/// `CM1_OSC9`, `CM1_OSC99` and `CM1_OSC777`.
+pub const OSC9: u64 = 1;
+pub const OSC99: u64 = 2;
+pub const OSC777: u64 = 3;
 pub const UNSET: u64 = 1;
 pub const VALUE: u64 = 2;
 pub const EXIT: u64 = 1;
@@ -42,6 +54,8 @@ pub const KNOWN_FINAL: u64 = 11;
 pub const RESPONSE: u64 = 1;
 pub const INITIAL_METADATA: u64 = 2;
 pub const TITLE: u64 = 3;
+pub const NOTIFICATION: u64 = 5;
+pub const PROGRESS: u64 = 6;
 pub const FINAL: u64 = 12;
 pub const DIAGNOSTIC: u64 = 14;
 pub const DELIVERY: u64 = 1;

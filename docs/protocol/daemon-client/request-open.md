@@ -73,7 +73,10 @@ The [session daemon](../../../GLOSSARY.md#sessions) checks the revision first
 (`unsupported_revision` unless 1), then the required families
 (`unsupported_capability` for an unknown or unadvertised one). The selected
 families are the requested ones it supports: every required family, plus the
-optional families it advertises. It adds no family the request did not name,
+optional families it advertises. `notification-v1` needs `status-v1`
+([#98](https://github.com/jackgeek/climon2/issues/98)): without `status-v1`
+selected, an optional `notification-v1` is not selected, and a required one
+rejects the Open with `unsupported_capability`. It adds no family the request did not name,
 since core and monitor support are implicit. Each successful Open gets a
 fresh random `connection_id`.
 
@@ -103,11 +106,16 @@ geometry under the same daemon policy as an ordinary attach, which the
 describes: a larger host gets
 [Derived presentation](../../../GLOSSARY.md#restoration-and-presentation). The attachment
 takes control from any current
-[controller](../../../GLOSSARY.md#attachment-and-control), private-protocol attachments
-included,
+[controller](../../../GLOSSARY.md#attachment-and-control),
 and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
-ends its stream. Once the command's result is final (see
+ends its stream. Once the session has issued its last
+[control period](../../../GLOSSARY.md#attachment-and-control) or
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts), an
+interactive Open, which needs a new one of each, is rejected with
+`resource_limit` without effects and ends its stream; a monitor-mode Open
+needs neither and is still served
+([#90](https://github.com/jackgeek/climon2/issues/90)). Once the command's result is final (see
 [Command final](event-command-final.md#implemented-behavior)), every
 rejection of a first-role Open carries that result as `known_final`; a
 later Open on a connection that already has a role is `invalid_state`

@@ -336,7 +336,10 @@ fn title_stack_and_reset_return_to_earlier_and_default_titles() {
 /// reported by value and in order, one per change even within one read:
 /// unset (`None`, while the default title shows), empty, or a value. An
 /// unchanged title is not reported again, and an oversized title sequence is
-/// ignored, never truncated.
+/// ignored, never truncated. LIM-01 (derived release-constant title bound,
+/// at the limit and one past): a title of 4,096 UTF-8 bytes is reported
+/// whole, its last character ending at the limit, and one of 4,097 bytes is
+/// ignored.
 #[test]
 fn application_title_changes_are_reported_in_order_by_value() {
     let title = |text: &str| Some(text.to_owned());
@@ -359,6 +362,12 @@ fn application_title_changes_are_reported_in_order_by_value() {
     oversized.push(0x07);
     assert!(feed(&mut vt, &oversized).titles.is_empty());
     assert_eq!(vt.application_title(), None);
+    let longest = "é".repeat(2048);
+    let fed = feed(&mut vt, format!("\x1b]0;{longest}\x07").as_bytes());
+    assert_eq!(fed.titles, [Some(longest.clone())]);
+    let one_past = format!("\x1b]2;{}x\x07", "é".repeat(2048));
+    assert!(feed(&mut vt, one_past.as_bytes()).titles.is_empty());
+    assert_eq!(vt.application_title(), Some(longest.as_str()));
 }
 
 #[test]

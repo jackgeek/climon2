@@ -3,10 +3,15 @@
 //! completes is exactly a unit the engine would act on, and holds partial
 //! tokens across reads.
 
-/// Largest control-string or CSI body kept; a longer token is dropped.
+/// Largest control-string or CSI body kept; a longer token is dropped. An
+/// OSC 0 or 2 title is the body after its `0;` or `2;`, so a title may
+/// have this many bytes.
 pub const MAX_BODY: usize = 4096;
 /// Introducer bytes held before a body (`ESC [`, `ESC ]`, `ESC P`, ...).
 const LIMIT: usize = MAX_BODY + 2;
+/// The beginnings of an OSC that sets the title, whose `0;` or `2;` does
+/// not count against [`MAX_BODY`].
+const TITLES: [&[u8]; 2] = [b"\x1b]0;", b"\x1b]2;"];
 const ESC: u8 = 0x1B;
 const ST: &[u8] = b"\x1b\\";
 
@@ -314,10 +319,17 @@ impl Tokenizer {
     fn ignore(&mut self, _: u8, _: &mut Vec<Token>) {}
 
     fn hold(&mut self, byte: u8, _: &mut Vec<Token>) {
-        self.oversized |= self.held.len() >= LIMIT;
+        self.oversized |= self.held.len() >= self.limit();
         if !self.oversized {
             self.held.push(byte);
         }
+    }
+
+    /// The bytes a held sequence may keep: its introducer and body, and a
+    /// title's `0;` or `2;` besides.
+    fn limit(&self) -> usize {
+        let title = TITLES.iter().any(|title| self.held.starts_with(title));
+        LIMIT + usize::from(title) * 2
     }
 
     fn finish(&mut self, byte: u8, out: &mut Vec<Token>) {

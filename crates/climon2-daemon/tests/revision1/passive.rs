@@ -1,14 +1,15 @@
 //! Passive monitor connections (#86): monitor Open, core metadata, Leave and
-//! validation, beside the private protocol that still serves attach and kill.
+//! validation.
 use super::{
-    assert_closed, assert_fatal, assert_rejected, counter, encoded, frame,
-    interactive::{Attached, geometry},
-    kill, leave, message, monitor, open, peer, raw_frame, request, send, title_changed,
+    assert_closed, assert_fatal, assert_killed, assert_rejected, committed_kill, counter, encoded,
+    exited, frame,
+    interactive::{Attached, detached, end_through_attachment, geometry, ready_attachment},
+    kill, leave, message, monitor, open, peer, raw_frame, request, send, signalled, title_changed,
 };
 use crate::{ID, Session};
 use climon2_core::{
     hello::Lifecycle,
-    protocol::{self, ClientMessage, ServerMessage as PrivateMessage, TerminalSize},
+    protocol::read_frame,
     wire::{
         Acknowledge, AuthorityIds, Available, ControlRecord, FatalError, Focus, Frame, Geometry,
         GrantReason, Input, Leave, Mode, Outcome, Ready, Resize, Response, ServerMessage,
@@ -33,6 +34,12 @@ const UNSET_TITLE_IDLE: &str = concat!(
     r#"{"title":{"available":true,"value":null},"#,
     r#""status":{"available":true,"value":{"state":"idle","changed_at":"2027-01-15T08:00:00.000Z","episode_id":null}},"#,
     r#""progress":{"available":false,"value":null},"command_result":null}"#
+);
+/// Nothing but progress, which is none.
+const NO_PROGRESS: &str = concat!(
+    r#"{"title":{"available":false,"value":null},"#,
+    r#""status":{"available":false,"value":null},"#,
+    r#""progress":{"available":true,"value":{"state":"none","percent":null}},"command_result":null}"#
 );
 const NO_TITLE: &str = concat!(
     r#"{"title":{"available":false,"value":null},"#,
@@ -66,30 +73,19 @@ fn body(frame: &Frame, code: u8) -> &str {
     std::str::from_utf8(frame.body()).unwrap()
 }
 
-/// Starts an `exit` fixture session with a ready private controller, so the
+/// Starts an `exit` fixture session with a ready controller, so the
 /// session outlives its initial-attachment deadline however slow the test.
-fn controlled() -> (Session, UnixStream) {
+fn controlled() -> (Session, Attached) {
     let session = Session::start("exit");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let controlling = ready_attachment(&session, &[]);
     (session, controlling)
 }
 
 /// Ends an `exit` fixture session through its controller.
-fn end_controlled(mut session: Session, mut controlling: UnixStream) {
-    crate::send(&mut controlling, ClientMessage::Input(b"go\n".to_vec()));
-    assert_eq!(
-        crate::until_terminal(&mut controlling).1,
-        PrivateMessage::Exit { code: 42 }
-    );
+fn end_controlled(mut session: Session, mut controlling: Attached) {
+    controlling.typed(b"go\n");
+    controlling.ended(&exited(42));
     session.finish();
-}
-
-/// Ends an `exit` fixture session through an ordinary private attachment.
-fn end_through_attachment(session: Session) {
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
-    end_controlled(session, controlling);
 }
 
 /// COM-01 (Contract case): hello advertises revision 1 the way the published
@@ -98,26 +94,27 @@ fn end_through_attachment(session: Session) {
 /// `daemon_wire_v1` carries the 1,048,576-byte release-constant limits.
 #[test]
 fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
-    let session = Session::start("exit");
+    let mut session = Session::start("exit");
     let mut probe = UnixStream::connect(&session.socket).unwrap();
     probe
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
-    crate::send(&mut probe, ClientMessage::Hello { protocol: 1 });
-    let reply = protocol::read_frame(&mut probe).unwrap();
+    crate::send_hello(&mut probe);
+    let reply = read_frame(&mut probe).unwrap();
     assert_eq!(reply.type_code(), 0x01);
     let expected = format!(
         concat!(
             r#"{{"session_id":"{}","climon2_version":"0.1.0","protocol":1,"#,
             r#""capabilities":["attach","kill","state-v1","client-startup-v1","#,
-            r#""daemon-wire-v1","monitor-v1","title-v1","status-v1","focus-v1"],"#,
+            r#""daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","#,
+            r#""progress-v1","focus-v1"],"#,
             r#""state":{{"lifecycle":"starting","attachments":0,"controlled":false}},"#,
             r#""daemon_wire_v1":{{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}}}"#
         ),
         ID
     );
     assert_eq!(std::str::from_utf8(reply.body()).unwrap(), expected);
-    end_through_attachment(session);
+    end_through_attachment(&mut session, b"go\n", &exited(42));
 }
 
 /// COM-01 and COM-03 (Contract case, passive Open), with STA-07 (Contract,
@@ -127,13 +124,13 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
 /// metadata record: the title by value when `title-v1` is selected and
 /// unavailable otherwise, the effective status, idle and cleared since the
 /// daemon's initialization on its controllable clock, when `status-v1` is
-/// selected and unavailable otherwise, progress explicitly unavailable, and
-/// no command result.
+/// selected and unavailable otherwise, progress unavailable unless
+/// `progress-v1` is selected, when it is none (STA-06 Contract), and no
+/// command result. `notification-v1` without `status-v1` is not selected.
 #[test]
 fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     let session = super::clocked("exit");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let controlling = ready_attachment(&session, &[]);
     let mut first = peer(&session);
     let optional = ["monitor-v1", "status-v1", "focus-v1", "future-v9"];
     request(
@@ -149,28 +146,17 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     assert_eq!(body(&frame(&mut first), 0x41), UNSET_TITLE_IDLE);
 
     let mut second = peer(&session);
-    request(&mut second, &open(7, &[], &["progress-v1"], Mode::Monitor));
+    let optional = ["notification-v1", "progress-v1"];
+    request(&mut second, &open(7, &[], &optional, Mode::Monitor));
     let (second_id, selected) = opened(&frame(&mut second), "7");
-    assert!(selected.is_empty(), "{selected:?}");
-    assert_eq!(body(&frame(&mut second), 0x41), NO_TITLE);
+    assert_eq!(selected, ["progress-v1"]);
+    assert_eq!(body(&frame(&mut second), 0x41), NO_PROGRESS);
     assert_ne!(first_id, second_id);
     end_controlled(session, controlling);
 }
 
-/// Attaches and detaches through the private protocol, so the session has
-/// no attachment and outlives its initial-attachment deadline.
-fn detached(session: &Session) {
-    let mut client = session.attach();
-    session.wait_marker(&mut client);
-    crate::send(&mut client, ClientMessage::Detach);
-    assert_eq!(
-        crate::until_terminal(&mut client).1,
-        PrivateMessage::Detached
-    );
-}
-
 /// Ends a `script` fixture session through its command's own exit.
-fn end_script(mut session: Session) {
+pub(super) fn end_script(mut session: Session) {
     crate::issue(&session, "exit");
     session.finish();
 }
@@ -194,8 +180,7 @@ fn background_title(attached: &mut Attached) -> Option<String> {
 #[test]
 fn title_changes_follow_initial_metadata_by_value_whatever_the_control() {
     let session = Session::start("script");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let mut controlling = ready_attachment(&session, &[]);
     let (stream, title) = monitor(&session, &["title-v1"]);
     let mut first = Attached::passive(stream);
     assert_eq!(title, Available::Available(None));
@@ -205,11 +190,7 @@ fn title_changes_follow_initial_metadata_by_value_whatever_the_control() {
     crate::script(&session, "title two");
     assert_eq!(first.title_changed().as_deref(), Some("two"));
 
-    crate::send(&mut controlling, ClientMessage::Detach);
-    assert_eq!(
-        crate::until_terminal(&mut controlling).1,
-        PrivateMessage::Detached
-    );
+    controlling.leave();
     first.granted(GrantReason::Successor, geometry(91, 37));
     crate::script(&session, "title-empty");
     assert_eq!(background_title(&mut first).as_deref(), Some(""));
@@ -278,19 +259,19 @@ fn a_title_burst_is_reported_gap_free_around_an_atomic_initial_metadata() {
     end_script(session);
 }
 
-/// CTL-03 (Contract, title case) and the derived release-constant title
-/// bound: the longest title a title sequence can carry arrives whole: 4,094
-/// UTF-8 bytes, because the existing 4,096-byte token body includes the
-/// sequence's `2;`. A longer one, at or one past the documented 4,096 bytes,
-/// is ignored, never truncated.
+/// CTL-03 (Contract, title case) and LIM-01 (Contract and Fault, the
+/// derived release-constant title bound at the limit and one past): a
+/// title of the documented 4,096 UTF-8 bytes arrives whole, its sequence's
+/// `2;` not counted against it; one of 4,097 or 4,098 bytes is ignored,
+/// never truncated.
 #[test]
 fn an_oversized_title_is_ignored_never_truncated() {
     let session = Session::start("script");
     detached(&session);
     let (mut monitor, _) = monitor(&session, &["title-v1"]);
-    crate::script(&session, "title-bytes 4094");
-    assert_eq!(title_changed(&mut monitor), Some("é".repeat(2047)));
-    for bytes in [4095, 4096, 4097] {
+    crate::script(&session, "title-bytes 4096");
+    assert_eq!(title_changed(&mut monitor), Some("é".repeat(2048)));
+    for bytes in [4097, 4098] {
         crate::script(&session, &format!("title-bytes {bytes}"));
     }
     crate::script(&session, "title after");
@@ -303,7 +284,9 @@ fn an_oversized_title_is_ignored_never_truncated() {
 /// documented outcome. Leave before Open is `invalid_state` and the stream
 /// goes on. A rejected first role, Open or Kill, has no effects and ends its
 /// stream: an unsupported revision is `unsupported_revision`, and an unknown
-/// or unsupported required family is `unsupported_capability`. A later Open
+/// required family, or one whose dependency is not selected
+/// (`notification-v1` without `status-v1`), is `unsupported_capability`. A
+/// later Open
 /// or Kill never repurposes a registration: `invalid_state`, and the
 /// registration stays until Leave, which reports that no attachment was
 /// detached.
@@ -332,7 +315,7 @@ fn passive_requests_get_their_documented_outcomes() {
     let roles = [
         (later_revision.to_frame(), "unsupported_revision"),
         (
-            open(1, &["progress-v1"], &[], Mode::Monitor).to_frame(),
+            open(1, &["notification-v1"], &[], Mode::Monitor).to_frame(),
             "unsupported_capability",
         ),
         (
@@ -366,13 +349,7 @@ fn passive_requests_get_their_documented_outcomes() {
 #[test]
 fn a_passive_registration_never_acquires_control_and_is_not_an_attachment() {
     let mut session = Session::start("exit");
-    let mut first = session.attach();
-    session.wait_marker(&mut first);
-    crate::send(&mut first, ClientMessage::Detach);
-    assert_eq!(
-        crate::until_terminal(&mut first).1,
-        PrivateMessage::Detached
-    );
+    detached(&session);
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Detached, 0, false)
@@ -384,15 +361,12 @@ fn a_passive_registration_never_acquires_control_and_is_not_an_attachment() {
         (Lifecycle::Detached, 0, false)
     );
 
-    let mut second = crate::attach_at(&session, TerminalSize { cols: 91, rows: 37 });
-    let (restoration, _) = crate::restoration(&mut second);
-    assert_eq!(restoration, 2, "only the two attachments were ever granted");
-    crate::send(
-        &mut second,
-        ClientMessage::Ready {
-            period: restoration,
-        },
-    );
+    let mut second = ready_attachment(&session, &[]);
+    let only_two_granted = AuthorityIds {
+        period: counter(2),
+        restoration_id: counter(2),
+    };
+    assert_eq!(second.authority(), only_two_granted);
     let (mut watching_controlled, _) = monitor(&session, &[]);
     assert_eq!(
         crate::advertised_state(&session),
@@ -404,10 +378,9 @@ fn a_passive_registration_never_acquires_control_and_is_not_an_attachment() {
         crate::advertised_state(&session),
         (Lifecycle::Attached, 1, true)
     );
-    crate::send(&mut second, ClientMessage::Input(b"go\n".to_vec()));
-    let (output, end) = crate::until_terminal(&mut second);
-    assert_eq!(end, PrivateMessage::Exit { code: 42 });
-    assert_eq!(crate::count(&output, b"final-bytes"), 1);
+    second.typed(b"go\n");
+    second.ended(&exited(42));
+    assert_eq!(crate::count(&second.display, b"final-bytes"), 1);
     session.finish();
 }
 
@@ -418,9 +391,8 @@ fn a_passive_registration_never_acquires_control_and_is_not_an_attachment() {
 #[test]
 fn a_monitor_registers_and_leaves_during_committed_termination() {
     let mut session = Session::start("ignore-hup");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
-    let mut killer = super::committed_kill(&session);
+    let mut controlling = ready_attachment(&session, &[]);
+    let mut killer = committed_kill(&session);
     let (mut watching, title) = monitor(&session, &["title-v1"]);
     assert_eq!(title, Available::Available(None));
     assert_eq!(
@@ -428,14 +400,8 @@ fn a_monitor_registers_and_leaves_during_committed_termination() {
         (Lifecycle::Terminating, 1, true)
     );
     leave(&mut watching, 2);
-    assert!(matches!(
-        crate::receive(&mut killer),
-        PrivateMessage::Terminated { .. }
-    ));
-    assert!(matches!(
-        crate::until_terminal(&mut controlling).1,
-        PrivateMessage::Exit { .. }
-    ));
+    assert_killed(&mut killer, &signalled(9));
+    controlling.ended(&signalled(9));
     session.finish();
 }
 
@@ -449,11 +415,14 @@ fn padded_open(bytes: usize) -> Vec<u8> {
     raw_frame(0x30, &body)
 }
 
-/// COM-02 (Contract): revision-1 traffic that breaks the framing or strict
-/// JSON rules, sends a server, private or unknown type, or does not increase
-/// its request ID fails with exactly the documented connection-fatal code,
-/// then the connection closes. The first frame after hello is judged as
-/// revision 1 when its type is. A stream ending inside a frame is
+/// COM-01 (Contract after retirement) and COM-02 (Contract): revision-1
+/// traffic that breaks the framing or strict JSON rules, sends a server or
+/// unknown type, or does not increase its request ID fails with exactly
+/// the documented connection-fatal code, then the connection closes. Every
+/// frame after hello is revision 1, the first one too: its length is judged
+/// under the revision-1 frame limit, and a retired private type (Attach
+/// `0x10`, Kill `0x16`, a type-only Detach `0x12`, the smallest frame) or a
+/// second hello is `unknown_message_type` whenever it is sent. A stream ending inside a frame is
 /// `truncated_frame`; one ending between frames just closes. Other
 /// connections and the session go on.
 #[test]
@@ -461,7 +430,8 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     let (session, controlling) = controlled();
     let valid =
         r#""revision":1,"required_capabilities":[],"optional_capabilities":[],"mode":"monitor""#;
-    let first_frames: [(Vec<u8>, &str); 8] = [
+    let hello = raw_frame(0x01, br#"{"protocol":1}"#);
+    let first_frames: [(Vec<u8>, &str); 14] = [
         (raw_frame(0x30, b"{"), "invalid_json"),
         (
             raw_frame(0x30, b"{\"request_id\":\"1\xff\"}"),
@@ -495,15 +465,21 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
         ),
         (raw_frame(0x40, b"{}"), "wrong_direction"),
         (raw_frame(0x4d, b"{}"), "wrong_direction"),
+        (vec![0, 0, 0, 0], "invalid_frame_length"),
+        (vec![0, 0x10, 0, 1], "frame_too_large"),
+        (
+            raw_frame(0x10, br#"{"cols":80,"rows":24}"#),
+            "unknown_message_type",
+        ),
+        (raw_frame(0x16, b"{}"), "unknown_message_type"),
+        (raw_frame(0x12, b""), "unknown_message_type"),
+        (hello.clone(), "unknown_message_type"),
     ];
     for (bytes, code) in first_frames {
         let mut stream = peer(&session);
         stream.write_all(&bytes).unwrap();
         assert_fatal(&mut stream, code);
     }
-    let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
-    let mut private_hello = Vec::new();
-    protocol::write_frame(&mut private_hello, &hello).unwrap();
     let after_open: [(Vec<u8>, &str); 8] = [
         (vec![0, 0, 0, 0], "invalid_frame_length"),
         (vec![0, 0x10, 0, 1], "frame_too_large"),
@@ -513,7 +489,7 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
             raw_frame(0x10, br#"{"cols":80,"rows":24}"#),
             "unknown_message_type",
         ),
-        (private_hello, "unknown_message_type"),
+        (hello, "unknown_message_type"),
         (
             raw_frame(0x37, br#"{"request_id":"1"}"#),
             "invalid_request_id",
@@ -545,7 +521,8 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
     end_controlled(session, controlling);
 }
 
-/// COM-02 (Contract, oversized frames): a request frame exactly at the
+/// COM-02 (Contract, oversized frames) and LIM-01 (Contract, the frame
+/// bound at the limit and one past): a request frame exactly at the
 /// advertised 1,048,576-byte limit is served; on a revision-1 stream one byte
 /// more is `frame_too_large`, decided from its prefix before any body
 /// arrives.
@@ -565,8 +542,8 @@ fn a_request_at_the_frame_limit_is_served_and_one_byte_more_is_fatal() {
 
 /// COM-02 (Contract, fragmented and coalesced I/O): partial reads and writes
 /// never define messages. Hello, Open and Leave written at once, then the
-/// peer's half-close, are each answered in order, the first frame after hello
-/// selecting revision 1; the stream ends after the Leave response, so a frame
+/// peer's half-close, are each answered in order, every frame after hello
+/// being revision 1; the stream ends after the Leave response, so a frame
 /// sent after Leave is not served. An Open written in pieces, each consumed
 /// before the next is sent, is answered once whole.
 #[test]
@@ -577,8 +554,7 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
     let mut bytes = Vec::new();
-    let hello = ClientMessage::Hello { protocol: 1 }.to_frame().unwrap();
-    protocol::write_frame(&mut bytes, &hello).unwrap();
+    bytes.extend(raw_frame(0x01, br#"{"protocol":1}"#));
     bytes.extend(encoded(
         &open(1, &[], &["title-v1"], Mode::Monitor).to_frame(),
     ));
@@ -586,10 +562,7 @@ fn coalesced_and_fragmented_revision1_frames_are_each_answered_in_order() {
     bytes.extend(encoded(&open(3, &[], &[], Mode::Monitor).to_frame()));
     coalesced.write_all(&bytes).unwrap();
     coalesced.shutdown(Shutdown::Write).unwrap();
-    assert_eq!(
-        protocol::read_frame(&mut coalesced).unwrap().type_code(),
-        0x01
-    );
+    assert_eq!(read_frame(&mut coalesced).unwrap().type_code(), 0x01);
     opened(&frame(&mut coalesced), "1");
     assert_eq!(body(&frame(&mut coalesced), 0x41), UNSET_TITLE);
     assert_eq!(
@@ -677,8 +650,7 @@ fn needing_an_attachment(id: u64) -> [Frame; 6] {
 #[test]
 fn requests_that_need_an_attachment_are_refused_and_the_stream_goes_on() {
     let mut session = super::clocked("lines");
-    let mut controlling = session.attach();
-    session.wait_marker(&mut controlling);
+    let mut controlling = ready_attachment(&session, &[]);
     let without_role = [
         "invalid_state",
         "invalid_state",
@@ -728,14 +700,8 @@ fn requests_that_need_an_attachment_are_refused_and_the_stream_goes_on() {
         crate::advertised_state(&session),
         (Lifecycle::Attached, 1, true)
     );
-    crate::send(
-        &mut controlling,
-        ClientMessage::Input(b"after\nend\n".to_vec()),
-    );
-    assert_eq!(
-        crate::until_terminal(&mut controlling).1,
-        PrivateMessage::Exit { code: 0 }
-    );
+    controlling.typed(b"after\nend\n");
+    controlling.ended(&exited(0));
     session.finish();
     assert_eq!(
         fs::read_to_string(session.directory.path().join("lines")).unwrap(),

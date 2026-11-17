@@ -11,7 +11,12 @@
 //! - `stall-cleanup` makes `run` start one worker whose cleanup never ends;
 //! - `joined-worker` makes `run` start one worker that briefly holds a block
 //!   of `chunk_bytes` and ends, and join it before going on, so it never runs
-//!   beside its instance's other work.
+//!   beside its instance's other work;
+//! - `counters:<input>,<display>,<drained>,<released>` starts each new
+//!   instance's monotonic snapshot counters at those values, near exhaustion
+//!   (#99);
+//! - `wire-ids:<last>` makes each new connection's first wire request ID
+//!   `last` plus one, near exhaustion (#99).
 
 use std::sync::Mutex;
 
@@ -69,6 +74,26 @@ pub(super) enum Worker {
     /// Holds one block of `chunk_bytes` and ends, and `run` joins it before
     /// it goes on.
     Joined,
+}
+
+/// The values after `prefix` in the selected fault, comma-separated, if the
+/// fault has it.
+fn values(prefix: &str) -> Option<Vec<u64>> {
+    let fault = fault();
+    let values = fault.strip_prefix(prefix)?.split(',');
+    Some(values.map(|value| value.parse().expect("a u64")).collect())
+}
+
+/// Where a new instance's snapshot counters start: zero, or the four values
+/// `counters:` names.
+pub(super) fn counters() -> [u64; 4] {
+    values("counters:").map_or([0; 4], |values| values.try_into().expect("four counters"))
+}
+
+/// The wire request ID a new connection counts as already used: zero, or
+/// the one `wire-ids:` names.
+pub(super) fn last_wire_id() -> u64 {
+    values("wire-ids:").map_or(0, |values| values[0])
 }
 
 /// The worker `run` starts, if any.

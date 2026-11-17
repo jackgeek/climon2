@@ -166,6 +166,15 @@ pub fn open_descriptors() -> Vec<i32> {
 /// Lowers the descriptor limit so that exactly `free` new descriptors can be
 /// created, runs `work`, and restores the limit.
 pub fn with_free_descriptors<T>(free: usize, work: impl FnOnce() -> T) -> T {
+    let original = limit_descriptors(free);
+    let result = work();
+    restore_descriptors(original);
+    result
+}
+
+/// Lowers the descriptor limit so that exactly `free` new descriptors can be
+/// created: the limit it replaced.
+pub fn limit_descriptors(free: usize) -> libc::rlimit {
     let mut limit = MaybeUninit::<libc::rlimit>::zeroed();
     // SAFETY: getrlimit only writes the supplied rlimit.
     assert_eq!(
@@ -189,13 +198,16 @@ pub fn with_free_descriptors<T>(free: usize, work: impl FnOnce() -> T) -> T {
         unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &exhausted) },
         0
     );
-    let result = work();
-    // SAFETY: as above.
+    original
+}
+
+/// Restores the descriptor limit `limit_descriptors` replaced.
+pub fn restore_descriptors(original: libc::rlimit) {
+    // SAFETY: setrlimit reads the supplied rlimit.
     assert_eq!(
         unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
         0
     );
-    result
 }
 
 /// The calling thread's deadline for anything the host waits on.

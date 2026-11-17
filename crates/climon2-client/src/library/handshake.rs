@@ -8,13 +8,13 @@ use super::{
     RELEASE,
     failure::{Failed, Fault, require},
     families::{self, Role},
-    link::{Link, TIMEOUT, remaining},
+    link::{Link, TIMEOUT, exhausted, remaining},
 };
 use climon2_core::{
     SessionId,
     hello::{Advertised, HelloExtensions},
     metadata::SessionMetadata,
-    protocol::{self, ClientMessage, HelloReply, PROTOCOL_VERSION, ServerMessage},
+    protocol::{self, HelloReply, HelloRequest, PROTOCOL_VERSION},
     wire::{Advertisement, Frame, FrameLimit},
 };
 use std::{
@@ -24,10 +24,7 @@ use std::{
     time::Instant,
 };
 
-const UNREADABLE: Failed = Failed::passive(Fault::library(
-    "io_error",
-    "the session metadata cannot be read",
-));
+const UNREADABLE: Fault = Fault::library("io_error", "the session metadata cannot be read");
 const INVALID_METADATA: Failed = Failed::permanent(Fault::library(
     "invalid_configuration",
     "the session metadata is not valid metadata of this session",
@@ -87,7 +84,7 @@ fn socket(expected: &Expected) -> Result<PathBuf, Failed> {
     let mut bytes = Vec::new();
     File::open(expected.metadata)
         .and_then(|file| file.take(expected.bytes).read_to_end(&mut bytes))
-        .map_err(|_| UNREADABLE)?;
+        .map_err(|error| Failed::passive(exhausted(&error, UNREADABLE)))?;
     let metadata =
         SessionMetadata::from_json(expected.metadata, &bytes).map_err(|_| INVALID_METADATA)?;
     require(metadata.session_id == *expected.session, INVALID_METADATA)?;
@@ -123,7 +120,7 @@ fn reach(expected: &Expected, deadline: Instant) -> Result<Link, Failed> {
 
 fn exchange(link: &mut Link, deadline: Instant) -> Result<Frame, Failed> {
     let mut hello = Vec::new();
-    let frame = ClientMessage::Hello {
+    let frame = HelloRequest {
         protocol: PROTOCOL_VERSION,
     }
     .to_frame()
@@ -142,12 +139,9 @@ fn peer(frame: &Frame, expected: &Expected, role: Role) -> Result<Peer, Failed> 
 
 /// The frozen reply: a hello frame with its required fields.
 fn reply(frame: &Frame) -> Result<HelloReply, Failed> {
-    let message = protocol::Frame::new(frame.code(), frame.body().to_vec())
-        .and_then(ServerMessage::from_frame);
-    match message {
-        Ok(ServerMessage::Hello(reply)) => Ok(reply),
-        _ => Err(BAD_HELLO),
-    }
+    protocol::Frame::new(frame.code(), frame.body().to_vec())
+        .and_then(|frame| HelloReply::from_frame(&frame))
+        .map_err(|_| BAD_HELLO)
 }
 
 /// This session, the frozen protocol and this release.
