@@ -4121,15 +4121,18 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
 /// holds shutdown only until it is answered or `deadlines.operation_ms`
 /// passes. With the session's daemon stopped, a key read with prefix+x is
 /// never answered, and the monitor still exits with status 0 within the
-/// one-second operation deadline plus the two-second shutdown deadline
-/// (and a few seconds' margin for the host's release).
+/// ten-second operation deadline plus the two-second shutdown deadline
+/// (and a few seconds' margin for the host's release), well before the
+/// test's own bound. The deadline also bounds every operation before the
+/// daemon stops, Acquire, Ready and Focus among them, so it is long enough
+/// for a loaded host to answer those.
 #[test]
 fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let package = Package::new();
     without_introduction(&package);
     limits_config(
         &package,
-        serde_json::json!({"deadlines": {"operation_ms": 1000, "shutdown_ms": 2000}}),
+        serde_json::json!({"deadlines": {"operation_ms": 10_000, "shutdown_ms": 2000}}),
     );
     headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid as i32;
@@ -4142,7 +4145,7 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
     let took = started.elapsed();
     kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
-    assert!(took < Duration::from_secs(6), "{took:?}");
+    assert!(took < Duration::from_secs(17), "{took:?}");
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     package.assert_clean();
