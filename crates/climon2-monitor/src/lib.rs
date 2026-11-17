@@ -722,10 +722,13 @@ impl Monitor {
     /// with that target's markers while it still takes input; once it does
     /// not, the paste is [cut](Monitor::cut) (spec #73, "Paste rules",
     /// "Target changes"). A modal owns a paste: the selector's search takes
-    /// it (#113), the key introduction discards it. A prefix the paste
-    /// discarded reaches its target as one literal prefix first.
+    /// it (#113), the key introduction discards it; a paste a modal covers
+    /// part-way is cut, and the search ignores the rest of it, which it
+    /// never saw begin. A prefix the paste discarded reaches its target as
+    /// one literal prefix first.
     fn paste(&mut self, pasted: Pasted, typed: &mut Vec<u8>) -> io::Result<()> {
         if self.covered() {
+            self.cut(None);
             return self.modal(&Routed::Paste(pasted));
         }
         let taking = self.taking();
@@ -819,6 +822,7 @@ impl Monitor {
         self.submit(typed);
         match routed {
             Routed::Action(action) => Ok(self.action(action)),
+            Routed::Unknown(..) | Routed::Rest(_) => Ok(None),
             input => self.modal(&input).map(|()| None),
         }
     }
