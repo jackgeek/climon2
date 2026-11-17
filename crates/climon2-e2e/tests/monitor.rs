@@ -4266,11 +4266,17 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let took = started.elapsed();
     kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
     assert!(took < Duration::from_secs(6), "{took:?}");
+    // Whether the client sent its Leave before the operation deadline failed
+    // it depends on scheduling (release builds usually do): either way the
+    // departure is unconfirmed, and the diagnostic says which evidence is
+    // missing.
+    let leave = ["", "Leave unconfirmed, "]
+        [usize::from(written(&mut terminal).contains(": Leave unconfirmed, client failed"))];
     assert_diagnosed_after_release(
         &mut terminal,
         &format!(
-            "climon2: error: monitor shutdown unconfirmed: session {id}: client failed: \
-             timeout: the session daemon did not answer in time (logs: "
+            "climon2: error: monitor shutdown unconfirmed: session {id}: {leave}client \
+             failed: timeout: the session daemon did not answer in time (logs: "
         ),
     );
     assert_released(&package, &mut terminal, 125);
