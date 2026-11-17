@@ -6,11 +6,12 @@
 //!
 //! A request is JSON: `tag` (a number or a name: `"open"`, `"leave"`,
 //! `"acquire"`, `"input"`, `"resize"`, `"ready"`, `"viewing"`,
-//! `"acknowledge"` or `"focus"`),
+//! `"acknowledge"`, `"focus"` or `"kill"`),
 //! `request_id`, optional `reserved`, `fill` (a byte written over the whole
 //! request first, so inactive storage holds it), and the active member:
 //! `open` (`mode`, `reserved`, `geometry` `[cols, rows]`, token lists
-//! `required` and `optional`), `generation` (Leave and Acquire), or an
+//! `required` and `optional`), `generation` (Leave and Acquire), a Kill's
+//! `required` token list (#96), or an
 //! `authority` (`[generation, period, restoration_id]`) with, for Input,
 //! `bytes` (a buffer, see `startup`), for Resize, `geometry`, and for Focus
 //! and Set viewing, `value` and optional `flag_reserved`. A token list is an array of
@@ -37,6 +38,7 @@ fn tag(spec: &Value) -> u32 {
         Some("viewing") => native::VIEWING,
         Some("acknowledge") => native::ACKNOWLEDGE,
         Some("focus") => native::FOCUS,
+        Some("kill") => native::KILL,
         _ => number(spec, 0),
     }
 }
@@ -117,6 +119,7 @@ pub fn build(arena: &mut Arena, spec: &Value) -> *const native::Request {
         native::LEAVE | native::ACQUIRE => {
             request.args.generation = number(&spec["generation"], 0);
         }
+        native::KILL => request.args.required = tokens(arena, &spec["required"]),
         native::INPUT => {
             request.args.input = native::Input {
                 authority: authority(&spec["authority"]),

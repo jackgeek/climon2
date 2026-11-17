@@ -165,10 +165,55 @@ pub(super) enum Answer {
     Left {
         detached: bool,
     },
-    /// An initial role rejection's known command result.
-    KnownFinal(Command),
+    /// What the response knows of the command's end.
+    Ending(Ending),
     /// A command's result (#94).
     Done(Done),
+}
+
+/// What a response knows of the command's end.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Ending {
+    /// An initial role rejection's known command result.
+    KnownFinal(Command),
+    /// What a Kill learned of termination: the command result, if known,
+    /// and the daemon's cleanup, `CM1_CLEANUP_*` (#96).
+    Termination {
+        command: Option<Command>,
+        cleanup: u32,
+    },
+}
+
+impl Ending {
+    /// Whether it makes the command's final result known.
+    pub(super) fn concludes(&self) -> bool {
+        self.command().is_some()
+    }
+
+    fn command(&self) -> Option<&Command> {
+        match self {
+            Self::KnownFinal(command) => Some(command),
+            Self::Termination { command, .. } => command.as_ref(),
+        }
+    }
+
+    /// Writes its result tag and active result into `response`.
+    fn native(&self, response: &mut native::Response) {
+        match self {
+            Self::KnownFinal(command) => {
+                response.result_tag = native::KNOWN_FINAL;
+                response.result.known_final = command.native();
+            }
+            Self::Termination { command, cleanup } => {
+                response.result_tag = native::TERMINATION;
+                response.result.termination = native::Termination {
+                    command_result: optional(command.as_ref()),
+                    cleanup: *cleanup,
+                    reserved: 0,
+                };
+            }
+        }
+    }
 }
 
 /// What a command did.
@@ -411,7 +456,7 @@ impl Response {
     fn bytes(&self) -> u64 {
         let answer = match &self.answer {
             Some(Answer::Opened { selected, .. }) => TOKEN * selected.families().count() as u64,
-            Some(Answer::KnownFinal(command)) => command.bytes(),
+            Some(Answer::Ending(ending)) => ending.command().into_iter().map(Command::bytes).sum(),
             _ => 0,
         };
         answer + self.outcome.fault().map_or(0, Fault::bytes)
@@ -607,16 +652,18 @@ impl Initial {
         let mut metadata: native::Metadata = unsafe { mem::zeroed() };
         metadata.title = self.title.native();
         metadata.status = available(self.status);
-        metadata.command_result =
-            self.command
-                .as_ref()
-                .map_or(NO_COMMAND, |command| native::OptionalCommand {
-                    present: u32::from(true),
-                    reserved: 0,
-                    value: command.native(),
-                });
+        metadata.command_result = optional(self.command.as_ref());
         metadata
     }
+}
+
+/// An optional command result's native view: absent is all zero.
+fn optional(command: Option<&Command>) -> native::OptionalCommand {
+    command.map_or(NO_COMMAND, |command| native::OptionalCommand {
+        present: u32::from(true),
+        reserved: 0,
+        value: command.native(),
+    })
 }
 
 impl Response {
@@ -649,10 +696,7 @@ impl Answer {
                 response.result_tag = native::LEFT;
                 response.result.attachment_detached = u8::from(*detached);
             }
-            Self::KnownFinal(command) => {
-                response.result_tag = native::KNOWN_FINAL;
-                response.result.known_final = command.native();
-            }
+            Self::Ending(ending) => ending.native(response),
             Self::Done(done) => done.native(response),
         }
     }

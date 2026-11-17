@@ -6,9 +6,11 @@ Implemented for the bootstrap and the immutable description
 lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)),
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
-status, viewing and acknowledgement ([#95](https://github.com/jackgeek/climon2/issues/95))
-and the validation of the bootstrap and description before create by the
-shared loader ([#84](https://github.com/jackgeek/climon2/issues/84)).** The
+status, viewing and acknowledgement ([#95](https://github.com/jackgeek/climon2/issues/95)),
+termination: Kill, Command final and their terminal evidence
+([#96](https://github.com/jackgeek/climon2/issues/96)), and the validation of
+the bootstrap and description before create by the shared loader
+([#84](https://github.com/jackgeek/climon2/issues/84)).** The
 shipped [client library](../../../GLOSSARY.md#sessions)
 (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified
@@ -24,19 +26,18 @@ worker's thread handle, which the Rust standard library allocates outside the
 library's allocator. State a library dependency keeps for the whole process
 or a caller's thread is shared-release allocation, so it is not counted.
 `submit` accepts `CM1_OPEN` in both modes, `CM1_LEAVE`, `CM1_ACQUIRE`,
-`CM1_INPUT`, `CM1_RESIZE`, `CM1_READY`, `CM1_VIEWING`, `CM1_ACKNOWLEDGE` and
-`CM1_FOCUS`; Kill reports `CM1_UNSUPPORTED_OPERATION`. An instance opens a
+`CM1_INPUT`, `CM1_RESIZE`, `CM1_READY`, `CM1_VIEWING`, `CM1_ACKNOWLEDGE`,
+`CM1_FOCUS` and `CM1_KILL`. An instance opens a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) or an
 interactive attachment to its [session daemon](../../../GLOSSARY.md#sessions)
 over [daemon wire revision 1](../daemon-client/core-v1.md), delivers
-Response, Initial metadata, Title, Status, Control granted and revoked,
-Restoration begin and complete, Display, Geometry, Final and diagnostic
-records, and attempts [Leave](../daemon-client/request-leave.md) once on
-shutdown.
+Response, Initial metadata, Title, Status, Command final, Control granted
+and revoked, Restoration begin and complete, Display, Geometry and
+diagnostic records, and attempts [Leave](../daemon-client/request-leave.md)
+once on shutdown. It sends [Kill](../daemon-client/request-kill.md) on an
+auxiliary connection of its own.
 [Implemented behavior](#implemented-behavior) records the choices this page
-leaves open. [Kill](../daemon-client/request-kill.md) and the notification and
-progress records are not implemented, and the Final record has only the
-handling [implemented behavior](#implemented-behavior) describes. The [C ABI](../TERMS.md#c-abi)
+leaves open. The notification and progress records are not implemented. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
 order. This page owns their semantics. The [examples](examples.c) compile but
 do not link to a shipped library. [Declaration checks](check.py) are not runtime
@@ -497,9 +498,12 @@ The Library-layer tests for
 [passive connections](../../../crates/climon2-e2e/README.md#library-layer-passive-monitor-connections-testspassivers-93)
 ([#93](https://github.com/jackgeek/climon2/issues/93)), for
 [control and display](../../../crates/climon2-e2e/README.md#library-layer-control-and-display-testscontrolrs-94)
-([#94](https://github.com/jackgeek/climon2/issues/94)) and for
+([#94](https://github.com/jackgeek/climon2/issues/94)), for
 [status, viewing and acknowledgement](../../../crates/climon2-e2e/README.md#library-layer-status-viewing-and-acknowledgement-testsstatusrs-95)
-([#95](https://github.com/jackgeek/climon2/issues/95)) are the evidence for this section.
+([#95](https://github.com/jackgeek/climon2/issues/95)) and for
+[termination](../../../crates/climon2-e2e/README.md#library-layer-termination-teststerminationrs-96)
+([#96](https://github.com/jackgeek/climon2/issues/96)) are the evidence for
+this section.
 
 - **Description.** `capabilities` lists exactly the families the library
   relays: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`
@@ -602,36 +606,14 @@ The Library-layer tests for
   terminal under the held authority, and the caller applies it before
   ending its presentation
   ([#108](https://github.com/jackgeek/climon2/issues/108)).
-- **Command final.** Minimal handling
-  ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)):
-  after an Initial metadata that did not know the result, a Command final is
-  delivered as `CM1_FINAL` with its exit code or signal (and signal name, if
-  sent) and, exactly when `status-v1` is selected, its final status
-  (completed for exit 0, failed otherwise; [#95](https://github.com/jackgeek/climon2/issues/95)), otherwise status
-  unavailable. It calls for no retry, and the connection
-  reads on: the last output, the release Display, Control revoked
-  `session_ending` and the close follow. The daemon closing the connection
-  between frames then stops the stream cleanly: client outcome stopped, no
-  error, retry none, Leave not required
-  ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)).
-  A close inside a frame is still `truncated_frame`, and a close that meets
-  an unanswered Leave still leaves that Leave indeterminate. A close after
-  an Initial metadata that already knew the result stops cleanly the same
-  way. A second Command final, one
-  after an Initial metadata that knew the result, one before the Initial
-  metadata and one whose status is present when `status-v1` is not selected,
-  or absent when it is, are `invalid_record`. A finished
-  session's view freezes at the Command final: later Displays are only its
-  last output and the release. Exit and signal detail tests, repeat
-  semantics and evidence that survives disconnection belong to
-  [#96](https://github.com/jackgeek/climon2/issues/96).
 - **Failures.** Transport origin covers the socket, framing and the wire's
   rules: `io_error`, `truncated_frame`, the wire's framing codes,
   `invalid_record` and `invalid_request_id`. Daemon origin covers the daemon's
   own errors, copied. Library origin covers `timeout`,
   `delivery_stalled`, `cancelled`,
-  `invalid_state` (a second Open, or a Leave or command without a role or
-  while a Leave is unanswered), `stale_generation`, `resource_limit` and the Open
+  `invalid_state` (a second Open, a Leave or command without a role or
+  while a Leave is unanswered, or a Kill while another is pending),
+  `stale_generation`, `resource_limit` and the Open
   refusals above. A failure ends the connection, queues one diagnostic when it
   fits and fails terminal evidence with its error.
 - **Deadlines and loss.** `start_ms` bounds an Open until its Initial metadata,
@@ -645,16 +627,75 @@ The Library-layer tests for
   rejects queued requests, waits for an Open under way, then attempts its own
   Leave once; an Open whose hello completes after shutdown is never sent and
   is `CM1_REJECTED` `cancelled`.
+- **Command final.** After an Initial metadata that did not know the
+  result, the daemon's Command final becomes one `CM1_FINAL` record: the
+  command result as sent (a normal exit keeps its raw code, a signal its
+  number and optional name, so exit 143 is not signal 15) and, exactly when
+  `status-v1` is selected, its final status (completed for exit 0, failed
+  otherwise; [#95](https://github.com/jackgeek/climon2/issues/95)),
+  otherwise status unavailable. It calls for no retry, and the connection reads on: the last output, the release
+  Display, Control revoked `session_ending` and the close may follow. A
+  finished session's view freezes at the Command final: later Displays are
+  only its last output and the release. A second Command final, consistent
+  or not, one after an Initial metadata that knew the result, one before
+  the Initial metadata and one whose status is present when `status-v1` is
+  not selected, or absent when it is, are `invalid_record`;
+  a record already queued, a Command final included, stays deliverable
+  after any failure. Once the result is known, from the Initial metadata
+  or a Command final, the daemon closing the connection between frames
+  with no Leave under way ends the stream cleanly: stopped, no error, retry
+  none, Leave not required
+  ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)).
+  A close inside a frame is still `truncated_frame`. Any other close is a
+  failure: without final evidence it calls for passive retry, and a close
+  that meets an unanswered Leave leaves that Leave indeterminate. Closure
+  never makes a result or a Leave known. The library does not compare a
+  Kill's result with a Command final, which arrive on different
+  connections ([owner decision on #96](https://github.com/jackgeek/climon2/issues/96)).
+- **Kill.** `CM1_KILL`'s required list is admitted as an Open's lists are
+  (unique nonempty UTF-8 tokens, each relayed, charged with the request).
+  Like Leave, it waits for the Initial metadata of an Open under way. At
+  execution the library reads the session metadata and exchanges hello
+  on a new connection of the Kill's own, with the same checks as an Open
+  except that `monitor-v1` is not needed: every required family must be
+  advertised. Hello is bounded by `kill_ms` and its 2-second limit. It
+  then sends one wire Kill, request ID 1, revision 1, naming the required
+  families, and waits for its answer until `kill_ms` after the Kill
+  started. A Kill refused before it is sent is `CM1_REJECTED` with the
+  refusal; one whose hello completes after shutdown is `cancelled`. At
+  most one Kill is pending per instance: another meanwhile is
+  `CM1_REJECTED` `invalid_state` at once. The answer maps to a Response:
+  success is `CM1_OK` with `CM1_TERMINATION`, the command result present
+  and cleanup `CM1_CLEANUP_COMPLETE`; a rejection carries `CM1_KNOWN_FINAL`
+  when the daemon sent one; a failed or indeterminate answer carries its
+  partial `CM1_TERMINATION`, an optional command result and cleanup
+  incomplete or unknown. A partial termination belongs only to a Kill: on
+  an Open, Leave or command's Response it is `invalid_record`, and that
+  request stays unanswered. A lost answer, one later than `kill_ms`
+  (`timeout`), a Fatal error, an uncorrelated or mismatched Response and
+  any other record are `CM1_INDETERMINATE` with that error. The library
+  then closes the connection and never sends the Kill again. On an
+  instance with an opened role, the Kill only answers its request; the
+  role and its stream go on. An instance that never executed an Open ends
+  its run after the Kill's result: stopped with no error after a
+  confirmed termination, otherwise failed with the Kill's error. Shutdown
+  waits for a Kill under way, bounded by `kill_ms`.
 - **Terminal evidence.** Retry is none once shutdown is requested, once a
   Leave the caller asked for is sent, answered or lost, and once the
   command's final result is known, from a known-final rejection, the
-  Initial metadata's command result or a Command final; otherwise permanent for the
+  Initial metadata's command result, a Command final or a Kill's
+  termination result; otherwise permanent for the
   library's `unsupported_revision`, `unsupported_capability`,
   `invalid_configuration`, `release_mismatch` and `unsupported_limit`
   refusals and the daemon's `unsupported_revision` and
-  `unsupported_capability`; passive otherwise. Leave is not required when no
+  `unsupported_capability`; passive otherwise, including a lost or late
+  Kill answer, whose outcome only a fresh passive instance may learn. Leave
+  is not required when no
   Leave was attempted, since closing the connection ends a passive
-  registration, and indeterminate when one was lost or late.
+  registration, and indeterminate when one was lost, late or answered
+  against the wire's rules. Every
+  connection, a Kill's included, is closed before terminal evidence is
+  published.
 - **Signals.** Sending never raises `SIGPIPE` in the embedding process.
 
 ## Required runtime evidence
