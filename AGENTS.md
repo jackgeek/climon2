@@ -60,3 +60,7 @@ Single-context layout: root `GLOSSARY.md` and `docs/adr/`. Read `docs/agents/dom
 ### Protocol docs
 
 Invoke `protocol-docs` when specifying or changing a communication protocol, plugin extension contract, or protocol documentation.
+
+### Human docs
+
+Invoke `writing-for-humans` when creating, editing, moving or removing `README.md` or a document under `docs/` outside `docs/adr/` and `docs/agents/`.

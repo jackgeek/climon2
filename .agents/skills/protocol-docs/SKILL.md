@@ -70,6 +70,9 @@ reference in the same change.
 
 ## Language
 
+Invoke `writing-for-humans` for the rules every human-read document follows;
+where they differ from this skill, this skill wins.
+
 Use simple, informative language, short sentences, and concrete examples.
 Link abbreviations to their technical definitions on first use. Describe
 observable behavior precisely without requiring knowledge of internal functions
