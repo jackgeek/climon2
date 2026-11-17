@@ -1,5 +1,5 @@
-//! Daemon wire revision 1 on the session loop, beside the private protocol:
-//! passive monitor connections, ordinary interactive attachments and
+//! Daemon wire revision 1 on the session loop, the only protocol after the
+//! frozen hello: passive monitor connections, ordinary interactive attachments and
 //! standalone Kills, their requests, their control and terminal records and
 //! their core metadata: the title, the effective status, notifications and
 //! progress.
@@ -38,7 +38,6 @@ const NOT_VIEWING: &str = "the latest reported viewing is not true";
 const EPISODES_EXHAUSTED: &str = "the session's attention episode identifiers are exhausted";
 const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
 const EMPTY_INPUT: &str = "Input carries no bytes";
-const TERMINATING: &str = "the session is terminating";
 const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
 
 /// What hello advertises: only the families this daemon implements.
@@ -66,6 +65,9 @@ pub(super) fn advertisement() -> Advertisement {
 pub(super) struct Opened {
     selected: BTreeSet<Family>,
     role: Role,
+    /// Whether the command's result was already final when it opened: its
+    /// Initial metadata carries the result, and no Command final reached it.
+    opened_after_final: bool,
 }
 
 enum Role {
@@ -212,10 +214,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// A passive monitor connection: success and Initial metadata at once.
     /// It may inherit control from now on.
     fn register(&mut self, id: u64, request_id: Counter, selected: BTreeSet<Family>) {
-        let opened = Opened {
-            selected,
-            role: Role::Monitor,
-        };
+        let opened = self.opened_with(selected, Role::Monitor);
         self.opened.insert(id, opened);
         self.control.register(ConnectionId(id));
         self.report_opened(id, request_id);
@@ -223,6 +222,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     /// An interactive Open attaches and is granted at once, under the leave
     /// and takeover policy every attachment shares; its admission answers it.
+    /// A refused one has no effects, and its stream ends.
     fn attach(
         &mut self,
         id: u64,
@@ -235,17 +235,31 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             self.reject_role(id, request_id, error);
             return Ok(());
         };
+        let effects = match self.control.attach(ConnectionId(id), host) {
+            Ok(effects) => effects,
+            Err(code) => {
+                self.reject_role(id, request_id, refusal(code));
+                return Ok(());
+            }
+        };
         let attachment = Attachment {
             open: Some(request_id),
             held: None,
         };
-        let opened = Opened {
-            selected,
-            role: Role::Attachment(attachment),
-        };
+        let opened = self.opened_with(selected, Role::Attachment(attachment));
         self.opened.insert(id, opened);
-        let effects = self.control.attach(ConnectionId(id), host);
         self.effects(effects)
+    }
+
+    /// A successful Open's connection, which selected `selected`, in
+    /// `role`. Its Initial metadata, sent in the same pass, carries the
+    /// command's result when that is already final.
+    fn opened_with(&self, selected: BTreeSet<Family>, role: Role) -> Opened {
+        Opened {
+            selected,
+            role,
+            opened_after_final: self.command_result.is_some(),
+        }
     }
 
     /// An admitted interactive Open's success and Initial metadata, before
@@ -253,15 +267,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     pub(super) fn admitted(&mut self, id: u64) {
         if let Some(request_id) = self.open_request(id) {
             self.report_opened(id, request_id);
-        }
-    }
-
-    /// An interactive Open refused because the session is terminating: it
-    /// has no effects, and its stream ends.
-    pub(super) fn refused(&mut self, id: u64) {
-        if let Some(request_id) = self.open_request(id) {
-            let error = error(OperationalCode::SessionTerminating, TERMINATING);
-            self.reject_role(id, request_id, error);
         }
     }
 
@@ -404,9 +409,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             let error = error(OperationalCode::InvalidGeometry, UNSUPPORTED_GEOMETRY);
             return self.reject_with(id, resize.request_id, error);
         };
-        self.control.resize(ConnectionId(id), host);
-        let accepted = Success::ResizeAccepted {};
-        self.respond(id, resize.request_id, Outcome::Ok(accepted));
+        let recorded = self.control.resize(ConnectionId(id), host);
+        let accepted = recorded.map(|()| Success::ResizeAccepted {});
+        self.answer(id, resize.request_id, accepted);
     }
 
     /// Ready confirms the complete current restoration; once ready again it
@@ -621,8 +626,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.opened.get_mut(&id)?.role.attachment_mut()
     }
 
-    /// The authority under which an interactive attachment receives
-    /// Display, or `None` for a private connection.
+    /// The authority under which an attachment receives Display, from its
+    /// grant until its revocation, or `None`.
     pub(super) fn display_authority(&self, id: u64) -> Option<Authority> {
         let attachment = self.opened.get(&id)?.role.attachment()?;
         attachment.held.map(|held| held.authority)
@@ -658,8 +663,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// Records the authority an interactive attachment now holds; false for
-    /// a private connection.
+    /// Records the authority an attachment now holds; false for a
+    /// connection that is no longer one.
     fn hold(&mut self, id: u64, authority: Authority, geometry: TerminalSize) -> bool {
         let Some(attachment) = self.attachment_mut(id) else {
             return false;
@@ -777,6 +782,26 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
         self.command_result = Some(result.clone());
         let status = self.status.finish(&self.moment, result);
+        self.send_final(result, status, |_| true);
+    }
+
+    /// The result a session held after its command exited, once the
+    /// session ends, however it ends: each connection that opened after the
+    /// Command final went out, and so learned the result only from its
+    /// Initial metadata, receives it as Command final now, so every opened
+    /// connection gets exactly one (owner decisions on #259). Nothing is
+    /// held when no result was final before this step.
+    pub(super) fn publish_held(&mut self) {
+        let Some(result) = self.command_result.clone() else {
+            return;
+        };
+        let status = self.status.status();
+        self.send_final(&result, status, |opened| opened.opened_after_final);
+    }
+
+    /// Command final of `result` to each opened connection `to` picks, with
+    /// the final `status` for one that selected `status-v1`.
+    fn send_final(&mut self, result: &CommandResult, status: Status, to: fn(&Opened) -> bool) {
         let frame = |status| {
             CommandFinal::new(result.clone(), status)
                 .expect("the final status agrees with its result")
@@ -786,6 +811,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let opened: Vec<(u64, bool)> = self
             .opened
             .iter()
+            .filter(|(_, opened)| to(opened))
             .map(|(id, opened)| (*id, opened.selected.contains(&Family::StatusV1)))
             .collect();
         for (id, selected) in opened {
@@ -858,7 +884,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn respond(&mut self, id: u64, request_id: Counter, outcome: Outcome) {
         #[cfg(feature = "test-hooks")]
-        if self.overflows(id, &outcome) {
+        if Self::overflows(&outcome) {
             return self.mark_lost(id);
         }
         self.send_wire(
@@ -871,13 +897,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         );
     }
 
-    /// The `monitor-overflow` fault: a passive monitor connection's
-    /// rejection overflows its output queue.
+    /// The `rejection-overflow` fault: a rejection overflows its
+    /// connection's output queue.
     #[cfg(feature = "test-hooks")]
-    fn overflows(&self, id: u64, outcome: &Outcome) -> bool {
+    fn overflows(outcome: &Outcome) -> bool {
         matches!(outcome, Outcome::Rejected(_))
-            && self.kind(id) == Some(Kind::Monitor)
-            && crate::startup::selected_fault("monitor-overflow")
+            && crate::startup::selected_fault("rejection-overflow")
     }
 
     fn end_stream(&mut self, id: u64) {

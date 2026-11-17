@@ -203,6 +203,16 @@ impl Fault {
         Self::of(native::ORIGIN_TRANSPORT, code, message)
     }
 
+    /// The library's own judgment, with a message composed for it (#99),
+    /// which a record carrying it owns and is charged.
+    pub(super) fn composed(code: &'static str, message: String) -> Self {
+        Self {
+            origin: native::ORIGIN_LIBRARY,
+            code: Cow::Borrowed(code),
+            message: Cow::Owned(message),
+        }
+    }
+
     const fn of(origin: u32, code: &'static str, message: &'static str) -> Self {
         Self {
             origin,

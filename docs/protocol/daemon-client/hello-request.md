@@ -26,21 +26,24 @@ length 15, type `0x01`, then the body.
 
 Unknown optional fields are ignored. Missing/wrong-type required fields,
 malformed JSON, or an invalid frame are rejected. The current daemon rejects
-a request protocol other than 1 and an out-of-state/repeated hello.
+a request protocol other than 1, and a repeated hello is a revision-1
+`unknown_message_type`. A rejected hello is answered by closing the
+connection without a byte.
 Required-field duplicates are invalid under the current typed JSON parser.
 
 ## Deadline and outcome
 
-The daemon requires a valid hello within two seconds of accepting the connection.
+The daemon requires a valid hello within two seconds of accepting the
+connection, and closes it without a byte otherwise.
 A client performing a probe has two seconds starting before connect to receive the full
 [reply](hello-reply.md). Partial reads do not restart those deadlines.
 
 Reply success identifies a [live session](../../../GLOSSARY.md); it is not permission to infer
 [attachment](../../../GLOSSARY.md), [controller](../../../GLOSSARY.md) identity, or future [plugin](../../../GLOSSARY.md) support from a release number.
-After hello, a connection may probe without attaching. Current attach/[kill](../../../GLOSSARY.md)
-traffic and its future frozen replacement are described by the
-[post-hello boundary](post-hello.md).
+After hello, a connection may probe without attaching. Attach and
+[kill](../../../GLOSSARY.md) traffic is [daemon wire revision 1](core-v1.md),
+as the [post-hello boundary](post-hello.md) describes.
 
 **Sources:** [handshake ADR](../../adr/0001-version-matched-client-and-frozen-hello.md),
 [implementation](../../../crates/climon2-core/src/protocol.rs), and
-[message tests](../../../crates/climon2-core/tests/messages.rs).
+[hello tests](../../../crates/climon2-core/tests/messages.rs).

@@ -78,4 +78,6 @@ reports any; see [Progress changed](event-progress-changed.md#implemented-behavi
 without it, `progress` is unavailable. `command_result` is null until the command's
 result is final, then that result, which the connections open at that
 moment received as [Command final](event-command-final.md#implemented-behavior);
-a connection that receives the result here receives no Command final.
+a connection that receives the result here receives it as its one Command
+final only when the session ends, however it ends
+([#259](https://github.com/jackgeek/climon2/issues/259)).

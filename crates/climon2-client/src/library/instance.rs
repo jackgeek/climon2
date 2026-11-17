@@ -69,6 +69,10 @@ const QUEUE_FULL: Failure = Failure::new(
     FULL,
     "the request does not fit the request queue, the operations or the outcome reserve",
 );
+const COUNTERS_EXHAUSTED: Failure = Failure::new(
+    RESOURCE_LIMIT,
+    "a monotonic snapshot counter is exhausted; counters never wrap",
+);
 const DELIVERIES_FULL: Failure = Failure::new(
     FULL,
     "every delivery the limits allow is outstanding; release one first",
@@ -110,17 +114,56 @@ struct Measures {
     deliveries: Gauge<u32>,
     workers: Gauge<u32>,
     descriptors: Gauge<u32>,
+    counters: Counters,
+}
+
+/// The snapshot's monotonic counters (#99): accepted input bytes,
+/// delivered display bytes, drained records and released deliveries. Each
+/// only grows, by checked addition, so none ever wraps: one that would pass
+/// `u64::MAX` keeps its value, is exhausted, and every later snapshot fails
+/// explicitly.
+#[derive(Clone, Copy)]
+struct Counters {
+    input: u64,
+    display: u64,
     drained: u64,
     released: u64,
+    exhausted: bool,
+}
+
+impl Default for Counters {
+    fn default() -> Self {
+        let [input, display, drained, released] = super::first_counts();
+        Self {
+            input,
+            display,
+            drained,
+            released,
+            exhausted: false,
+        }
+    }
+}
+
+impl Counters {
+    /// Adds `amount` to the counter `pick` names, unless it would pass
+    /// `u64::MAX`, which exhausts the counters instead.
+    fn count(&mut self, pick: fn(&mut Self) -> &mut u64, amount: u64) {
+        let counter = pick(self);
+        match counter.checked_add(amount) {
+            Some(grown) => *counter = grown,
+            None => self.exhausted = true,
+        }
+    }
 }
 
 /// Each charge has one owner here: what enters a queue or a delivery is
 /// counted where it enters and where it leaves.
 impl Measures {
-    /// A request enters the queue, with its bytes.
-    fn queue_request(&mut self, bytes: u64) {
+    /// A request enters the queue, with its bytes and its Input's.
+    fn queue_request(&mut self, bytes: u64, input: u64) {
         self.request_records.add(1);
         self.request_bytes.add(bytes);
+        self.counters.count(|counters| &mut counters.input, input);
     }
 
     /// A request leaves the queue, to execute or be cancelled.
@@ -136,10 +179,13 @@ impl Measures {
         self.event_bytes.add(charge);
     }
 
-    /// A delivery of `records` queued records is drained.
-    fn deliver(&mut self, records: u32) {
+    /// A delivery of `records` queued records, holding `display` Display
+    /// bytes, is drained.
+    fn deliver(&mut self, records: u32, display: u64) {
         self.deliveries.add(1);
-        self.drained += u64::from(records);
+        let counters = &mut self.counters;
+        counters.count(|counters| &mut counters.drained, records.into());
+        counters.count(|counters| &mut counters.display, display);
     }
 
     /// A delivery is released, with its records and their charge.
@@ -147,7 +193,7 @@ impl Measures {
         self.deliveries.sub(1);
         self.event_records.sub(records);
         self.event_bytes.sub(charge);
-        self.released += 1;
+        self.counters.count(|counters| &mut counters.released, 1);
     }
 }
 
@@ -215,6 +261,27 @@ struct Evidence {
 unsafe impl Send for Evidence {}
 // SAFETY: as above.
 unsafe impl Sync for Evidence {}
+
+/// Which part of the event allowance a record may use (#99): an
+/// outcome, control, status or restoration boundary is protected progress
+/// and may use the progress reserve; ordinary work (Display, Title,
+/// Notification, Progress changed, Geometry, and the outcome room `submit`
+/// reserves) may not.
+#[derive(Clone, Copy)]
+enum Room {
+    Ordinary,
+    Protected,
+}
+
+impl Room {
+    fn of(event: &Event) -> Self {
+        if event.ordinary() {
+            Self::Ordinary
+        } else {
+            Self::Protected
+        }
+    }
+}
 
 /// What the connection does next.
 pub(super) enum Next {
@@ -537,7 +604,7 @@ impl Shared {
     fn diagnose(&self, state: &mut State, fault: Fault) {
         let event = Event::Diagnostic(fault);
         let reserved = u64::from(state.measures.operations.current);
-        if self.events_fit(state, reserved, 1, event.charge()) {
+        if self.events_fit(state, reserved, (1, event.charge()), Room::Protected) {
             self.queue(state, event);
         }
     }
@@ -563,10 +630,15 @@ impl Shared {
         self.lock().stop.shutdown
     }
 
-    /// Records the intent before anything that can fail, so even a failed
-    /// call ends the stream with no retry.
+    /// Records the intent and rejects every queued request before anything
+    /// that can fail, so even a failed call ends the stream with no retry,
+    /// and every rejection precedes whatever the daemon sends after it.
     pub(super) fn shutdown(&self) -> Result<(), Failure> {
-        self.lock().stop.shutdown = true;
+        self.scope(|| {
+            let mut state = self.lock();
+            state.stop.shutdown = true;
+            self.cancel(&mut state);
+        });
         self.changed.notify_all();
         self.waker.raise();
         self.guard("shutdown", || {
@@ -615,7 +687,7 @@ impl Shared {
             (operations, u64::from(limits.operations)),
         ];
         fits.into_iter().all(|(need, limit)| need <= limit)
-            && self.events_fit(state, operations, 0, 0)
+            && self.events_fit(state, operations, (0, 0), Room::Ordinary)
     }
 
     /// What each outstanding operation reserves for its outcome: a record's
@@ -625,16 +697,23 @@ impl Shared {
         CHARGE + u64::from(self.limits.metadata_record_bytes)
     }
 
-    /// Whether the event allowance holds every queued and delivered record,
-    /// the outcomes `operations` reserve, and `records` more records of
-    /// `bytes`.
-    fn events_fit(&self, state: &State, operations: u64, records: u64, bytes: u64) -> bool {
+    /// Whether the part of the event allowance `room` may use holds every
+    /// queued and delivered record, the outcomes `operations` reserve, and
+    /// `records` more records of `bytes`.
+    fn events_fit(
+        &self,
+        state: &State,
+        operations: u64,
+        (records, bytes): (u64, u64),
+        room: Room,
+    ) -> bool {
         let measures = &state.measures;
         let reserved = operations.saturating_mul(self.reserve());
+        let (record_limit, byte_limit) = self.allowance(room);
         let fits = [
             (
                 u64::from(measures.event_records.current) + operations + records,
-                u64::from(self.limits.event_records),
+                record_limit,
             ),
             (
                 measures
@@ -642,22 +721,39 @@ impl Shared {
                     .current
                     .saturating_add(reserved)
                     .saturating_add(bytes),
-                self.limits.event_bytes,
+                byte_limit,
             ),
         ];
         fits.into_iter().all(|(need, limit)| need <= limit)
     }
 
+    /// The records and bytes of the event allowance `room` may use: all of
+    /// it for protected progress, all but the progress reserve, which create
+    /// keeps smaller than the allowance, for ordinary work (#99).
+    fn allowance(&self, room: Room) -> (u64, u64) {
+        let limits = &self.limits;
+        let all = (u64::from(limits.event_records), limits.event_bytes);
+        match room {
+            Room::Protected => all,
+            Room::Ordinary => (
+                all.0 - u64::from(limits.progress_records),
+                all.1 - limits.progress_bytes,
+            ),
+        }
+    }
+
     fn accept(&self, state: &mut State, submitted: Submitted) {
         state.last_request = submitted.id;
-        state.measures.queue_request(submitted.bytes);
+        let input = submitted.input();
+        state.measures.queue_request(submitted.bytes, input);
         state.measures.operations.add(1);
         state.requests.push_back(submitted);
         self.waker.raise();
     }
 
     /// What the connection does next: stop after a failure elsewhere, react
-    /// to shutdown once, or take the oldest request when it can execute.
+    /// to shutdown once (which left no request queued), or take the oldest
+    /// request when it can execute.
     fn next(&self, shutdown_seen: bool, ready: bool) -> Next {
         let mut state = self.lock();
         self.waker.clear();
@@ -665,7 +761,6 @@ impl Shared {
             return Next::Stop;
         }
         if state.stop.shutdown && !shutdown_seen {
-            self.cancel(&mut state);
             return Next::Shutdown;
         }
         take(&mut state, ready).map_or(Next::Wait, Next::Request)
@@ -694,7 +789,8 @@ impl Shared {
     pub(super) fn offer(&self, event: Event) -> Option<Event> {
         let mut state = self.lock();
         let reserved = u64::from(state.measures.operations.current);
-        if !self.events_fit(&state, reserved, 1, event.charge()) {
+        let need = (1, event.charge());
+        if !self.events_fit(&state, reserved, need, Room::of(&event)) {
             return Some(event);
         }
         self.queue(&mut state, event);
@@ -787,7 +883,7 @@ impl Shared {
         require(outstanding < self.limits.deliveries, DELIVERIES_FULL)?;
         let count = self.batch(&state.events);
         let batch = Batch::new(self.generation, state.events.drain(..count).collect());
-        state.measures.deliver(batch.len());
+        state.measures.deliver(batch.len(), batch.display());
         let delivery = Box::new(Delivery {
             shared: Arc::clone(self),
             batch,
@@ -857,19 +953,25 @@ impl Shared {
         self.notifier.descriptor()
     }
 
-    pub(super) fn snapshot(&self) -> native::Metrics {
+    /// The instance's measurements, unless a monotonic counter is
+    /// exhausted (#99).
+    pub(super) fn snapshot(&self) -> Result<native::Metrics, Failure> {
         let state = self.lock();
         let measures = &state.measures;
+        let counters = measures.counters;
+        require(!counters.exhausted, COUNTERS_EXHAUSTED)?;
         let allocation = self.account.measure();
-        native::Metrics {
+        Ok(native::Metrics {
             allocation_bytes: allocation.current,
             peak_allocation_bytes: allocation.peak,
             request_bytes: measures.request_bytes.current,
             peak_request_bytes: measures.request_bytes.peak,
             event_bytes: measures.event_bytes.current,
             peak_event_bytes: measures.event_bytes.peak,
-            records_drained: measures.drained,
-            deliveries_released: measures.released,
+            input_bytes_accepted: counters.input,
+            display_bytes_delivered: counters.display,
+            records_drained: counters.drained,
+            deliveries_released: counters.released,
             request_records: measures.request_records.current,
             peak_request_records: measures.request_records.peak,
             event_records: measures.event_records.current,
@@ -883,7 +985,7 @@ impl Shared {
             descriptors: measures.descriptors.current,
             peak_descriptors: measures.descriptors.peak,
             ..NO_METRICS
-        }
+        })
     }
 }
 

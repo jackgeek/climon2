@@ -53,6 +53,15 @@ const _: () = assert!(ProgressState::Indeterminate as u32 + 1 == native::PROGRES
 const _: () = assert!(ProgressState::Error as u32 + 1 == native::PROGRESS_ERROR);
 const _: () = assert!(ProgressState::Paused as u32 + 1 == native::PROGRESS_PAUSED);
 
+/// What a record does to the restoration under way (#99).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Restoring {
+    Begins,
+    Progresses,
+    Ends,
+    Neither,
+}
+
 /// One record, as the library holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Event {
@@ -529,6 +538,44 @@ impl Event {
         CHARGE + self.payload()
     }
 
+    /// What it does to a restoration under way (#99): a beginning starts
+    /// one, a Display of it is progress, its complete or a revocation ends
+    /// it.
+    pub(super) fn restoring(&self) -> Restoring {
+        match self {
+            Self::Presentation(Presentation::Screen(Screen::Begin(..))) => Restoring::Begins,
+            Self::Presentation(Presentation::Screen(Screen::Display(..))) => Restoring::Progresses,
+            Self::Presentation(
+                Presentation::Screen(Screen::Complete(..)) | Presentation::Revoked(..),
+            ) => Restoring::Ends,
+            _ => Restoring::Neither,
+        }
+    }
+
+    /// Whether it is ordinary work, which may not use the progress reserve
+    /// (#99): a Display, Title changed, Notification, Progress changed or
+    /// Geometry. Every other record is protected progress.
+    pub(super) fn ordinary(&self) -> bool {
+        matches!(
+            self,
+            Self::Metadata(
+                Metadata::Title(_)
+                    | Metadata::Report(Report::Notification(_) | Report::Progress(_))
+            ) | Self::Presentation(Presentation::Screen(
+                Screen::Display(..) | Screen::Geometry(..)
+            ))
+        )
+    }
+
+    /// The terminal bytes it carries: a Display's, which `snapshot` counts
+    /// as delivered once drained (#99).
+    fn display(&self) -> u64 {
+        match self {
+            Self::Presentation(presentation) => presentation.bytes(),
+            _ => 0,
+        }
+    }
+
     /// The bytes of its variable data.
     pub(super) fn payload(&self) -> u64 {
         match self {
@@ -626,6 +673,11 @@ impl Batch {
 
     pub(super) fn len(&self) -> u32 {
         self.records.len() as u32
+    }
+
+    /// The Display bytes its records carry.
+    pub(super) fn display(&self) -> u64 {
+        self.events.iter().map(Event::display).sum()
     }
 }
 

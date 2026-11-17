@@ -527,13 +527,19 @@ impl Monitor {
         }
     }
 
-    /// Only the selected terminal can be shown, and only while nothing
-    /// covers its canvas and the host has room for it.
+    /// Only the [`Monitor::shown`] terminal is shown.
     fn mark_shown(&mut self) {
-        let visible = self.screen.desire().is_some() && !self.covered();
+        let shown = self.shown().cloned();
         for (id, terminal) in &mut self.terminals {
-            terminal.painted(visible && self.selected.as_ref() == Some(id));
+            terminal.painted(shown.as_ref() == Some(id));
         }
+    }
+
+    /// The selected session while the screen shows its canvas: nothing
+    /// covers it and the host has room for it.
+    fn shown(&self) -> Option<&SessionId> {
+        let shows = self.screen.shows_canvas(self.covered());
+        self.selected.as_ref().filter(|_| shows)
     }
 
     /// `id`'s terminal, created the first time it is needed.
@@ -944,17 +950,14 @@ impl Monitor {
             })
     }
 
-    /// The selected session, its terminal and the authority it takes input
-    /// with, while nothing covers it and the host has room for it.
-    /// `Terminal::input` alone learns of a modal or a small host only at the
-    /// next frame; within one read, a key after prefix+s must already reach
-    /// the selector.
+    /// The [`Monitor::shown`] session, its terminal and the authority it
+    /// takes input with, while it may take input. `Terminal::input` alone
+    /// learns of a modal or a small host only at the next frame; within one
+    /// read, a key after prefix+s must already reach the selector.
     fn target(&self) -> Option<(&SessionId, &Terminal, Authority)> {
-        let open = !self.introduction.is_open() && !self.selector.is_open();
-        let id = self.selected.as_ref().filter(|_| open)?;
+        let id = self.shown()?;
         let terminal = self.terminals.get(id)?;
-        let ready = terminal.input().zip(self.screen.desire());
-        ready.map(|(authority, _)| (id, terminal, authority))
+        terminal.input().map(|authority| (id, terminal, authority))
     }
 
     /// Submits the application bytes gathered so far to the target they
@@ -1037,7 +1040,7 @@ impl Monitor {
 
     /// Whether the selector or the key introduction covers the canvas.
     fn covered(&self) -> bool {
-        self.selector.is_open() || self.introduction.is_open()
+        screen::covered(&self.selector, &self.introduction)
     }
 
     /// Input no application takes goes to the key introduction while it is
