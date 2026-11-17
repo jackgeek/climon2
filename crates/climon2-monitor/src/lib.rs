@@ -14,11 +14,13 @@ mod host;
 mod initial;
 mod introduction;
 mod keys;
+mod mouse;
 mod paint;
 mod preference;
 mod registry;
 mod router;
 mod screen;
+mod search;
 mod selector;
 mod startup;
 mod supervisor;
@@ -140,6 +142,7 @@ impl Monitor {
         let supervisor = Supervisor::start(context(&startup, filter)?, dispatch.clone())?;
         let introduction = KeyIntroduction::new(prefix, startup.preference, hints);
         let limits = &config.settings().limits;
+        let search = usize::try_from(limits.search_bytes()).unwrap_or(usize::MAX);
         let discovery = Discovery::start(startup.home, limits.discovery())?;
         let model = limits.model();
         let start = Duration::from_millis(limits.library().start_ms.into());
@@ -148,7 +151,7 @@ impl Monitor {
             router: Router::new(prefix),
             introduction,
             registry: Registry::new(own_session()),
-            selector: Selector::default(),
+            selector: Selector::new(prefix, hints, search),
             discovery,
             supervisor,
             selected: None,
@@ -365,6 +368,7 @@ impl Monitor {
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
             self.report(&id, event, now);
         }
+        self.selector.update(&self.registry.rows());
         self.initialise();
     }
 
@@ -449,8 +453,8 @@ impl Monitor {
         self.submit(typed);
         match routed {
             Routed::Action(action) => Ok(self.action(action)),
-            Routed::Key(key) => self.modal(&key).map(|()| None),
             Routed::Unknown(..) | Routed::Rest(_) => Ok(None),
+            input => self.modal(&input).map(|()| None),
         }
     }
 
@@ -495,21 +499,23 @@ impl Monitor {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
             Action::SessionList if !self.introduction.is_open() => {
-                self.selector.open(&self.registry.rows());
+                let area = self.screen.overlay();
+                self.selector
+                    .open(&self.registry.rows(), self.selected.as_ref(), area);
             }
             _ => {}
         }
         None
     }
 
-    /// A key no application takes goes to [`Monitor::modal_key`]. When it
+    /// Input no application takes goes to [`Monitor::modal_input`]. When it
     /// closes the last modal, the uncovered session is painted at once, so
     /// the rest of the same read meets the screen now in force and a key
     /// typed straight after Escape reaches the session (owner decision on
     /// #109). Nothing is kept beyond the read.
-    fn modal(&mut self, key: &Key) -> io::Result<()> {
+    fn modal(&mut self, input: &Routed) -> io::Result<()> {
         let covered = self.covered();
-        self.modal_key(key);
+        self.modal_input(input);
         if revealed(covered, self.covered()) {
             return self.show();
         }
@@ -521,26 +527,35 @@ impl Monitor {
         screen::covered(&self.selector, &self.introduction)
     }
 
-    /// A key no application takes goes to the key introduction while it is
+    /// Input no application takes goes to the key introduction while it is
     /// open, otherwise to the open selector; outside them the take-control
-    /// key takes control, and any other key is discarded, never kept for
+    /// key takes control, and anything else is discarded, never kept for
     /// later. Inside a modal the take-control key does nothing.
-    fn modal_key(&mut self, key: &Key) {
+    fn modal_input(&mut self, input: &Routed) {
         if self.introduction.is_open() {
-            self.introduction.key(key);
+            self.introduction_input(input);
         } else if self.selector.is_open() {
-            self.selector_key(key);
+            self.selector_input(input);
         } else if self
             .take_control
-            .is_some_and(|byte| *key == Key::Bytes(vec![byte]))
+            .is_some_and(|byte| *input == Routed::Key(Key::Bytes(vec![byte])))
         {
             self.take_control();
         }
     }
 
-    /// A key for the open selector; Enter acts on the row it chose.
-    fn selector_key(&mut self, key: &Key) {
-        if let Some(id) = self.selector.key(key, &self.registry.rows()) {
+    /// The key introduction takes keys only: pastes and mouse reports are
+    /// discarded while it is open.
+    fn introduction_input(&mut self, input: &Routed) {
+        if let Routed::Key(key) = input {
+            self.introduction.key(key);
+        }
+    }
+
+    /// Input for the open selector; Enter acts on the row it chose.
+    fn selector_input(&mut self, input: &Routed) {
+        let area = self.screen.overlay();
+        if let Some(id) = self.selector.input(input, &self.registry.rows(), area) {
             self.enter(id);
         }
     }

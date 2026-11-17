@@ -12,7 +12,8 @@ over a selector. The basic [selector](../GLOSSARY.md#attachment-and-control) of
 [#106](https://github.com/jackgeek/climon2/issues/106) is implemented: prefix+s
 overlays the captionless double border with status and title columns and a
 reversed highlight, Up and Down move it without wrapping, and Escape closes
-it, without resizing an application or acquiring anything. Rows show the
+it, without resizing an application or acquiring anything (#113 adds the
+search, separator and footer below). Rows show the
 effective status their daemons report (Needs attention, Acknowledged,
 Running, Idle), Succeeded or Failed with the exact exit code or signal, or a
 not-connected label (Starting, Unavailable or Disconnected), and list in the
@@ -35,9 +36,15 @@ go to it at once. Enter selects the highlighted row
 known to be final is acquired, and a Starting row or an Unavailable row
 without a connected client is selected without acquiring
 ([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
-final rows wait for [#116](https://github.com/jackgeek/climon2/issues/116). Nothing else this
-document specifies is implemented: no search or separator, key-hint
-footer, Delete, toasts or bell. Initial selection
+final rows wait for [#116](https://github.com/jackgeek/climon2/issues/116). The full selector of
+[#113](https://github.com/jackgeek/climon2/issues/113) is implemented: the
+always-focused search with its separator, `SkimMatcherV2` ordered-subsequence
+matching in row order, typed and pasted search text within `ui.search_bytes`,
+Up/Down/PageUp/PageDown without wrapping, the highlight rules for edits and
+live updates, row clicks, the wheel, cancelling by a click outside the box
+(owner decision on #113), and the key-hint footer, which names only select,
+cancel and help (owner decision on #113). Nothing else this document
+specifies is implemented: no Delete, toasts or bell. Initial selection
 ([#266](https://github.com/jackgeek/climon2/issues/266)) selects and
 acquires a row at startup without closing an open selector or moving its
 highlight.
@@ -61,6 +68,12 @@ prefix:
 | prefix+x | Exit the monitor |
 | prefix+s | Open the session list |
 | prefix+? | Show this dialog |
+
+Below them it lists the selector's own keys under **In the session list**:
+typing or pasting to search, the search's editing keys, Up/Down/PageUp/PageDown,
+the select and cancel keys (as the footer names them), clicking a row or
+outside the box, and the wheel (owner decision on #113: the footer names only
+select, cancel and help, and help lists everything else).
 
 Provide an initially unchecked **Don't show again** checkbox. Persist the
 selected preference separately from the user's configuration, per climon2 home
