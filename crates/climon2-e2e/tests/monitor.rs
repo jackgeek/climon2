@@ -2331,11 +2331,20 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
 /// breaking ties; each start waits for the one before it to open or fail.
 /// The fake daemons are the oracle: each records a client (a peer that sends
 /// Open after the hello, which a probe never does) before hanging up on it.
+/// Each failed client's passive retry (#116) waits a minute, beyond the
+/// test, so the oracle hears the four first starts and nothing after them
+/// however slowly the test reads it.
 #[test]
 fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
     let package = Package::new();
     without_introduction(&package);
-    limits_config(&package, serde_json::json!({"scheduling": {"starts": 1}}));
+    limits_config(
+        &package,
+        serde_json::json!({
+            "scheduling": {"starts": 1},
+            "retry": {"initial_ms": 60_000, "cap_ms": 60_000},
+        }),
+    );
     let ids = [
         (
             "0d5c0000-0000-4000-8000-0000000000a2",
