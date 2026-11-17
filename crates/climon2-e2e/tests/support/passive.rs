@@ -20,6 +20,8 @@ pub const UNSUPPORTED_OPERATION: u64 = 3;
 pub const INVALID_REQUEST_ID: u64 = 4;
 pub const FULL: u64 = 5;
 pub const CLOSED: u64 = 6;
+pub const UNSUPPORTED_LIMIT: u64 = 9;
+pub const RESOURCE_LIMIT: u64 = 10;
 /// `CM1_RELEASE_MISMATCH`.
 pub const RELEASE_MISMATCH: u64 = 14;
 pub const ORIGIN_LIBRARY: u64 = 1;

@@ -8,7 +8,9 @@ passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93
 control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 status, viewing and acknowledgement ([#95](https://github.com/jackgeek/climon2/issues/95)),
 termination: Kill, Command final and their terminal evidence
-([#96](https://github.com/jackgeek/climon2/issues/96)), and the validation of
+([#96](https://github.com/jackgeek/climon2/issues/96)), the snapshot's
+measurements, counters, limits and deadlines
+([#99](https://github.com/jackgeek/climon2/issues/99)), and the validation of
 the bootstrap and description before create by the shared loader
 ([#84](https://github.com/jackgeek/climon2/issues/84)).** The
 shipped [client library](../../../GLOSSARY.md#sessions)
@@ -504,7 +506,9 @@ The Library-layer tests for
 [notifications and progress](../../../crates/climon2-e2e/README.md#library-layer-notifications-and-progress-testsnotificationsrs-98)
 ([#98](https://github.com/jackgeek/climon2/issues/98)) and for
 [termination](../../../crates/climon2-e2e/README.md#library-layer-termination-teststerminationrs-96)
-([#96](https://github.com/jackgeek/climon2/issues/96)) are the evidence for
+([#96](https://github.com/jackgeek/climon2/issues/96)) and for
+[limits and accounting](../../../crates/climon2-e2e/README.md#library-layer-limits-and-accounting-testslimitsrs-99)
+([#99](https://github.com/jackgeek/climon2/issues/99)) are the evidence for
 this section.
 
 - **Description.** `capabilities` lists exactly the families the library
@@ -550,6 +554,8 @@ this section.
   restarting each time a waiting record is queued; on expiry the connection
   fails with library `delivery_stalled`, retry passive
   ([owner decision on #94](https://github.com/jackgeek/climon2/issues/94)),
+  whose message states how many records were still undelivered, waiting
+  for room ([#99](https://github.com/jackgeek/climon2/issues/99)),
   and the requests it held back stay unanswered. Once nothing waits, request deadlines apply again.
 - **Open.** The session metadata, read up to `client_bytes`, must name the
   startup's session (`invalid_configuration`) and release
@@ -716,6 +722,42 @@ this section.
   against the wire's rules. Every
   connection, a Kill's included, is closed before terminal evidence is
   published.
+- **Limits and measurements** ([#99](https://github.com/jackgeek/climon2/issues/99)).
+  Create also refuses, with `CM1_UNSUPPORTED_LIMIT`, a progress reserve
+  (`progress_bytes`, `progress_records`) that is not smaller than the
+  event allowance it is reserved inside, and a `client_bytes` below the
+  sum of the described instance allocation, `request_bytes`, `event_bytes`
+  and one `wire_frame_bytes` frame. The reserve is protected progress:
+  Responses, Initial metadata, Status changed, Command final, Control
+  granted and revoked, Restoration begin and complete and diagnostics may
+  use the whole event allowance, while ordinary work (Display, Title
+  changed, Notification, Progress changed and Geometry records, and the
+  outcome room `submit` reserves for each accepted request) may use only
+  the allowance less the reserve. A record never overtakes an earlier one
+  waiting for room. A restoration is timed from its Restoration begin
+  until its Restoration complete, or a revocation: it fails the connection
+  with library `timeout`, retry passive, when no Display of it is queued
+  within `restoration_stall_ms` (each queued Display restarts that
+  deadline) or when it has not completed within `restoration_total_ms`.
+  An allocation that fails at run time may abort the process, as a native
+  fault does. `snapshot` reports `input_bytes_accepted`, the bytes
+  of every Input `submit` accepted, counted at acceptance (a rejected
+  Input counts nothing); `display_bytes_delivered`, the bytes of every
+  Display record drained; `records_drained`; and `deliveries_released`.
+  Each grows by checked addition and never wraps: it may reach
+  18,446,744,073,709,551,615, and one that would pass it makes every later
+  `snapshot` `CM1_RESOURCE_LIMIT` (`resource_limit`) with its output
+  cleared, while submission, draining, release and shutdown go on. Public
+  request IDs end at the same value: after it, every ID is
+  `invalid_request_id`. The library numbers each connection's wire
+  requests from one; a request that would need an ID past the last is
+  refused before it is sent with library `resource_limit` and consumes no
+  ID: a command or an explicit Leave is `CM1_REJECTED` and the role goes
+  on, and shutdown's own Leave ends the stream with Leave failed and that
+  error. A Leave concludes the stream (no retry) only once it is sent.
+  No descriptor left in the process (`EMFILE` or `ENFILE`) while reading
+  the session metadata or connecting is library `resource_limit`, retry
+  passive, rather than an unreadable file or an unreachable daemon.
 - **Signals.** Sending never raises `SIGPIPE` in the embedding process.
 
 ## Required runtime evidence

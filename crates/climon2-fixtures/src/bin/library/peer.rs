@@ -31,7 +31,8 @@
 //! `{"together": [action, ...]}` (several actions' bytes in one write),
 //! `{"bytewise": action}` (an action's bytes one at a time),
 //! `{"wait": "<path>"}` (until that file exists, bounded; an expired wait is
-//! recorded as `wait_expired`),
+//! recorded as `wait_expired`), `{"pause_ms": n}` (let `n` milliseconds
+//! pass, for the library's deadlines to measure, #99),
 //! `"close"` (recorded as `closed` once the connection is dropped), or
 //! `"hold"` (stop answering; keep the connection until the library closes
 //! it).
@@ -385,6 +386,10 @@ impl Serving {
             action => {
                 if let Some(path) = action["wait"].as_str() {
                     self.wait(path);
+                    return Next::Continue;
+                }
+                if let Some(pause) = action["pause_ms"].as_u64() {
+                    thread::sleep(Duration::from_millis(pause));
                     return Next::Continue;
                 }
                 let bytewise = action.get("bytewise").is_some();

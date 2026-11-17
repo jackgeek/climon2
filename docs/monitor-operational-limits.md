@@ -19,7 +19,11 @@ connections it also enforces its request and event queues, outstanding
 operations and their outcome reserves, deliveries, drain ceilings,
 `wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
 `leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)), and
-`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)). The
+`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)). It
+keeps the progress reserve inside the event allowance for protected
+progress, bounds each restoration by `restoration_stall_ms` and
+`restoration_total_ms`, and never wraps its snapshot counters or wire
+request IDs ([#99](https://github.com/jackgeek/climon2/issues/99)). The
 session daemon keeps revision-1 connections within its own existing bounds,
 emits frames, titles and metadata records within the derived release
 constants, and never wraps request IDs, control periods or restoration IDs

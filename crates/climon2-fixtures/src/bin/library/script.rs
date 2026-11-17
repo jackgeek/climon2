@@ -39,6 +39,8 @@
 //!   test creates `path`, so later steps follow what the test does outside
 //!   the host, such as attaching an ordinary client (#102);
 //! - `await_peer` until it received `frames` frames;
+//! - `limit_descriptors` so that exactly `free` more descriptors can be
+//!   created in the host, until `restore_descriptors` (#99);
 //! - `destroy` on the owner thread, ahead of `finish` (#96);
 //! - `finish`: run's report, drains to terminal evidence, handle releases,
 //!   destroy and join.
@@ -85,6 +87,8 @@ struct Instance {
 struct World<'a> {
     setup: &'a Setup,
     instances: BTreeMap<String, Instance>,
+    /// The descriptor limit before `limit_descriptors`, until restored.
+    descriptors: Option<libc::rlimit>,
 }
 
 pub fn script(setup: &Setup) -> Value {
@@ -95,6 +99,7 @@ pub fn script(setup: &Setup) -> Value {
     let mut world = World {
         setup,
         instances: BTreeMap::new(),
+        descriptors: None,
     };
     let steps = setup.input["steps"].as_array().expect("steps");
     let started = Instant::now();
@@ -140,6 +145,15 @@ impl World<'_> {
             "clock" => return clock(step),
             "await_file" => return await_file(step),
             "probe" => return hello_state(Path::new(step["socket"].as_str().expect("a socket"))),
+            "limit_descriptors" => {
+                let free = step["free"].as_u64().expect("a count") as usize;
+                self.descriptors = Some(probe::limit_descriptors(free));
+                return json!("limited");
+            }
+            "restore_descriptors" => {
+                probe::restore_descriptors(self.descriptors.take().expect("a limit"));
+                return json!("restored");
+            }
             _ => {}
         }
         let instance = self.instances.get_mut(&name).expect("a created instance");
