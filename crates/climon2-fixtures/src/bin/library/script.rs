@@ -58,7 +58,7 @@ use super::{
 };
 use climon2_core::{
     native,
-    protocol::{self, HelloRequest},
+    protocol::{self, ClientMessage},
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -500,7 +500,7 @@ fn hello_state(socket: &Path) -> Value {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .expect("a read timeout");
-    let hello = HelloRequest {
+    let hello = ClientMessage::Hello {
         protocol: protocol::PROTOCOL_VERSION,
     }
     .to_frame()

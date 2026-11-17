@@ -13,8 +13,8 @@ at `Geometry::LARGEST`, to check that its limits hold one session's model
 The [#63 terminal contract](../../docs/protocol/terminal-integration.md) has
 the monitor paint each session with Ratatui from
 [read-only views](#read-only-views) of its model (#83). They are Rust types,
-not a native cross-release cell schema, and the monitor does not paint from
-them yet (#108, #112). The daemon remains the sole query authority; the
+not a native cross-release cell schema; the monitor paints its selected
+session from them (#108). The daemon remains the sole query authority; the
 monitor never forwards parser replies or session bytes directly to its host.
 
 **Implemented ([#89](https://github.com/jackgeek/climon2/issues/89)):** the
@@ -83,8 +83,7 @@ host Direct/Derived presentation below is unchanged.
 - `Vt::grant(&mut presentation) -> (phase A, Restoration)` takes the
   snapshot point; `Vt::produce(&mut restoration, &mut presentation, budget)
   -> Chunk { bytes, done }` yields whole history rows up to about `budget`
-  bytes, then the screen suffix. Commit Restoration complete after the `done`
-  chunk.
+  bytes, then the screen suffix. Commit `RestoreEnd` after the `done` chunk.
 - `Vt::canonical(&mut presentation) -> (phase A, Restoration)` takes the
   snapshot point of a canonical restoration, produced the same way: the
   session at its own geometry for a fresh terminal of exactly that size,
@@ -98,7 +97,7 @@ host Direct/Derived presentation below is unchanged.
   geometry, so live output for it stays Direct; a monitor-mode connection
   parses each restoration into a fresh model.
 - `Vt::derive(&mut presentation)`: the live update for a Derived controller
-  after Restoration complete; empty when nothing changed.
+  after `RestoreEnd`; empty when nothing changed.
 - `Vt::present(&mut presentation, host_cols, host_rows)`: after a ready
   controller's resize, the repaint (or nothing, Direct to Direct) that must
   precede further live output.

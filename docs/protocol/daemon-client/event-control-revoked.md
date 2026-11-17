@@ -48,7 +48,7 @@ an [attachment](../../../GLOSSARY.md#attachment-and-control), interactive or a
 [passive monitor connection](../../../GLOSSARY.md#attachment-and-control) its
 Acquire or a [promotion](../../../GLOSSARY.md#attachment-and-control) converted,
 whose control ends while the attachment stays: with reason `takeover` when
-another attachment attaches or takes control, and with
+another attachment, of either protocol, attaches or takes control, and with
 reason `session_ending` when the session ends while it still controls, just
 before its stream closes. Each time, the
 [release](../../../GLOSSARY.md#restoration-and-presentation) of its

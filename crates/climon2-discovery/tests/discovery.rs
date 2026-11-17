@@ -5,10 +5,9 @@ use climon2_core::{
     hello::{Lifecycle, SessionState},
     layout::HomeLayout,
     metadata::{LinuxProcessIdentity, SessionMetadata},
-    protocol::{HANGUP_GRACE, HELLO_TIMEOUT, HelloRequest, read_frame, write_frame},
-    wire::{
-        self, ControlRecord, Counter, Families, FrameLimit, Geometry, Kill, Leave, Mode, Open,
-        Outcome as WireOutcome, Ready, Requested, Response, ServerMessage, Success,
+    protocol::{
+        ClientMessage, HANGUP_GRACE, HELLO_TIMEOUT, ServerMessage, TerminalSize, read_frame,
+        write_frame,
     },
 };
 use climon2_discovery::{
@@ -118,38 +117,12 @@ fn resolved(isolation: &Isolation) -> HomeLayout {
     layout(&runtime::canonical_home(resolved.root()).unwrap())
 }
 
-/// The daemon's release-constant revision-1 frame limit.
-fn limit() -> FrameLimit {
-    FrameLimit::new(1_048_576).unwrap()
-}
-
-fn counter(value: u64) -> Counter {
-    Counter::new(value).unwrap()
-}
-
-fn none() -> Families {
-    Families::new(Vec::new()).unwrap()
-}
-
-/// Sends a daemon wire revision 1 request.
-fn send(stream: &mut UnixStream, request: &impl ControlRecord) {
-    wire::write_frame(stream, &request.to_frame(), limit()).unwrap();
+fn send(stream: &mut UnixStream, message: ClientMessage) {
+    write_frame(stream, &message.to_frame().unwrap()).unwrap();
 }
 
 fn receive(stream: &mut UnixStream) -> ServerMessage {
-    let frame = wire::read_frame(stream, limit()).unwrap().unwrap();
-    ServerMessage::from_frame(&frame).unwrap()
-}
-
-/// Waits for the Response to request `request_id`.
-fn response(stream: &mut UnixStream, request_id: u64) -> Response {
-    loop {
-        if let ServerMessage::Response(response) = receive(stream)
-            && response.request_id == counter(request_id)
-        {
-            return response;
-        }
-    }
+    ServerMessage::from_frame(read_frame(stream).unwrap()).unwrap()
 }
 
 fn hello(socket: &Path) -> UnixStream {
@@ -157,48 +130,35 @@ fn hello(socket: &Path) -> UnixStream {
     stream
         .set_read_timeout(Some(HANGUP_GRACE + Duration::from_secs(5)))
         .unwrap();
-    let hello = HelloRequest { protocol: 1 }.to_frame().unwrap();
-    write_frame(&mut stream, &hello).unwrap();
-    read_frame(&mut stream).unwrap();
+    send(&mut stream, ClientMessage::Hello { protocol: 1 });
+    assert!(matches!(receive(&mut stream), ServerMessage::Hello(_)));
     stream
 }
 
-/// Opens an interactive attachment at 80x24 and confirms its restoration,
-/// so this connection controls the session.
+/// Attaches and finishes restoration, so this connection controls the session.
 fn attach(socket: &Path) -> UnixStream {
     let mut stream = hello(socket);
-    let dimension = |value| std::num::NonZeroU32::new(value).unwrap();
-    let open = Open {
-        request_id: counter(1),
-        revision: 1,
-        capabilities: Requested::new(none(), none()).unwrap(),
-        mode: Mode::Interactive(Geometry {
-            cols: dimension(80),
-            rows: dimension(24),
-        }),
-    };
-    send(&mut stream, &open);
+    send(
+        &mut stream,
+        ClientMessage::Attach(TerminalSize { cols: 80, rows: 24 }),
+    );
+    assert_eq!(receive(&mut stream), ServerMessage::Attached);
     loop {
-        if let ServerMessage::RestorationComplete(complete) = receive(&mut stream) {
-            let ready = Ready {
-                request_id: counter(2),
-                authority: complete.authority,
-            };
-            send(&mut stream, &ready);
-            return stream;
+        match receive(&mut stream) {
+            ServerMessage::Granted { .. } | ServerMessage::Output(_) => {}
+            ServerMessage::RestoreEnd { period } => {
+                send(&mut stream, ClientMessage::Ready { period });
+                return stream;
+            }
+            other => panic!("unexpected restoration frame: {other:?}"),
         }
     }
 }
 
-/// An explicit detach (Leave) leaves the session running without a client.
+/// An explicit detach leaves the session running without a client.
 fn detach(mut stream: UnixStream) {
-    send(
-        &mut stream,
-        &Leave {
-            request_id: counter(3),
-        },
-    );
-    response(&mut stream, 3);
+    send(&mut stream, ClientMessage::Detach);
+    while receive(&mut stream) != ServerMessage::Detached {}
 }
 
 /// A real session daemon running `/bin/cat`, so it lives until killed.
@@ -263,18 +223,13 @@ impl Daemon {
 fn kill(daemons: [Daemon; 2]) {
     let killers = daemons.each_ref().map(|daemon| {
         let mut killer = hello(&daemon.socket);
-        let kill = Kill {
-            request_id: counter(1),
-            revision: 1,
-            required_capabilities: none(),
-        };
-        send(&mut killer, &kill);
+        send(&mut killer, ClientMessage::Kill);
         killer
     });
     for (mut daemon, mut killer) in daemons.into_iter().zip(killers) {
         assert!(matches!(
-            response(&mut killer, 1).outcome,
-            WireOutcome::Ok(Success::Termination { .. })
+            receive(&mut killer),
+            ServerMessage::Terminated { .. }
         ));
         // The daemon is reaped even when it fails the assertion, so `Drop` must not signal or
         // wait for it again.

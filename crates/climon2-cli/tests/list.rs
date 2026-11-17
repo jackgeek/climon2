@@ -191,7 +191,7 @@ fn refusing_socket(path: &str) {
 /// exchanges.
 #[test]
 fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
-    use climon2_core::protocol::read_frame;
+    use climon2_core::protocol::{Frame, read_frame, write_frame};
     let home = tempfile::tempdir().unwrap();
     let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
     let pid = child.id();
@@ -213,10 +213,7 @@ fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
         let worker = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             read_frame(&mut socket).unwrap();
-            let length = u32::try_from(body.len() + 1).unwrap();
-            socket.write_all(&length.to_be_bytes()).unwrap();
-            socket.write_all(&[type_code]).unwrap();
-            socket.write_all(&body).unwrap();
+            write_frame(&mut socket, &Frame::new(type_code, body).unwrap()).unwrap();
         });
         assert!(discover(home.path()).unwrap().is_empty());
         worker.join().unwrap();
@@ -296,12 +293,8 @@ fn list_created_column_uses_the_local_timezone() {
 /// version companions.
 #[test]
 fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
-    use climon2_core::{
-        protocol::{HelloRequest, read_frame, write_frame},
-        wire::{
-            self, ControlRecord, Counter, Families, FrameLimit, Geometry, Mode, Open, Ready,
-            Requested, ServerMessage,
-        },
+    use climon2_core::protocol::{
+        ClientMessage, ServerMessage, TerminalSize, read_frame, write_frame,
     };
     use climon2_platform::daemon::{self, Readiness};
     use climon2_test_term::{Isolation, bin_path};
@@ -355,28 +348,26 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     controller
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    let hello = HelloRequest { protocol: 1 }.to_frame().unwrap();
-    write_frame(&mut controller, &hello).unwrap();
-    read_frame(&mut controller).unwrap();
-    // An interactive Open over daemon wire revision 1 attaches at 80x24.
-    let limit = FrameLimit::new(1_048_576).unwrap();
-    let none = || Families::new(Vec::new()).unwrap();
-    let dimension = |value| std::num::NonZeroU32::new(value).unwrap();
-    let open = Open {
-        request_id: Counter::new(1).unwrap(),
-        revision: 1,
-        capabilities: Requested::new(none(), none()).unwrap(),
-        mode: Mode::Interactive(Geometry {
-            cols: dimension(80),
-            rows: dimension(24),
-        }),
-    };
-    wire::write_frame(&mut controller, &open.to_frame(), limit).unwrap();
-    let mut next = || {
-        let frame = wire::read_frame(&mut controller, limit).unwrap().unwrap();
-        ServerMessage::from_frame(&frame).unwrap()
-    };
-    assert!(matches!(next(), ServerMessage::Response(_)));
+    write_frame(
+        &mut controller,
+        &ClientMessage::Hello { protocol: 1 }.to_frame().unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap(),
+        ServerMessage::Hello(_)
+    ));
+    write_frame(
+        &mut controller,
+        &ClientMessage::Attach(TerminalSize { cols: 80, rows: 24 })
+            .to_frame()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap(),
+        ServerMessage::Attached
+    );
     let live = climon2_cli::list::discover_live(&home).unwrap();
     assert_eq!(live.len(), 1);
     let capabilities = live[0].extensions.capabilities.valid().unwrap();
@@ -406,27 +397,21 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
         json[0]["state"],
         serde_json::json!({"lifecycle":"attached","attachments":1,"controlled":true})
     );
-    // The controller confirms its restoration and receives the exit.
-    let mut request_id = 1;
     loop {
-        let frame = wire::read_frame(&mut controller, limit).unwrap().unwrap();
-        match ServerMessage::from_frame(&frame).unwrap() {
-            ServerMessage::RestorationComplete(complete) => {
-                request_id += 1;
-                let ready = Ready {
-                    request_id: Counter::new(request_id).unwrap(),
-                    authority: complete.authority,
-                };
-                wire::write_frame(&mut controller, &ready.to_frame(), limit).unwrap();
+        match ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap() {
+            ServerMessage::Output(_) | ServerMessage::Granted { .. } => (),
+            ServerMessage::RestoreEnd { period } => {
+                write_frame(
+                    &mut controller,
+                    &ClientMessage::Ready { period }.to_frame().unwrap(),
+                )
+                .unwrap();
             }
-            ServerMessage::CommandFinal(result) => {
-                assert_eq!(
-                    result.command_result(),
-                    &wire::CommandResult::Exit { code: 7 }
-                );
+            ServerMessage::Exit { code } => {
+                assert_eq!(code, 7);
                 break;
             }
-            _ => (),
+            message => panic!("unexpected controlling message: {message:?}"),
         }
     }
     drop(controller);

@@ -1,5 +1,5 @@
 use crate::control::{Authority, Target};
-use climon2_core::protocol::TerminalSize;
+use climon2_core::protocol::{MAX_DATA_FRAME_LENGTH, TerminalSize};
 use climon2_vt::{Mode, Presentation, Restoration, Vt};
 use std::time::{Duration, Instant};
 
@@ -8,8 +8,7 @@ pub(super) const LIVE_LIMIT: usize = 16 * 1024 * 1024;
 const RESTORE_WINDOW: usize = 1024 * 1024;
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
 const RESTORE_RATE: usize = 4 * 1024 * 1024;
-/// The terminal bytes one Display carries at most.
-pub(super) const DISPLAY_CHUNK: usize = 65_535;
+const FRAME_BUDGET: usize = MAX_DATA_FRAME_LENGTH - 1;
 
 /// What a delivery pass commits to the attachment, in order.
 #[derive(Debug, PartialEq, Eq)]
@@ -191,7 +190,7 @@ impl Delivery {
         let Some(restoration) = &mut granted.restoration else {
             return;
         };
-        let chunk = vt.produce(restoration, &mut self.presentation, DISPLAY_CHUNK);
+        let chunk = vt.produce(restoration, &mut self.presentation, FRAME_BUDGET);
         granted.prefix_bytes += chunk.bytes.len();
         out.push(Out::Prefix(chunk.bytes));
         if chunk.done {

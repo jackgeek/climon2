@@ -74,8 +74,8 @@ make an otherwise matching session stale. They are not silently treated as
 valid support.
 
 A snapshot can become outdated immediately. It does not [grant](../../../GLOSSARY.md) control or promise
-future successful attachment. The [post-hello boundary](post-hello.md)
-describes what follows hello: daemon wire revision 1 only.
+future successful attachment. Use the [post-hello decision boundary](post-hello.md)
+to distinguish the private implementation from the agreed wire revision.
 
 This implemented `state` object does not contain the planned
 [activity/attention status or its UTC change timestamp](../../session-status.md).
@@ -119,8 +119,8 @@ tokens and `state`: `daemon-wire-v1`, `monitor-v1`, `title-v1`,
 1,048,576, the release constant from the
 [operational limits](../../monitor-operational-limits.md#payloads-and-parser-state).
 It advertises only the families it implements, which are now all seven. The
-[post-hello boundary](post-hello.md#after-hello) explains that every frame
-after hello is then a revision-1 frame.
+[post-hello boundary](post-hello.md#choosing-a-protocol) explains how the
+first frame after hello then chooses a protocol.
 Existing optional-field behavior and required fields remain frozen;
 this is not permission to apply post-hello strict unknown-field rejection to
 hello. Optional family meanings are in the

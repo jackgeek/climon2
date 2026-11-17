@@ -7,7 +7,7 @@
 //! folder, and answers as a revision-1 peer whose frames are written here by
 //! hand from the wire reference, never by the code under test.
 
-use climon2_core::protocol::{HelloRequest, PROTOCOL_VERSION, read_frame};
+use climon2_core::protocol::{ClientMessage, PROTOCOL_VERSION, read_frame};
 use climon2_fixtures::stand_in;
 use climon2_test_term::{client_library_path, copy_executable, process_command};
 use serde_json::{Value, json};
@@ -119,8 +119,8 @@ impl Peer {
         assert_eq!(
             read_frame(&mut stream)
                 .ok()
-                .map(|frame| HelloRequest::from_frame(&frame).unwrap()),
-            Some(HelloRequest {
+                .map(|frame| ClientMessage::from_frame(frame).unwrap()),
+            Some(ClientMessage::Hello {
                 protocol: PROTOCOL_VERSION
             })
         );
@@ -395,8 +395,8 @@ fn a_silent_hello_fails_at_the_hello_deadline_without_sending_the_kill() {
     assert_eq!(
         read_frame(&mut stream)
             .ok()
-            .map(|frame| HelloRequest::from_frame(&frame).unwrap()),
-        Some(HelloRequest {
+            .map(|frame| ClientMessage::from_frame(frame).unwrap()),
+        Some(ClientMessage::Hello {
             protocol: PROTOCOL_VERSION
         })
     );

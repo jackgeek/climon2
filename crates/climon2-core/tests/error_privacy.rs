@@ -1,7 +1,7 @@
 //! #25/#34 diagnostics must not leak supplied command or environment contents.
 use climon2_core::{
     metadata::SessionMetadata,
-    protocol::{Frame, HelloRequest},
+    protocol::{ClientMessage, Frame},
 };
 use std::path::Path;
 
@@ -17,9 +17,9 @@ fn malformed_metadata_and_control_errors_do_not_echo_external_values() {
     )
     .unwrap_err();
     assert!(!error.to_string().contains(secret), "{error}");
-    let body = serde_json::json!({ "protocol": secret });
+    let body = serde_json::json!({"cols":secret,"rows":24});
     let error =
-        HelloRequest::from_frame(&Frame::new(0x01, serde_json::to_vec(&body).unwrap()).unwrap())
+        ClientMessage::from_frame(Frame::new(0x10, serde_json::to_vec(&body).unwrap()).unwrap())
             .unwrap_err();
     assert!(!error.to_string().contains(secret), "{error}");
 }

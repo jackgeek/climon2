@@ -6,12 +6,17 @@ not implementation or executed acceptance evidence.** The
 [monitor](../GLOSSARY.md#sessions) is the walking skeleton of
 [#74](https://github.com/jackgeek/climon2/issues/74) with discovery, passive
 clients and the basic selector of
-[#106](https://github.com/jackgeek/climon2/issues/106) and the row statuses,
+[#106](https://github.com/jackgeek/climon2/issues/106), the row statuses,
 final outcomes and status order of
-[#107](https://github.com/jackgeek/climon2/issues/107), whose Monitor-layer
-cases are mapped in the monitor README; initial selection, moved from #107
-to [#266](https://github.com/jackgeek/climon2/issues/266), is not
-implemented. Packaged
+[#107](https://github.com/jackgeek/climon2/issues/107), the selection,
+control and painting of [#108](https://github.com/jackgeek/climon2/issues/108),
+the input router of [#109](https://github.com/jackgeek/climon2/issues/109) and
+the switching, revocation and take-control key of
+[#110](https://github.com/jackgeek/climon2/issues/110),
+and the initial selection of
+[#266](https://github.com/jackgeek/climon2/issues/266), moved there from
+#107, whose Monitor-layer cases are mapped in the monitor README.
+The daemon wire is partly implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
 local instance lifecycle
@@ -28,11 +33,7 @@ executable cases, and for ordinary attach
 ([#101](https://github.com/jackgeek/climon2/issues/101)), the COM-01 Monitor
 parity case, with its derived viewing and acknowledgement
 ([#102](https://github.com/jackgeek/climon2/issues/102)), the STA-08
-ordinary-attach case. Session daemons speak only the frozen hello and daemon
-wire revision 1 since the private post-hello protocol was retired
-([#104](https://github.com/jackgeek/climon2/issues/104)), the COM-01
-Contract after retirement case, mapped in the core, daemon and packaged-test
-READMEs. The Library layer's
+ordinary-attach case. The Library layer's
 [second-release fixture](../GLOSSARY.md#testing)
 ([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
 libraries in one process, against sessions of each release's own daemon, for

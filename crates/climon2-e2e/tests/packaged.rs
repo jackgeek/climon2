@@ -510,11 +510,9 @@ fn installed_log_headers_links_and_filters_survive_exec_handoffs() {
     }
 }
 
-/// #19/#20/#38 and COM-01 (Contract after retirement): a slow pre-hello
-/// peer plus invalid framing on unrelated raw sockets cannot starve the
-/// actual installed client's input/output or the installed list's
-/// concurrent probe. No raw peer becomes a controlling client, and the peer
-/// that never sends a hello is closed at its deadline without a byte.
+/// #19/#20/#38: a slow pre-hello peer plus invalid framing on unrelated raw
+/// sockets cannot starve the actual installed client's input/output or the
+/// installed list's concurrent probe. No raw peer becomes a controlling client.
 #[test]
 fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     use std::io::{Read, Write};
@@ -549,7 +547,11 @@ fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     terminal.wait_for_text("54-still-live", TIMEOUT).unwrap();
     let mut response = Vec::new();
     pending.read_to_end(&mut response).unwrap();
-    assert_eq!(response, b"", "the pending peer was answered");
+    let frame = climon2_core::protocol::read_frame(&mut response.as_slice()).unwrap();
+    assert!(matches!(
+        climon2_core::protocol::ServerMessage::from_frame(frame).unwrap(),
+        climon2_core::protocol::ServerMessage::Error { .. }
+    ));
     drop(pending);
     terminal.send("exit 0\n").unwrap();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);

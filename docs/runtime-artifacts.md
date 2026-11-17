@@ -36,7 +36,7 @@ flowchart TB
         monitor -->|"hello probes for discovery"| daemon
         monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
         client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
-        library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill"| daemon
+        library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
     end
@@ -148,14 +148,21 @@ new sessions, and background clients never take control. Native client crashes
 can terminate the entire monitor. Ratatui draws the permanent top row, the
 body and the basic [selector](../GLOSSARY.md#attachment-and-control).
 
+**Current (#108):** Enter acquires the selected session through its client,
+which relays its control, restorations and display. The monitor parses them
+into its own allocation-bounded `climon2-vt` model per session and paints the
+selected one from `climon2-vt`'s read-only views, below the top row at the
+session's effective geometry; it submits Ready and Resize through the client.
+Session bytes never go directly to the host, and the daemon alone answers
+session queries.
+
 **Planned:** background clients relay negotiated plugin data, and the rest of
 the monitor's terminal integration is agreed, unimplemented.
-The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
-selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with read-only
-Rust views for Ratatui, which `climon2-vt` provides (#83) but the monitor does
-not use yet. Session bytes never go directly to the host;
-daemon query authority stays unique. Monitor-mode daemon presentation uses
+The [agreed terminal contract](protocol/terminal-integration.md), implemented
+for selection and painting (#108), selects exact ordered terminal
+bytes/control/restoration through existing in-process record queues and
+monitor-owned `climon2-vt` models, with read-only Rust views for Ratatui.
+Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
 [promotion](../GLOSSARY.md#attachment-and-control); session daemons already
 serialize it so. Optional core Focus is not
@@ -209,11 +216,9 @@ its diagnostics to a log file of its own in the session-log directory,
 beside the client's,
 `<climon2 home>/logs/<session-id>/library-<UTC second>-<pid>.log`, since
 spec #73 places each instance's library log in its session's log. A missing,
-other-release or faulty library fails before any connection. Session
-daemons speak only the frozen hello and daemon wire revision 1: the
-version-private post-hello protocol is retired
-([#104](https://github.com/jackgeek/climon2/issues/104)), so no artifact
-consumes it.
+other-release or faulty library fails before any connection. The client
+executable no longer speaks the private post-hello protocol, which session
+daemons still serve until its deletion.
 
 **Current (#84):** one validated loader for client libraries is part of
 `climon2-platform`, not a separate artifact; the monitor (#106) and the client
@@ -276,10 +281,9 @@ interactive [attachments](../GLOSSARY.md#attachment-and-control) and
 standalone [Kill](../GLOSSARY.md#attachment-and-control) over it, with the
 command's final result, and passive monitor connections that acquire or
 inherit control with
-[canonical presentation](../GLOSSARY.md#restoration-and-presentation), and
-it is the only protocol they speak after hello. The client library consumes
-it, as the diagram shows; the monitor's consumption through that library
-remains planned.
+[canonical presentation](../GLOSSARY.md#restoration-and-presentation),
+beside the private protocol, but no climon2 executable or library consumes
+it yet, so no arrow changes.
 
 The planned wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over

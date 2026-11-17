@@ -74,8 +74,8 @@ it controls: its restoration chunks, live output, and the
 attachment ends, before
 [Control revoked](event-control-revoked.md) or the [Leave](request-leave.md)
 success. Each frame carries the period and restoration ID of the current
-restoration and at most 65,535 payload bytes, the daemon's Display chunk.
-The daemon never sends an empty Display. Bytes are exact:
+restoration and at most 65,535 payload bytes, the chunk size of the private
+protocol's output. The daemon never sends an empty Display. Bytes are exact:
 the daemon's live-output policy decides what reaches the attachment, as for
 an ordinary attach, and terminal queries are answered by the daemon alone.
 An interactive attachment's bytes are presented for its host, Direct or

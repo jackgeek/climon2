@@ -3,6 +3,7 @@
 //! with the time the monitor observed them; it decides which sessions need a
 //! client and what each row shows. Rows are keyed by full session ID, which
 //! is never shown.
+use crate::terminal::Presentation;
 use climon2_core::{SessionId, metadata::SessionMetadata};
 use std::{cmp::Reverse, collections::BTreeMap, time::SystemTime};
 use unicode_width::UnicodeWidthChar;
@@ -28,6 +29,10 @@ pub(crate) enum ClientEvent {
     Ended,
     /// What the daemon reported about its session.
     Report(Report),
+    /// Control and display, for the session's terminal: never row state.
+    Presentation(Presentation),
+    /// A request's answer, matched to its request by the supervisor.
+    Answer(u64, Result<(), String>),
 }
 
 /// What a daemon reports about its session over a connected client.
@@ -110,8 +115,6 @@ enum Group {
 /// Whether the row has a client, and how far it got.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Connection {
-    /// This monitor's own session: never a client.
-    Own,
     /// No client: discovery has not proven the session live.
     None,
     Starting,
@@ -128,7 +131,6 @@ impl Connection {
     /// Initial metadata reports the status; one without it is Unavailable.
     fn label(&self) -> &'static str {
         match self {
-            Self::Own => "This monitor",
             Self::Starting | Self::Connected { status: true } => "Starting",
             Self::Disconnected => "Disconnected",
             Self::None | Self::Connected { status: false } | Self::Unavailable(_) => "Unavailable",
@@ -212,12 +214,35 @@ impl Row {
         }
     }
 
+    /// Whether the row awaits its client: no status or outcome yet, and a
+    /// client starting or opened with `status-v1`.
+    fn starting(&self) -> bool {
+        let waiting = matches!(
+            self.connection,
+            Connection::Starting | Connection::Connected { status: true }
+        );
+        waiting && self.standing().0 == Group::Disconnected
+    }
+
+    /// What Enter does on this row, and what its canvas shows without a view.
+    fn kind(&self) -> Kind {
+        match (&self.connection, self.ended.is_some()) {
+            (Connection::Disconnected, _) | (_, true) => Kind::Retained,
+            (Connection::Connected { .. }, false) => Kind::Connected,
+            _ => Kind::Unconnected,
+        }
+    }
+
+    /// A report changes what the row shows, a connection event its
+    /// connection; control, display and answers are never row state.
     fn apply(&mut self, event: ClientEvent, now: SystemTime) {
         match event {
-            ClientEvent::Opened { status } => self.connect(Connection::Connected { status }, now),
-            ClientEvent::Unavailable(why) => self.connect(Connection::Unavailable(why), now),
-            ClientEvent::Ended => self.connect(Connection::Disconnected, now),
             ClientEvent::Report(report) => self.learn(report, now),
+            event => {
+                if let Some(connection) = connection(event) {
+                    self.connect(connection, now);
+                }
+            }
         }
     }
 
@@ -241,6 +266,21 @@ impl Row {
             self.title = Some(title);
         }
     }
+}
+
+/// What Enter does on a row (spec #73, "Enter"), and what the canvas
+/// shows for a selected row whose terminal has no view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Kind {
+    /// Connected and not known to be final: selected and acquired, and the
+    /// non-controller placeholder while the monitor does not control it.
+    Connected,
+    /// Starting, or Unavailable with no connected client: selected
+    /// but never acquired, with no terminal content to show.
+    Unconnected,
+    /// Disconnected or known final: its retained history arrives with #116;
+    /// until then Enter ignores it.
+    Retained,
 }
 
 /// One row as the selector shows it. The session ID identifies it and is
@@ -273,9 +313,11 @@ impl Registry {
     }
 
     /// Records a probe's outcome. Returns the session's metadata when it now
-    /// needs a passive client: a live session that has none and is not this
-    /// monitor's. Discovery never changes a client's connection. A session
-    /// proven gone drops its row unless it was ever connected, and adds none.
+    /// needs a passive client: a live session that has none. Discovery never
+    /// changes a client's connection. A session proven gone drops its row
+    /// unless it was ever connected, and adds none; this monitor's own
+    /// session never has a row (owner decision on #110), so it can be
+    /// neither listed nor selected.
     pub(crate) fn discovered(
         &mut self,
         metadata: SessionMetadata,
@@ -283,20 +325,15 @@ impl Registry {
         now: SystemTime,
     ) -> Option<SessionMetadata> {
         let id = metadata.session_id.clone();
-        if matches!(found, Found::Stale) {
+        let own = self.own.as_ref() == Some(&id);
+        if own || matches!(found, Found::Stale) {
             self.rows.retain(|key, row| *key != id || row.connected);
             return None;
         }
-        let own = self.own.as_ref() == Some(&id);
-        let connection = if own {
-            Connection::Own
-        } else {
-            Connection::None
-        };
         let row = self
             .rows
             .entry(id)
-            .or_insert_with(|| Row::new(metadata.clone(), connection, now));
+            .or_insert_with(|| Row::new(metadata.clone(), Connection::None, now));
         let wanted = matches!(found, Found::Live) && row.connection == Connection::None;
         wanted.then(|| {
             row.connect(Connection::Starting, now);
@@ -311,6 +348,11 @@ impl Registry {
         }
     }
 
+    /// What Enter does on `id`'s row, if there is one.
+    pub(crate) fn kind(&self, id: &SessionId) -> Option<Kind> {
+        self.rows.get(id).map(Row::kind)
+    }
+
     /// Records whether the latest pass reached every entry.
     pub(crate) fn pass(&mut self, incomplete: Option<String>) {
         self.incomplete = incomplete;
@@ -323,6 +365,27 @@ impl Registry {
     /// Every row by ordering group, then newest time first, then ascending
     /// full session ID.
     pub(crate) fn rows(&self) -> Vec<View> {
+        self.ordered().into_iter().map(|(_, view)| view).collect()
+    }
+
+    /// The first row in row order that initial selection may take (spec
+    /// #73, "Initial selection"): connected, its status known and not
+    /// final. The own session has no row.
+    pub(crate) fn eligible(&self) -> Option<SessionId> {
+        self.ordered()
+            .into_iter()
+            .find(|(group, _)| matches!(group, Group::Status(_)))
+            .map(|(_, view)| view.id)
+    }
+
+    /// Whether `id`'s row still awaits its client: Starting, also once
+    /// opened with `status-v1` until its status arrives.
+    pub(crate) fn starting(&self, id: &SessionId) -> bool {
+        self.rows.get(id).is_some_and(Row::starting)
+    }
+
+    /// Every row as shown, with its ordering group, in row order.
+    fn ordered(&self) -> Vec<(Group, View)> {
         let mut rows: Vec<_> = self
             .rows
             .values()
@@ -338,7 +401,19 @@ impl Registry {
             })
             .collect();
         rows.sort_by(|(left, a), (right, b)| (left, &a.id).cmp(&(right, &b.id)));
-        rows.into_iter().map(|(_, view)| view).collect()
+        rows.into_iter()
+            .map(|((group, _), view)| (group, view))
+            .collect()
+    }
+}
+
+/// The connection a client event moves its row to, if any.
+fn connection(event: ClientEvent) -> Option<Connection> {
+    match event {
+        ClientEvent::Opened { status } => Some(Connection::Connected { status }),
+        ClientEvent::Unavailable(why) => Some(Connection::Unavailable(why)),
+        ClientEvent::Ended => Some(Connection::Disconnected),
+        _ => None,
     }
 }
 
@@ -558,10 +633,11 @@ mod tests {
     /// Not-connected rows (confirmed 2026-11-08) and STA-07 (Monitor, pure
     /// supplement): a row with no current status and no final outcome sorts
     /// after every status and final row, by the newest time it entered its
-    /// condition: This monitor, Starting (also a client opened with
-    /// `status-v1` awaiting its Initial metadata), Unavailable (uncertain,
-    /// failed, or connected without `status-v1`) and Disconnected, whose
-    /// stale status time neither sorts nor labels it.
+    /// condition: Starting (also a client opened with `status-v1` awaiting
+    /// its Initial metadata), Unavailable (uncertain, failed, or connected
+    /// without `status-v1`) and Disconnected, whose stale status time neither
+    /// sorts nor labels it. The own session has no row (owner decision on
+    /// #110).
     #[test]
     fn not_connected_rows_sort_by_when_they_entered_their_condition() {
         let mut registry = Registry::new(Some(OWN.parse().unwrap()));
@@ -590,20 +666,30 @@ mod tests {
                 "Unavailable|without status",
                 "Unavailable|unsure",
                 "Starting|starting",
-                "This monitor|own",
             ]
         );
     }
 
-    /// Own-session scenario (confirmed 2026-11-08): this monitor's own session
-    /// shows as This monitor and never needs a client.
+    /// Own-session scenario (owner decision on #110, 2026-11-14): this
+    /// monitor's own session never needs a client and has no row, live or
+    /// uncertain, so it cannot be selected; other sessions still do.
     #[test]
-    fn the_own_session_is_this_monitor_and_never_needs_a_client() {
+    fn the_own_session_is_hidden_and_never_needs_a_client() {
         let mut registry = Registry::new(Some(OWN.parse().unwrap()));
         let own = metadata(OWN, "2026-11-13T10:00:00.000Z", "bash", &[]);
         assert_eq!(registry.discovered(own.clone(), Found::Live, at(1)), None);
-        assert_eq!(registry.discovered(own, Found::Live, at(2)), None);
-        assert_eq!(shown(&registry), ["This monitor|bash"]);
+        assert_eq!(
+            registry.discovered(own.clone(), Found::Uncertain, at(2)),
+            None
+        );
+        assert!(shown(&registry).is_empty());
+        assert_eq!(registry.kind(&own.session_id), None);
+        let other = metadata(&id(1), "2026-11-13T10:00:00.000Z", "other", &[]);
+        assert_eq!(
+            registry.discovered(other.clone(), Found::Live, at(3)),
+            Some(other)
+        );
+        assert_eq!(shown(&registry), ["Starting|other"]);
     }
 
     /// DSC-04 (pure supplement): uncertainty and staleness never change a
@@ -706,6 +792,96 @@ mod tests {
         }
         registry.client(&key, titled(Some("t")), at(9));
         assert_eq!(registry.rows()[0].since, at(5));
+    }
+
+    /// Enter (spec #73, Session registry; #108, #110, pure supplement): a
+    /// connected row not known to be final, with or without `status-v1`, is
+    /// connected (selected and acquired); a Starting row and an Unavailable
+    /// row without a connected client, uncertain or failed, are unconnected
+    /// (selected without acquiring); Disconnected and final rows are retained
+    /// (#116); an unknown row has none.
+    /// Control and display change nothing.
+    #[test]
+    fn enter_kinds_follow_each_row_condition() {
+        let mut registry = Registry::new(Some(OWN.parse().unwrap()));
+        let sessions = [1, 2, 3, 4, 5, 6].map(|suffix| {
+            let created = format!("2026-11-13T10:00:0{suffix}.000Z");
+            metadata(&id(suffix), &created, "cmd", &[])
+        });
+        for session in &sessions {
+            registry.discovered(session.clone(), Found::Live, at(1));
+        }
+        let uncertain = metadata(&id(8), "2026-11-13T10:00:08.000Z", "cmd", &[]);
+        registry.discovered(uncertain, Found::Uncertain, at(1));
+        let key = |index: usize| sessions[index].session_id.clone();
+        registry.client(&key(0), ClientEvent::Opened { status: false }, at(2));
+        registry.client(&key(1), ClientEvent::Opened { status: true }, at(2));
+        registry.client(&key(2), ClientEvent::Opened { status: true }, at(2));
+        registry.client(&key(2), ended(Outcome::Exit(0), None), at(3));
+        registry.client(&key(3), ClientEvent::Unavailable("no".into()), at(2));
+        registry.client(&key(4), ClientEvent::Opened { status: false }, at(2));
+        registry.client(&key(4), ClientEvent::Ended, at(3));
+        for event in [
+            ClientEvent::Presentation(Presentation::Revoked),
+            ClientEvent::Answer(2, Ok(())),
+        ] {
+            registry.client(&key(0), event, at(4));
+        }
+        let kinds: Vec<_> = (0..6).map(|index| registry.kind(&key(index))).collect();
+        assert_eq!(
+            kinds,
+            [
+                Some(Kind::Connected),
+                Some(Kind::Connected),
+                Some(Kind::Retained),
+                Some(Kind::Unconnected),
+                Some(Kind::Retained),
+                Some(Kind::Unconnected),
+            ]
+        );
+        assert_eq!(
+            registry.kind(&id(8).parse().unwrap()),
+            Some(Kind::Unconnected)
+        );
+        assert_eq!(registry.kind(&id(7).parse().unwrap()), None);
+        let first = registry.rows().into_iter().find(|row| row.id == key(0));
+        assert_eq!(first.map(|row| row.since), Some(at(2)));
+    }
+
+    /// DSC-01 (initial-selection case, pure supplement) and the confirmed
+    /// exclusion: initial selection may take only a connected row whose
+    /// status is known and not final, the first in row order; a final row,
+    /// a disconnected row with a stale status and every not-connected row
+    /// are never eligible. A row awaits its client while Starting, also
+    /// once opened with `status-v1` until its status arrives.
+    #[test]
+    fn only_a_connected_row_with_a_known_nonfinal_status_is_eligible() {
+        let mut registry = Registry::new(None);
+        let starting = metadata(&id(1), "2026-11-13T10:00:00.000Z", "starting", &[]);
+        let unsure = metadata(&id(2), "2026-11-13T10:00:00.000Z", "unsure", &[]);
+        registry.discovered(starting.clone(), Found::Live, at(1));
+        registry.discovered(unsure.clone(), Found::Uncertain, at(1));
+        let awaiting = opened(&mut registry, (3, "awaiting"), true, 1);
+        let without = opened(&mut registry, (4, "without"), false, 1);
+        let lost = opened(&mut registry, (5, "lost"), true, 1);
+        registry.client(&lost, status(State::NeedsAttention, 90), at(2));
+        registry.client(&lost, ClientEvent::Ended, at(3));
+        let failed = opened(&mut registry, (6, "failed"), true, 1);
+        registry.client(&failed, ended(Outcome::Exit(1), Some(95)), at(2));
+        assert_eq!(registry.eligible(), None);
+        let starts: Vec<_> = [&starting.session_id, &unsure.session_id, &awaiting]
+            .into_iter()
+            .chain([&without, &lost, &failed])
+            .map(|key| registry.starting(key))
+            .collect();
+        assert_eq!(starts, [true, false, true, false, false, false]);
+        let idle = opened(&mut registry, (7, "idle"), true, 1);
+        registry.client(&idle, status(State::Idle, 99), at(4));
+        assert_eq!(registry.eligible(), Some(idle.clone()));
+        registry.client(&awaiting, status(State::Running, 10), at(5));
+        assert!(!registry.starting(&awaiting));
+        assert_eq!(registry.eligible(), Some(awaiting));
+        assert!(!registry.starting(&id(9).parse().unwrap()));
     }
 
     /// TRM-06 label cases: the latest nonempty title, otherwise command and

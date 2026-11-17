@@ -4,12 +4,12 @@
 use super::{
     assert_final_then_closed, encoded, exited,
     interactive::{Attached, geometry, ready_attachment, rejected},
-    kill, message, open, raw_frame, request,
+    kill, open, raw_frame,
 };
 use crate::{ID, Session};
 use climon2_core::{
     metadata::SessionMetadata,
-    wire::{ControlRecord, Mode, Outcome, Response, RevocationReason, ServerMessage, Success},
+    wire::{ControlRecord, Mode, RevocationReason},
 };
 use climon2_platform::process;
 use std::{
@@ -93,16 +93,15 @@ fn the_daemon_ignores_hup_int_and_pipe_and_its_controller_goes_on() {
     session.finish();
 }
 
-/// Reads `stream` to its end, which must come without a byte: the daemon
-/// answers traffic that never completes a hello by closing the connection,
-/// never with a hello reply or any other frame. It may close with the
-/// peer's bytes unread, which resets the connection.
+/// Reads `stream` to its end, which must come without a hello reply: no
+/// frame of type `0x01` starts it. The daemon may close the connection
+/// with the peer's bytes unread, which resets it.
 fn assert_closed_without_hello(stream: &mut UnixStream) {
     let mut bytes = Vec::new();
     if let Err(error) = stream.read_to_end(&mut bytes) {
         assert_eq!(error.kind(), ErrorKind::ConnectionReset, "{error}");
     }
-    assert_eq!(bytes, b"", "the daemon answered");
+    assert_ne!(bytes.get(4), Some(&0x01), "a hello reply: {bytes:?}");
 }
 
 /// DSC-04 (Contract: the frozen two-second hello deadline with bounded probes)
@@ -111,7 +110,7 @@ fn assert_closed_without_hello(stream: &mut UnixStream) {
 /// hold the session's revision-1 controller. Eight probes are answered
 /// while a hello trickles a byte every 50 ms, and a second interactive
 /// Open takes control at once. The trickling hello is closed without a
-/// byte no sooner than two seconds after it connected, its deadline
+/// reply no sooner than two seconds after it connected, its deadline
 /// running from accept however recently it wrote. The first attachment,
 /// revoked by the takeover, can no longer type (`not_controller`); the
 /// second's input reaches the command, and both get its Command final.
@@ -141,14 +140,14 @@ fn probes_and_an_unfinished_hello_never_hold_a_revision1_controller() {
     session.finish();
 }
 
-/// DSC-04, COM-01 (Contract after retirement) and COM-02 (Contract:
-/// framing failures before hello, connection effects).
+/// DSC-04 and COM-02 (Contract: framing failures before hello, connection
+/// effects).
 /// #20 over revision 1: traffic that never completes a hello closes only
-/// its own connection. A revision-1 Open or Kill or a retired private
-/// Attach sent instead of a hello, a hello whose JSON is malformed or whose
-/// protocol is not 1, and a first frame of zero length or over the
-/// 1,048,576-byte hello limit are each refused: the connection closes
-/// without a byte. The session and its revision-1 controller go on.
+/// its own connection. A revision-1 Open or Kill sent instead of a hello, a
+/// hello whose JSON is malformed, and a first frame of zero length or over
+/// the 1,048,576-byte hello limit are each refused without a hello reply,
+/// and the connection closes; the session and its revision-1 controller go
+/// on.
 #[test]
 fn traffic_instead_of_a_hello_closes_only_its_connection() {
     let mut session = Session::start("exit");
@@ -156,9 +155,7 @@ fn traffic_instead_of_a_hello_closes_only_its_connection() {
     let refused = [
         encoded(&open(1, &[], &[], Mode::Monitor).to_frame()),
         encoded(&kill(1, 1, &[]).to_frame()),
-        raw_frame(0x10, br#"{"cols":80,"rows":24}"#),
         raw_frame(0x01, b"["),
-        raw_frame(0x01, br#"{"protocol":2}"#),
         vec![0, 0, 0, 0],
         vec![0, 0x10, 0, 1],
     ];
@@ -170,40 +167,6 @@ fn traffic_instead_of_a_hello_closes_only_its_connection() {
         probe.write_all(&bytes).unwrap();
         assert_closed_without_hello(&mut probe);
     }
-    attached.typed(b"go\n");
-    attached.ended(&exited(42));
-    session.finish();
-}
-
-/// DSC-04 and COM-01 (Contract: the frozen hello limit, at the limit): a
-/// hello whose frame is exactly 1,048,576 bytes, its type and a body padded
-/// with JSON whitespace, is answered, and revision 1 follows it on the same
-/// connection. One byte more is refused
-/// (`traffic_instead_of_a_hello_closes_only_its_connection`).
-#[test]
-fn a_hello_at_the_frozen_limit_is_answered() {
-    let mut session = Session::start("exit");
-    let mut body = br#"{"protocol":1"#.to_vec();
-    body.resize(1_048_574, b' ');
-    body.push(b'}');
-    let mut stream = UnixStream::connect(&session.socket).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    stream.write_all(&raw_frame(0x01, &body)).unwrap();
-    crate::receive_hello(&mut stream);
-    request(&mut stream, &open(1, &[], &[], Mode::Monitor));
-    assert!(
-        matches!(
-            message(&mut stream),
-            ServerMessage::Response(Response {
-                outcome: Outcome::Ok(Success::Opened { .. }),
-                ..
-            })
-        ),
-        "the Open after the hello was not answered"
-    );
-    let mut attached = ready_attachment(&session, &[]);
     attached.typed(b"go\n");
     attached.ended(&exited(42));
     session.finish();

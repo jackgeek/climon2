@@ -3,36 +3,47 @@
 //! owns the host with one permanent top row, discovers sessions off its UI
 //! thread, keeps one passive client per live session, and lists them in the
 //! selector on prefix+s, under the key introduction when it is due, until
-//! prefix+x or a catchable termination signal. Nothing is selected yet.
+//! prefix+x or a catchable termination signal. Once its first discovery
+//! pass's clients are ready, it selects and acquires the first eligible row
+//! (#266).
 
 mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod host;
+mod initial;
 mod introduction;
 mod keys;
+mod paint;
 mod preference;
 mod registry;
+mod router;
 mod screen;
 mod selector;
 mod startup;
 mod supervisor;
+mod terminal;
 
 use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
+use climon2_vt::{Limits, Parser};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
+use initial::Initial;
 use introduction::KeyIntroduction;
-use keys::{Action, Key, Keys};
-use registry::Registry;
-use screen::{Scene, Screen};
+use keys::Action;
+use registry::{ClientEvent, Kind, Registry, Report};
+use router::{Key, Routed, Router};
+use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
 use startup::Startup;
 use std::{
-    io,
-    time::{Duration, SystemTime},
+    collections::BTreeMap,
+    io, mem,
+    time::{Duration, Instant, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
+use terminal::{Control, Presentation, Request, Terminal};
 
 /// A one-line diagnostic that the thin main prints, after the host is
 /// restored, with the climon2 error code.
@@ -89,16 +100,30 @@ fn own_session() -> Option<SessionId> {
     parsed
 }
 
-/// The monitor: what it draws, the rows it tracks, and the keys that act on
-/// them.
+/// The monitor: what it draws, the rows it tracks, each session's terminal,
+/// and the keys that act on them.
 struct Monitor {
     screen: Screen,
-    keys: Keys,
+    router: Router,
     introduction: KeyIntroduction,
     registry: Registry,
     selector: Selector,
     discovery: Discovery,
     supervisor: Supervisor,
+    /// The selected session: none until initial selection or the user
+    /// selects one, and no arrival ever moves it.
+    selected: Option<SessionId>,
+    /// Initial selection, until a selection exists.
+    initial: Initial,
+    /// One terminal per session ID, kept for the whole run.
+    terminals: BTreeMap<SessionId, Terminal>,
+    /// What bounds each terminal's model.
+    model: Limits,
+    /// The take-control key's byte, if one is bound.
+    take_control: Option<u8>,
+    /// The one vte parser every terminal's model is fed through (#166),
+    /// counted once beside their footprints at startup.
+    parser: Parser,
 }
 
 impl Monitor {
@@ -110,18 +135,31 @@ impl Monitor {
     ) -> io::Result<Self> {
         let config = &startup.config;
         let prefix = config.escape_prefix();
+        let take_control = config.take_control_key();
         let hints = config.settings().show_key_hints;
         let supervisor = Supervisor::start(context(&startup, filter)?, dispatch.clone())?;
         let introduction = KeyIntroduction::new(prefix, startup.preference, hints);
-        let discovery = Discovery::start(startup.home, config.settings().limits.discovery())?;
+        let limits = &config.settings().limits;
+        let discovery = Discovery::start(startup.home, limits.discovery())?;
+        let model = limits.model();
+        let start = Duration::from_millis(limits.library().start_ms.into());
         let mut monitor = Self {
-            screen: Screen::new(size, prefix, hints)?,
-            keys: Keys::new(prefix),
+            screen: Screen::new(size, prefix, take_control, hints),
+            router: Router::new(prefix),
             introduction,
             registry: Registry::new(own_session()),
             selector: Selector::default(),
             discovery,
             supervisor,
+            selected: None,
+            initial: Initial::new(start),
+            terminals: BTreeMap::new(),
+            model: Limits {
+                bytes: usize::try_from(model.bytes).unwrap_or(usize::MAX),
+                history_rows: model.history_rows as usize,
+            },
+            take_control: take_control.map(climon2_core::keys::ControlKey::byte),
+            parser: Parser::new(),
         };
         monitor.show().map(|()| monitor)
     }
@@ -159,23 +197,156 @@ impl Monitor {
             Event::End(ending) => Ok(Some(ending)),
             Event::Resize(size) => {
                 self.screen.resize(size);
+                self.resize();
                 self.show().map(|()| None)
             }
-            Event::Input(bytes) => Ok(self.input(bytes)),
+            Event::Input(bytes) => self.input(bytes),
             Event::Idle => Ok(None),
         }
     }
 
     /// Paints the current scene when it differs from what the screen shows.
+    /// Each terminal first learns whether this frame shows its applied
+    /// restoration, so its control and input readiness describe the frame
+    /// being painted.
     fn show(&mut self) -> io::Result<()> {
+        self.mark_shown();
         let rows = self.registry.rows();
+        let row = self
+            .selected
+            .as_ref()
+            .and_then(|id| rows.iter().find(|row| &row.id == id));
+        let kind = self.selected.as_ref().and_then(|id| self.registry.kind(id));
+        let terminal = self.selected.as_ref().and_then(|id| self.terminals.get(id));
+        let session = row
+            .zip(kind)
+            .map(|(row, kind)| selected(row, kind, terminal));
         let scene = Scene {
             introduction: &self.introduction,
             rows: &rows,
             selector: &self.selector,
             incomplete: self.registry.incomplete(),
+            progress: self
+                .initial
+                .progress(&self.registry)
+                .map(|progress| progress.to_string()),
+            late: self.initial.late(&self.registry),
+            session,
         };
         self.screen.show(&scene)
+    }
+
+    /// Only the [`Monitor::shown`] terminal is shown.
+    fn mark_shown(&mut self) {
+        let shown = self.shown().cloned();
+        for (id, terminal) in &mut self.terminals {
+            terminal.painted(shown.as_ref() == Some(id));
+        }
+    }
+
+    /// The selected session while the screen shows its canvas: nothing
+    /// covers it and the host has room for it.
+    fn shown(&self) -> Option<&SessionId> {
+        let shows = self.screen.shows_canvas(self.covered());
+        self.selected.as_ref().filter(|_| shows)
+    }
+
+    /// `id`'s terminal, created the first time it is needed.
+    fn terminal(&mut self, id: &SessionId) -> &mut Terminal {
+        terminal(&mut self.terminals, self.model, id)
+    }
+
+    /// Submits `request` through `id`'s client, if there is one.
+    fn request(&self, id: &SessionId, request: Option<Request>) {
+        if let Some(request) = request {
+            self.supervisor.request(id.clone(), request);
+        }
+    }
+
+    /// Resize goes only to the selected controller, and only while the host
+    /// leaves room for a session.
+    fn resize(&mut self) {
+        let Some(desire) = self.screen.desire() else {
+            return;
+        };
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let request = self.terminal(&id).resize(desire);
+        self.request(&id, request);
+    }
+
+    /// Enter acts on the row's condition when pressed (spec #73, "Enter"):
+    /// a connected row not known to be final is selected and acquired; a
+    /// Starting or Unavailable row with no connected client is selected
+    /// without acquiring. Disconnected and final rows are ignored until
+    /// #116, which owns their retained history. This monitor's own session
+    /// has no row (owner decision on #110).
+    fn enter(&mut self, id: SessionId) {
+        match self.registry.kind(&id) {
+            Some(Kind::Connected) => {
+                self.choose(id.clone());
+                self.acquire(&id);
+            }
+            Some(Kind::Unconnected) => self.choose(id),
+            Some(Kind::Retained) | None => {}
+        }
+    }
+
+    /// Selects `id` and closes the selector. A session selected before
+    /// keeps any control in the background, and nothing is selected
+    /// automatically any more.
+    fn choose(&mut self, id: SessionId) {
+        self.selector.close();
+        self.initial.selected();
+        self.selected = Some(id);
+    }
+
+    /// Initial selection (spec #73): once collection has ended, the first
+    /// eligible row is selected and acquired, at most once and never over
+    /// an existing selection. Any open modal stays open over it.
+    fn initialise(&mut self) {
+        if let Some(id) = self.initial.choose(&self.registry, Instant::now()) {
+            self.selected = Some(id.clone());
+            self.acquire(&id);
+        }
+    }
+
+    /// Takes control of `id` explicitly, then keeps the selected
+    /// controller's size.
+    fn acquire(&mut self, id: &SessionId) {
+        let request = self.terminal(id).acquire();
+        self.request(id, Some(request));
+        self.resize();
+    }
+
+    /// The take-control key acquires the selected session while it shows
+    /// the non-controller placeholder, and is consumed either way; the
+    /// monitor never takes control back by itself.
+    fn take_control(&mut self) {
+        let revoked = self.selected.clone().filter(|id| {
+            self.registry
+                .kind(id)
+                .is_some_and(|kind| placeholder(kind, self.control(id)))
+        });
+        if let Some(id) = revoked {
+            self.acquire(&id);
+        }
+    }
+
+    /// The control the monitor holds over `id`.
+    fn control(&self, id: &SessionId) -> Control {
+        control(self.terminals.get(id))
+    }
+
+    /// Applies a client's control and display report to its terminal,
+    /// submitting the Ready that follows an applied restoration, then
+    /// keeps the selected controller's size.
+    fn present(&mut self, id: &SessionId, presentation: Presentation) {
+        let ready =
+            terminal(&mut self.terminals, self.model, id).present(&mut self.parser, presentation);
+        self.request(id, ready);
+        self.resize();
     }
 
     /// Applies what discovery and the supervisor reported since the last
@@ -185,11 +356,30 @@ impl Monitor {
         while let Ok(found) = self.discovery.found.try_recv() {
             match found {
                 Found::Batch(batch) => self.batch(batch, now),
-                Found::Pass(progress) => self.registry.pass(incomplete(&progress)),
+                Found::Pass(progress) => {
+                    self.registry.pass(incomplete(&progress));
+                    self.initial.passed();
+                }
             }
         }
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
-            self.registry.client(&id, event, now);
+            self.report(&id, event, now);
+        }
+        self.initialise();
+    }
+
+    /// Control and display go to the session's terminal, everything else to
+    /// its row; the command's final result and the end of the client to
+    /// both.
+    fn report(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
+        match event {
+            ClientEvent::Presentation(presentation) => self.present(id, presentation),
+            event => {
+                if let Some(presentation) = ending(&event) {
+                    self.present(id, presentation);
+                }
+                self.registry.client(id, event, now);
+            }
         }
     }
 
@@ -212,59 +402,223 @@ impl Monitor {
             Outcome::Stale(metadata, _) => (metadata, registry::Found::Stale),
         };
         if let Some(metadata) = self.registry.discovered(metadata, found, now) {
+            self.initial
+                .started(metadata.session_id.clone(), Instant::now());
             self.supervisor.start_client(metadata);
         }
     }
 
-    /// Acts on each byte in turn until one ends the monitor. The end of the
-    /// read goes where typed keys go: past the open key introduction to the
-    /// selector, which ignores it while closed.
-    fn input(&mut self, bytes: &[u8]) -> Option<Ending> {
-        let ending = bytes.iter().find_map(|&byte| self.act(byte));
-        if !self.introduction.is_open() {
-            self.selector.read_ended(&self.registry.rows());
+    /// Routes one host read; a lone Escape that ends it then goes at once
+    /// to a session taking input, while a modal waits for the next byte.
+    fn input(&mut self, bytes: &[u8]) -> io::Result<Option<Ending>> {
+        let routed = self.router.read(bytes);
+        let ending = self.route(routed)?;
+        if ending.is_none() && self.accepting().is_some() {
+            let released = self.router.release();
+            self.route(released.into_iter().collect())?;
         }
-        ending
+        Ok(ending)
     }
 
-    /// Acts on the key `byte` completes: prefix+x ends the monitor, and
-    /// other actions and typed keys go to [`Monitor::action`] and
-    /// [`Monitor::typed`].
-    fn act(&mut self, byte: u8) -> Option<Ending> {
-        match self.keys.key(byte)? {
-            Key::Action(Action::Exit) => Some(Ending::Exit),
-            Key::Action(action) => {
-                self.action(action);
-                None
+    /// Acts on each routed input in turn until one ends the monitor, each
+    /// against the state the ones before it left. Application bytes are
+    /// gathered and submitted together, before anything else acts, so
+    /// nothing typed after an action can reach the target before it, and
+    /// nothing after prefix+x reaches any.
+    fn route(&mut self, routed: Vec<Routed>) -> io::Result<Option<Ending>> {
+        let mut typed = Vec::new();
+        let mut ending = None;
+        for routed in routed {
+            ending = self.routed(routed, &mut typed)?;
+            if ending.is_some() {
+                break;
             }
-            Key::Typed(byte) => {
-                self.typed(byte);
-                None
-            }
+        }
+        self.submit(&mut typed);
+        Ok(ending)
+    }
+
+    fn routed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
+        if let Some(modes) = self
+            .accepting()
+            .filter(|_| !matches!(routed, Routed::Action(_)))
+        {
+            routed.encode(&modes, typed);
+            return Ok(None);
+        }
+        self.submit(typed);
+        match routed {
+            Routed::Action(action) => Ok(self.action(action)),
+            Routed::Key(key) => self.modal(&key).map(|()| None),
+            Routed::Unknown(..) | Routed::Rest(_) => Ok(None),
         }
     }
 
-    /// Prefix+? opens the key introduction, and prefix+s the selector
-    /// unless the modal key introduction is open.
-    fn action(&mut self, action: Action) {
+    /// The selected session's terminal modes while it accepts application
+    /// input: no modal is open, the host has room for it, and its control
+    /// period's restoration is applied, ready and painted.
+    fn accepting(&self) -> Option<climon2_vt::view::Modes> {
+        let (_, terminal) = self.target()?;
+        terminal.view().map(|view| view.modes())
+    }
+
+    /// The selected session and its terminal, while nothing covers it, the
+    /// host has room for it and it may take input. `Terminal::input` alone
+    /// learns of a modal or a small host only at the next frame; within one
+    /// read, a key after prefix+s must already reach the selector.
+    fn target(&self) -> Option<(&SessionId, &Terminal)> {
+        let id = self.shown()?;
+        let terminal = self.terminals.get(id)?;
+        terminal.input().map(|_| (id, terminal))
+    }
+
+    /// Submits the application bytes gathered so far to the target they
+    /// were encoded for, under its current authority.
+    fn submit(&mut self, typed: &mut Vec<u8>) {
+        if typed.is_empty() {
+            return;
+        }
+        let bytes = mem::take(typed);
+        let target = self
+            .target()
+            .and_then(|(id, terminal)| Some((id.clone(), terminal.input()?)));
+        if let Some((id, authority)) = target {
+            self.request(&id, Some(Request::Input(authority, bytes)));
+        }
+    }
+
+    /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
+    /// prefix+s the selector unless the modal key introduction is open;
+    /// prefix+j's jump arrives with #114.
+    fn action(&mut self, action: Action) -> Option<Ending> {
         match action {
+            Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
             Action::SessionList if !self.introduction.is_open() => {
                 self.selector.open(&self.registry.rows());
             }
             _ => {}
         }
+        None
     }
 
-    /// A typed key goes to the key introduction while it is open, otherwise
-    /// to the open selector, otherwise nowhere.
-    fn typed(&mut self, byte: u8) {
+    /// A key no application takes goes to [`Monitor::modal_key`]. When it
+    /// closes the last modal, the uncovered session is painted at once, so
+    /// the rest of the same read meets the screen now in force and a key
+    /// typed straight after Escape reaches the session (owner decision on
+    /// #109). Nothing is kept beyond the read.
+    fn modal(&mut self, key: &Key) -> io::Result<()> {
+        let covered = self.covered();
+        self.modal_key(key);
+        if revealed(covered, self.covered()) {
+            return self.show();
+        }
+        Ok(())
+    }
+
+    /// Whether the selector or the key introduction covers the canvas.
+    fn covered(&self) -> bool {
+        screen::covered(&self.selector, &self.introduction)
+    }
+
+    /// A key no application takes goes to the key introduction while it is
+    /// open, otherwise to the open selector; outside them the take-control
+    /// key takes control, and any other key is discarded, never kept for
+    /// later. Inside a modal the take-control key does nothing.
+    fn modal_key(&mut self, key: &Key) {
         if self.introduction.is_open() {
-            self.introduction.key(byte);
+            self.introduction.key(key);
         } else if self.selector.is_open() {
-            self.selector.key(byte, &self.registry.rows());
+            self.selector_key(key);
+        } else if self
+            .take_control
+            .is_some_and(|byte| *key == Key::Bytes(vec![byte]))
+        {
+            self.take_control();
         }
     }
+
+    /// A key for the open selector; Enter acts on the row it chose.
+    fn selector_key(&mut self, key: &Key) {
+        if let Some(id) = self.selector.key(key, &self.registry.rows()) {
+            self.enter(id);
+        }
+    }
+}
+
+/// Whether a key uncovered the canvas: a modal was open before it and none
+/// is after it.
+fn revealed(covered_before: bool, covered_after: bool) -> bool {
+    covered_before && !covered_after
+}
+
+/// What a row event means for the session's terminal: the view freezes at
+/// the command's final result, and control ends with the client.
+fn ending(event: &ClientEvent) -> Option<Presentation> {
+    match event {
+        ClientEvent::Report(Report::Final(_)) => Some(Presentation::Final),
+        ClientEvent::Ended | ClientEvent::Unavailable(_) => Some(Presentation::Ended),
+        _ => None,
+    }
+}
+
+/// `id`'s terminal in `terminals`, created with `model` the first time it
+/// is needed.
+fn terminal<'a>(
+    terminals: &'a mut BTreeMap<SessionId, Terminal>,
+    model: Limits,
+    id: &SessionId,
+) -> &'a mut Terminal {
+    terminals
+        .entry(id.clone())
+        .or_insert_with(|| Terminal::new(model))
+}
+
+/// The selected row as the top row shows it: its label, its row status
+/// (#107), its control, any error, and what its canvas shows.
+fn selected<'a>(
+    row: &'a registry::View,
+    kind: Kind,
+    terminal: Option<&'a Terminal>,
+) -> Session<'a> {
+    let control = control(terminal);
+    let canvas = terminal
+        .and_then(Terminal::view)
+        .map_or_else(|| without_view(kind, &row.status, control), Canvas::View);
+    Session {
+        label: &row.label,
+        status: &row.status,
+        control: control.label(),
+        error: terminal.and_then(Terminal::error),
+        canvas,
+    }
+}
+
+/// The control the monitor holds through `terminal`: a session it never
+/// made a terminal for is not controlled.
+fn control(terminal: Option<&Terminal>) -> Control {
+    terminal.map_or(Control::NotControlling, Terminal::control)
+}
+
+/// The canvas of a selected row of `kind` whose terminal has no view: the
+/// placeholder while the monitor does not control a connected session,
+/// never its cache; no terminal content and the row's `status` for a row
+/// selected without a connected client; otherwise nothing yet.
+fn without_view(kind: Kind, status: &str, control: Control) -> Canvas<'_> {
+    if placeholder(kind, control) {
+        Canvas::Placeholder
+    } else if kind == Kind::Unconnected {
+        Canvas::NoContent(status)
+    } else {
+        Canvas::Nothing
+    }
+}
+
+/// Whether a selected row shows the non-controller placeholder, on which
+/// the take-control key acquires: connected, not known to be final, and
+/// neither controlled nor being acquired by this monitor.
+fn placeholder(kind: Kind, control: Control) -> bool {
+    kind == Kind::Connected && control == Control::NotControlling
 }
 
 /// What the supervisor's instances share, from the started configuration.
@@ -310,5 +664,78 @@ fn incomplete(progress: &Progress) -> Option<String> {
             tracing::warn!(%error, "discovery pass incomplete");
             Some(format!("cannot list sessions: {error}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Canvas, Control, Kind, control, placeholder, revealed, without_view};
+
+    const CONTROLS: [Control; 5] = [
+        Control::Acquiring,
+        Control::Restoring,
+        Control::Controlling,
+        Control::NotControlling,
+        Control::Ended,
+    ];
+
+    /// CTL-02 and INP-01 takeover (pure supplement, #110): only a connected
+    /// row the monitor neither controls, nor is acquiring, nor saw end shows
+    /// the placeholder and takes the take-control key; no other kind does,
+    /// and a session the monitor never made a terminal for is not
+    /// controlled.
+    #[test]
+    fn only_an_uncontrolled_connected_row_shows_the_placeholder() {
+        for kind in [Kind::Connected, Kind::Unconnected, Kind::Retained] {
+            let shown: Vec<_> = CONTROLS
+                .into_iter()
+                .map(|control| placeholder(kind, control))
+                .collect();
+            let expected = [false, false, false, kind == Kind::Connected, false];
+            assert_eq!(shown, expected, "{kind:?}");
+        }
+        assert_eq!(control(None), Control::NotControlling);
+    }
+
+    /// Spec #73 Enter and placeholders (pure supplement, #110): with no view
+    /// to paint, a connected row the monitor does not control shows the
+    /// placeholder, a row selected without a connected client says it has
+    /// no terminal content and its status, and any other shows nothing yet.
+    #[test]
+    fn a_selected_row_without_a_view_shows_the_placeholder_its_condition_or_nothing() {
+        let shape = |canvas: Canvas<'_>| match canvas {
+            Canvas::View(_) => "view".to_owned(),
+            Canvas::Placeholder => "placeholder".to_owned(),
+            Canvas::NoContent(condition) => format!("no content, {condition}"),
+            Canvas::Nothing => "nothing".to_owned(),
+        };
+        let shown = |kind, status, control| shape(without_view(kind, status, control));
+        assert_eq!(
+            shown(Kind::Connected, "Unavailable", Control::NotControlling),
+            "placeholder"
+        );
+        assert_eq!(
+            shown(Kind::Connected, "Unavailable", Control::Acquiring),
+            "nothing"
+        );
+        assert_eq!(
+            shown(Kind::Unconnected, "Starting", Control::NotControlling),
+            "no content, Starting"
+        );
+        assert_eq!(
+            shown(Kind::Retained, "Disconnected", Control::NotControlling),
+            "nothing"
+        );
+    }
+
+    /// Owner decision on #109 (pure supplement): only a key that closes the
+    /// last modal uncovers the canvas and paints before the rest of the read;
+    /// one that opens a modal, or leaves the canvas as it was, does not.
+    #[test]
+    fn only_closing_the_last_modal_reveals_the_canvas() {
+        assert!(revealed(true, false));
+        assert!(!revealed(true, true));
+        assert!(!revealed(false, true));
+        assert!(!revealed(false, false));
     }
 }

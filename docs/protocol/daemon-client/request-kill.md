@@ -54,8 +54,8 @@ establish later definitive completion. Dismissal is run-local and blocks same-ru
 rediscovery; fallback selection never acquires another session.
 Existing `c2 kill <session>` also terminates
 [headless sessions](../../../GLOSSARY.md#sessions), whose zero-client lifetime
-survives later attachment loss until completion or Kill; that is implemented,
-and `c2 kill` sends this standalone Kill through the client library. The other amendments are unimplemented; operation
+survives later attachment loss until completion or Kill; that is implemented on
+the current private protocol. The other amendments are unimplemented; operation
 fields/results are unchanged.
 #69 owns agreed deadlines/bounds; [native declarations](../monitor-client/core-v1.md)
 are agreed in #71; the [acceptance matrix](../../monitor-acceptance.md)
@@ -76,7 +76,7 @@ has a role, such as a registered
 
 A valid standalone Kill gives its connection the Kill role, which is not an
 [attachment](../../../GLOSSARY.md#attachment-and-control), and commits the
-session's termination at once: new
+session's termination at once, as the private protocol's kill does: new
 interactive work is refused, the command's terminal is hung up, and after the
 five-second [hang-up grace](../../../GLOSSARY.md#attachment-and-control) the
 daemon kills what remains of the command's terminal session and cleans up.
@@ -93,7 +93,7 @@ when the application ends it or its 150 ms latch expires. Once termination
 is committed, the restoration deadline for a missing
 [Ready](request-ready.md) no longer applies, so a restoration ends only when
 it completes or its reader is lost after 5 s without progress. A
-later Kill sent while termination is committed joins it without
+Kill of either protocol sent while termination is committed joins it without
 restarting the grace. Every Kill is answered once the session has ended, at
 once if it already had:
 
@@ -113,5 +113,4 @@ later Open or Kill on its connection is `invalid_state`, as are Leave and
 Acquire, since it opened nothing; Input, Resize and Ready are
 `not_attached`, and Focus is `unsupported_capability`. The Kill's connection
 receives no [Command final](event-command-final.md): its answer carries the
-result. `c2 kill` sends this Kill through its own release's client library
-([#100](https://github.com/jackgeek/climon2/issues/100)).
+result. `c2 kill` still uses the private protocol.

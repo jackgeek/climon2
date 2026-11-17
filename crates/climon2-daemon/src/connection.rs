@@ -1,6 +1,7 @@
 use climon2_core::{
     protocol::{
-        self, HELLO, HelloRequest, PROTOCOL_VERSION, hello_time_remaining, read_frame, write_frame,
+        ClientMessage, ConnectionState, MAX_FRAME_LENGTH, ServerMessage, hello_time_remaining,
+        read_frame, write_frame,
     },
     wire::{self, ControlRecord, Counter, FatalCode, FrameLimit, Request},
 };
@@ -37,42 +38,45 @@ impl PendingFrame {
     }
 }
 
-/// What a connection speaks: the frozen hello, then daemon wire revision 1.
+/// The protocol a connection speaks after the frozen hello.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Protocol {
-    AwaitingHello,
-    /// Daemon wire revision 1, with the last request ID received, if any.
-    Revision1(Option<Counter>),
+    /// Hello, then the private protocol, unless the first frame after hello
+    /// has a revision-1 type and so selects revision 1.
+    Private(ConnectionState),
+    /// Daemon wire revision 1, with the last request ID received.
+    Revision1(Counter),
 }
 
 impl Protocol {
     /// A well-formed request consumes its ID even when it is then rejected;
     /// an ID that does not increase is connection-fatal.
     fn receive_request(&mut self, id: Counter) -> Result<(), FatalCode> {
-        if let Self::Revision1(Some(last)) = *self
+        if let Self::Revision1(last) = *self
             && id <= last
         {
             return Err(FatalCode::InvalidRequestId);
         }
-        *self = Self::Revision1(Some(id));
+        *self = Self::Revision1(id);
         Ok(())
     }
 }
 
-/// A received frame: the hello, or a revision-1 request.
+/// A received frame, in the protocol it was sent in.
 pub(crate) enum Received {
-    Hello,
+    Private(ClientMessage),
     Request(Request),
 }
 
 /// Why a connection stopped receiving.
 #[derive(Debug)]
 pub(crate) enum Failure {
+    /// A private-protocol failure, reported with a private `Error`.
+    Private(io::Error),
     /// A revision-1 validation failure, reported with a best-effort Fatal error.
     Fatal(FatalCode),
-    /// Traffic that never completed a valid hello in time, or a revision-1
-    /// stream that ended between frames or whose transport failed: nothing
-    /// to report.
+    /// A revision-1 stream that ended between frames or whose transport
+    /// failed: nothing to report.
     Closed,
 }
 
@@ -92,7 +96,7 @@ impl Connection {
         stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
-            protocol: Protocol::AwaitingHello,
+            protocol: Protocol::Private(ConnectionState::default()),
             accepted: Instant::now(),
             incoming: Vec::new(),
             outgoing: VecDeque::new(),
@@ -124,8 +128,11 @@ impl Connection {
         self.close_when_empty = true;
     }
 
-    /// Queues the hello reply.
-    pub fn queue_frame(&mut self, frame: protocol::Frame) -> io::Result<()> {
+    pub fn queue(&mut self, message: ServerMessage) -> io::Result<()> {
+        self.queue_frame(message.to_frame()?)
+    }
+
+    pub fn queue_frame(&mut self, frame: climon2_core::protocol::Frame) -> io::Result<()> {
         let mut bytes = Vec::new();
         write_frame(&mut bytes, &frame)?;
         self.queue_bytes(bytes)
@@ -152,10 +159,19 @@ impl Connection {
 
     /// Reports why receiving failed, best effort, and closes once flushed.
     pub fn fail(&mut self, failure: Failure) {
-        if let Failure::Fatal(code) = failure {
-            self.fatal(code);
+        match failure {
+            Failure::Private(error) => self.error(&protocol_error(&error)),
+            Failure::Fatal(code) => self.fatal(code),
+            Failure::Closed => {}
         }
         self.close_after_flush();
+    }
+
+    fn error(&mut self, message: &str) {
+        let error = ServerMessage::Error {
+            message: message.into(),
+        };
+        self.last(|connection| connection.queue(error));
     }
 
     fn fatal(&mut self, code: FatalCode) {
@@ -197,15 +213,16 @@ impl Connection {
     }
 
     /// Every frame already readable, so a burst sent in one write is handled
-    /// in one iteration, then the failure that ended receiving, if any. The
-    /// frames read before a failure are still served.
+    /// in one iteration, then the failure that ended receiving, if any. A
+    /// private failure discards the frames read with it; revision-1 frames
+    /// read before a failure are still served.
     pub fn receive_available(&mut self) -> (Vec<Received>, Option<Failure>) {
         let mut messages = Vec::new();
         if !self.receiving() {
             return (messages, None);
         }
         let failure = self.receive_into(&mut messages).err();
-        (messages, failure)
+        (served(messages, failure.as_ref()), failure)
     }
 
     fn receive_into(&mut self, messages: &mut Vec<Received>) -> Result<(), Failure> {
@@ -221,31 +238,31 @@ impl Connection {
     }
 
     /// `None` once nothing is readable; `Some(None)` after part of a frame.
-    /// A connection still without its hello two seconds after accept is
-    /// closed.
     fn receive(&mut self) -> Result<Option<Option<Received>>, Failure> {
-        if self.hello_overdue() {
-            return Err(Failure::Closed);
-        }
+        self.validate_receive().map_err(Failure::Private)?;
         self.read_message()
     }
 
-    fn hello_overdue(&self) -> bool {
-        self.protocol == Protocol::AwaitingHello
+    fn validate_receive(&self) -> io::Result<()> {
+        if self.protocol == Protocol::Private(ConnectionState::AwaitingHello)
             && hello_time_remaining(self.accepted.elapsed()).is_none()
+        {
+            return Err(super::io_error("hello deadline exceeded"));
+        }
+        Ok(())
     }
 
     fn read_message(&mut self) -> Result<Option<Option<Received>>, Failure> {
         let mut bytes = self.read_buffer()?;
         let read = super::unless_would_block(self.stream.read(&mut bytes));
-        let Some(count) = read.map_err(|_| self.ended())? else {
+        let Some(count) = read.map_err(|error| self.ended(error))? else {
             return Ok(None);
         };
         self.received(&bytes[..count]).map(Some)
     }
 
     /// Never reads past the current frame, so each read holds at most one
-    /// frame, and the hello is read under the frozen layout.
+    /// frame, and the first frame after hello decides how later ones are read.
     fn read_buffer(&self) -> Result<Vec<u8>, Failure> {
         Ok(vec![
             u8::default();
@@ -255,42 +272,55 @@ impl Connection {
 
     fn received(&mut self, bytes: &[u8]) -> Result<Option<Received>, Failure> {
         if bytes.is_empty() {
-            return Err(self.ended());
+            return Err(self.ended(super::io_error("connection closed")));
         }
         self.incoming.extend_from_slice(bytes);
         self.complete()
     }
 
-    /// The stream ended or failed: a revision-1 stream that ended inside a
-    /// frame is truncated; otherwise the connection just closed.
-    fn ended(&self) -> Failure {
-        if self.protocol != Protocol::AwaitingHello && !self.incoming.is_empty() {
-            return Failure::Fatal(FatalCode::TruncatedFrame);
+    /// The stream ended or failed. A private connection reports it; a
+    /// revision-1 stream that ended inside a frame is truncated, and one that
+    /// ended between frames simply closed.
+    fn ended(&self, error: io::Error) -> Failure {
+        match (self.revision1(), self.incoming.is_empty()) {
+            (false, _) => Failure::Private(error),
+            (true, true) => Failure::Closed,
+            (true, false) => Failure::Fatal(FatalCode::TruncatedFrame),
         }
-        Failure::Closed
+    }
+
+    /// Whether the frame being read is revision 1: on a revision-1 connection,
+    /// or the first frame after hello when revision 1 defines its type.
+    fn revision1(&self) -> bool {
+        match self.protocol {
+            Protocol::Revision1(_) => true,
+            Protocol::Private(state) => {
+                state == ConnectionState::Probing
+                    && self
+                        .incoming
+                        .get(4)
+                        .is_some_and(|code| wire::defines(*code))
+            }
+        }
     }
 
     /// Bytes needed for the frame being decoded: the prefix; then the whole
-    /// revision-1 frame, or first the type of the hello.
+    /// revision-1 frame, or first the type of a private one.
     fn target(&self) -> Result<usize, Failure> {
         if self.incoming.len() < 4 {
             return Ok(4);
         }
-        match self.protocol {
-            Protocol::AwaitingHello => self.hello_target().ok_or(Failure::Closed),
-            Protocol::Revision1(_) => self.wire_target(),
+        if self.revision1() {
+            return self.wire_target();
         }
+        self.private_target().map_err(Failure::Private)
     }
 
-    /// The hello's type once its length is valid, then the whole hello; a
-    /// frame of another type is no hello.
-    fn hello_target(&self) -> Option<usize> {
-        let length = protocol::frame_length(self.prefix()).ok()?;
-        match self.incoming.get(4) {
-            None => Some(5),
-            Some(&HELLO) => Some(4 + length),
-            Some(_) => None,
+    fn private_target(&self) -> io::Result<usize> {
+        if self.incoming.len() == 4 {
+            return self.frame_length().map(|_| 5);
         }
+        self.frame_target()
     }
 
     /// A revision-1 frame's whole length, which the codec decides from its prefix.
@@ -305,41 +335,69 @@ impl Connection {
         self.incoming[..4].try_into().expect("frame prefix")
     }
 
+    fn frame_length(&self) -> io::Result<usize> {
+        let length = u32::from_be_bytes(self.prefix()) as usize;
+        if !(1..=MAX_FRAME_LENGTH).contains(&length) {
+            return Err(super::io_error("invalid frame length"));
+        }
+        Ok(length)
+    }
+
+    fn frame_target(&self) -> io::Result<usize> {
+        let length = self.frame_length()?;
+        validate_frame_type(self.incoming[4], length)?;
+        Ok(4 + length)
+    }
+
     fn complete(&mut self) -> Result<Option<Received>, Failure> {
         if !self.frame_complete()? {
             return Ok(None);
         }
+        let revision1 = self.revision1();
         let bytes = std::mem::take(&mut self.incoming);
-        self.decode(&bytes).map(Some)
+        self.decode(&bytes, revision1).map(Some)
     }
 
     fn frame_complete(&self) -> Result<bool, Failure> {
         Ok(self.incoming.len() >= 5 && self.incoming.len() == self.target()?)
     }
 
-    fn decode(&mut self, bytes: &[u8]) -> Result<Received, Failure> {
-        match self.protocol {
-            Protocol::AwaitingHello => self.hello(bytes).ok_or(Failure::Closed),
-            Protocol::Revision1(_) => self.request(bytes).map_err(Failure::Fatal),
+    fn decode(&mut self, bytes: &[u8], revision1: bool) -> Result<Received, Failure> {
+        if revision1 {
+            return self.request(bytes).map_err(Failure::Fatal);
         }
+        self.message(bytes)
+            .map(Received::Private)
+            .map_err(Failure::Private)
     }
 
-    /// A valid hello of protocol 1; every later frame is revision 1.
-    fn hello(&mut self, bytes: &[u8]) -> Option<Received> {
-        let frame = read_frame(&mut &bytes[..]).ok()?;
-        HelloRequest::from_frame(&frame)
-            .ok()
-            .filter(|hello| hello.protocol == PROTOCOL_VERSION)?;
-        self.protocol = Protocol::Revision1(None);
-        Some(Received::Hello)
+    fn message(&mut self, bytes: &[u8]) -> io::Result<ClientMessage> {
+        let message = parsed_message(bytes)?;
+        if let Protocol::Private(state) = &mut self.protocol {
+            state.receive(&message)?;
+        }
+        Ok(message)
     }
 
-    /// Each request keeps the connection's request ID sequence.
+    /// The first request selects revision 1; later ones keep its ID sequence.
     fn request(&mut self, bytes: &[u8]) -> Result<Received, FatalCode> {
         let request = decoded_request(bytes)?;
         self.protocol.receive_request(request.request_id())?;
         Ok(Received::Request(request))
     }
+}
+
+/// The frames read before receiving ended that are still served.
+fn served(messages: Vec<Received>, failure: Option<&Failure>) -> Vec<Received> {
+    match failure {
+        Some(Failure::Private(_)) => Vec::new(),
+        _ => messages,
+    }
+}
+
+fn parsed_message(bytes: &[u8]) -> io::Result<ClientMessage> {
+    let mut reader = bytes;
+    ClientMessage::from_frame(read_frame(&mut reader)?)
 }
 
 /// A whole frame the codec already admitted by its prefix.
@@ -349,6 +407,26 @@ fn decoded_request(bytes: &[u8]) -> Result<Request, FatalCode> {
         .flatten()
         .ok_or(FatalCode::InternalError)?;
     Request::from_frame(&frame)
+}
+
+fn validate_frame_type(code: u8, length: usize) -> io::Result<()> {
+    climon2_core::protocol::Frame::new(code, Vec::new())?;
+    validate_data_length(code, length)
+}
+
+fn validate_data_length(code: u8, length: usize) -> io::Result<()> {
+    if matches!(code, 0x11 | 0x21) && length > climon2_core::protocol::MAX_DATA_FRAME_LENGTH {
+        return Err(super::io_error("oversized data frame"));
+    }
+    Ok(())
+}
+
+/// A private decoding failure names itself; any other framing failure is generic.
+fn protocol_error(error: &io::Error) -> String {
+    if error.kind() == io::ErrorKind::InvalidData {
+        return error.to_string();
+    }
+    "invalid session protocol".into()
 }
 
 impl Drop for Connection {

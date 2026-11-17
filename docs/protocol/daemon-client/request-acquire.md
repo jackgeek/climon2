@@ -47,11 +47,11 @@ Related: [Acknowledge](request-acknowledge.md), [Ready](request-ready.md).
 On an interactive attachment the
 [session daemon](../../../GLOSSARY.md#sessions) serves Acquire. A
 non-controlling attachment takes control at once. The previous
-[controller](../../../GLOSSARY.md#attachment-and-control) first
+[controller](../../../GLOSSARY.md#attachment-and-control), of either protocol, first
 receives the [release](../../../GLOSSARY.md#restoration-and-presentation) of its
 [presentation](../../../GLOSSARY.md#restoration-and-presentation), then a
-[revocation](../../../GLOSSARY.md#attachment-and-control):
-[Control revoked](event-control-revoked.md) with reason `takeover`.
+[revocation](../../../GLOSSARY.md#attachment-and-control): a revision-1 one
+gets [Control revoked](event-control-revoked.md) with reason `takeover`.
 The requester receives [Control granted](event-control-granted.md) with
 reason `acquire` and the [Restoration begin](event-restoration-begin.md) of
 its first restoration, then the success with `changed:true` and that

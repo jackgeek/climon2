@@ -2,7 +2,7 @@
 use climon2_core::{
     hello::HelloExtensions,
     metadata::SessionMetadata,
-    protocol::{HelloReply, HelloRequest, PROTOCOL_VERSION, read_frame, write_frame},
+    protocol::{ClientMessage, ServerMessage, read_frame, write_frame},
 };
 use climon2_platform::{connection, runtime::SocketStream};
 use std::{
@@ -70,17 +70,20 @@ pub(crate) fn hello(
     deadline: Instant,
     metadata: &SessionMetadata,
 ) -> io::Result<Option<HelloExtensions>> {
-    let (reply, extensions) = exchange_hello(stream, deadline)?;
-    Ok(reply
-        .is_live_session(&metadata.session_id)
-        .then_some(extensions))
+    let (message, extensions) = exchange_hello(stream, deadline)?;
+    match message {
+        ServerMessage::Hello(reply) if reply.is_live_session(&metadata.session_id) => {
+            Ok(Some(extensions))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Nonblocking I/O under one absolute deadline; never socket timeouts (Darwin EINVAL after FIN).
 fn exchange_hello(
     stream: SocketStream,
     deadline: Instant,
-) -> io::Result<(HelloReply, HelloExtensions)> {
+) -> io::Result<(ServerMessage, HelloExtensions)> {
     stream.set_nonblocking(true)?;
     let mut stream = DeadlineStream { stream, deadline };
     send_hello(&mut stream)?;
@@ -88,14 +91,11 @@ fn exchange_hello(
 }
 
 fn send_hello(stream: &mut DeadlineStream) -> io::Result<()> {
-    let hello = HelloRequest {
-        protocol: PROTOCOL_VERSION,
-    };
-    write_frame(stream, &hello.to_frame()?)
+    write_frame(stream, &ClientMessage::Hello { protocol: 1 }.to_frame()?)
 }
 
-fn receive_hello(stream: &mut DeadlineStream) -> io::Result<(HelloReply, HelloExtensions)> {
+fn receive_hello(stream: &mut DeadlineStream) -> io::Result<(ServerMessage, HelloExtensions)> {
     let frame = read_frame(stream)?;
     let extensions = HelloExtensions::from_body(frame.body());
-    Ok((HelloReply::from_frame(&frame)?, extensions))
+    Ok((ServerMessage::from_frame(frame)?, extensions))
 }

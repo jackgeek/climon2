@@ -4,10 +4,11 @@
 //! wire revision 1. Each test installs the client executable and the
 //! workspace's client library in a private version folder, and answers as a
 //! revision-1 peer whose frames are written here by hand from the wire
-//! reference, never by the code under test. They prove the bridge's
-//! terminal behaviour.
+//! reference, never by the code under test. These are the bridge tests of
+//! the private protocol, re-expressed over revision-1 peers: they prove the
+//! same terminal behaviour.
 
-use climon2_core::protocol::{HelloRequest, PROTOCOL_VERSION, read_frame};
+use climon2_core::protocol::{ClientMessage, PROTOCOL_VERSION, read_frame};
 use climon2_test_term::{client_library_path, copy_executable};
 use serde_json::{Value, json};
 use std::{
@@ -669,8 +670,8 @@ impl Peer {
     fn hello_with(&mut self, extensions: Value) {
         let hello = read_frame(&mut self.stream).ok();
         assert_eq!(
-            hello.map(|frame| HelloRequest::from_frame(&frame).unwrap()),
-            Some(HelloRequest {
+            hello.map(|frame| ClientMessage::from_frame(frame).unwrap()),
+            Some(ClientMessage::Hello {
                 protocol: PROTOCOL_VERSION
             })
         );

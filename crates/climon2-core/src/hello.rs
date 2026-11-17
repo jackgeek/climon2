@@ -269,14 +269,17 @@ pub fn advertise_revision1(
 ) -> io::Result<Frame> {
     let frozen = Capability::ADVERTISED.map(Capability::token);
     let families = revision1.tokens();
-    protocol::hello_frame(&AdvertisedHello {
-        reply,
-        capabilities: frozen.into_iter().chain(families).collect(),
-        state: StateBody {
-            lifecycle: state.lifecycle.name(),
-            attachments: state.attachments,
-            controlled: state.controlled,
+    protocol::control(
+        protocol::HELLO,
+        &AdvertisedHello {
+            reply,
+            capabilities: frozen.into_iter().chain(families).collect(),
+            state: StateBody {
+                lifecycle: state.lifecycle.name(),
+                attachments: state.attachments,
+                controlled: state.controlled,
+            },
+            daemon_wire_v1: revision1.limits(),
         },
-        daemon_wire_v1: revision1.limits(),
-    })
+    )
 }

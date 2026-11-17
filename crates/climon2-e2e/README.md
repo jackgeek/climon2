@@ -62,6 +62,21 @@ fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
 renaming the same archive binary, never by rebuilding/substituting it.
+The archive's session daemon has no controllable status clock
+(`CLIMON2_DAEMON_CLOCK`), so the monitor's real-session status order case
+returns early in archive mode, and its other real-session cases expect the
+status the daemon's own heuristic settles on (a session whose title changed
+needs attention ten quiet seconds later) instead of the frozen clock's Idle.
+The monitor's real-session scenarios of #108-#110 and #266 do not depend on
+that clock, so they run against the archive too: each of their sessions
+reports a root OSC 7501 `working` at start, which holds its status at Running
+on any clock (explicit detection; typed input's user work returns to it), a
+session that must stay Idle reports `clear` instead, and a scenario with
+several sessions starts the monitor empty, so the first session to appear
+is the initial selection whatever the statuses. Only the restoration
+scenario (`keys_and_resizes_during_a_restoration_reach_no_session`), which
+holds the daemon with its `CLIMON2_DAEMON_HOLD` test hook, also returns
+early in archive mode.
 
 From release two, set `CLIMON2_E2E_PREVIOUS_ARCHIVE` to the actual published
 previous release archive for that platform as well. The compatibility gate starts its real
@@ -175,12 +190,11 @@ the actual exit statuses and ends with `assert_clean()`. Ordering uses
 acknowledgement files and observable completion, never sleeps.
 
 Since #101 the installed client executable attaches through its own release's
-client library over daemon wire revision 1, the only protocol session daemons
-speak after hello since #104 retired the version-private one. These
-continuity scenarios and the packaged attach, kill, leave-policy and
-termination scenarios run unchanged on it: together they are the COM-01
-Monitor parity case and, after the retirement, the COM-01 Contract after
-retirement case for `list`, `attach` and `kill`.
+client library over daemon wire revision 1, not the private post-hello
+protocol. These continuity scenarios and the packaged attach, kill,
+leave-policy and termination scenarios run unchanged on it: together they are
+the COM-01 Monitor parity case, the evidence that gates deleting the private
+protocol.
 
 ## Specification mapping
 
@@ -201,7 +215,7 @@ sessions in `tests/headless.rs`.
 | #19/#25/#26 owned daemon SIGKILL, lost-connection/log suffix, real list stale cleanup | `killed_installed_daemon_reports_logs_and_list_reclaims_stale_session` |
 | #19/#21.7 named pre-command panic/never-ready, real five-second startup deadline | `debug_hook_startup_panic_and_never_ready_report_and_clean_up` |
 | #25/#28 headers, general/session linking, CLI/client PID continuity, daemon parent PID, TRACE/WARN propagation | `installed_log_headers_links_and_filters_survive_exec_handoffs` |
-| #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list; COM-01 (Contract after retirement): the peer that never sends a hello is closed at its deadline without a byte | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
+| #20 unrelated malformed/oversized raw peers and pending hello do not starve installed client/list | `installed_session_survives_raw_socket_abuse_and_pending_hello` |
 | ADR 0001/#19/#25 missing version-matched client after Ready, version/log diagnostic, startup owner cleanup | `missing_installed_client_after_ready_is_diagnostic_and_cleans_command` |
 | #21.17–20 crash mid-install/recovery while real client remains usable | `debug_hook_mid_install_crash_recovers_without_stranding_live_client` |
 | ADRs 0001/0002/#28 controlled side-by-side versions, exact frozen client argv, home/filter environment, current handoff; each wrapper execs a real client kept as `climon2-client` in a folder of its session's release beside that release's library, the second-release fixture's 0.0.97 for the new version (#101) | `controlled_versions_route_their_own_frozen_client_across_current_handoff` |
@@ -430,10 +444,15 @@ earlier run would, so they open on the empty state.
 | HLP-02 (empty monitor) the key introduction owns typed keys, prefixed keys, reports and pastes, none acts; Enter closes, prefix+? reopens, prefix+x exits | `the_key_introduction_is_modal_and_prefix_x_still_exits_from_it` |
 | HLP-02 (empty monitor) with Ctrl+[ as the prefix Escape cannot close the key introduction, prefix+x still exits | `with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix_x_still_exits` |
 | HLP-02 (empty monitor) a doubled prefix reaches the key introduction as one literal prefix: with Ctrl+M as the prefix, Enter Enter continues, the prefix and Space reach nothing, prefix+x still exits | `with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction` |
+| INP-01, INP-02, TRM-02, COM-04 (typed), EXT-03 (Ctrl+C) typed bytes reach the selected session exactly, identically when split into ten reads; prefix rules, replies and reports applied; cursor and keypad keys follow the application's modes; a lone Escape reaches the session at once and its key's rest follows; keys read with prefix+x arrive before exit | `typed_bytes_reach_the_selected_session_exactly_however_reads_split` |
+| INP-01 (live and too-small screens) global actions work; input that cannot reach the session is discarded, never buffered | `global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffered` |
+| INP-02, HLP-02 (Escape) a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives; Escape then a key in one read closes it and the key reaches the session (many frames: only the title itself is checked afterwards) | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` |
+| Spec #73 exit (owner decision on #109) a stuck session's unanswered key, read with prefix+x, holds exit no longer than the operation and shutdown deadlines | `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` |
+| COM-03 (queue full), COM-04 (chunks) a refusal is shown with the bytes not sent; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
-holds a packaged client between Control granted and `Ready`; daemon
-`a_resize_before_ready_replaces_the_restoration_and_leaves_the_alternate_screen_once`)
+holds a packaged client between `Granted` and `Ready`; daemon
+`resize_before_ready_replaces_the_restoration_period`)
 and the ambiguous selector (random GUIDs; CLI
 `a_selector_must_match_exactly_one_live_session`). Daemon raw-socket (6.2) and
 client bridge (6.3) scenarios are mapped in those crates' test doc comments.
@@ -478,8 +497,8 @@ remain in those crates' READMEs and test doc comments. In particular:
   `issue19_readiness_uses_real_five_second_absolute_deadline` in platform
   `tests/daemon.rs`. There is no public packaged empty-readiness hook.
 - Actual stalled-producer/lossless 8 MiB backpressure:
-  `saturation_backpressures_the_pty_without_blocking_probes_or_losing_bytes` in
-  daemon `tests/revision1/terminal.rs`, and
+  `saturation_backpressures_pty_without_blocking_probes_or_losing_bytes` in
+  daemon `tests/lifecycle.rs`, and
   `bounded_output_backpressure_drains_every_byte_before_exit` /
   `input_backpressure_is_bounded_and_lossless` in client `tests/bridge.rs`.
   The public packaged PTY driver always drains, so this crate does not claim

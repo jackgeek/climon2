@@ -106,7 +106,8 @@ geometry under the same daemon policy as an ordinary attach, which the
 describes: a larger host gets
 [Derived presentation](../../../GLOSSARY.md#restoration-and-presentation). The attachment
 takes control from any current
-[controller](../../../GLOSSARY.md#attachment-and-control),
+[controller](../../../GLOSSARY.md#attachment-and-control), private-protocol attachments
+included,
 and the hello `state` counts it like any attachment. During committed
 termination an interactive Open is rejected with `session_terminating` and
 ends its stream. Once the session has issued its last

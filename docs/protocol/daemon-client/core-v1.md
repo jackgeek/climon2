@@ -6,11 +6,10 @@ The [#63 terminal contract](../terminal-integration.md) adds optional core
 [Focus](request-focus.md) and
 [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation) of monitor-mode connections below;
 these amendments are also agreed, and the session daemon implements both.
-[Session daemons](../../../GLOSSARY.md#sessions) speak only this revision
-after [hello](../../../GLOSSARY.md#sessions): every
-[frame](../TERMS.md#frame) after it is a revision-1 frame, and the
-version-private protocol that came before it is retired, as the
-[post-hello boundary](post-hello.md) describes.
+The [private protocol](post-hello.md) is not this revision;
+[session daemons](../../../GLOSSARY.md#sessions) now speak both, and the
+first [frame](../TERMS.md#frame) after [hello](../../../GLOSSARY.md#sessions)
+selects one.
 Use the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
@@ -33,7 +32,7 @@ acquire and inherit control
 ([#89](https://github.com/jackgeek/climon2/issues/89)),
 `status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)), with
 output-driven status detection from [OSC](../TERMS.md#osc) 7501 program status and OSC 133
-shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)), and
+shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)),
 `notification-v1` and `progress-v1` from OSC 9, OSC 99, OSC 777 and OSC 9;4
 ([#98](https://github.com/jackgeek/climon2/issues/98)), and
 keeps that traffic within its [bounds](#implemented-bounds) with counters
@@ -48,8 +47,8 @@ changed, [Notification](event-notification.md#implemented-behavior),
 granted and revoked, Restoration begin and complete, Display, Geometry and
 [Command final](event-command-final.md#implemented-behavior) with the final
 status,
-with takeover,
-[hand-back](../../../GLOSSARY.md#attachment-and-control) and the
+with the private protocol's takeover,
+[hand-back](../../../GLOSSARY.md#attachment-and-control) and
 [leave policy](../../../GLOSSARY.md#attachment-and-control), the
 [promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations
 and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
@@ -60,13 +59,11 @@ requests without effects, as each request's page describes. The
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 for `status-v1` ([#95](https://github.com/jackgeek/climon2/issues/95)),
-for `notification-v1` and `progress-v1`
-([#98](https://github.com/jackgeek/climon2/issues/98)),
-with Command final, and for standalone Kill
-([#96](https://github.com/jackgeek/climon2/issues/96)), and the
-[client executable](../../../GLOSSARY.md#sessions) drives that library for
-ordinary attach and kill ([#100](https://github.com/jackgeek/climon2/issues/100),
-[#101](https://github.com/jackgeek/climon2/issues/101)). The
+with Command final and for standalone Kill
+([#96](https://github.com/jackgeek/climon2/issues/96)), and for
+`notification-v1` and `progress-v1`
+([#98](https://github.com/jackgeek/climon2/issues/98)); no other
+[client](../../../GLOSSARY.md#sessions) does yet. The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 
@@ -101,8 +98,9 @@ redundant negotiation exchange. Exact-release client/library/daemon matching
 remains mandatory and separate from support negotiation. Release numbers never
 imply support. Initial role rejection has no effects and ends that attempted
 role stream; later Open/Kill cannot repurpose an existing role.
-Every frame after hello is a revision-1 frame, the first one too, as the
-[post-hello boundary](post-hello.md) describes.
+Until the private protocol is retired, the first frame after hello selects
+the protocol by its type, as the [post-hello boundary](post-hello.md)
+describes.
 
 ## Framing and validation
 
@@ -174,8 +172,10 @@ number or null. Only the current normalized value is retained, not an archive.
 Command results preserve raw unsigned 32-bit normal exits, including future
 Windows values. Normal exit 143 and termination by signal 15 are different
 results. Signal numbers describe the source host, not local commands to send.
-Session daemons keep that distinction
-([#88](https://github.com/jackgeek/climon2/issues/88)).
+Session daemons keep that distinction on this revision
+([#88](https://github.com/jackgeek/climon2/issues/88)); only their
+[private protocol](post-hello.md) still folds a signal into 128 plus its
+number.
 
 ## Capability families
 
@@ -253,9 +253,9 @@ guarantee survival of a native monitor crash.
 and returns success only after daemon-confirmed creation. Zero-client survival
 lasts for that session's lifetime, even after later attachments disappear,
 until command completion or explicit Kill. That CLI spelling and lifetime are
-[implemented](../../monitor-lifecycle.md#headless-creation-and-existing-cli-kill):
-creation uses a private same-release daemon startup argument, not a wire
-message, and the frozen [hello reply](hello-reply.md)
+[implemented](../../monitor-lifecycle.md#headless-creation-and-existing-cli-kill)
+on the current private protocol: creation uses a private same-release daemon
+startup argument, not a wire message, and the frozen [hello reply](hello-reply.md)
 reports a headless session without attachments as `detached`. Existing
 `c2 kill <session>` ends headless sessions. Under this revision,
 succession stays as above for every session. The headless
@@ -381,8 +381,8 @@ Each request then checks its own arguments. Periods and restoration IDs are
 session-wide and only increase: every grant starts a new period with its
 first restoration, and a replacement restoration within a period, after the
 controller's host changed before readiness, gets a new restoration ID.
-Every attachment shares the same control, so the numbers one connection
-sees can skip. They never wrap or repeat: after the last value,
+Private-protocol attachments share the same control, so the numbers one
+connection sees can skip. They never wrap or repeat: after the last value,
 18446744073709551615, work that needs a new one is refused before its
 effects with `resource_limit`, as the [bounds](#implemented-bounds)
 describe.
@@ -510,7 +510,7 @@ The session daemon applies its existing per-connection policy to
 revision-1 connections, as daemon policy rather than wire values
 ([#90](https://github.com/jackgeek/climon2/issues/90)):
 
-- It serves at most 64 connections at once, passive
+- It serves at most 64 connections at once, of either protocol, passive
   monitor connections included; a further connection is closed unanswered.
 - Each connection's output queue holds at most 16 MiB, charging each
   queued frame's allocation, four-byte prefix included, and its place in
@@ -542,8 +542,8 @@ request can then increase it, so any is `invalid_request_id`. Once the last
 [control period](../../../GLOSSARY.md#attachment-and-control) or
 [restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) is
 issued, work that needs a new one is refused before its effects with
-`resource_limit`: an interactive [Open](request-open.md), an
-[Acquire](request-acquire.md) by anyone but the controller, and a
+`resource_limit`: an interactive [Open](request-open.md), a private attach,
+an [Acquire](request-acquire.md) by anyone but the controller, and a
 [Resize](request-resize.md) whose restoration would need a new ID. No
 registration is then promoted, and a departing controller hands control back
 to nobody: since no attachment can control again, each remaining one is
@@ -588,7 +588,7 @@ and after an early exit, whether the initial-attachment deadline, a Kill or
 a later attachment's Ready ends the session, no final
 without evidence (an unconfirmed hang-up, or the end of the command's output
 while it runs), and standalone Kill: its answer after termination and
-cleanup, later Kills joining one
+cleanup, Kills of both protocols joining one
 [hang-up grace](../../../GLOSSARY.md#attachment-and-control), its success
 after a session failure, and its partial result after a failed cleanup or
 an unconfirmed termination. For monitors they cover Acquire by a
@@ -612,9 +612,8 @@ and restoration ID. The daemon's lifecycle evidence
 revision too: startup and the hello deadline, exits, the final drain, the
 hang-up grace after every
 unexpected departure, Kill in its harder cases, terminal sizes, restoration,
-retention, PTY write ordering, saturation and the headless lifetime; the
-private-protocol tests it replaced were deleted with that protocol
-([#104](https://github.com/jackgeek/climon2/issues/104)). The rest remains future.
+retention, PTY write ordering, saturation and the headless lifetime, so the
+private-protocol tests that remain only repeat it. The rest remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent

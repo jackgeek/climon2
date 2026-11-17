@@ -92,9 +92,12 @@ test-only executable of the existing harness crate.
 crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It
 consumes `core`, `discovery` (#106), `platform` and `vt` (the only exception to
 [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)'s daemon-only
-`climon2-vt` rule) and never the CLI, client or daemon crates.
+`climon2-vt` rule: the release baseline, and since #108 each session's model
+and its read-only views for painting) and never the CLI, client or daemon
+crates.
 `climon2-test-term` consumes it only to unify `test-hooks` into the test build.
-Ratatui is a dependency of this crate alone; third-party crates are
+Ratatui (with `ratatui-core`, enabled for underline colours) is a dependency
+of this crate alone; third-party crates are
 deliberately excluded from this workspace-only diagram.
 
 **Current (#75):** the [client library](../GLOSSARY.md#sessions)'s `cdylib`,
@@ -158,10 +161,7 @@ Canonical monitor presentation and optional core Focus introduce no new crate.
 The platform-neutral encoder and validator for
 [daemon wire revision 1](protocol/daemon-client/core-v1.md) lives in
 `climon2-core`, which the daemon and client already consume, so it adds no
-crate or edge. Beside it, core's `protocol` module now holds only the frozen
-hello; retiring the version-private post-hello message set
-([#104](https://github.com/jackgeek/climon2/issues/104)) removed no crate or
-edge either. The agreed revision also
+crate or edge. The agreed revision also
 anticipates source-monitor session consumption and browser terminal consumption
 over future forwarding boundaries, shown in the artifact diagram. Their crate
 placement is unassigned; no new crate or Cargo edge is implied. The wire

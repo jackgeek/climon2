@@ -118,9 +118,8 @@ fn a_prefix_alone_decides_the_admitted_frame_length() {
 }
 
 /// COM-02 (codec case): revision 1 defines exactly the request types
-/// `0x30`–`0x39` and the server types `0x40`–`0x4d`; the retired private
-/// types such as Attach `0x10` and Kill `0x16`, and hello, are not among
-/// them.
+/// `0x30`–`0x39` and the server types `0x40`–`0x4d`. A session daemon that
+/// still speaks another post-hello protocol selects revision 1 by them.
 #[test]
 fn revision1_defines_the_request_and_server_types_only() {
     for code in [0x30, 0x37, 0x39, 0x40, 0x4c, 0x4d] {

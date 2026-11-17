@@ -31,8 +31,7 @@ or rejected. Without one, a directly started client reads and validates the
 
 Both operations go through this release's own
 [client library](#client-library-libclimon2_clientdylib-libclimon2_clientso)
-over daemon wire revision 1, the only protocol session daemons speak after
-hello since the version-private one was retired (#104): ordinary
+over daemon wire revision 1, never the private post-hello protocol: ordinary
 attach since #101 (`src/attachment.rs`, `src/bridge.rs`) and kill since #100
 (`src/kill.rs`); `src/embedded.rs` loads and drives the library for both.
 The executable loads `<executable home>/<version>/<library file>`, beside
@@ -624,7 +623,8 @@ no worker that could stall. Open
 `tests/bridge.rs` drives the real binary on real PTYs (#20, #101). Each test
 installs the client executable and the workspace's client library in a
 private version folder and answers as a revision-1 peer whose frames it writes
-by hand from the wire reference. They are the COM-01 Monitor parity case
+by hand from the wire reference. These are the private protocol's bridge
+tests, re-expressed over revision-1 peers: the COM-01 Monitor parity case
 (ordinary attach, input, resize, escape, detach and Kill parity), beside the
 packaged scenarios in `climon2-e2e`.
 

@@ -88,4 +88,5 @@ frame is sent as several Input requests, each with its own request ID.
 When the controller's input admission ends, by
 [revocation](../../../GLOSSARY.md#attachment-and-control), departure or
 termination, its input and Focus reports not yet written are discarded and
-an open application paste is closed with its end marker.
+an open application paste is closed with its end marker, as for an ordinary
+private-protocol attachment.
