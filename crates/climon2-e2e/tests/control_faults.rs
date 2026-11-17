@@ -11,132 +11,6 @@ mod support;
 use serde_json::{Value, json};
 use support::{Package, control::*, library::CHARGE, passive::*};
 
-/// What the fake daemon advertises: the real one's families, focus too.
-const ADVERTISED: [&str; 8] = [
-    "attach",
-    "kill",
-    "state-v1",
-    "client-startup-v1",
-    "daemon-wire-v1",
-    "monitor-v1",
-    "title-v1",
-    "focus-v1",
-];
-/// What an interactive Open of `interactive` selects from it.
-const ATTACHED: [&str; 3] = ["daemon-wire-v1", "title-v1", "focus-v1"];
-const PERIOD: u64 = 2;
-
-fn counter(value: u64) -> String {
-    value.to_string()
-}
-
-fn granted(period: u64, restoration: u64, reason: &str) -> Value {
-    send(
-        0x46,
-        json!({
-            "period": counter(period),
-            "restoration_id": counter(restoration),
-            "geometry": { "cols": 80, "rows": 24 },
-            "reason": reason,
-        }),
-    )
-}
-
-fn begin(period: u64, restoration: u64) -> Value {
-    send(
-        0x48,
-        json!({
-            "period": counter(period),
-            "restoration_id": counter(restoration),
-            "geometry": { "cols": 80, "rows": 24 },
-        }),
-    )
-}
-
-fn complete(period: u64, restoration: u64) -> Value {
-    send(
-        0x4a,
-        json!({ "period": counter(period), "restoration_id": counter(restoration) }),
-    )
-}
-
-fn revoked(period: u64, restoration: u64, reason: &str) -> Value {
-    send(
-        0x47,
-        json!({
-            "period": counter(period),
-            "restoration_id": counter(restoration),
-            "reason": reason,
-        }),
-    )
-}
-
-fn geometry(period: u64, cols: u64, rows: u64) -> Value {
-    send(
-        0x4b,
-        json!({ "period": counter(period), "geometry": { "cols": cols, "rows": rows } }),
-    )
-}
-
-/// A binary Display: two big-endian counters, then the bytes `hex`.
-fn shown(period: u64, restoration: u64, hex: &str) -> Value {
-    json!({ "send": { "type": 0x49, "hex": format!("{period:016x}{restoration:016x}{hex}") } })
-}
-
-/// The fake daemon's Response to the latest request of `kind`.
-fn answered(kind: &str, outcome: &str, result: Value, error: Value) -> Value {
-    response(&format!("${kind}"), outcome, result, error)
-}
-
-/// An attach as a real daemon sends it: Response, Initial metadata, then the
-/// grant of period 2, restoration 2 at 80x24, its restoration with the
-/// Display `41`, and the complete.
-fn attach_records(selected: &[&str]) -> Vec<Value> {
-    vec![
-        opened(selected),
-        initial(json!("t")),
-        granted(PERIOD, 2, "attach"),
-        begin(PERIOD, 2),
-        shown(PERIOD, 2, "41"),
-        complete(PERIOD, 2),
-    ]
-}
-
-/// A fake daemon that attaches with `ATTACHED`, answers a Leave detaching,
-/// and does `then` after each request of the kinds it names.
-fn attached_peer(then: Value) -> Value {
-    let mut peer = json!({
-        "hello": { "json": { "capabilities": ADVERTISED } },
-        "open": attach_records(&ATTACHED),
-        "leave": [leave_answer("ok", true, Value::Null)],
-    });
-    for (kind, actions) in then.as_object().unwrap() {
-        peer[kind] = actions.clone();
-    }
-    peer
-}
-
-/// One instance's steps: create against `peer` with `startup`, Open
-/// interactively, run, and drain through the attach's Restoration complete
-/// (labelled `attached-<name>`), then `then`.
-fn attached(name: &str, peer: Value, startup: Value, then: &[Value]) -> Vec<Value> {
-    let mut steps = vec![
-        json!({ "do": "create", "peer": peer, "startup": startup }),
-        json!({ "do": "submit", "request": interactive(1, 80, 24) }),
-        json!({ "do": "run" }),
-        json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE },
-                "as": format!("attached-{name}") }),
-    ];
-    steps.extend(then.iter().cloned());
-    steps
-        .into_iter()
-        .map(|mut step| {
-            step["instance"] = json!(name);
-            step
-        })
-        .collect()
-}
-
 /// Each control request under the authority the attach granted.
 fn commands(id: u64) -> [(&'static str, Value); 5] {
     [
@@ -148,33 +22,6 @@ fn commands(id: u64) -> [(&'static str, Value); 5] {
     ]
 }
 
-/// Where each instance's `finish` step is, by name, as steps are added.
-struct Plan {
-    steps: Vec<Value>,
-    finishes: Vec<(String, usize)>,
-}
-
-impl Plan {
-    fn new() -> Self {
-        Self {
-            steps: Vec::new(),
-            finishes: Vec::new(),
-        }
-    }
-
-    /// Adds an instance's steps, then its `finish`.
-    fn add(&mut self, name: &str, steps: Vec<Value>) {
-        self.steps.extend(steps);
-        self.finishes.push((name.to_owned(), self.steps.len()));
-        self.steps.push(json!({ "do": "finish", "instance": name }));
-    }
-
-    fn run(self, package: &Package) -> (Value, Vec<(String, usize)>) {
-        let root = root(package);
-        (script(package, &root, json!(self.steps)), self.finishes)
-    }
-}
-
 /// COM-02 and COM-03 Library control cases, local rejection: `submit`
 /// refuses each malformed control request synchronously with
 /// `invalid_argument`, retains nothing and never consumes its ID (an
@@ -184,8 +31,9 @@ impl Plan {
 /// generation zero, Focus of 2 or with a reserved
 /// byte set); Input of `chunk_bytes` whose charge exceeds `request_bytes`
 /// by one is `queue_full`, while Input charging exactly `request_bytes` is
-/// accepted. The accepted requests are then
-/// cancelled by shutdown, and nothing reaches the daemon.
+/// accepted. The accepted request is then cancelled by shutdown itself,
+/// before it returns and before `run`: the request queue is empty at once
+/// and the cancellation is the only record. Nothing reaches the daemon.
 #[test]
 fn installed_library_rejects_malformed_control_requests_locally() {
     let package = Package::new();
@@ -225,6 +73,7 @@ fn installed_library_rejects_malformed_control_requests_locally() {
             "bytes": { "hex": "41424344" } }, "as": "at" }),
         json!({ "do": "snapshot", "as": "queued" }),
         json!({ "do": "shutdown" }),
+        json!({ "do": "snapshot", "as": "cancelled" }),
         json!({ "do": "run" }),
         json!({ "do": "finish", "as": "finished" }),
     ]);
@@ -241,6 +90,11 @@ fn installed_library_rejects_malformed_control_requests_locally() {
     let queued = &labelled(&report, &steps, "queued")["output"];
     assert_eq!(queued["request_records"], 1, "{queued:#}");
     assert_eq!(queued["request_bytes"], REQUEST + 4, "{queued:#}");
+    let cancelled = &labelled(&report, &steps, "cancelled")["output"];
+    assert_eq!(cancelled["request_records"], 0, "{cancelled:#}");
+    assert_eq!(cancelled["request_bytes"], 0, "{cancelled:#}");
+    assert_eq!(cancelled["operations"], 0, "{cancelled:#}");
+    assert_eq!(cancelled["event_records"], 1, "{cancelled:#}");
     let (records, terminal) = finished(labelled(&report, &steps, "finished"));
     assert_eq!(records.len(), 1, "{records:#?}");
     assert_rejected(&records[0], 1, 1, ORIGIN_LIBRARY, "cancelled");
@@ -1159,12 +1013,13 @@ fn installed_library_relays_one_command_final_after_the_initial_metadata() {
 /// COM-03 Library and Fault (backpressure is the caller's, never a false
 /// timeout): while a Display waits for room in `event_bytes`, the library
 /// reads nothing, so an answer behind it cannot arrive; the Ready
-/// waiting for it is not timed out at `operation_ms` (1 s). Instead,
+/// waiting for it is not timed out at `operation_ms` (3 s). Instead,
 /// once the waiting Display has had no room for `delivery_stall_ms`
-/// (2 s), the connection fails with library `delivery_stalled`: the
+/// (6 s), the connection fails with library `delivery_stalled`: the
 /// Ready stays unanswered for the caller's pending ledger, never
 /// fabricated, and what was queued before is still delivered, then the
-/// diagnostic, whose static text costs only its record.
+/// diagnostic. Its error states how many records were still undelivered:
+/// the two `chunk_bytes` records of the second Display (LIM-02, #99).
 #[test]
 fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() {
     let package = Package::new();
@@ -1176,7 +1031,7 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
     let peer = attached_peer(json!({
         "ready": [
             shown(PERIOD, 2, &big),
-            shown(PERIOD, 2, &big),
+            shown(PERIOD, 2, &big.repeat(2)),
             answered(
                 "ready",
                 "ok",
@@ -1188,9 +1043,10 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
     let limits = json!({
         "chunk_bytes": chunk,
         "metadata_record_bytes": metadata,
-        "event_bytes": reserve + one_display + CHARGE,
-        "operation_ms": 1000,
-        "delivery_stall_ms": 2000,
+        "event_bytes": reserve + one_display + CHARGE + 128,
+        "progress_bytes": 1,
+        "operation_ms": 3000,
+        "delivery_stall_ms": 6000,
     });
     let then = [
         json!({ "do": "submit", "request": ready(2, 1, CURRENT) }),
@@ -1206,6 +1062,8 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
     assert_eq!(tags(&records), [DISPLAY, DIAGNOSTIC], "{records:#?}");
     assert_eq!(display(&records, 1, [PERIOD, 2]), big);
     assert_diagnostic(&records[1], 1, ORIGIN_LIBRARY, "delivery_stalled");
+    let message = records[1]["diagnostic"]["message"].as_str().unwrap();
+    assert!(message.ends_with("undelivered records: 2"), "{message}");
     assert_terminal(
         terminal,
         1,
@@ -1221,10 +1079,10 @@ fn installed_library_fails_a_stalled_delivery_without_timing_out_its_commands() 
 
 /// COM-03 Library and Fault (a wait for event room ends with it): a
 /// Display split into two `chunk_bytes` records, of which only the first
-/// fits `event_records`, waits until the caller releases what it drained;
+/// fits `event_records` less its one-record progress reserve, waits until the caller releases what it drained;
 /// once queued, nothing waits, so no stall deadline remains, and a Ready
 /// the daemon never answers then reports `timeout` at `operation_ms`
-/// (300 ms), well before `delivery_stall_ms` (1 s) from the wait.
+/// (300 ms), well before `delivery_stall_ms` (5 s) from the wait.
 #[test]
 fn installed_library_times_commands_out_again_once_waiting_records_are_queued() {
     let package = Package::new();
@@ -1234,9 +1092,10 @@ fn installed_library_times_commands_out_again_once_waiting_records_are_queued() 
     peer["open"] = json!(records);
     let limits = json!({
         "chunk_bytes": 1,
-        "event_records": 7,
+        "event_records": 8,
+        "progress_records": 1,
         "operation_ms": 300,
-        "delivery_stall_ms": 1000,
+        "delivery_stall_ms": 5000,
     });
     let steps = vec![
         json!({ "do": "create", "peer": peer, "startup": { "limits": limits } }),

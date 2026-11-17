@@ -20,7 +20,7 @@ use climon2_core::{
 use std::{
     fs,
     num::NonZeroU16,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -400,26 +400,25 @@ fn a_held_session_loop_reads_no_frame_until_released() {
     session.finish();
 }
 
-/// CTL-04 (Fault, through the `monitor-overflow` and `CLIMON2_DAEMON_HOLD`
-/// test hooks: a registration lost to its own queue's overflow racing a
-/// promotion). The daemon reads, in one pass, a registration's request
-/// whose Response overflows its output queue, then the final attachment's
-/// Leave. The departing registration is removed before succession, so the
-/// Leave promotes nobody: the registration's stream just ends, the
-/// attachment leaves as an accepted detach, and the session stays
-/// detached rather than ending at the lost registration's departure.
-#[test]
-fn a_registration_lost_to_an_overflow_is_never_promoted() {
+/// A session of the `lines` fixture under the `rejection-overflow` and
+/// `CLIMON2_DAEMON_HOLD` test hooks, and the path that holds its input.
+fn overflowing() -> (Session, PathBuf) {
     let mut hold = None;
-    let mut session = Session::configured("lines", |command, home| {
-        command.env("CLIMON2_DAEMON_FAULT", "monitor-overflow");
+    let session = Session::configured("lines", |command, home| {
+        command.env("CLIMON2_DAEMON_FAULT", "rejection-overflow");
         hold = Some(home.join("hold"));
         command.env("CLIMON2_DAEMON_HOLD", home.join("hold"));
     });
-    let mut watching = Attached::registered(&session);
-    let mut controller = ready_attachment(&session, &[]);
-    in_one_pass(&hold.unwrap(), || {
-        watching.send(|request_id| {
+    (session, hold.unwrap())
+}
+
+/// The daemon reads, in one pass, a repeated Open on `lost`, whose
+/// rejection overflows its output queue, then the controller's Leave. The
+/// controller leaves as an accepted detach, and `lost`'s stream just ends:
+/// nothing, no grant either, reaches it after the overflow.
+fn lost_then_left(hold: &Path, lost: &mut Attached, controller: &mut Attached) {
+    in_one_pass(hold, || {
+        lost.send(|request_id| {
             let mut again = open(1, &[], &[], Mode::Monitor);
             again.request_id = request_id;
             again.to_frame()
@@ -431,13 +430,122 @@ fn a_registration_lost_to_an_overflow_is_never_promoted() {
     };
     assert_eq!(controller.response(), Outcome::Ok(left));
     controller.closed();
-    watching.closed();
+    lost.closed();
+}
+
+/// The session advertises itself detached, and a later attachment still
+/// reaches its command, which then exits.
+fn stays_detached(mut session: Session) {
     assert_eq!(
         crate::advertised_state(&session),
         (Lifecycle::Detached, 0, false)
     );
 
     end_through_attachment(&mut session, b"end\n", &exited(0));
+}
+
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: a registration lost to its own queue's overflow racing a
+/// promotion). The daemon reads, in one pass, a registration's request
+/// whose Response overflows its output queue, then the final attachment's
+/// Leave. The departing registration is removed before succession, so the
+/// Leave promotes nobody: the registration's stream just ends, the
+/// attachment leaves as an accepted detach, and the session stays
+/// detached rather than ending at the lost registration's departure.
+#[test]
+fn a_registration_lost_to_an_overflow_is_never_promoted() {
+    let (session, hold) = overflowing();
+    let mut watching = Attached::registered(&session);
+    let mut controller = ready_attachment(&session, &[]);
+    lost_then_left(&hold, &mut watching, &mut controller);
+    stays_detached(session);
+}
+
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: an attachment lost to its own queue's overflow racing a
+/// hand-back). The daemon reads, in one pass, a non-controlling
+/// attachment's request whose Response overflows its output queue, then
+/// the controller's Leave. The lost attachment departs first, so the Leave
+/// hands control back to nobody: the lost attachment receives no grant,
+/// and the ordinary session follows its leave policy as if the lost
+/// attachment had left before the controller. It stays detached after the
+/// final explicit detach rather than ending at the lost attachment's
+/// departure.
+#[test]
+fn an_attachment_lost_to_an_overflow_never_inherits_control() {
+    let (session, hold) = overflowing();
+    let mut lost = ready_attachment(&session, &[]);
+    let mut controller = Attached::open(&session, geometry(91, 37), &[], geometry(91, 37));
+    lost.revoked(RevocationReason::Takeover);
+    controller.confirm_ready();
+    lost_then_left(&hold, &mut lost, &mut controller);
+    stays_detached(session);
+}
+
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: an attachment lost to its own queue's overflow racing a
+/// promotion). With a registration behind it, a non-controlling
+/// monitor-mode attachment lost to its queue's overflow in the pass that
+/// reads the controller's Leave departs first: the registration is the
+/// next candidate and is promoted (`successor`) under the very next
+/// control period, 4, so no period went to the lost attachment, which
+/// receives no grant.
+#[test]
+fn an_attachment_lost_to_an_overflow_yields_to_the_next_registration() {
+    let (mut session, hold) = overflowing();
+    let mut lost = Attached::registered(&session);
+    let mut controller = ready_attachment(&session, &[]);
+    lost.acquire(geometry(91, 37));
+    controller.revoked(RevocationReason::Takeover);
+    controller.acquire(geometry(91, 37));
+    lost.revoked(RevocationReason::Takeover);
+    controller.confirm_ready();
+    let mut successor = Attached::registered(&session);
+    lost_then_left(&hold, &mut lost, &mut controller);
+    successor.granted(GrantReason::Successor, geometry(91, 37));
+    assert_eq!(successor.authority().period, counter(4));
+    assert_eq!(
+        crate::advertised_state(&session),
+        (Lifecycle::Attached, 1, true)
+    );
+    successor.confirm_ready();
+    successor.typed(b"inherited\n");
+    crate::wait_line(&session, "inherited 91x37");
+    drop(successor);
+    session.finish();
+    assert_eq!(recorded(&session), "inherited 91x37\n");
+}
+
+/// CTL-04 (Fault, through the `rejection-overflow` and `CLIMON2_DAEMON_HOLD`
+/// test hooks: a controller lost to its own queue's overflow racing a
+/// registration's Leave). The daemon reads, in one pass, the final
+/// controller's request whose Response overflows its output queue, then a
+/// registration's Leave. The loss promotes the registration before its
+/// Leave is read, so the registration leaves as an attachment: its grant
+/// (`successor`) comes first, then `left` with `attachment_detached: true`,
+/// and the session stays detached after that explicit detach.
+#[test]
+fn a_controller_lost_to_an_overflow_promotes_before_a_later_leave() {
+    let (session, hold) = overflowing();
+    let mut lost = ready_attachment(&session, &[]);
+    let mut watching = Attached::registered(&session);
+    in_one_pass(&hold, || {
+        lost.send(|request_id| {
+            let mut again = open(1, &[], &[], Mode::Monitor);
+            again.request_id = request_id;
+            again.to_frame()
+        });
+        watching.send(|request_id| Leave { request_id }.to_frame());
+    });
+    lost.closed();
+    watching.grant(GrantReason::Successor, geometry(91, 37));
+    assert_eq!(watching.authority().period, counter(2));
+    let left = Success::Left {
+        attachment_detached: true,
+    };
+    assert_eq!(watching.response(), Outcome::Ok(left));
+    watching.closed();
+    stays_detached(session);
 }
 
 /// CTL-04 (Fault, a promotion racing a committed Kill) and COM-03

@@ -6,7 +6,10 @@ monitor reports its effective values
 ([#82](https://github.com/jackgeek/climon2/issues/82)). At startup the monitor
 alone also refuses limits that cannot hold one session's mandatory current
 model and recent page
-([#167](https://github.com/jackgeek/climon2/issues/167)). Operating-system
+([#167](https://github.com/jackgeek/climon2/issues/167)). `exec` passes the
+notification assembly limits to the session daemon, which enforces them
+with the release-constant notification text and record bounds
+([#98](https://github.com/jackgeek/climon2/issues/98)). Operating-system
 limits are left to admission
 ([#120](https://github.com/jackgeek/climon2/issues/120)). The client library
 rejects native instance limits it cannot honour, bounds worker cleanup by
@@ -16,7 +19,11 @@ connections it also enforces its request and event queues, outstanding
 operations and their outcome reserves, deliveries, drain ceilings,
 `wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
 `leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)), and
-`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)). The
+`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)). It
+keeps the progress reserve inside the event allowance for protected
+progress, bounds each restoration by `restoration_stall_ms` and
+`restoration_total_ms`, and never wraps its snapshot counters or wire
+request IDs ([#99](https://github.com/jackgeek/climon2/issues/99)). The
 session daemon keeps revision-1 connections within its own existing bounds,
 emits frames, titles and metadata records within the derived release
 constants, and never wraps request IDs, control periods or restoration IDs
@@ -147,8 +154,11 @@ An illustrative override is:
 ```
 
 The monitor and `exec` validate this configuration, the monitor alone also
-against its terminal models' mandatory allocation (above), but no limit is
-enforced yet. It does not modify daemon `scrollback.max_rows`.
+against its terminal models' mandatory allocation (above), but no other
+limit is enforced yet. Only `exec` passes `payload.assembly_records`,
+`payload.assembly_bytes` and `deadlines.assembly_ms` on, to the daemon it
+starts (#98); a monitor's configuration never reconfigures a running daemon,
+and it does not modify daemon `scrollback.max_rows`.
 
 ## Memory, history and admission
 

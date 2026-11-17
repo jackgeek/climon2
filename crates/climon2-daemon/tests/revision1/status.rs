@@ -752,7 +752,7 @@ fn a_session_silent_from_startup_stays_idle_and_cleared() {
     let (later, initial) = Watcher::open(&session);
     assert_eq!(initial, status(Idle, 0, None));
     drop((watcher, later));
-    crate::kill(session);
+    super::end_by_kill(session);
 }
 
 /// STA-01 (Contract, same-turn dispatch, through the `test-hooks` turn

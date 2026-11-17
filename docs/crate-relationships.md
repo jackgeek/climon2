@@ -161,7 +161,10 @@ Canonical monitor presentation and optional core Focus introduce no new crate.
 The platform-neutral encoder and validator for
 [daemon wire revision 1](protocol/daemon-client/core-v1.md) lives in
 `climon2-core`, which the daemon and client already consume, so it adds no
-crate or edge. The agreed revision also
+crate or edge. Beside it, core's `protocol` module now holds only the frozen
+hello; retiring the version-private post-hello message set
+([#104](https://github.com/jackgeek/climon2/issues/104)) removed no crate or
+edge either. The agreed revision also
 anticipates source-monitor session consumption and browser terminal consumption
 over future forwarding boundaries, shown in the artifact diagram. Their crate
 placement is unassigned; no new crate or Cargo edge is implied. The wire

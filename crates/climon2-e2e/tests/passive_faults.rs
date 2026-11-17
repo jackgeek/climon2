@@ -276,39 +276,37 @@ fn installed_library_rejects_an_open_the_session_cannot_honour_before_any_role()
 }
 
 /// COM-01 Fault (optional families intersect three ways, and the selection
-/// must be one the request allows): a daemon advertising `notification-v1`
-/// and `progress-v1` but not `title-v1` is asked for no optional family at all,
-/// since the library relays neither and the daemon lacks titles; its Initial
-/// metadata reports the title unavailable, never a fabricated empty one.
+/// must be one the request allows): a daemon advertising `progress-v1` and
+/// `focus-v1` but not `title-v1` is asked for `progress-v1` alone, the one
+/// optional family both sides support, since the caller did not ask for
+/// focus and the daemon lacks titles; its Initial metadata reports the
+/// title unavailable, never a fabricated empty one, and the progress the
+/// selection makes available (#98).
 /// A daemon that selects a family the Open did not request, or omits a
 /// required one, breaks the stream (`invalid_record`).
 #[test]
 fn installed_library_selects_only_families_both_sides_support() {
     let package = Package::new();
     let root = root(&package);
-    let advertised = [
-        "daemon-wire-v1",
-        "monitor-v1",
-        "notification-v1",
-        "progress-v1",
-    ];
-    let unavailable = send(
+    let advertised = ["daemon-wire-v1", "monitor-v1", "progress-v1", "focus-v1"];
+    let with_progress = ["daemon-wire-v1", "monitor-v1", "progress-v1"];
+    let untitled = send(
         0x41,
         json!({
             "title": { "available": false, "value": null },
             "status": { "available": false, "value": null },
-            "progress": { "available": false, "value": null },
+            "progress": { "available": true, "value": { "state": "none", "percent": null } },
             "command_result": null,
         }),
     );
     let intersected = json!({
         "hello": hello(json!({ "capabilities": advertised })),
-        "open": [opened(&REQUIRED), unavailable],
+        "open": [opened(&with_progress), untitled],
         "leave": [leave_answer("ok", false, Value::Null)],
     });
     let unrequested = json!({ "open": [opened(&["daemon-wire-v1", "monitor-v1", "status-v1"])] });
     let incomplete = json!({ "open": [opened(&["title-v1"])] });
-    let optional = ["title-v1", "notification-v1", "progress-v1"];
+    let optional = ["title-v1", "progress-v1"];
     let steps = json!([
         { "do": "create", "instance": "a", "peer": intersected },
         { "do": "submit", "instance": "a", "request": open(1, &REQUIRED, &optional) },
@@ -334,7 +332,7 @@ fn installed_library_selects_only_families_both_sides_support() {
             "request_id": "1",
             "revision": 1,
             "required_capabilities": REQUIRED,
-            "optional_capabilities": [],
+            "optional_capabilities": ["progress-v1"],
             "mode": "monitor",
             "geometry": null,
         })
@@ -344,9 +342,14 @@ fn installed_library_selects_only_families_both_sides_support() {
     assert_eq!(response["result_tag"], OPENED);
     assert_eq!(
         response["result"],
-        json!({ "connection_id": CONNECTION_BYTES, "selected": REQUIRED })
+        json!({ "connection_id": CONNECTION_BYTES, "selected": with_progress })
     );
     assert_eq!(records[1]["metadata"]["title"], title(UNAVAILABLE, None));
+    assert_eq!(
+        records[1]["metadata"]["progress"],
+        json!({ "available": 1, "reserved": 0, "value": {
+            "state": PROGRESS_NONE, "percent_present": 0, "percent": 0, "reserved": 0 } })
+    );
     let (_, terminal) = finished(step(&report, 5));
     assert_left(terminal, 1);
     for finish in [9, 13] {
@@ -375,7 +378,7 @@ fn installed_library_selects_only_families_both_sides_support() {
 /// a title before the Open's response or before the Initial metadata, an
 /// Initial metadata reporting a family nobody selected, a title when
 /// `title-v1` is not selected, a Status changed when `status-v1` is not,
-/// or a Notification, which this library never selects
+/// or a Notification when `notification-v1` is not
 /// (`invalid_record`) each fail the connection:
 /// a transport diagnostic, then failed terminal evidence with passive retry,
 /// the connection closed and no Leave needed. A title one byte over
@@ -634,8 +637,6 @@ enum Expect {
     Left(u64),
     /// The Initial metadata.
     Metadata,
-    /// A Title changed record.
-    Title,
     /// A failed Leave `id` whose known result detached an attachment.
     FailedLeft(u64, (u64, &'static str)),
     /// A Response to `id` with `outcome`, no result and an error.
@@ -661,7 +662,6 @@ fn assert_records(name: &str, records: &[Value], expected: &[Expect]) {
                 assert_eq!(response["error"], no_error(), "{name}: {record:#}");
             }
             Expect::Metadata => assert_header(record, INITIAL_METADATA, 1),
-            Expect::Title => assert_header(record, TITLE, 1),
             Expect::FailedLeft(id, (origin, code)) => {
                 let response = assert_response(record, 1, *id, FAILED);
                 assert_eq!(response["result_tag"], LEFT, "{name}: {record:#}");
@@ -919,14 +919,13 @@ fn installed_library_reports_lost_and_late_answers_truthfully_without_replay() {
                 json!({ "open": [
                     opened(&SELECTED),
                     initial(json!("t")),
-                    title_changed(json!("x")),
                     send(0x4d, daemon_error("internal_error")),
                 ] }),
-                json!({ "limits": { "event_records": 3 } }),
+                json!({ "limits": { "event_records": 2, "progress_records": 1 } }),
                 &alone,
             ),
             drained: None,
-            records: vec![Expect::Opened(1), Expect::Metadata, Expect::Title],
+            records: vec![Expect::Opened(1), Expect::Metadata],
             terminal: (CLIENT_FAILED, RETRY_PASSIVE, LEAVE_NOT_REQUIRED),
             error: Some(daemon("internal_error")),
             kinds: &["hello", "open"],
@@ -1246,7 +1245,7 @@ fn installed_library_never_raises_sigpipe_in_its_embedder() {
         "open": [opened(&SELECTED), initial(json!("t")), title_changed(json!("x")), "close"],
     });
     let steps = json!([
-        { "do": "create", "peer": gone, "startup": { "limits": { "event_records": 2 } } },
+        { "do": "create", "peer": gone, "startup": { "limits": { "event_records": 2, "progress_records": 1 } } },
         { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
         { "do": "run" },
         { "do": "await_snapshot", "gauge": "event_records", "value": 2 },
