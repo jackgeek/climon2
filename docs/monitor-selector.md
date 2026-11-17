@@ -266,16 +266,19 @@ running (owner decision on #115).
 Animation never blocks session switching, selector input, resize or exit.
 
 Accepted prototype timings are 400 ms drawing, 2 seconds title hold,
-300 ms text fade, then 400 ms erasure. These are visual trials;
+300 ms text fade, then 400 ms erasure. The hold starts when the frame showing
+the full title has finished writing to the host (owner decision on #115,
+2026-11-17). These are visual trials;
 final operational/rendering/queue budgets are specified in
 [operational limits](monitor-operational-limits.md#ui-sampling-and-responsiveness).
 Too-small screens remain explicit, retain clients/control/models and global
 commands, and never send invalid application geometry or buffer input.
 
 `monitor.bell` is boolean, default true. It controls one
-[host bell](protocol/monitor-host/bell.md) when each toast first begins drawing,
-including initial and queued presentations, not every frame, hint change,
-dismissal or coalesced request. Missing file/object/field uses the default.
+[host bell](protocol/monitor-host/bell.md) when each toast's full title is
+first shown, once that frame has been written to the host, including initial
+and queued presentations, not every frame, resize, hint change, dismissal or
+coalesced request, and not for a toast dismissed before its title showed. Missing file/object/field uses the default.
 Read one [climon2-home](../GLOSSARY.md#installation)
 [JSONC](protocol/TERMS.md#jsonc) snapshot before terminal setup; wrong types/null,
 duplicate known fields or unreadable/malformed input fail explicitly.

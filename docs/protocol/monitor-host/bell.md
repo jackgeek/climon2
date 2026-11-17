@@ -21,9 +21,13 @@ wrong types/null and duplicate known fields fail, and there is no live reload.
 Unknown/unrelated settings are ignored. False suppresses this byte, not the
 toast or [OSC](../TERMS.md#osc) 7501 reporting.
 
-Send once per presentation, including initial and queued toasts when they
-actually become visible. Do not send per frame, redraw, resize, hint toggle,
-dismissal or coalesced request. A toast that never begins drawing sends no bell.
+Send once per presentation, including initial and queued toasts, when the
+frame first showing the toast's full title (with any ellipsis) has finished
+writing to the host, the moment its title hold starts (owner decision on
+[#115](https://github.com/jackgeek/climon2/issues/115), 2026-11-17). Do not
+send per frame, redraw, resize, hint toggle, dismissal or coalesced request.
+A toast dismissed or erased before its full title was shown sends no bell,
+and neither does one that never begins drawing.
 No acknowledgement is expected, and successful writing does not prove an audible
 sound: host settings may suppress it or display a visual bell.
 The host may independently sound on program-status changes.

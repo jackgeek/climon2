@@ -553,8 +553,14 @@ sessions list` follows the three in its place, and every later one coalesces
 into it until it shows; nothing fails a notification stream or connection.
 There is no toast setting.
 The selector's accepted visual timings are 400 ms border drawing, 2000 ms title
-hold, 300 ms text fade and 400 ms erasure. Use elapsed time and skip obsolete
-animation paints; never accumulate frames or block input/exit. Over-limit search/
+hold, 300 ms text fade and 400 ms erasure. The hold starts when the frame
+showing the full title (with any ellipsis) has finished writing to the host,
+and the toast's one bell rings then (owner decision on #115, 2026-11-17): a
+host that accepts output late still sees every title for its whole hold.
+Drawing, fading and erasure use elapsed time and skip obsolete animation
+paints; never accumulate frames or block input/exit. The host write itself
+still blocks the monitor while the host refuses output; making it
+non-blocking is follow-up work for render pacing (#119). Over-limit search/
 paste text is rejected visibly, without leaking to an application.
 
 Snapshot accounting permits one retained viewport character baseline and one

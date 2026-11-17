@@ -7194,8 +7194,12 @@ fn a_notification_storm_stays_within_the_toast_bound_while_input_responds() {
     }
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
-    let rung = bells(&terminal);
-    assert!((1..=5).contains(&rung), "{rung} bells");
+    // The first toast's bell rings once its title has been written (owner
+    // decision on #115, 2026-11-17).
+    terminal
+        .wait_for_host_signals(TIMEOUT, |signals| signals.contains(&HostSignal::Bell))
+        .unwrap();
+    assert!(bells(&terminal) <= 5, "{} bells", bells(&terminal));
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     assert!(bells(&terminal) <= 5, "{} bells", bells(&terminal));
@@ -7926,28 +7930,19 @@ fn episode_status(state: &str, episode: u64, second: u32) -> Act {
 /// acquiring or acknowledging: the selection, its control and its pending
 /// attention stay. Opening the selector and the key introduction toasts
 /// nothing again: the pending episodes were toasted. One bell rings as each
-/// toast begins, six in all. Pending's Initial metadata waits until the
-/// host shows the startup progress, so its toast begins once the host has
-/// read the monitor's startup output: a toast's paints follow elapsed time,
-/// skipping obsolete ones (operational limits), so a host still reading
-/// that output when the toast began could miss its every held frame.
+/// toast's full title is first shown, six in all. Pending's toast begins
+/// while the host is still reading the monitor's startup output: its hold
+/// and bell wait for its title to be written (owner decision on #115,
+/// 2026-11-17), so it is seen however slowly the host reads.
 #[test]
 fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
     let package = Package::new();
     without_introduction(&package);
     // The acquisition initial selection starts is never granted, nor timed
-    // out while the test runs, and collection waits for Pending's client
-    // while the test holds it.
-    limits_config(
-        &package,
-        json!({"deadlines": {"start_ms": 120_000, "operation_ms": 120_000}}),
-    );
+    // out while the test runs.
+    limits_config(&package, json!({"deadlines": {"operation_ms": 120_000}}));
     let home = package.isolation.home().to_owned();
-    let (open, go, end) = (
-        home.join("pending.go"),
-        home.join("burst.go"),
-        home.join("end.go"),
-    );
+    let (go, end) = (home.join("burst.go"), home.join("end.go"));
     let ear = Ear::default();
     let created = "2026-01-01T00:00:00.000Z";
     let start = |suffix: u8, answer: Answer| {
@@ -7959,15 +7954,12 @@ fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
         Some(exited(0)),
         vec![],
     );
-    let pending = serving(vec![
-        Act::Await(open.clone()),
-        opened_with(true),
-        initial_metadata(
-            "pending",
-            Some(wire_status("needs_attention", &utc(2))),
-            None,
-        ),
-    ]);
+    let pending = with_status(
+        "pending",
+        wire_status("needs_attention", &utc(2)),
+        None,
+        vec![],
+    );
     let mut burst = vec![Act::Await(go.clone())];
     for episode in 1..=6u32 {
         if episode > 1 {
@@ -7996,14 +7988,6 @@ fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
     let later = with_status("later", wire_status("running", &utc(3)), None, burst);
     let daemons = [start(0xe1, known), start(0xe2, pending), start(0xe3, later)];
     let mut terminal = outer(&package, "c2 monitor");
-    // Collection waits for Pending alone; its attention is still pending
-    // at startup, in its client's first Initial metadata.
-    let progress = [
-        "Connecting to 3 sessions (2 ready)",
-        "Press Ctrl+] then x to exit.",
-    ];
-    shows(&mut terminal, &empty_monitor(ROWS, COLS, &progress));
-    fs::write(&open, b"").unwrap();
     let top = session_top_row(
         usize::from(COLS),
         "pending",
@@ -8031,8 +8015,9 @@ fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
 
     terminal.send("\x1ds").unwrap();
     listed_with(&terminal, ATTENTION, "E6");
-    // A toast the menu brought would begin with the frame that opened it,
-    // its bell before the search's next frame.
+    // A toast the menu brought would begin with the frame that opened it
+    // and ring once its title showed: no toast shows, five bells stay
+    // five, and the sixth is E6's.
     terminal.send("p").unwrap();
     shows_row(&mut terminal, "║p ");
     terminal.send(ESCAPE).unwrap();
