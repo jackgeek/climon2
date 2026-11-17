@@ -21,7 +21,14 @@ use climon2_core::{
     hello::{SessionState, advertise_revision1},
     protocol::{Frame, HANGUP_GRACE, HelloReply, PROTOCOL_VERSION, PTY_DRAIN_CAP, TerminalSize},
     title::default_title,
+<<<<<<< HEAD
     wire::{CommandResult, Counter, GrantReason, Notification, Progress, RevocationReason, Status},
+=======
+    wire::{
+        CommandResult, Counter, GrantReason, Notification, OperationalCode, Progress,
+        RevocationReason, Status,
+    },
+>>>>>>> origin/feature/monitor-impl
 };
 use climon2_platform::{
     peer,
