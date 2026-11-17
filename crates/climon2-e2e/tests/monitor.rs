@@ -2221,6 +2221,12 @@ fn discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap()
     package.assert_clean();
 }
 
+/// [`titled_hold`], reporting a root OSC 7501 `clear` after the title: the
+/// session stays Idle, never needing attention, on any clock.
+fn quiet_hold(title: &str) -> String {
+    titled_hold(title).replacen("; until", &format!("; {}; until", report("clear")), 1)
+}
+
 /// Bash that sets its session's title to `title`, then holds as
 /// [`headless`]'s scripts do.
 fn titled_hold(title: &str) -> String {
@@ -2538,11 +2544,12 @@ fn cursor_at(terminal: &Terminal, row: usize, column: usize) {
     }
 }
 
-/// Opens the selector once `label`'s session is connected (listed with its
-/// [`STATUS`]), moves the highlight `downs` rows down
+/// Opens the selector once `label`'s session is connected (listed
+/// [`RUNNING`], as every session these scenarios select reports
+/// [`working`]), moves the highlight `downs` rows down
 /// from the first and selects that row with Enter.
 fn select(terminal: &mut Terminal, label: &str, downs: usize) {
-    select_as(terminal, STATUS, label, downs);
+    select_as(terminal, RUNNING, label, downs);
 }
 
 /// [`select`] for a row listed with `status`.
@@ -2619,7 +2626,7 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
     let package = Package::new();
     without_introduction(&package);
     let script = r#"printf '\033]2;Paint\007plain \033[31mred\033[0m \033[1;44mbold\033[0m \xe7\x95\x8ce\xcc\x81\r\n\033[3;5H'; until [ -e "$HOME/more" ] || [ "$SECONDS" -ge 120 ]; do sleep 0.05; done; printf 'MORE'"#;
-    headless(&package, script, "finish");
+    headless(&package, &working(script), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     let unselected = empty_monitor(
         ROWS,
@@ -2631,7 +2638,7 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
     let top = session_top_row(
         usize::from(COLS),
         "Paint",
-        &[STATUS, CONTROLLING, SESSIONS_HINT],
+        &[RUNNING, CONTROLLING, SESSIONS_HINT],
     );
     top_row_is(&mut terminal, &top);
     // The host's row text has each cell's character alone, and a blank for
@@ -2681,9 +2688,9 @@ fn enter_selects_and_acquires_a_session_and_paints_it_live() {
         .unwrap();
     cursor_at(&terminal, 3, 8);
 
-    headless(&package, &titled_hold("Later"), "finish");
+    headless(&package, &working(&titled_hold("Later")), "finish");
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, &format!("║{STATUS} Later"));
+    shows_row(&mut terminal, &format!("║{RUNNING} Later"));
     // The selector covers the canvas, but control has not changed: the top
     // row still says Controlling (owner decision, 2026-11-14).
     top_row_is(&mut terminal, &top);
@@ -2710,7 +2717,7 @@ fn only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host(
     let package = Package::new();
     without_introduction(&package);
     let script = r#"printf '\033]2;Queries\007\033[6n'; IFS= read -rs -t 10 -d R reply; printf 'GOT %s\r\n\033[c' "${reply#*[}""#;
-    headless(&package, script, "finish");
+    headless(&package, &working(script), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
@@ -2721,7 +2728,7 @@ fn only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host(
         &session_top_row(
             usize::from(COLS),
             "Queries",
-            &[STATUS, CONTROLLING, SESSIONS_HINT],
+            &[RUNNING, CONTROLLING, SESSIONS_HINT],
         ),
     );
     assert_eq!(terminal.row(1).trim_end(), "GOT 1;1");
@@ -2759,7 +2766,7 @@ fn the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geomet
             "printf '\\033]2;Corner\\007'; until [ \"$(stty size)\" = '{} {}' ] || [ \"$SECONDS\" -ge 60 ]; do sleep 0.05; done; printf '\\033[{};{}HZ'",
             session.0, session.1, session.0, session.1
         );
-        headless(&package, &corner, "finish");
+        headless(&package, &working(&corner), "finish");
         let mut terminal =
             support::outer(&package, Path::new("/bin/bash"), "c2 monitor", rows, cols);
         terminal
@@ -2779,7 +2786,7 @@ fn the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geomet
         let top = session_top_row(
             usize::from(cols),
             "Corner",
-            &[STATUS, CONTROLLING, SESSIONS_HINT],
+            &[RUNNING, CONTROLLING, SESSIONS_HINT],
         );
         top_row_is(&mut terminal, &top);
         let screen = terminal.screen();
@@ -2810,13 +2817,16 @@ fn the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geomet
 fn host_resizes_reach_only_the_selected_controller() {
     let package = Package::new();
     without_introduction(&package);
-    headless(&package, &sized("First"), "finish");
-    headless(&package, &sized("Second"), "finish");
+    headless(&package, &working(&sized("First")), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
-    // Rows list newest first: Second, then First.
+    // Both report `working`, and Second only once First's report is in, so
+    // the rows list newest first on any clock: Second, then First.
+    shows_row_after_selector(&mut terminal, RUNNING, "First");
+    headless(&package, &working(&sized("Second")), "finish");
+    shows_row_after_selector(&mut terminal, RUNNING, "Second");
     select(&mut terminal, "First", 1);
     sized_to(&package, "First", &["24 80", "29 120"]);
     select(&mut terminal, "Second", 0);
@@ -2859,14 +2869,14 @@ fn shows_too_small(terminal: &mut Terminal, rows: u16, cols: u16) {
 fn a_host_too_small_for_a_session_says_so_sends_no_resize_and_recovers() {
     let package = Package::new();
     without_introduction(&package);
-    headless(&package, &sized("Small"), "finish");
+    headless(&package, &working(&sized("Small")), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     select(&mut terminal, "Small", 0);
     sized_to(&package, "Small", &["24 80", "29 120"]);
-    let fields = [STATUS, CONTROLLING, SESSIONS_HINT];
+    let fields = [RUNNING, CONTROLLING, SESSIONS_HINT];
     let mut expected = vec!["24 80", "29 120"];
     for (rows, cols, size) in [
         (3, 120, None),
@@ -2915,7 +2925,7 @@ fn without_key_hints_the_top_row_shows_no_hint() {
         r#"{"monitor": {"show_key_hints": false}}"#,
     )
     .unwrap();
-    headless(&package, &titled_hold("Plain"), "finish");
+    headless(&package, &working(&titled_hold("Plain")), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
@@ -2923,7 +2933,7 @@ fn without_key_hints_the_top_row_shows_no_hint() {
     select(&mut terminal, "Plain", 0);
     top_row_is(
         &mut terminal,
-        &session_top_row(usize::from(COLS), "Plain", &[STATUS, CONTROLLING]),
+        &session_top_row(usize::from(COLS), "Plain", &[RUNNING, CONTROLLING]),
     );
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
@@ -2944,13 +2954,13 @@ fn a_revoked_session_shows_no_cached_output_until_enter_takes_control_again() {
     let script = "printf '\\033]2;Taken\\007VISIBLE\\r\\n'; \
          until [ -e \"$HOME/change\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; \
          printf '\\033[2J\\033[HCHANGED\\r\\n'";
-    let id = headless(&package, script, "finish");
+    let id = headless(&package, &working(script), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     select(&mut terminal, "Taken", 0);
-    let fields = |control| [STATUS, control, SESSIONS_HINT];
+    let fields = |control| [RUNNING, control, SESSIONS_HINT];
     let controlling = session_top_row(usize::from(COLS), "Taken", &fields(CONTROLLING));
     top_row_is(&mut terminal, &controlling);
     assert_eq!(terminal.row(1).trim_end(), "VISIBLE");
@@ -2991,7 +3001,7 @@ fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
     let package = Package::new();
     without_introduction(&package);
     let script = "printf '\\033]2;Done\\007FINAL OUTPUT'; until [ -e \"$HOME/end\" ] || [ \"$SECONDS\" -ge 120 ]; do sleep 0.05; done; exit 3";
-    headless(&package, script, "finish");
+    headless(&package, &working(script), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
@@ -3002,7 +3012,7 @@ fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
         &session_top_row(
             usize::from(COLS),
             "Done",
-            &[STATUS, CONTROLLING, SESSIONS_HINT],
+            &[RUNNING, CONTROLLING, SESSIONS_HINT],
         ),
     );
     fs::write(package.isolation.home().join("end"), b"").unwrap();
@@ -3246,7 +3256,9 @@ fn global_actions_work_from_live_and_too_small_screens_and_input_is_never_buffer
 fn split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both() {
     let package = Package::new();
     without_introduction(&package);
-    headless(&package, &titled_hold("Other"), "finish");
+    // Other reports `clear` and Keys `working`, so on any clock Other stays
+    // Idle, listed below Running Keys.
+    headless(&package, &quiet_hold("Other"), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     terminal
         .wait_for_text("No session selected.", TIMEOUT)
