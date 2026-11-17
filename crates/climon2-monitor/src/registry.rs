@@ -115,8 +115,6 @@ enum Group {
 /// Whether the row has a client, and how far it got.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Connection {
-    /// This monitor's own session: never a client.
-    Own,
     /// No client: discovery has not proven the session live.
     None,
     Starting,
@@ -133,7 +131,6 @@ impl Connection {
     /// Initial metadata reports the status; one without it is Unavailable.
     fn label(&self) -> &'static str {
         match self {
-            Self::Own => "This monitor",
             Self::Starting | Self::Connected { status: true } => "Starting",
             Self::Disconnected => "Disconnected",
             Self::None | Self::Connected { status: false } | Self::Unavailable(_) => "Unavailable",
@@ -217,6 +214,15 @@ impl Row {
         }
     }
 
+    /// What Enter does on this row, and what its canvas shows without a view.
+    fn kind(&self) -> Kind {
+        match (&self.connection, self.ended.is_some()) {
+            (Connection::Disconnected, _) | (_, true) => Kind::Retained,
+            (Connection::Connected { .. }, false) => Kind::Connected,
+            _ => Kind::Unconnected,
+        }
+    }
+
     fn apply(&mut self, event: ClientEvent, now: SystemTime) {
         match event {
             ClientEvent::Opened { status } => self.connect(Connection::Connected { status }, now),
@@ -249,6 +255,21 @@ impl Row {
     }
 }
 
+/// What Enter does on a row (spec #73, "Enter"), and what the canvas
+/// shows for a selected row whose terminal has no view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Kind {
+    /// Connected and not known to be final: selected and acquired, and the
+    /// non-controller placeholder while the monitor does not control it.
+    Connected,
+    /// Starting, or Unavailable with no connected client: selected
+    /// but never acquired, with no terminal content to show.
+    Unconnected,
+    /// Disconnected or known final: its retained history arrives with #116;
+    /// until then Enter ignores it.
+    Retained,
+}
+
 /// One row as the selector shows it. The session ID identifies it and is
 /// never displayed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -279,9 +300,11 @@ impl Registry {
     }
 
     /// Records a probe's outcome. Returns the session's metadata when it now
-    /// needs a passive client: a live session that has none and is not this
-    /// monitor's. Discovery never changes a client's connection. A session
-    /// proven gone drops its row unless it was ever connected, and adds none.
+    /// needs a passive client: a live session that has none. Discovery never
+    /// changes a client's connection. A session proven gone drops its row
+    /// unless it was ever connected, and adds none; this monitor's own
+    /// session never has a row (owner decision on #110), so it can be
+    /// neither listed nor selected.
     pub(crate) fn discovered(
         &mut self,
         metadata: SessionMetadata,
@@ -289,20 +312,15 @@ impl Registry {
         now: SystemTime,
     ) -> Option<SessionMetadata> {
         let id = metadata.session_id.clone();
-        if matches!(found, Found::Stale) {
+        let own = self.own.as_ref() == Some(&id);
+        if own || matches!(found, Found::Stale) {
             self.rows.retain(|key, row| *key != id || row.connected);
             return None;
         }
-        let own = self.own.as_ref() == Some(&id);
-        let connection = if own {
-            Connection::Own
-        } else {
-            Connection::None
-        };
         let row = self
             .rows
             .entry(id)
-            .or_insert_with(|| Row::new(metadata.clone(), connection, now));
+            .or_insert_with(|| Row::new(metadata.clone(), Connection::None, now));
         let wanted = matches!(found, Found::Live) && row.connection == Connection::None;
         wanted.then(|| {
             row.connect(Connection::Starting, now);
@@ -317,12 +335,9 @@ impl Registry {
         }
     }
 
-    /// Whether Enter on `id` selects and acquires it: connected and not
-    /// known to be final.
-    pub(crate) fn acquirable(&self, id: &SessionId) -> bool {
-        self.rows.get(id).is_some_and(|row| {
-            matches!(row.connection, Connection::Connected { .. }) && row.ended.is_none()
-        })
+    /// What Enter does on `id`'s row, if there is one.
+    pub(crate) fn kind(&self, id: &SessionId) -> Option<Kind> {
+        self.rows.get(id).map(Row::kind)
     }
 
     /// Records whether the latest pass reached every entry.
@@ -572,10 +587,11 @@ mod tests {
     /// Not-connected rows (confirmed 2026-11-08) and STA-07 (Monitor, pure
     /// supplement): a row with no current status and no final outcome sorts
     /// after every status and final row, by the newest time it entered its
-    /// condition: This monitor, Starting (also a client opened with
-    /// `status-v1` awaiting its Initial metadata), Unavailable (uncertain,
-    /// failed, or connected without `status-v1`) and Disconnected, whose
-    /// stale status time neither sorts nor labels it.
+    /// condition: Starting (also a client opened with `status-v1` awaiting
+    /// its Initial metadata), Unavailable (uncertain, failed, or connected
+    /// without `status-v1`) and Disconnected, whose stale status time neither
+    /// sorts nor labels it. The own session has no row (owner decision on
+    /// #110).
     #[test]
     fn not_connected_rows_sort_by_when_they_entered_their_condition() {
         let mut registry = Registry::new(Some(OWN.parse().unwrap()));
@@ -604,20 +620,30 @@ mod tests {
                 "Unavailable|without status",
                 "Unavailable|unsure",
                 "Starting|starting",
-                "This monitor|own",
             ]
         );
     }
 
-    /// Own-session scenario (confirmed 2026-11-08): this monitor's own session
-    /// shows as This monitor and never needs a client.
+    /// Own-session scenario (owner decision on #110, 2026-11-14): this
+    /// monitor's own session never needs a client and has no row, live or
+    /// uncertain, so it cannot be selected; other sessions still do.
     #[test]
-    fn the_own_session_is_this_monitor_and_never_needs_a_client() {
+    fn the_own_session_is_hidden_and_never_needs_a_client() {
         let mut registry = Registry::new(Some(OWN.parse().unwrap()));
         let own = metadata(OWN, "2026-11-13T10:00:00.000Z", "bash", &[]);
         assert_eq!(registry.discovered(own.clone(), Found::Live, at(1)), None);
-        assert_eq!(registry.discovered(own, Found::Live, at(2)), None);
-        assert_eq!(shown(&registry), ["This monitor|bash"]);
+        assert_eq!(
+            registry.discovered(own.clone(), Found::Uncertain, at(2)),
+            None
+        );
+        assert!(shown(&registry).is_empty());
+        assert_eq!(registry.kind(&own.session_id), None);
+        let other = metadata(&id(1), "2026-11-13T10:00:00.000Z", "other", &[]);
+        assert_eq!(
+            registry.discovered(other.clone(), Found::Live, at(3)),
+            Some(other)
+        );
+        assert_eq!(shown(&registry), ["Starting|other"]);
     }
 
     /// DSC-04 (pure supplement): uncertainty and staleness never change a
@@ -722,12 +748,15 @@ mod tests {
         assert_eq!(registry.rows()[0].since, at(5));
     }
 
-    /// Enter (spec #73, Session registry; #108, pure supplement): only a
+    /// Enter (spec #73, Session registry; #108, #110, pure supplement): a
     /// connected row not known to be final, with or without `status-v1`, is
-    /// acquired; Starting, Unavailable, Disconnected, This monitor, final
-    /// and unknown rows are not, and control and display change nothing.
+    /// connected (selected and acquired); a Starting row and an Unavailable
+    /// row without a connected client, uncertain or failed, are unconnected
+    /// (selected without acquiring); Disconnected and final rows are retained
+    /// (#116); an unknown row has none.
+    /// Control and display change nothing.
     #[test]
-    fn only_connected_rows_not_known_to_be_final_are_acquirable() {
+    fn enter_kinds_follow_each_row_condition() {
         let mut registry = Registry::new(Some(OWN.parse().unwrap()));
         let sessions = [1, 2, 3, 4, 5, 6].map(|suffix| {
             let created = format!("2026-11-13T10:00:0{suffix}.000Z");
@@ -736,8 +765,8 @@ mod tests {
         for session in &sessions {
             registry.discovered(session.clone(), Found::Live, at(1));
         }
-        let own = metadata(OWN, "2026-11-13T10:00:00.000Z", "bash", &[]);
-        registry.discovered(own, Found::Live, at(1));
+        let uncertain = metadata(&id(8), "2026-11-13T10:00:08.000Z", "cmd", &[]);
+        registry.discovered(uncertain, Found::Uncertain, at(1));
         let key = |index: usize| sessions[index].session_id.clone();
         registry.client(&key(0), ClientEvent::Opened { status: false }, at(2));
         registry.client(&key(1), ClientEvent::Opened { status: true }, at(2));
@@ -752,12 +781,23 @@ mod tests {
         ] {
             registry.client(&key(0), event, at(4));
         }
-        let acquirable: Vec<_> = (0..6)
-            .map(|index| registry.acquirable(&key(index)))
-            .collect();
-        assert_eq!(acquirable, [true, true, false, false, false, false]);
-        assert!(!registry.acquirable(&OWN.parse().unwrap()));
-        assert!(!registry.acquirable(&id(7).parse().unwrap()));
+        let kinds: Vec<_> = (0..6).map(|index| registry.kind(&key(index))).collect();
+        assert_eq!(
+            kinds,
+            [
+                Some(Kind::Connected),
+                Some(Kind::Connected),
+                Some(Kind::Retained),
+                Some(Kind::Unconnected),
+                Some(Kind::Retained),
+                Some(Kind::Unconnected),
+            ]
+        );
+        assert_eq!(
+            registry.kind(&id(8).parse().unwrap()),
+            Some(Kind::Unconnected)
+        );
+        assert_eq!(registry.kind(&id(7).parse().unwrap()), None);
         let first = registry.rows().into_iter().find(|row| row.id == key(0));
         assert_eq!(first.map(|row| row.since), Some(at(2)));
     }

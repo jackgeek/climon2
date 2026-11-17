@@ -7,8 +7,11 @@ not implementation or executed acceptance evidence.** The
 [#74](https://github.com/jackgeek/climon2/issues/74) with discovery, passive
 clients and the basic selector of
 [#106](https://github.com/jackgeek/climon2/issues/106), the selection,
-control and painting of [#108](https://github.com/jackgeek/climon2/issues/108)
-and the row statuses, final outcomes and status order of
+control and painting of [#108](https://github.com/jackgeek/climon2/issues/108),
+the input router of [#109](https://github.com/jackgeek/climon2/issues/109),
+the switching, revocation and take-control key of
+[#110](https://github.com/jackgeek/climon2/issues/110) and the row statuses,
+final outcomes and status order of
 [#107](https://github.com/jackgeek/climon2/issues/107), whose Monitor-layer
 cases are mapped in the monitor README; initial selection, moved from #107
 to [#266](https://github.com/jackgeek/climon2/issues/266), is not

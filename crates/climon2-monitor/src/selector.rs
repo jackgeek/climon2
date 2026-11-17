@@ -226,7 +226,7 @@ mod tests {
     /// labels clipped by display cell, and the first row highlighted.
     #[test]
     fn the_selector_draws_a_captionless_double_border_with_two_columns() {
-        let rows = rows(&[("Starting", "Alpha"), ("This monitor", "日本語ラベル")]);
+        let rows = rows(&[("Starting", "Alpha"), ("Disconnected", "日本語ラベル")]);
         let mut selector = Selector::default();
         selector.open(&rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 6));
@@ -237,7 +237,7 @@ mod tests {
                 "                        ",
                 " ╔════════════════════╗ ",
                 " ║Starting     Alpha  ║ ",
-                " ║This monitor 日本語 ║ ",
+                " ║Disconnected 日本語 ║ ",
                 " ╚════════════════════╝ ",
                 "                        ",
             ]
