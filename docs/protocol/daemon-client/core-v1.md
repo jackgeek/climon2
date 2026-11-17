@@ -583,8 +583,9 @@ after a session failure, and its partial result after a failed cleanup or
 an unconfirmed termination. For monitors they cover Acquire by a
 registration, of a starting session too and after the Command final,
 succession (hand-back before the newest registration's promotion, leave
-policy only after it, in headless sessions too), Leave, a committed Kill and
-a registration's queue overflow racing a promotion, and canonical
+policy only after it, in headless sessions too), Leave, a committed Kill,
+an output queue overflow racing a hand-back, a promotion or a Leave (the lost
+connection departs first and never inherits control), and canonical
 restorations at the effective geometry, with a Restoration begin after every
 geometry change. For `status-v1` they cover, on a controllable
 clock, the activity and attention transitions, the re-armed user window,
