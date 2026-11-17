@@ -33,7 +33,7 @@ acquire and inherit control
 ([#89](https://github.com/jackgeek/climon2/issues/89)),
 `status-v1` ([#91](https://github.com/jackgeek/climon2/issues/91)), with
 output-driven status detection from [OSC](../TERMS.md#osc) 7501 program status and OSC 133
-shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)), and
+shell markers ([#92](https://github.com/jackgeek/climon2/issues/92)),
 `notification-v1` and `progress-v1` from OSC 9, OSC 99, OSC 777 and OSC 9;4
 ([#98](https://github.com/jackgeek/climon2/issues/98)), and
 keeps that traffic within its [bounds](#implemented-bounds) with counters
@@ -60,10 +60,10 @@ requests without effects, as each request's page describes. The
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 for `status-v1` ([#95](https://github.com/jackgeek/climon2/issues/95)),
-for `notification-v1` and `progress-v1`
-([#98](https://github.com/jackgeek/climon2/issues/98)),
 with Command final, and for standalone Kill
-([#96](https://github.com/jackgeek/climon2/issues/96)), and the
+([#96](https://github.com/jackgeek/climon2/issues/96)), and for
+`notification-v1` and `progress-v1`
+([#98](https://github.com/jackgeek/climon2/issues/98)), and the
 [client executable](../../../GLOSSARY.md#sessions) drives that library for
 ordinary attach and kill ([#100](https://github.com/jackgeek/climon2/issues/100),
 [#101](https://github.com/jackgeek/climon2/issues/101)). The
@@ -594,8 +594,9 @@ after a session failure, and its partial result after a failed cleanup or
 an unconfirmed termination. For monitors they cover Acquire by a
 registration, of a starting session too and after the Command final,
 succession (hand-back before the newest registration's promotion, leave
-policy only after it, in headless sessions too), Leave, a committed Kill and
-a registration's queue overflow racing a promotion, and canonical
+policy only after it, in headless sessions too), Leave, a committed Kill,
+an output queue overflow racing a hand-back, a promotion or a Leave (the lost
+connection departs first and never inherits control), and canonical
 restorations at the effective geometry, with a Restoration begin after every
 geometry change. For `status-v1` they cover, on a controllable
 clock, the activity and attention transitions, the re-armed user window,

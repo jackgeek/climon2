@@ -634,7 +634,7 @@ impl State {
     fn settle_input(&mut self, deadline: Instant) {
         let bound = Duration::from_millis(self.context.limits.operation_ms.into());
         let deadline = deadline.min(Instant::now() + bound);
-        while self.input_pending() && Instant::now() < deadline {
+        while self.input_pending() && before(deadline) {
             self.internals();
             self.poll();
         }
@@ -1810,9 +1810,7 @@ impl State {
     /// be unreleased.
     fn shut_down(mut self, deadline: Instant) -> shutdown::Report {
         self.ask_shutdown();
-        while !(self.instances.is_empty() && self.loads.is_empty())
-            && deadline.checked_duration_since(Instant::now()).is_some()
-        {
+        while !(self.instances.is_empty() && self.loads.is_empty()) && before(deadline) {
             self.internals();
             self.poll();
             self.tell_waiting();
@@ -1863,6 +1861,11 @@ fn rejected(why: String) -> Answer {
         verdict: Verdict::Rejected(why),
         ended: None,
     }
+}
+
+/// Whether `deadline` has not passed yet.
+fn before(deadline: Instant) -> bool {
+    deadline.checked_duration_since(Instant::now()).is_some()
 }
 
 /// Whether a lane of `bound` has room beside the `used` slots it holds.

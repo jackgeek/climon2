@@ -162,10 +162,15 @@ pub(crate) struct Scene<'a> {
     pub(crate) session: Option<Session<'a>>,
 }
 
+/// Whether modal or overlaid UI covers the canvas: the selector or the key
+/// introduction.
+pub(crate) fn covered(selector: &Selector, introduction: &KeyIntroduction) -> bool {
+    selector.is_open() || introduction.is_open()
+}
+
 impl Scene<'_> {
-    /// Whether modal or overlaid UI covers the canvas.
     fn covered(&self) -> bool {
-        self.selector.is_open() || self.introduction.is_open()
+        covered(self.selector, self.introduction)
     }
 }
 
@@ -255,6 +260,12 @@ impl Screen {
         }
     }
 
+    /// Whether a frame shows the selected session's canvas: nothing
+    /// `covered` it and the host has room for a session.
+    pub(crate) fn shows_canvas(&self, covered: bool) -> bool {
+        !covered && self.desire().is_some()
+    }
+
     /// Paints `scene` unless its frame is the one painted.
     pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
@@ -337,7 +348,7 @@ impl Screen {
         let modes = self.followed(scene);
         Frame {
             buffer,
-            cursor: shown_cursor(scene, cursor, search),
+            cursor: shown_cursor(scene, cursor.filter(|_| self.desire().is_some()), search),
             keypad: modes.is_some_and(|modes| modes.application_keypad),
             tracking: modes.and_then(|modes| tracking(modes.mouse_reporting)),
             underlines,
@@ -349,7 +360,7 @@ impl Screen {
     /// (owner decision on #111). Modal UI and every other screen get the
     /// host's own numeric keypad and the monitor's own mouse tracking.
     fn followed(&self, scene: &Scene<'_>) -> Option<Modes> {
-        let shown = !scene.covered() && self.desire().is_some();
+        let shown = self.shows_canvas(scene.covered());
         let view = scene
             .session
             .as_ref()
@@ -417,8 +428,8 @@ impl Screen {
 }
 
 /// The host cursor: the search's while the selector is open, otherwise the
-/// selected session's; none while the key introduction or the Delete
-/// confirmation covers them.
+/// selected session's while the host has room for it; none while the key
+/// introduction or the Delete confirmation covers them.
 fn shown_cursor(
     scene: &Scene<'_>,
     session: Option<HostCursor>,
@@ -582,7 +593,8 @@ fn session_row(
     let slots: Vec<_> = slots.collect();
     let width: u16 = slots.iter().map(|(_, width)| separator + width).sum();
     let room = top.width.saturating_sub(width);
-    let mut x = top.x + room;
+    let slots_start = top.x + room;
+    let mut x = slots_start;
     for (text, slot) in slots {
         buffer.set_stringn(x, top.y, SEPARATOR, usize::from(separator), style);
         buffer.set_stringn(x + separator, top.y, text, usize::from(slot), style);
@@ -590,7 +602,7 @@ fn session_row(
     }
     let label = truncate(session.label, room.into());
     let (end, _) = buffer.set_stringn(top.x, top.y, label, room.into(), style);
-    let left = usize::from(room - (end - top.x));
+    let left = usize::from(slots_start - end);
     if let Some(error) = error.filter(|_| left > SEPARATOR.width()) {
         buffer.set_stringn(end, top.y, format!("{SEPARATOR}{error}"), left, style);
     }
@@ -1139,6 +1151,73 @@ mod tests {
         let notice = "No sessions need attention";
         assert_eq!(error(Some(notice), Some("timed out"), true), Some(notice));
         assert_eq!(error(Some(notice), None, false), Some(notice));
+    }
+
+    /// What a host `cols` by 4 receives of `model`'s session in one frame:
+    /// whether its keypad is in application mode, and the cursor, under the
+    /// selector or the key introduction when they are open.
+    fn received(
+        cols: u16,
+        model: &Model,
+        selector: bool,
+        introduction: bool,
+    ) -> (bool, Option<HostCursor>) {
+        let prefix = ControlKey::from_byte(0x1d).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let layout = climon2_core::layout::HomeLayout::at(home.path()).unwrap();
+        let preference = crate::preference::Preference::read(&layout);
+        let mut key_introduction = KeyIntroduction::new(prefix, preference, false);
+        if introduction {
+            key_introduction.open();
+        }
+        let mut screen = Screen::new(TerminalSize { cols, rows: 4 }, prefix, None, false);
+        let mut list = Selector::new(prefix, false, 4096);
+        if selector {
+            list.open(&[], None, screen.overlay());
+        }
+        let id = id();
+        let toasts = Toasts::new(None);
+        let scene = Scene {
+            introduction: &key_introduction,
+            rows: &[],
+            selector: &list,
+            asking: None,
+            incomplete: None,
+            progress: None,
+            late: false,
+            notice: None,
+            toasts: &toasts,
+            now: Instant::now(),
+            session: Some(Session {
+                id: &id,
+                label: "Paint",
+                status: "Idle",
+                control: "Controlling",
+                error: None,
+                canvas: Canvas::View(model.view()),
+            }),
+        };
+        let frame = screen.frame(&scene);
+        (frame.keypad, frame.cursor)
+    }
+
+    /// INP-02 and TRM-01 (pure supplement): the session's application
+    /// keypad mode and its cursor reach the host only while its canvas
+    /// shows. Either modal alone over it gives the host its own numeric
+    /// keypad and no session cursor, and so does a host too small for a
+    /// session.
+    #[test]
+    fn a_modal_or_a_small_host_keeps_the_sessions_keypad_mode_and_cursor() {
+        let session = model(10, 3, b"\x1b=\x1b[2;3H");
+        let cursor = Some(HostCursor {
+            column: 2,
+            row: 2,
+            style: 0,
+        });
+        assert_eq!(received(10, &session, false, false), (true, cursor));
+        assert_eq!(received(10, &session, true, false), (false, None));
+        assert_eq!(received(10, &session, false, true), (false, None));
+        assert_eq!(received(4, &session, false, false), (false, None));
     }
 
     /// A model `cols` by `rows` that took `bytes`.
