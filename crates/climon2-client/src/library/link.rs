@@ -17,6 +17,10 @@ use std::{
 const PREFIX: usize = 4;
 
 const UNREACHABLE: Fault = Fault::transport("io_error", "the session daemon cannot be reached");
+const NO_DESCRIPTOR: Fault = Fault::library(
+    "resource_limit",
+    "no descriptor is left to reach the session",
+);
 pub(super) const CLOSED: Fault =
     Fault::transport("io_error", "the session daemon closed the connection");
 const BROKEN: Fault = Fault::transport("io_error", "the connection to the session daemon failed");
@@ -26,6 +30,15 @@ const TRUNCATED: Fault = Fault::transport(
 );
 pub(super) const TIMEOUT: Fault =
     Fault::library("timeout", "the session daemon did not answer in time");
+
+/// `otherwise`, unless `error` is the process or the system running out of
+/// descriptors: an exhausted resource, explicit as such (#99).
+pub(super) fn exhausted(error: &io::Error, otherwise: Fault) -> Fault {
+    match error.raw_os_error() {
+        Some(libc::EMFILE | libc::ENFILE) => NO_DESCRIPTOR,
+        _ => otherwise,
+    }
+}
 
 /// A connection-fatal code the library found in the daemon's traffic.
 pub(super) fn fatal(code: FatalCode) -> Fault {
@@ -44,8 +57,8 @@ pub(super) struct Link {
 impl Link {
     /// Connects to a same-UID peer within `timeout`.
     pub(super) fn connect(path: &Path, timeout: Duration) -> Result<Self, Fault> {
-        let socket =
-            climon2_platform::connection::connect(path, timeout).map_err(|_| UNREACHABLE)?;
+        let socket = climon2_platform::connection::connect(path, timeout)
+            .map_err(|error| exhausted(&error, UNREACHABLE))?;
         climon2_platform::peer::authenticate(&socket).map_err(|_| UNREACHABLE)?;
         socket.set_nonblocking(true).map_err(|_| UNREACHABLE)?;
         platform::quiet(socket.as_raw_fd()).map_err(|_| UNREACHABLE)?;
