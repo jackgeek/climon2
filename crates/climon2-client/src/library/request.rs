@@ -6,8 +6,7 @@
 
 use super::{
     failure::{
-        FULL, Failure, INVALID_ARGUMENT, INVALID_REQUEST_ID, UNSUPPORTED_CAPABILITY,
-        UNSUPPORTED_OPERATION, require,
+        FULL, Failure, INVALID_ARGUMENT, INVALID_REQUEST_ID, UNSUPPORTED_CAPABILITY, require,
     },
     families,
     startup::buffer,
@@ -120,9 +119,10 @@ pub(super) unsafe fn parse(
     request: &native::Request,
     capacity: Capacity,
 ) -> Result<Submitted, Failure> {
-    let id = header(request)?;
-    // SAFETY: guaranteed by the caller.
-    let (operation, bytes) = unsafe { operation(request, capacity) }?;
+    let (id, parser) = header(request)?;
+    // SAFETY: the parser reads the member the tag names, whose buffers the
+    // caller guarantees.
+    let (operation, bytes) = unsafe { parser(request, capacity) }?;
     Ok(Submitted {
         id,
         operation,
@@ -130,13 +130,18 @@ pub(super) unsafe fn parse(
     })
 }
 
-/// A known tag, reserved zero, then a positive ID.
-fn header(request: &native::Request) -> Result<u64, Failure> {
-    let known = (native::OPEN..=native::FOCUS).contains(&request.tag);
-    require(known, invalid("unknown request tag"))?;
+/// A known tag, reserved zero, then a positive ID: the ID and the tag's
+/// parser. Every tag of revision 1 is performed, so the parsers name the
+/// known tags.
+fn header(request: &native::Request) -> Result<(u64, Parser), Failure> {
+    let parser = PARSERS
+        .iter()
+        .find(|(tag, _)| *tag == request.tag)
+        .map(|(_, parser)| *parser)
+        .ok_or(invalid("unknown request tag"))?;
     require(request.reserved == 0, invalid("reserved must be zero"))?;
     (request.request_id != 0)
-        .then_some(request.request_id)
+        .then_some((request.request_id, parser))
         .ok_or(Failure::new(
             INVALID_REQUEST_ID,
             "request_id must be positive",
@@ -163,26 +168,6 @@ const PARSERS: [(u32, Parser); 10] = [
     (native::ACKNOWLEDGE, acknowledge),
     (native::FOCUS, focus),
 ];
-
-/// # Safety
-///
-/// As for [`parse`].
-unsafe fn operation(
-    request: &native::Request,
-    capacity: Capacity,
-) -> Result<(Operation, u64), Failure> {
-    let parser = PARSERS
-        .iter()
-        .find(|(tag, _)| *tag == request.tag)
-        .map(|(_, parser)| *parser)
-        .ok_or(Failure::new(
-            UNSUPPORTED_OPERATION,
-            "this client library does not perform this request yet",
-        ))?;
-    // SAFETY: the parser reads the member the tag names, whose buffers the
-    // caller guarantees.
-    unsafe { parser(request, capacity) }
-}
 
 fn nonzero(generation: u64) -> Result<u64, Failure> {
     (generation != 0)

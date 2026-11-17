@@ -9,17 +9,34 @@
 //! never from another run of the library. Fault cases against the host's
 //! fake daemon peer are in `status_faults.rs`. Release archives have no
 //! test hooks, so these cases run only on the workspace's hooked build.
+//! The ordinary client's own viewing and acknowledgement (#102) is observed
+//! here too, through such a library instance watching the session.
 
 #[allow(dead_code)]
 mod support;
 
+use climon2_test_term::Terminal;
 use serde_json::{Value, json};
-use support::{Package, TIMEOUT, control::*, library::archive, passive::*, status::*};
+use std::{
+    fs,
+    path::Path,
+    thread,
+    time::{Duration, Instant},
+};
+use support::{
+    Package, TIMEOUT,
+    control::*,
+    library::{archive, observe_within, scenario_command},
+    passive::*,
+    status::*,
+};
 
 /// The controllable clock's start, the first sample, and ten seconds later.
 const AT_START: &str = "2027-01-15T08:00:00.000Z";
 const AT_SAMPLE: &str = "2027-01-15T08:00:01.500Z";
 const AT_DEADLINE: &str = "2027-01-15T08:00:11.500Z";
+/// Ten seconds after the sample at 13 s saw more agent work (#102).
+const AT_SECOND_DEADLINE: &str = "2027-01-15T08:00:23.000Z";
 
 /// What a monitor that requires status asks for, and what it selects from a
 /// real daemon.
@@ -488,5 +505,132 @@ fn installed_library_sets_viewing_and_acknowledges_attention_through_a_real_daem
     assert_all_released(&report["ledger"]);
     session.end();
     assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    package.assert_clean();
+}
+
+/// How long a host whose steps wait on the test's clients may run: each of
+/// its waits is bounded on its own, by 30 s at most.
+const HOST_BOUND: Duration = Duration::from_secs(120);
+
+/// A host step that waits until the test creates `path`.
+fn await_step(path: &Path) -> Value {
+    json!({ "do": "await_file", "path": path.to_str().unwrap() })
+}
+
+fn touch_step(path: &Path) -> Value {
+    json!({ "do": "touch", "path": path.to_str().unwrap() })
+}
+
+/// Waits, within [`TIMEOUT`], until the host creates `path`.
+fn await_host(path: &Path) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "the host never made {path:?}");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// An ordinary `climon2 attach` client of session `id` at the session's own
+/// 120x30, so attaching never resizes the session.
+fn ordinary_attach(package: &Package, id: &str) -> Terminal {
+    let mut command = package.command("climon2");
+    command.args(["attach", id]);
+    Terminal::spawn(command, 30, 120).unwrap()
+}
+
+/// Derived scenario (spec #73, Client executable: viewing and
+/// acknowledgement, #102), STA-08 ordinary-attach case against a real
+/// daemon, watched by a passive library instance: pending attention
+/// (episode 1) stays pending while the session's own ready client merely
+/// shows it; an explicit `climon2 attach` moves it to acknowledged, same
+/// episode, once that client is ready; new agent work then requests
+/// attention again (episode 2), which the attached client, viewing, does
+/// not acknowledge; the first client's take-control key (a takeover) then
+/// acknowledges it once ready. Both clients end with the command's status.
+#[test]
+fn ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    let root = root(&package);
+    let clock = root.join("clock");
+    start_clock(&clock);
+    let work = root.join("work");
+    let mut session = Session::clocked_working(&package, &root, &clock, &work);
+    let [pending, attached, worked, again, taken] =
+        ["pending", "attached", "worked", "again", "taken"].map(|name| root.join(name));
+    let mut steps = watch("w", &session, &package, 1);
+    steps.push(advance(&clock, 1_500));
+    steps.extend(statuses(&["w"], "running"));
+    steps.push(advance(&clock, 11_500));
+    steps.extend(statuses(&["w"], "pending"));
+    steps.extend([touch_step(&pending), await_step(&attached)]);
+    steps.extend(statuses(&["w"], "attached"));
+    steps.extend([
+        await_step(&worked),
+        advance(&clock, 13_000),
+        advance(&clock, 23_000),
+    ]);
+    steps.extend(statuses(&["w"], "again"));
+    steps.extend([touch_step(&again), await_step(&taken)]);
+    steps.extend(statuses(&["w"], "taken"));
+    steps.extend([
+        on("w", json!({ "do": "shutdown" })),
+        on("w", json!({ "do": "finish", "as": "w-left" })),
+    ]);
+    let (report, mut second) = thread::scope(|scope| {
+        let input = json!({ "root": root.to_str().unwrap(), "steps": steps });
+        let command = scenario_command(&package, "script", &input);
+        let host = scope.spawn(|| observe_within(command, HOST_BOUND));
+        await_host(&pending);
+        let mut second = ordinary_attach(&package, &session.id);
+        second.wait_for_text("ECHO-READY", TIMEOUT).unwrap();
+        session
+            .terminal
+            .wait_for_text("take control", TIMEOUT)
+            .unwrap();
+        fs::write(&attached, b"").unwrap();
+        fs::write(&work, b"").unwrap();
+        second.wait_for_text("MORE", TIMEOUT).unwrap();
+        fs::write(&worked, b"").unwrap();
+        await_host(&again);
+        session.terminal.send(b"\x14").unwrap();
+        session.terminal.wait_for_text("MORE", TIMEOUT).unwrap();
+        second.wait_for_text("take control", TIMEOUT).unwrap();
+        fs::write(&taken, b"").unwrap();
+        (host.join().unwrap(), second)
+    });
+    for (index, done) in steps.iter().enumerate() {
+        if ["clock", "await_file"].contains(&done["do"].as_str().unwrap()) {
+            assert_eq!(step(&report, index), &json!(true), "{done}");
+        }
+    }
+    let initial = drained(&report, &steps, "w-initial");
+    assert_eq!(
+        initial_status(&initial, 1, &WATCHED),
+        &available(status(IDLE, None, AT_START))
+    );
+    let expected = [
+        ("running", status(RUNNING, None, AT_SAMPLE)),
+        ("pending", status(NEEDS_ATTENTION, Some(1), AT_DEADLINE)),
+        ("attached", status(ACKNOWLEDGED, Some(1), AT_DEADLINE)),
+        (
+            "again",
+            status(NEEDS_ATTENTION, Some(2), AT_SECOND_DEADLINE),
+        ),
+        ("taken", status(ACKNOWLEDGED, Some(2), AT_SECOND_DEADLINE)),
+    ];
+    for (label, status) in expected {
+        let records = drained(&report, &steps, &format!("w-{label}"));
+        assert_status(&records, 1, &status);
+    }
+    let (left, terminal) = finished(labelled(&report, &steps, "w-left"));
+    assert!(left.is_empty(), "{left:#?}");
+    assert_left(terminal, 1);
+    assert_all_released(&report["ledger"]);
+    session.end();
+    assert_eq!(session.terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    assert_eq!(second.wait_exit(TIMEOUT).unwrap(), 0);
     package.assert_clean();
 }

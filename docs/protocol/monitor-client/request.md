@@ -7,8 +7,10 @@
 [Acquire](request-take-control.md), [Input](request-input.md),
 [Resize](request-resize.md), [Ready](request-ready.md) and
 [Focus](request-focus.md) ([#94](https://github.com/jackgeek/climon2/issues/94)),
-and [Kill](request-kill.md) ([#96](https://github.com/jackgeek/climon2/issues/96));
-Set viewing and Acknowledge report `CM1_UNSUPPORTED_OPERATION`. See its
+[Set viewing](request-viewing.md) and [Acknowledge](request-acknowledge.md)
+([#95](https://github.com/jackgeek/climon2/issues/95)), and
+[Kill](request-kill.md) ([#96](https://github.com/jackgeek/climon2/issues/96)).
+See its
 [implemented behavior](core-v1.md#implemented-behavior). The caller is not
 implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) submits a

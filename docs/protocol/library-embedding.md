@@ -13,7 +13,8 @@ passive monitor connection to its session's daemon on its owner thread,
 never raising `SIGPIPE` in the process
 ([#93](https://github.com/jackgeek/climon2/issues/93)), or an interactive
 attachment, and relays control and display
-([#94](https://github.com/jackgeek/climon2/issues/94)), and sends
+([#94](https://github.com/jackgeek/climon2/issues/94)), status, Set viewing
+and Acknowledge ([#95](https://github.com/jackgeek/climon2/issues/95)), and sends
 [Kill](../../GLOSSARY.md#attachment-and-control) on an auxiliary connection
 of its own ([#96](https://github.com/jackgeek/climon2/issues/96)). The one
 shared loader that the [monitor](../../GLOSSARY.md#sessions) and the
@@ -31,9 +32,10 @@ end, its handles to be released and its owner to be joined. An instance
 unconfirmed by then is reported and left, never destroyed, to process exit:
 the monitor does not claim it joined. The client executable loads its own
 version folder's library through it and drives ordinary attach
-([#101](https://github.com/jackgeek/climon2/issues/101)) and kill
-([#100](https://github.com/jackgeek/climon2/issues/100)) through the function
-table; test tooling uses it too. The monitor's admission, recovery,
+([#101](https://github.com/jackgeek/climon2/issues/101)), with its viewing and
+acknowledgement ([#102](https://github.com/jackgeek/climon2/issues/102)), and
+kill ([#100](https://github.com/jackgeek/climon2/issues/100)) through the
+function table; test tooling uses it too. The monitor's admission, recovery,
 acquisition and fail-stop remain unimplemented. The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)

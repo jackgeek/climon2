@@ -1,5 +1,5 @@
 use crate::{
-    attachment::{Attachment, Authority, Command, Ending, Event},
+    attachment::{Attachment, Authority, Command, Confirm, Ending, Event, Held},
     polling::{Pending, invalid, poll, ready},
 };
 use climon2_core::{
@@ -296,6 +296,10 @@ struct Bridge {
     role: Role,
     /// A complete restoration, waiting for `Ready`.
     restored: Option<Authority>,
+    /// The latest grant's authority while it was an explicit attach or
+    /// takeover whose readiness has not yet acknowledged pending attention
+    /// (#102).
+    acknowledging: Option<Authority>,
     /// The command's status, once its final result is known.
     known: Option<u32>,
     pending_detach: bool,
@@ -342,6 +346,7 @@ pub fn run(
         output: Pending::default(),
         role: Role::Restoring(None),
         restored: None,
+        acknowledging: None,
         known: None,
         pending_detach: false,
         closing: None,
@@ -552,7 +557,7 @@ impl Bridge {
     fn send_resize(&mut self) {
         let unheard = self.told != self.size && self.attachment.idle();
         if let Some(authority) = self.role.authority().filter(|_| unheard) {
-            self.attachment.queue(Command::Resize(authority, self.size));
+            self.held(authority, Held::Resize(self.size));
             self.told = self.size;
         }
     }
@@ -580,7 +585,14 @@ impl Bridge {
 
     fn presentation(&mut self, event: Event) {
         match event {
-            Event::Granted(authority) => self.enter(Role::Restoring(Some(authority))),
+            Event::Granted {
+                authority,
+                explicit,
+            } => {
+                self.acknowledging = explicit.then_some(authority);
+                self.enter(Role::Restoring(Some(authority)));
+            }
+            Event::Restoring(authority) => self.enter(Role::Restoring(Some(authority))),
             Event::Restored(authority) => self.restored = Some(authority),
             other => self.revoked(other),
         }
@@ -671,11 +683,19 @@ impl Bridge {
     /// Only a controller's keys become input, under its authority.
     fn send_input(&mut self, bytes: Vec<u8>) {
         if let Some(authority) = self.role.authority() {
-            self.attachment.queue(Command::Input(authority, bytes));
+            self.held(authority, Held::Input(bytes));
         }
     }
 
+    fn held(&mut self, authority: Authority, held: Held) {
+        self.attachment.queue(Command::Held(authority, held));
+    }
+
+    /// A client holding an authority stops viewing before it leaves (#102).
     fn detach(&mut self) {
+        if let Some(authority) = self.role.authority() {
+            self.held(authority, Held::Viewing(false));
+        }
         self.attachment.queue(Command::Leave);
         self.pending_detach = true;
         self.close_within_deadline();
@@ -692,9 +712,15 @@ impl Bridge {
         }
     }
 
+    /// The ready controller is viewing, focus assumed (#102); an explicit
+    /// attach or takeover then acknowledges pending attention, once.
     fn ready(&mut self, authority: Authority) {
         self.filter.role_changed();
-        self.attachment.queue(Command::Ready(authority));
+        self.held(authority, Held::Confirm(Confirm::Ready));
+        self.held(authority, Held::Viewing(true));
+        if self.acknowledging.take().is_some() {
+            self.held(authority, Held::Confirm(Confirm::Acknowledge));
+        }
         self.role = Role::Controlling(authority);
     }
 

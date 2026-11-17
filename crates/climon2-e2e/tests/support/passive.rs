@@ -148,7 +148,7 @@ pub fn native_command(kind: u64, value: u64, name: Option<&str>) -> Value {
 }
 
 /// A Command final record of `command` (its native form), status
-/// unavailable because `status-v1` is never selected yet (#96).
+/// unavailable because `status-v1` is not selected (#96).
 pub fn assert_final(record: &Value, generation: u64, command: &Value) {
     assert_header(record, FINAL, generation);
     let expected = json!({
