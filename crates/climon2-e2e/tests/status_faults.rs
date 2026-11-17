@@ -161,9 +161,8 @@ fn assert_accepted(report: &Value, steps: &[Value]) {
 /// outcomes): `submit` refuses a malformed Set viewing or Acknowledge
 /// synchronously with `invalid_argument` (viewing of 2, a reserved byte
 /// set, a zero period; Acknowledge of a zero restoration or generation),
-/// consuming no ID, and Kill remains `unsupported_operation`; Set viewing
-/// and Acknowledge queued behind an Open under way are rejected
-/// `cancelled` by shutdown, never sent. STA-08 Library and Fault: on a
+/// consuming no ID; Set viewing and Acknowledge queued behind an Open
+/// under way are rejected `cancelled` by shutdown, never sent. STA-08 Library and Fault: on a
 /// connection whose Open did not select `status-v1` both are
 /// `unsupported_capability`, and naming another generation is
 /// `stale_generation`, all locally: the fake daemon receives only the
@@ -193,7 +192,6 @@ fn installed_library_rejects_viewing_and_acknowledgement_it_cannot_send() {
             .map(|request| json!({ "do": "submit", "request": request, "as": "malformed" })),
     );
     queued.extend([
-        json!({ "do": "submit", "request": { "tag": 9, "request_id": 1 }, "as": "kill" }),
         json!({ "do": "submit", "request": interactive_status(1, 80, 24), "as": "accepted" }),
         json!({ "do": "submit", "request": { "tag": "viewing", "request_id": 2,
                 "authority": authority, "value": 1 }, "as": "accepted" }),
@@ -230,11 +228,6 @@ fn installed_library_rejects_viewing_and_acknowledgement_it_cannot_send() {
             assert_failure(step(&report, index), INVALID_ARGUMENT, "invalid_argument");
         }
     }
-    assert_failure(
-        labelled(&report, &steps, "kill"),
-        UNSUPPORTED_OPERATION,
-        "unsupported_operation",
-    );
     let (records, terminal) = ended(&report, &steps, "queued");
     for (index, id) in [2, 3].into_iter().enumerate() {
         assert_rejected(&records[index], 1, id, ORIGIN_LIBRARY, "cancelled");
@@ -774,7 +767,7 @@ fn installed_library_relays_status_records_by_the_reference_rules() {
     assert_header(&stream[6], FINAL, 1);
     assert_eq!(
         stream[6]["final"]["command_result"],
-        command_result(EXIT, 3)
+        native_command(EXIT, 3, None)
     );
     let finished_failed = available(status(STATUS_FAILED, None, LATER));
     assert_eq!(stream[6]["final"]["status"], finished_failed);
@@ -785,14 +778,17 @@ fn installed_library_relays_status_records_by_the_reference_rules() {
     );
     assert_eq!(
         completed[2]["final"]["command_result"],
-        command_result(EXIT, 0)
+        native_command(EXIT, 0, None)
     );
     let finished_completed = available(status(COMPLETED, None, LATER));
     assert_eq!(completed[2]["final"]["status"], finished_completed);
     let (knowing, _) = ended(&report, &steps, "known");
     let metadata = &knowing[1]["metadata"];
     assert_eq!(metadata["status"], available(status(COMPLETED, None, TIME)));
-    assert_eq!(metadata["command_result"]["value"], command_result(EXIT, 0));
+    assert_eq!(
+        metadata["command_result"]["value"],
+        native_command(EXIT, 0, None)
+    );
     let (unselected, _) = ended(&report, &steps, "unselected");
     assert_eq!(unselected[1]["metadata"]["status"], unavailable());
     let charges = &labelled(&report, &steps, "charged")["output"];

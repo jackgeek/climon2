@@ -27,7 +27,10 @@ use climon2_core::{
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
-    wire::{CommandResult, Counter, GrantReason, Notification, Progress, RevocationReason, Status},
+    wire::{
+        CommandResult, Counter, GrantReason, Notification, OperationalCode, Progress,
+        RevocationReason, Status,
+    },
 };
 use climon2_platform::{
     peer,
@@ -119,7 +122,7 @@ pub(crate) fn serve(
         opened: BTreeMap::new(),
         kills: BTreeMap::new(),
         command_result: None,
-        control: Control::new(options.size, options.lifetime),
+        control: issued(Control::new(options.size, options.lifetime)),
         vt,
         next_id: Default::default(),
         controller: None,
@@ -139,6 +142,13 @@ pub(crate) fn serve(
     }
     .run();
     end_pty(pty, result)
+}
+
+/// The `CLIMON2_DAEMON_ISSUED` test hook brings the counters near exhaustion.
+fn issued(control: Control) -> Control {
+    #[cfg(feature = "test-hooks")]
+    let control = crate::startup::issued(control);
+    control
 }
 
 fn session_vt(options: &Options) -> io::Result<Vt> {
@@ -365,7 +375,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn control_message(&mut self, conn: ConnectionId, message: ClientMessage) -> io::Result<()> {
         if let ClientMessage::Resize(size) = message {
-            self.control.resize(conn, size);
+            // The private protocol answers no Resize; a refused size is not recorded.
+            let _refused = self.control.resize(conn, size);
             return Ok(());
         }
         let effects = control_effects(&mut self.control, conn, message);
@@ -444,11 +455,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Nothing more of the command's output is read once it ended, so a
-    /// known result is final.
+    /// known result is final. A result held while the session went on
+    /// reaches, as the session ends, the connections that opened after it.
     fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
         if let Some(result) = command.known() {
             self.publish(result);
         }
+        self.publish_held();
         self.command = Command::Ended;
         self.react(|control| control.command_exited(command))
     }
@@ -836,7 +849,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn attachment_effect(&mut self, effect: Effect) {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
-            Effect::Refuse { conn } => self.refuse(conn.0),
+            Effect::Refuse { conn, code } => self.refuse(conn.0, code),
             Effect::Convert { conn } => self.convert(conn.0),
             other => self.input_effect(other),
         }
@@ -987,9 +1000,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.admitted(id);
     }
 
-    fn refuse(&mut self, id: u64) {
-        self.refused(id);
-        self.close_with_error(id, "session is terminating");
+    fn refuse(&mut self, id: u64, code: OperationalCode) {
+        self.refused(id, code);
+        self.close_with_error(id, &format!("attach refused: {}", code.as_str()));
     }
 
     fn close_with_error(&mut self, id: u64, message: &str) {

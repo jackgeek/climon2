@@ -1536,9 +1536,10 @@ fn shows_row(terminal: &mut Terminal, text: &str) {
 /// headless sessions as they are created, without being asked. Each gets one
 /// passive client, reused across later passes: one start and one library log
 /// in its own session log directory. Passive clients never attach or take
-/// control. The daemon advertises no `status-v1`, so a connected row shows
-/// Unavailable, never a fabricated status; its title arrives through
-/// `title-v1`, and an untitled session shows its command and arguments. On
+/// control. The daemon advertises `status-v1` (#95), and the monitor shows
+/// no effective status before #107, so a connected row's status column stays
+/// empty, never a fabricated status; its title arrives through `title-v1`,
+/// and an untitled session shows its command and arguments. On
 /// Linux the monitor maps exactly the session version's
 /// `libclimon2_client.so`.
 #[test]
@@ -1557,9 +1558,9 @@ fn sessions_appear_as_they_are_created_each_with_one_passive_client() {
         ),
     );
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Alpha");
+    shows_row(&mut terminal, "║ Alpha");
     let untitled = headless(&package, ": untitled", "finish");
-    shows_row(&mut terminal, "║Unavailable /bin/bash -c : untitled");
+    shows_row(&mut terminal, "║ /bin/bash -c : untitled");
     for id in [&titled, &untitled] {
         let logs = library_logs(&package, id);
         assert_eq!(logs.len(), 1, "{logs:?}");
@@ -1824,7 +1825,7 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Live");
+    shows_row(&mut terminal, "║            Live");
     shows_row(
         &mut terminal,
         "║Unavailable fake 0d5c0000-0000-4000-8000-0000000000f2",
@@ -1852,14 +1853,14 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
         "Discovery incomplete: cannot list sessions: Permission denied (os error 13)",
     );
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Live");
+    shows_row(&mut terminal, "║            Live");
     terminal.send("\x1b").unwrap();
     fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
     terminal
         .wait_for_screen(TIMEOUT, |screen| !screen.contains("Discovery incomplete"))
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, "║Unavailable Live");
+    shows_row(&mut terminal, "║            Live");
     // A complete pass has reported every batch, the stale session's included.
     assert!(
         !terminal.screen().contains("0000000000f4"),
@@ -2061,11 +2062,11 @@ fn the_own_session_is_this_monitor_and_nested_and_controlled_sessions_appear() {
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║This monitor /bin/bash -c c2 monitor ");
     // The host's screen text follows each wide character with its covered cell.
-    shows_row(&mut terminal, "║Unavailable  Nested 日 本 ");
-    shows_row(&mut terminal, "║Unavailable  Elsewhere");
+    shows_row(&mut terminal, "║             Nested 日 本 ");
+    shows_row(&mut terminal, "║             Elsewhere");
     shows_row(
         &mut terminal,
-        "║Unavailable  /bin/bash -c c2 exec --headless",
+        "║             /bin/bash -c c2 exec --headless",
     );
     // Wide labels, and the long one clipped to the list, keep the border
     // whole once the frame is painted: one snapshot may land mid-paint.
@@ -2154,14 +2155,7 @@ fn the_selector_lists_rows_moves_its_highlight_and_closes_without_resizing() {
         .wait_for_text("No session selected.", TIMEOUT)
         .unwrap();
     terminal.send("\x1ds").unwrap();
-    let open = with_selector(
-        &body,
-        &[
-            ("Unavailable", "C3"),
-            ("Unavailable", "B2"),
-            ("Unavailable", "A1"),
-        ],
-    );
+    let open = with_selector(&body, &[("", "C3"), ("", "B2"), ("", "A1")]);
     shows(&mut terminal, &open);
     assert_eq!(highlighted_rows(&terminal), [3]);
     // Each step's keys end on a row that differs from where the step

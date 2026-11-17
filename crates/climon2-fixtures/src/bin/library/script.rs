@@ -31,12 +31,13 @@
 //! - `snapshot`, `notification`, `shutdown`; `await_snapshot` until its
 //!   `gauge` reaches `value`;
 //! - `touch` a `path`; `probe` a `socket`'s hello `state`; `signal` a
-//!   real daemon's `pid` to `stop` or `continue`; `clock`: set a real
-//!   daemon's controllable status clock (`CLIMON2_DAEMON_CLOCK`) at `path`
-//!   to `value` milliseconds and wait, up to 30 s, until the daemon writes the
-//!   value to its `.ack` sibling, once the turn that read it has queued its
-//!   records (#95);
+//!   real daemon's `pid` to `stop`, `continue` or `kill` (#96); `clock`: set
+//!   a real daemon's controllable status clock (`CLIMON2_DAEMON_CLOCK`) at
+//!   `path` to `value` milliseconds and wait, up to 30 s, until the daemon
+//!   writes the value to its `.ack` sibling, once the turn that read it has
+//!   queued its records (#95);
 //! - `await_peer` until it received `frames` frames;
+//! - `destroy` on the owner thread, ahead of `finish` (#96);
 //! - `finish`: run's report, drains to terminal evidence, handle releases,
 //!   destroy and join.
 //!
@@ -156,6 +157,10 @@ impl World<'_> {
             "notification" => json!(api.notification(handles(instance)).0),
             "shutdown" => api.shutdown(handles(instance)),
             "await_peer" => await_peer(instance, step),
+            "destroy" => {
+                let handles = handles(instance);
+                owner(instance).call(move || api.destroy(handles))
+            }
             "finish" => finish(api, instance),
             _ => panic!("unknown step {action}"),
         }
@@ -415,12 +420,13 @@ fn touch(step: &Value) -> Value {
     json!("touched")
 }
 
-/// Stops or resumes a process, such as a real session daemon.
+/// Stops, resumes or kills a process, such as a real session daemon.
 fn signal(step: &Value) -> Value {
     let pid = step["pid"].as_i64().expect("a pid") as libc::pid_t;
     let signal = match step["signal"].as_str() {
         Some("stop") => libc::SIGSTOP,
         Some("continue") => libc::SIGCONT,
+        Some("kill") => libc::SIGKILL,
         other => panic!("unknown signal {other:?}"),
     };
     // SAFETY: kill has no memory-safety preconditions.

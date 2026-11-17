@@ -38,7 +38,6 @@ const NOT_VIEWING: &str = "the latest reported viewing is not true";
 const EPISODES_EXHAUSTED: &str = "the session's attention episode identifiers are exhausted";
 const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
 const EMPTY_INPUT: &str = "Input carries no bytes";
-const TERMINATING: &str = "the session is terminating";
 const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
 
 /// What hello advertises: only the families this daemon implements.
@@ -66,6 +65,9 @@ pub(super) fn advertisement() -> Advertisement {
 pub(super) struct Opened {
     selected: BTreeSet<Family>,
     role: Role,
+    /// Whether the command's result was already final when it opened: its
+    /// Initial metadata carries the result, and no Command final reached it.
+    opened_after_final: bool,
 }
 
 enum Role {
@@ -212,10 +214,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// A passive monitor connection: success and Initial metadata at once.
     /// It may inherit control from now on.
     fn register(&mut self, id: u64, request_id: Counter, selected: BTreeSet<Family>) {
-        let opened = Opened {
-            selected,
-            role: Role::Monitor,
-        };
+        let opened = self.opened_with(selected, Role::Monitor);
         self.opened.insert(id, opened);
         self.control.register(ConnectionId(id));
         self.report_opened(id, request_id);
@@ -239,13 +238,21 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             open: Some(request_id),
             held: None,
         };
-        let opened = Opened {
-            selected,
-            role: Role::Attachment(attachment),
-        };
+        let opened = self.opened_with(selected, Role::Attachment(attachment));
         self.opened.insert(id, opened);
         let effects = self.control.attach(ConnectionId(id), host);
         self.effects(effects)
+    }
+
+    /// A successful Open's connection, which selected `selected`, in
+    /// `role`. Its Initial metadata, sent in the same pass, carries the
+    /// command's result when that is already final.
+    fn opened_with(&self, selected: BTreeSet<Family>, role: Role) -> Opened {
+        Opened {
+            selected,
+            role,
+            opened_after_final: self.command_result.is_some(),
+        }
     }
 
     /// An admitted interactive Open's success and Initial metadata, before
@@ -256,12 +263,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    /// An interactive Open refused because the session is terminating: it
-    /// has no effects, and its stream ends.
-    pub(super) fn refused(&mut self, id: u64) {
+    /// An interactive Open refused with `code`, because the session is
+    /// terminating or no new control period and restoration can be issued:
+    /// it has no effects, and its stream ends.
+    pub(super) fn refused(&mut self, id: u64, code: OperationalCode) {
         if let Some(request_id) = self.open_request(id) {
-            let error = error(OperationalCode::SessionTerminating, TERMINATING);
-            self.reject_role(id, request_id, error);
+            self.reject_role(id, request_id, refusal(code));
         }
     }
 
@@ -404,9 +411,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             let error = error(OperationalCode::InvalidGeometry, UNSUPPORTED_GEOMETRY);
             return self.reject_with(id, resize.request_id, error);
         };
-        self.control.resize(ConnectionId(id), host);
-        let accepted = Success::ResizeAccepted {};
-        self.respond(id, resize.request_id, Outcome::Ok(accepted));
+        let recorded = self.control.resize(ConnectionId(id), host);
+        let accepted = recorded.map(|()| Success::ResizeAccepted {});
+        self.answer(id, resize.request_id, accepted);
     }
 
     /// Ready confirms the complete current restoration; once ready again it
@@ -777,6 +784,26 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
         self.command_result = Some(result.clone());
         let status = self.status.finish(&self.moment, result);
+        self.send_final(result, status, |_| true);
+    }
+
+    /// The result a session held after its command exited, once the
+    /// session ends, however it ends: each connection that opened after the
+    /// Command final went out, and so learned the result only from its
+    /// Initial metadata, receives it as Command final now, so every opened
+    /// connection gets exactly one (owner decisions on #259). Nothing is
+    /// held when no result was final before this step.
+    pub(super) fn publish_held(&mut self) {
+        let Some(result) = self.command_result.clone() else {
+            return;
+        };
+        let status = self.status.status();
+        self.send_final(&result, status, |opened| opened.opened_after_final);
+    }
+
+    /// Command final of `result` to each opened connection `to` picks, with
+    /// the final `status` for one that selected `status-v1`.
+    fn send_final(&mut self, result: &CommandResult, status: Status, to: fn(&Opened) -> bool) {
         let frame = |status| {
             CommandFinal::new(result.clone(), status)
                 .expect("the final status agrees with its result")
@@ -786,6 +813,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let opened: Vec<(u64, bool)> = self
             .opened
             .iter()
+            .filter(|(_, opened)| to(opened))
             .map(|(id, opened)| (*id, opened.selected.contains(&Family::StatusV1)))
             .collect();
         for (id, selected) in opened {

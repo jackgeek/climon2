@@ -32,6 +32,9 @@ impl Installation {
         for binary in ["climon2-cli", "climon2-client", "climon2-daemon"] {
             copy_executable(&bin_path(binary), &version.join(binary));
         }
+        // The client kills through its own version folder's library (#100).
+        let library = climon2_test_term::client_library_path();
+        copy_executable(&library, &version.join(library.file_name().unwrap()));
         Self(directory)
     }
 

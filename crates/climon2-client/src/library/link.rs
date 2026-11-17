@@ -96,7 +96,7 @@ impl Link {
     fn step(&mut self, limit: FrameLimit, deadline: Instant) -> Result<Option<Frame>, Fault> {
         self.flush()?;
         remaining(deadline).ok_or(TIMEOUT)?;
-        wait(None, Some(self), Some(deadline));
+        wait(None, &[self], Some(deadline));
         self.receive(limit)
     }
 
@@ -145,14 +145,18 @@ impl Link {
     }
 }
 
-/// Waits until `waker` or `link`'s socket is ready, or `deadline` passes. A
-/// signal or a spurious wake only makes the caller look again.
-pub(super) fn wait(waker: Option<i32>, link: Option<&Link>, deadline: Option<Instant>) {
+/// Waits until `waker` or one of `links`' sockets is ready, or `deadline`
+/// passes. A signal or a spurious wake only makes the caller look again.
+pub(super) fn wait(waker: Option<i32>, links: &[&Link], deadline: Option<Instant>) {
     let mut descriptors: Vec<_> = waker
         .map(|waker| pollfd(waker, libc::POLLIN))
         .into_iter()
         .collect();
-    descriptors.extend(link.map(|link| pollfd(link.socket.as_raw_fd(), link.interest())));
+    descriptors.extend(
+        links
+            .iter()
+            .map(|link| pollfd(link.socket.as_raw_fd(), link.interest())),
+    );
     let timeout = deadline.map_or(i32::MAX, milliseconds);
     // SAFETY: the entries are valid for the call's duration.
     unsafe {

@@ -275,6 +275,14 @@ fn response(response: &native::Response) -> Value {
                 "accepted_bytes": flag.accepted_bytes,
             })
         }
+        native::TERMINATION => {
+            let termination = unsafe { response.result.termination };
+            json!({
+                "command_result": optional_command(&termination.command_result),
+                "cleanup": termination.cleanup,
+                "reserved": termination.reserved,
+            })
+        }
         _ => Value::Null,
     };
     value
@@ -414,11 +422,15 @@ fn metadata(metadata: &native::Metadata) -> Value {
         "title": title(&metadata.title),
         "status": available_status(&metadata.status),
         "progress": available_progress(&metadata.progress),
-        "command_result": {
-            "present": metadata.command_result.present,
-            "reserved": metadata.command_result.reserved,
-            "value": command(&metadata.command_result.value),
-        },
+        "command_result": optional_command(&metadata.command_result),
+    })
+}
+
+fn optional_command(optional: &native::OptionalCommand) -> Value {
+    json!({
+        "present": optional.present,
+        "reserved": optional.reserved,
+        "value": command(&optional.value),
     })
 }
 

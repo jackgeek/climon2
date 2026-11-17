@@ -318,8 +318,9 @@ pub struct Metadata {
     pub command_result: OptionalCommand,
 }
 
+/// Client keys; the default enables neither key.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Settings {
     pub escape_enabled: u8,
     pub escape_byte: u8,

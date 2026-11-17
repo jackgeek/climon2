@@ -134,7 +134,7 @@ fn assert_completed(
     assert_header(finals[0], FINAL, generation);
     assert_eq!(
         finals[0]["final"]["command_result"],
-        command_result(EXIT, 0)
+        native_command(EXIT, 0, None)
     );
     assert_eq!(
         finals[0]["final"]["status"],

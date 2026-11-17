@@ -1,5 +1,5 @@
 use climon2_core::{
-    hello::{Capabilities, HelloExtensions},
+    hello::HelloExtensions,
     metadata::SessionMetadata,
     protocol::{
         ClientMessage, Frame, HELLO_TIMEOUT, PROTOCOL_VERSION, ServerMessage, read_frame,
@@ -46,29 +46,6 @@ pub fn poll(descriptors: &mut [libc::pollfd], milliseconds: i32) -> io::Result<(
         return Err(io::Error::last_os_error());
     }
     Ok(())
-}
-
-/// What the client asks of the session after hello.
-#[derive(Clone, Copy)]
-pub enum Request {
-    Attach,
-    Kill,
-}
-
-impl Request {
-    fn supported(self, capabilities: &Capabilities) -> bool {
-        match self {
-            Self::Attach => capabilities.supports_attach(),
-            Self::Kill => capabilities.supports_kill(),
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Attach => "attach",
-            Self::Kill => "kill",
-        }
-    }
 }
 
 pub struct Transport {
@@ -123,29 +100,19 @@ impl Transport {
         )
     }
 
-    pub fn hello(
-        &mut self,
-        metadata: &SessionMetadata,
-        signals: &Signals,
-        request: Request,
-    ) -> io::Result<()> {
-        let result = self.exchange_hello(metadata, signals, request);
+    pub fn hello(&mut self, metadata: &SessionMetadata, signals: &Signals) -> io::Result<()> {
+        let result = self.exchange_hello(metadata, signals);
         result.map_err(|error| response_error(error, metadata))
     }
 
-    fn exchange_hello(
-        &mut self,
-        metadata: &SessionMetadata,
-        signals: &Signals,
-        request: Request,
-    ) -> io::Result<()> {
+    fn exchange_hello(&mut self, metadata: &SessionMetadata, signals: &Signals) -> io::Result<()> {
         climon2_platform::peer::authenticate(&self.stream)?;
         self.send(&ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
         })?;
         self.flush_until(signals, Some(self.deadline))?;
         let frame = self.receive_frame_until(signals, Some(self.deadline))?;
-        validate_hello(frame, metadata, request)
+        validate_hello(frame, metadata)
     }
 
     pub fn attached(&mut self, signals: &Signals) -> io::Result<()> {
@@ -153,15 +120,6 @@ impl Transport {
         match self.receive_until(signals, None)? {
             ServerMessage::Attached => Ok(()),
             message => Err(rejection(message, "expected Attached")),
-        }
-    }
-
-    /// The daemon confirms only after the command ended and cleanup finished.
-    pub fn terminated(&mut self, signals: &Signals) -> io::Result<()> {
-        self.flush_until(signals, None)?;
-        match self.receive_until(signals, None)? {
-            ServerMessage::Terminated { .. } => Ok(()),
-            message => Err(rejection(message, "expected Terminated")),
         }
     }
 
@@ -304,24 +262,24 @@ fn lost_connection() -> io::Error {
     io::Error::new(io::ErrorKind::UnexpectedEof, "lost connection to session")
 }
 
-fn validate_hello(frame: Frame, metadata: &SessionMetadata, request: Request) -> io::Result<()> {
+fn validate_hello(frame: Frame, metadata: &SessionMetadata) -> io::Result<()> {
     let extensions = HelloExtensions::from_body(frame.body());
     match ServerMessage::from_frame(frame)? {
         ServerMessage::Hello(reply) => {
             reply.validate_client(&metadata.session_id, &metadata.climon2_version)?;
-            supports(&extensions, request)
+            supports_attach(&extensions)
         }
         message => Err(rejection(message, "expected session hello")),
     }
 }
 
-fn supports(extensions: &HelloExtensions, request: Request) -> io::Result<()> {
+fn supports_attach(extensions: &HelloExtensions) -> io::Result<()> {
     extensions
         .capabilities
         .valid()
-        .is_some_and(|capabilities| request.supported(capabilities))
+        .is_some_and(|capabilities| capabilities.supports_attach())
         .then_some(())
-        .ok_or_else(|| invalid(format!("session does not support {}", request.name())))
+        .ok_or_else(|| invalid("session does not support attach"))
 }
 
 /// The session's own diagnosis when it sent one, otherwise what was expected.
