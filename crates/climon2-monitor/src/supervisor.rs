@@ -536,13 +536,21 @@ impl State {
     /// Kill-only instance, a refused one ends it, and an unconfirmed one is
     /// learned passively.
     fn unheld(&mut self, id: &SessionId, kill: Kill) {
+        if kill == Kill::Wanted {
+            self.killing.insert(id.clone());
+        } else {
+            self.unanswered(id, kill);
+        }
+    }
+
+    /// A Delete with no instance left whose Kill waits for none: a refused
+    /// Kill ends it, an unconfirmed one is learned passively, and any other
+    /// leaves it as it is.
+    fn unanswered(&mut self, id: &SessionId, kill: Kill) {
         match kill {
-            Kill::Wanted => {
-                self.killing.insert(id.clone());
-            }
             Kill::Refused => self.refused(id),
             Kill::Unconfirmed => self.relearn(id),
-            Kill::Skipped | Kill::Pending | Kill::Answered => {}
+            Kill::Skipped | Kill::Wanted | Kill::Pending | Kill::Answered => {}
         }
     }
 
@@ -1201,11 +1209,24 @@ impl State {
             removal.resume |= instance.retry == Some(Retry::Passive);
             return self.cleaned(id, destroyed);
         }
-        if instance.retry != Some(Retry::Passive) {
+        self.retry_cleaned(id, instance.retry, instance.metadata, destroyed);
+    }
+
+    /// A joined instance the monitor retries passively is retried after
+    /// its backoff once its cleanup is confirmed, and never once it cannot
+    /// be; any other is done.
+    fn retry_cleaned(
+        &mut self,
+        id: &SessionId,
+        retry: Option<Retry>,
+        metadata: SessionMetadata,
+        cleaned: Result<(), String>,
+    ) {
+        if retry != Some(Retry::Passive) {
             return;
         }
-        match destroyed {
-            Ok(()) => self.backoff(instance.metadata),
+        match cleaned {
+            Ok(()) => self.backoff(metadata),
             Err(error) => {
                 let why = format!("cannot confirm the client's cleanup: {error}");
                 self.recover(id, why, Retry::Permanent);
