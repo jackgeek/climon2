@@ -7,6 +7,7 @@ mod ending;
 mod headless;
 mod interactive;
 mod limits;
+mod notifications;
 mod passive;
 mod signals;
 mod startup;

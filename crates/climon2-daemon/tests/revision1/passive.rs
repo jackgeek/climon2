@@ -35,6 +35,12 @@ const UNSET_TITLE_IDLE: &str = concat!(
     r#""status":{"available":true,"value":{"state":"idle","changed_at":"2027-01-15T08:00:00.000Z","episode_id":null}},"#,
     r#""progress":{"available":false,"value":null},"command_result":null}"#
 );
+/// Nothing but progress, which is none.
+const NO_PROGRESS: &str = concat!(
+    r#"{"title":{"available":false,"value":null},"#,
+    r#""status":{"available":false,"value":null},"#,
+    r#""progress":{"available":true,"value":{"state":"none","percent":null}},"command_result":null}"#
+);
 const NO_TITLE: &str = concat!(
     r#"{"title":{"available":false,"value":null},"#,
     r#""status":{"available":false,"value":null},"#,
@@ -100,7 +106,8 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
         concat!(
             r#"{{"session_id":"{}","climon2_version":"0.1.0","protocol":1,"#,
             r#""capabilities":["attach","kill","state-v1","client-startup-v1","#,
-            r#""daemon-wire-v1","monitor-v1","title-v1","status-v1","focus-v1"],"#,
+            r#""daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","#,
+            r#""progress-v1","focus-v1"],"#,
             r#""state":{{"lifecycle":"starting","attachments":0,"controlled":false}},"#,
             r#""daemon_wire_v1":{{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}}}"#
         ),
@@ -117,8 +124,9 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
 /// metadata record: the title by value when `title-v1` is selected and
 /// unavailable otherwise, the effective status, idle and cleared since the
 /// daemon's initialization on its controllable clock, when `status-v1` is
-/// selected and unavailable otherwise, progress explicitly unavailable, and
-/// no command result.
+/// selected and unavailable otherwise, progress unavailable unless
+/// `progress-v1` is selected, when it is none (STA-06 Contract), and no
+/// command result. `notification-v1` without `status-v1` is not selected.
 #[test]
 fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     let session = super::clocked("exit");
@@ -138,10 +146,11 @@ fn monitor_open_selects_supported_families_then_reports_initial_metadata() {
     assert_eq!(body(&frame(&mut first), 0x41), UNSET_TITLE_IDLE);
 
     let mut second = peer(&session);
-    request(&mut second, &open(7, &[], &["progress-v1"], Mode::Monitor));
+    let optional = ["notification-v1", "progress-v1"];
+    request(&mut second, &open(7, &[], &optional, Mode::Monitor));
     let (second_id, selected) = opened(&frame(&mut second), "7");
-    assert!(selected.is_empty(), "{selected:?}");
-    assert_eq!(body(&frame(&mut second), 0x41), NO_TITLE);
+    assert_eq!(selected, ["progress-v1"]);
+    assert_eq!(body(&frame(&mut second), 0x41), NO_PROGRESS);
     assert_ne!(first_id, second_id);
     end_controlled(session, controlling);
 }
@@ -275,7 +284,9 @@ fn an_oversized_title_is_ignored_never_truncated() {
 /// documented outcome. Leave before Open is `invalid_state` and the stream
 /// goes on. A rejected first role, Open or Kill, has no effects and ends its
 /// stream: an unsupported revision is `unsupported_revision`, and an unknown
-/// or unsupported required family is `unsupported_capability`. A later Open
+/// required family, or one whose dependency is not selected
+/// (`notification-v1` without `status-v1`), is `unsupported_capability`. A
+/// later Open
 /// or Kill never repurposes a registration: `invalid_state`, and the
 /// registration stays until Leave, which reports that no attachment was
 /// detached.
@@ -304,7 +315,7 @@ fn passive_requests_get_their_documented_outcomes() {
     let roles = [
         (later_revision.to_frame(), "unsupported_revision"),
         (
-            open(1, &["progress-v1"], &[], Mode::Monitor).to_frame(),
+            open(1, &["notification-v1"], &[], Mode::Monitor).to_frame(),
             "unsupported_capability",
         ),
         (

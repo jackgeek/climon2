@@ -9,7 +9,10 @@ use super::{
 };
 use climon2_core::{
     native,
-    wire::{self, AuthorityIds, Counter, Geometry, GrantReason, RevocationReason, StatusState},
+    wire::{
+        self, AuthorityIds, Counter, Geometry, GrantReason, NotificationSource, ProgressState,
+        RevocationReason, StatusState,
+    },
 };
 use std::mem;
 
@@ -31,6 +34,9 @@ const NO_COMMAND: native::OptionalCommand = unsafe { mem::zeroed() };
 // SAFETY: every field is an integer, for which zero is valid, and zero is
 // "unavailable".
 const NO_STATUS: native::AvailableStatus = unsafe { mem::zeroed() };
+// SAFETY: every field is an integer, for which zero is valid, and zero is
+// "unavailable".
+const NO_PROGRESS: native::AvailableProgress = unsafe { mem::zeroed() };
 
 // The native status codes follow the wire's states in order, from one.
 const _: () = assert!(StatusState::Idle as u32 + 1 == native::IDLE);
@@ -39,6 +45,13 @@ const _: () = assert!(StatusState::NeedsAttention as u32 + 1 == native::NEEDS_AT
 const _: () = assert!(StatusState::Acknowledged as u32 + 1 == native::ACKNOWLEDGED);
 const _: () = assert!(StatusState::Completed as u32 + 1 == native::COMPLETED);
 const _: () = assert!(StatusState::Failed as u32 + 1 == native::STATUS_FAILED);
+
+// The native progress codes follow the wire's states in order, from one.
+const _: () = assert!(ProgressState::None as u32 + 1 == native::PROGRESS_NONE);
+const _: () = assert!(ProgressState::Normal as u32 + 1 == native::PROGRESS_NORMAL);
+const _: () = assert!(ProgressState::Indeterminate as u32 + 1 == native::PROGRESS_INDETERMINATE);
+const _: () = assert!(ProgressState::Error as u32 + 1 == native::PROGRESS_ERROR);
+const _: () = assert!(ProgressState::Paused as u32 + 1 == native::PROGRESS_PAUSED);
 
 /// One record, as the library holds it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,12 +82,57 @@ pub(super) enum Metadata {
     Initial(Initial),
     /// A Title changed, by value; never unavailable.
     Title(Title),
-    /// A Status changed: an effective nonfinal status (#95).
-    Status(Status),
+    /// A change of the session's status, a notification or a change of
+    /// its progress.
+    Report(Report),
     /// The command's final result, after an Initial metadata that did not
     /// know it (#94), and its final status when `status-v1` is selected
     /// (#95).
     Final(Command, Option<Status>),
+}
+
+/// What the session reports about its status, notifications and progress.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum Report {
+    /// A Status changed: an effective nonfinal status (#95).
+    Status(Status),
+    /// A Notification (#98): inert text and the episode it requested or
+    /// joined.
+    Notification(Notification),
+    /// A Progress changed (#98): the retained normalized progress.
+    Progress(wire::Progress),
+}
+
+impl Report {
+    fn bytes(&self) -> u64 {
+        match self {
+            Self::Notification(notification) => notification.bytes(),
+            Self::Status(_) | Self::Progress(_) => 0,
+        }
+    }
+
+    fn native(&self) -> (u32, native::RecordData) {
+        match self {
+            Self::Status(status) => (
+                native::STATUS,
+                native::RecordData {
+                    status: status.native(),
+                },
+            ),
+            Self::Notification(notification) => (
+                native::NOTIFICATION,
+                native::RecordData {
+                    notification: notification.native(),
+                },
+            ),
+            Self::Progress(value) => (
+                native::PROGRESS,
+                native::RecordData {
+                    progress: progress(*value),
+                },
+            ),
+        }
+    }
 }
 
 /// What the daemon presents to the role it controls, under immutable
@@ -207,7 +265,7 @@ impl Ending {
             Self::Termination { command, cleanup } => {
                 response.result_tag = native::TERMINATION;
                 response.result.termination = native::Termination {
-                    command_result: optional(command.as_ref()),
+                    command_result: optional_command(command.as_ref()),
                     cleanup: *cleanup,
                     reserved: 0,
                 };
@@ -287,6 +345,84 @@ fn available(status: Option<Status>) -> native::AvailableStatus {
     })
 }
 
+/// Progress as native: its state code, and its percentage when present.
+fn progress(progress: wire::Progress) -> native::Progress {
+    let percent = progress.percent();
+    native::Progress {
+        state: progress.state() as u32 + 1,
+        percent_present: u32::from(percent.is_some()),
+        percent: percent.map_or(0, |percent| percent.get().into()),
+        reserved: 0,
+    }
+}
+
+/// Optional progress as native availability: unavailable is all zero.
+fn available_progress(value: Option<wire::Progress>) -> native::AvailableProgress {
+    value.map_or(NO_PROGRESS, |value| native::AvailableProgress {
+        available: 1,
+        reserved: 0,
+        value: progress(value),
+    })
+}
+
+/// A notification as the library holds it: its source's native code, the
+/// episode and its owned text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Notification {
+    source: u32,
+    episode: Option<Counter>,
+    source_id: Option<Box<str>>,
+    title: Option<Box<str>>,
+    body: Option<Box<str>>,
+}
+
+impl From<wire::Notification> for Notification {
+    fn from(notification: wire::Notification) -> Self {
+        let source = match notification.source {
+            NotificationSource::Osc9 => native::OSC9,
+            NotificationSource::Osc99 => native::OSC99,
+            NotificationSource::Osc777 => native::OSC777,
+        };
+        Self {
+            source,
+            episode: notification.episode_id,
+            source_id: notification.source_id.map(Box::from),
+            title: notification.title.map(Box::from),
+            body: notification.body.map(Box::from),
+        }
+    }
+}
+
+impl Notification {
+    fn bytes(&self) -> u64 {
+        [&self.source_id, &self.title, &self.body]
+            .into_iter()
+            .flatten()
+            .map(|text| text_bytes(text))
+            .sum()
+    }
+
+    fn native(&self) -> native::Notification {
+        native::Notification {
+            source: self.source,
+            episode_present: u32::from(self.episode.is_some()),
+            episode_id: self.episode.map_or(0, Counter::get),
+            source_id: optional(self.source_id.as_deref()),
+            title: optional(self.title.as_deref()),
+            body: optional(self.body.as_deref()),
+        }
+    }
+}
+
+/// Optional text as native: absent is not present, with no bytes.
+fn optional(text: Option<&str>) -> native::OptionalText {
+    native::OptionalText {
+        present: u32::from(text.is_some()),
+        reserved: 0,
+        value: bytes(text.unwrap_or_default()),
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Title {
     /// `title-v1` is not selected.
@@ -301,6 +437,8 @@ pub(super) struct Initial {
     pub(super) title: Title,
     /// Available exactly when `status-v1` is selected (#95).
     pub(super) status: Option<Status>,
+    /// Available exactly when `progress-v1` is selected (#98).
+    pub(super) progress: Option<wire::Progress>,
     pub(super) command: Option<Command>,
 }
 
@@ -338,11 +476,7 @@ impl Command {
         native::CommandResult {
             kind: self.kind,
             value: self.value,
-            signal_name: native::OptionalText {
-                present: u32::from(self.name.is_some()),
-                reserved: 0,
-                value: bytes(self.name.as_deref().unwrap_or_default()),
-            },
+            signal_name: optional(self.name.as_deref()),
         }
     }
 }
@@ -413,7 +547,7 @@ impl Metadata {
                 initial.title.bytes() + initial.command.as_ref().map_or(0, Command::bytes)
             }
             Self::Title(title) => title.bytes(),
-            Self::Status(_) => 0,
+            Self::Report(report) => report.bytes(),
             Self::Final(command, _) => command.bytes(),
         }
     }
@@ -433,12 +567,7 @@ impl Metadata {
                     title: title.native(),
                 },
             ),
-            Self::Status(status) => (
-                native::STATUS,
-                native::RecordData {
-                    status: status.native(),
-                },
-            ),
+            Self::Report(report) => report.native(),
             Self::Final(command, status) => (
                 native::FINAL,
                 native::RecordData {
@@ -644,21 +773,20 @@ impl Screen {
 }
 
 impl Initial {
-    /// Progress stays explicitly unavailable: `progress-v1` is never
-    /// selected yet.
     fn native(&self) -> native::Metadata {
         // SAFETY: every field is an integer or a raw pointer, for which zero
         // (null) is valid, and zero is "unavailable".
         let mut metadata: native::Metadata = unsafe { mem::zeroed() };
         metadata.title = self.title.native();
         metadata.status = available(self.status);
-        metadata.command_result = optional(self.command.as_ref());
+        metadata.progress = available_progress(self.progress);
+        metadata.command_result = optional_command(self.command.as_ref());
         metadata
     }
 }
 
 /// An optional command result's native view: absent is all zero.
-fn optional(command: Option<&Command>) -> native::OptionalCommand {
+fn optional_command(command: Option<&Command>) -> native::OptionalCommand {
     command.map_or(NO_COMMAND, |command| native::OptionalCommand {
         present: u32::from(true),
         reserved: 0,

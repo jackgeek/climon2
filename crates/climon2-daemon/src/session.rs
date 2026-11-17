@@ -16,7 +16,9 @@ use crate::{
         Restoration, SessionEnd,
     },
     pty::Pty,
-    status::{self, Clock, Detector, Interpreted, Now, Sample, Screen, SystemRandom},
+    status::{
+        self, Assembler, Clock, Detector, Interpreted, Now, Sample, Screen, SystemRandom, Tracker,
+    },
 };
 use climon2_core::{
     hello::{SessionState, advertise_revision1},
@@ -25,7 +27,10 @@ use climon2_core::{
         PTY_DRAIN_CAP, ServerMessage, TerminalSize,
     },
     title::default_title,
-    wire::{CommandResult, Counter, GrantReason, OperationalCode, RevocationReason},
+    wire::{
+        CommandResult, Counter, GrantReason, Notification, OperationalCode, Progress,
+        RevocationReason, Status,
+    },
 };
 use climon2_platform::{
     peer,
@@ -91,6 +96,10 @@ struct Session<'a, C> {
     moment: Now,
     /// Activity, attention and the effective status they report.
     status: Detector<SystemRandom>,
+    /// Incomplete OSC 99 notifications, under the session's fixed limits.
+    assembler: Assembler,
+    /// The retained normalized progress.
+    progress: Tracker,
 }
 
 pub(crate) fn serve(
@@ -130,6 +139,8 @@ pub(crate) fn serve(
         clock,
         moment,
         status,
+        assembler: Assembler::new(options.assembly),
+        progress: Tracker::default(),
     }
     .run();
     end_pty(pty, result)
@@ -166,23 +177,62 @@ fn sample(vt: &Vt) -> Sample {
     }
 }
 
-/// What a sequence observed in the command's output does: a program-status
-/// capability query is answered locally, in order with the terminal's other
-/// replies; a terminal signal drives detection, sampling the terminal as of
-/// its place in the output. Returns the effective status it changed.
-fn observe(
-    detector: &mut Detector<SystemRandom>,
-    now: &Now,
-    vt: &Vt,
-    observed: Signal<'_>,
-    replies: &mut Vec<u8>,
-) -> Option<climon2_core::wire::Status> {
-    match status::interpret(observed)? {
-        Interpreted::Query => {
-            replies.extend_from_slice(status::QUERY_REPLY);
-            None
+/// A metadata change the command's output made.
+enum Change {
+    Status(Status),
+    Notification(Notification),
+    Progress(Progress),
+}
+
+/// What the command's output drives, and the changes it made, in stream
+/// order.
+struct Observer<'a> {
+    detector: &'a mut Detector<SystemRandom>,
+    assembler: &'a mut Assembler,
+    progress: &'a mut Tracker,
+    now: &'a Now,
+    changes: Vec<Change>,
+}
+
+impl Observer<'_> {
+    /// What a sequence observed in the command's output does: a
+    /// program-status capability query is answered locally, in order with
+    /// the terminal's other replies; a terminal signal drives detection,
+    /// sampling the terminal as of its place in the output; a progress
+    /// report changes the retained progress; notification data may
+    /// complete a notification.
+    fn observe(&mut self, vt: &Vt, observed: Signal<'_>, replies: &mut Vec<u8>) {
+        if let Some(interpreted) = status::interpret(observed) {
+            self.apply(interpreted, vt, replies);
         }
-        Interpreted::Detect(signal) => detector.signal(now, signal, || sample(vt)),
+    }
+
+    fn apply(&mut self, interpreted: Interpreted<'_>, vt: &Vt, replies: &mut Vec<u8>) {
+        match interpreted {
+            Interpreted::Query => replies.extend_from_slice(status::QUERY_REPLY),
+            Interpreted::Detect(signal) => {
+                let changed = self.detector.signal(self.now, signal, || sample(vt));
+                self.changes.extend(changed.map(Change::Status));
+            }
+            Interpreted::Progress(report) => {
+                let changed = self.progress.report(report);
+                self.changes.extend(changed.map(Change::Progress));
+            }
+            Interpreted::Notify(parsed) => self.notify(parsed),
+        }
+    }
+
+    /// A completed notification requests attention, and its record
+    /// carries the episode then pending: the status change, if any, comes
+    /// first.
+    fn notify(&mut self, parsed: status::Parsed<'_>) {
+        let Some(notified) = self.assembler.notification(self.now.monotonic, parsed) else {
+            return;
+        };
+        let changed = self.detector.notify(self.now);
+        self.changes.extend(changed.map(Change::Status));
+        let record = notified.record(self.detector.pending_episode());
+        self.changes.push(Change::Notification(record));
     }
 }
 
@@ -491,22 +541,35 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     /// Feeds the command's output to the VT; the terminal signals in it
-    /// change the status in order, reported after its live output.
+    /// change the status, notify and change progress in order, reported
+    /// after its live output.
     fn fed(&mut self, bytes: &[u8], now: Instant) {
-        let (detector, moment) = (&mut self.status, &self.moment);
-        let mut changes = Vec::new();
+        let mut observer = Observer {
+            detector: &mut self.status,
+            assembler: &mut self.assembler,
+            progress: &mut self.progress,
+            now: &self.moment,
+            changes: Vec::new(),
+        };
         let fed = self.vt.feed_observed(bytes, now, |vt, observed, replies| {
-            changes.extend(observe(detector, moment, vt, observed, replies));
+            observer.observe(vt, observed, replies);
         });
+        let changes = observer.changes;
         self.pty_writes.daemon(&fed.replies);
         if fed.focus_enabled {
             self.focus_enabled();
         }
         self.route(fed.live);
-        changes
-            .into_iter()
-            .for_each(|change| self.report_status(Some(change)));
+        changes.into_iter().for_each(|change| self.report(change));
         self.titles(fed.titles);
+    }
+
+    fn report(&mut self, change: Change) {
+        match change {
+            Change::Status(status) => self.report_status(Some(status)),
+            Change::Notification(notification) => self.report_notification(notification),
+            Change::Progress(progress) => self.report_progress(progress),
+        }
     }
 
     fn route(&mut self, live: Vec<u8>) {
