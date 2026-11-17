@@ -3082,8 +3082,21 @@ fn a_finished_session_keeps_its_last_screen_and_cannot_be_acquired() {
 /// cursor keys (DECCKM) and the application keypad (DECKPAM). It holds until
 /// `$HOME/finish` exists.
 fn recorder(title: &str) -> String {
+    recording(title, "-echo")
+}
+
+/// A [`recorder`] whose terminal echoes every byte it receives after `RAW`.
+/// The daemon answers an Input before it reads the echo, on the same
+/// connection, so once the monitor shows a byte's echo, every operation it
+/// submitted before that byte has been answered.
+fn echoing_recorder(title: &str) -> String {
+    recording(title, "echo")
+}
+
+/// The [`recorder`] script, with stty's `echo` setting `echo`.
+fn recording(title: &str, echo: &str) -> String {
     working(&format!(
-        "printf '\\033]2;{title}\\007'; stty raw -echo; cat </dev/tty >\"$HOME/got\" & printf RAW; \
+        "printf '\\033]2;{title}\\007'; stty raw {echo}; cat </dev/tty >\"$HOME/got\" & printf RAW; \
          until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
          if [ -e \"$HOME/modes\" ] && [ -z \"$m\" ]; then printf '\\033[?1h\\033='; m=1; fi; \
          sleep 0.05; done; kill $!"
@@ -3373,44 +3386,54 @@ fn highlight_at(terminal: &Terminal, row: usize) {
 }
 
 /// COM-03 (Monitor, queue-full case) and COM-04 (Monitor, chunking): with
-/// two-byte chunks and two outstanding operations, while the session's
-/// daemon is stopped seven typed bytes are submitted as ab and cd, and the
-/// third chunk does not fit: the top row says that its three bytes and
-/// those after them (efg) were not sent and that earlier input was
-/// accepted. Once the daemon resumes, the session has received exactly
-/// abcd, nothing is replayed, and later typing reaches it.
+/// two-byte chunks and room for three outstanding operations, once every
+/// earlier operation is answered (a typed z is echoed) and while the
+/// session's daemon is stopped, nine typed bytes are submitted as ab, cd
+/// and ef, and the fourth chunk does not fit: the top row says that its
+/// three bytes and those after them (ghi) were not sent and that earlier
+/// input was accepted. Once the daemon resumes, the session has received exactly
+/// zabcdef, nothing is replayed, and later typing reaches it.
 #[test]
 fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
     const WIDE: u16 = 250;
     let package = Package::new();
     without_introduction(&package);
-    // ab and cd stay unanswered while the daemon is stopped, and an
+    // ab, cd and ef stay unanswered while the daemon is stopped, and an
     // operation past `deadlines.operation_ms` fails the connection: the
     // deadline must outlast the test's steps until it resumes the daemon,
-    // even on a loaded host.
+    // even on a loaded host. The operations a newly ready controller
+    // submits by itself, such as Focus, leave room for the z typed to wait
+    // for their answers.
     limits_config(
         &package,
         serde_json::json!({
             "transfer": {"chunk_bytes": 2},
-            "queues": {"operations": 2},
+            "queues": {"operations": 3},
             "deadlines": {"operation_ms": 120_000},
         }),
     );
-    headless(&package, &recorder("Keys"), "finish");
+    headless(&package, &echoing_recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid;
     let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
     record(&mut terminal, "Keys", WIDE);
+    terminal.send("z").unwrap();
+    whole_frame_shows(&terminal, "the echoed z", |screen| {
+        screen
+            .lines()
+            .nth(1)
+            .is_some_and(|row| row.starts_with("RAWz"))
+    });
     let monitor = monitor_process(&package).0;
     stop(daemon as i32);
-    read_alone(&mut terminal, monitor, b"abcdefg");
+    read_alone(&mut terminal, monitor, b"abcdefghi");
     shows_row(
         &mut terminal,
         "Input not sent (3 bytes; earlier input was accepted): queue_full: the request does not fit",
     );
     kill(Pid::from_raw(daemon as i32), Signal::SIGCONT).unwrap();
-    received(&package, b"abcd");
-    terminal.send("h").unwrap();
-    received(&package, b"abcdh");
+    received(&package, b"zabcdef");
+    terminal.send("j").unwrap();
+    received(&package, b"zabcdefj");
     terminal.send("\x1dx").unwrap();
     // Its wide frames can outgrow the oracle's recent bytes, so only the
     // title itself is checked.
