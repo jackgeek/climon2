@@ -68,6 +68,10 @@ const UNFIT: Fault = Fault::library(
     "unsupported_limit",
     "a request frame exceeds the frame ceilings",
 );
+const EXHAUSTED: Fault = Fault::library(
+    "resource_limit",
+    "every wire request ID of the connection is used; IDs never wrap",
+);
 
 /// A request the library sent and the daemon has not answered.
 #[derive(Clone, Debug)]
@@ -337,6 +341,16 @@ impl Departure {
         fault: None,
     };
 
+    /// A Leave that could not be sent: it failed, and the registration is
+    /// not known to have ended (#99).
+    pub(super) fn unsent(fault: Fault) -> Self {
+        Self {
+            leave: native::LEAVE_FAILED,
+            detached: false,
+            fault: Some(fault),
+        }
+    }
+
     /// A Leave whose response was lost or never came: unconfirmed.
     pub(super) fn lost(fault: Fault) -> Self {
         Self {
@@ -459,7 +473,7 @@ impl Stream {
     pub(super) fn new(text: TextLimits) -> Self {
         Self {
             text,
-            last: 0,
+            last: super::last_wire_id(),
             pending: Vec::new(),
             selected: None,
             synchronized: false,
@@ -469,14 +483,16 @@ impl Stream {
     }
 
     /// Encodes `record` as the next request; it counts as sent, and its
-    /// wire ID as used, only once it fits `limit`.
+    /// wire ID as used, only once it fits `limit`. A request needing an ID
+    /// past the last one is refused before it is encoded (#99).
     fn send(
         &mut self,
         sent: Sent,
         record: impl FnOnce(Counter) -> Frame,
         (limit, deadline): (FrameLimit, Option<Instant>),
     ) -> Result<Vec<u8>, Fault> {
-        let request_id = Counter::new(self.last + 1).expect("wire request IDs start at one");
+        let next = self.last.checked_add(1).ok_or(EXHAUSTED)?;
+        let request_id = Counter::new(next).expect("wire request IDs start at one");
         let mut bytes = Vec::new();
         wire::write_frame(&mut bytes, &record(request_id), limit).map_err(|_| UNFIT)?;
         self.last = request_id.get();

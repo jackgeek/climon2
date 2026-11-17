@@ -181,7 +181,8 @@ fn installed_library_admits_only_valid_requests_and_rejections_cost_nothing() {
 /// `request_bytes` both requests' charges, and the outcome reserve of a
 /// record (charged with the library's own copy) and `metadata_record_bytes`
 /// each in `event_records` and
-/// `event_bytes`), both are accepted at the limit and a third request is
+/// `event_bytes`, beside a progress reserve of one, which the outcomes of
+/// submitted work may not use: #99), both are accepted at the limit and a third request is
 /// `queue_full`. An Open too large for `request_bytes` on its own is
 /// `queue_full`, and its ID is then accepted; one that fills it exactly is
 /// accepted, and a Leave after it is `queue_full`. Shutdown answers each
@@ -196,10 +197,13 @@ fn installed_library_bounds_requests_by_every_queue_limit() {
         ("request_records", json!({ "request_records": 2 })),
         ("request_bytes", json!({ "request_bytes": both })),
         ("operations", json!({ "operations": 2 })),
-        ("event_records", json!({ "event_records": 2 })),
+        (
+            "event_records",
+            json!({ "event_records": 3, "progress_records": 1 }),
+        ),
         (
             "event_bytes",
-            json!({ "event_bytes": 2 * reserve, "metadata_record_bytes": 1024 }),
+            json!({ "event_bytes": 2 * reserve + 1, "progress_bytes": 1, "metadata_record_bytes": 1024 }),
         ),
     ];
     let unfit = "x".repeat(both as usize);
@@ -397,7 +401,8 @@ fn installed_library_batches_records_within_drain_payload_bytes() {
 /// records wait for room instead of being dropped or overrunning it): a
 /// fake daemon sends its Open response and Initial metadata a byte at a
 /// time, then eight Title changed records in one write, to an instance
-/// whose event queue holds three records. The queue fills to three and
+/// whose event queue holds three ordinary records beside a one-record
+/// progress reserve, which a Title may not use (#99). The queue fills to three and
 /// stays there until drained; then every title arrives, in order, with no
 /// gap, and the queue never held more.
 #[test]
@@ -416,7 +421,7 @@ fn installed_library_holds_daemon_records_while_the_event_queue_is_full() {
         "leave": [leave_answer("ok", false, Value::Null)],
     });
     let steps = json!([
-        { "do": "create", "peer": peer, "startup": { "limits": { "event_records": 3 } } },
+        { "do": "create", "peer": peer, "startup": { "limits": { "event_records": 4, "progress_records": 1 } } },
         { "do": "submit", "request": open(1, &REQUIRED, &["title-v1"]) },
         { "do": "run" },
         { "do": "await_snapshot", "gauge": "event_records", "value": 3 },
