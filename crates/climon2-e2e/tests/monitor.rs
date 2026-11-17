@@ -9447,10 +9447,12 @@ fn a_dialog_whose_row_is_dropped_closes_without_retargeting() {
     const STAY: &str = "0d5c0000-0000-4000-8000-0000000000e7";
     let package = Package::new();
     without_introduction(&package);
-    // The held client's start outlasts the test and its shutdown.
+    // The held client's start outlasts the test and its shutdown. The
+    // shutdown deadline leaves a loaded host time to finish everything
+    // else, so only the held client is unconfirmed.
     limits_config(
         &package,
-        serde_json::json!({"deadlines": {"start_ms": 120_000, "shutdown_ms": 2000}}),
+        serde_json::json!({"deadlines": {"start_ms": 120_000, "shutdown_ms": 10_000}}),
     );
     let ear = Ear::default();
     let held = FakeDaemon::start(
