@@ -4991,6 +4991,157 @@ mod tests {
         assert!(log.contains("Kill-only instance resource-blocked"), "{log}");
     }
 
+    /// LIM-04 and the admission rate limit (pure supplement over the fake
+    /// library; #120 with #117): a Kill-only instance admission refuses is
+    /// reconsidered only once `retry.admission_ms` has passed, never in a
+    /// loop: with an interval of an hour, the capacity the open client's
+    /// removal frees admits nothing meanwhile, and it was blocked once.
+    #[test]
+    fn a_blocked_kill_only_instance_waits_out_its_admission_interval() {
+        let [open, blocked] = [session(50, 1), session(50, 2)];
+        let mut supervised = adjusted(8, fake_library(), |context| {
+            context.admission.total_bytes = RELEASE + INSTANCE;
+            context.admission.admission_ms = 3_600_000;
+        });
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&open, "2026-11-16T10:00:02.000Z"));
+        supervisor.start_client(metadata(&blocked, "2026-11-16T10:00:01.000Z"));
+        let short = "not enough memory: 9699328 bytes needed, 0 bytes available";
+        let waiting = ClientEvent::AwaitingResources(short.into());
+        reports_of(supervisor, &blocked, &waiting, &mut Vec::new());
+        supervisor.remove(metadata(&blocked, "2026-11-16T10:00:01.000Z"), true);
+        supervisor.remove(metadata(&open, "2026-11-16T10:00:02.000Z"), true);
+        let (_, cleaned) = reported_until(supervisor, &open, &ClientEvent::Removed);
+        assert!(cleaned);
+        // Ten ticks: an earlier reconsideration would have started it.
+        thread::sleep(Duration::from_millis(200));
+        supervisor.stop();
+        assert!(kills(&blocked).is_empty());
+        assert!(generations(&blocked).is_empty());
+        let log = supervised.log();
+        let once = "Kill-only instance resource-blocked";
+        assert_eq!(log.matches(once).count(), 1, "{log}");
+    }
+
+    /// DEL-01 (pure supplement over the fake library; #117 with #120's
+    /// start lane): a Kill-only instance takes a start slot like any start.
+    /// While the only slot is held by a client still opening, a Delete of a
+    /// session waiting for its start sends nothing; once that client opens
+    /// and frees the slot, the Kill-only instance starts, sends its Kill and
+    /// its session is removed.
+    #[test]
+    fn a_kill_only_instance_waits_for_a_start_slot() {
+        let [opening, waiting] = [session(51, 1), session(51, 2)];
+        script(
+            &opening,
+            Script {
+                opens_late: true,
+                ..Script::default()
+            },
+        );
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        supervisor.start_client(metadata(&opening, "2026-11-16T10:00:02.000Z"));
+        let published = guid(&opening);
+        until(|world| world.looked_up.contains(&published));
+        supervisor.start_client(metadata(&waiting, "2026-11-16T10:00:01.000Z"));
+        supervisor.remove(metadata(&waiting, "2026-11-16T10:00:01.000Z"), true);
+        // Ten ticks: a Kill-only instance started meanwhile would have sent
+        // its Kill.
+        thread::sleep(Duration::from_millis(200));
+        assert!(kills(&waiting).is_empty());
+        let_go(&opening);
+        let (reports, cleaned) = reported_until(&supervisor, &waiting, &ClientEvent::Removed);
+        assert_eq!(reports, [killed_by(9), ClientEvent::Removed]);
+        assert!(cleaned);
+        assert_eq!(kills(&waiting), [2]);
+        supervisor.stop();
+    }
+
+    /// LIM-05 and DEL-02 (pure supplement over the fake library; #119 with
+    /// #117): a Kill takes its client's next request ID, which never wraps.
+    /// With the last ID free the Kill is sent as that ID; with every ID used
+    /// it is refused unsent, the row learns why, and the Delete ends.
+    #[test]
+    fn a_kill_after_the_last_request_id_is_refused_unsent() {
+        let [last, spent] = [session(52, 1), session(52, 2)];
+        let limits = climon2_core::config::Limits::default().library();
+        let near = Identifiers {
+            request: u64::MAX,
+            ..Identifiers::default()
+        };
+        let mut supervised = starting_at(2, 20_000, fake_library(), (limits, NEVER), near);
+        let supervisor = &mut supervised.supervisor;
+        let opened = ClientEvent::Opened { status: false };
+        supervisor.start_client(metadata(&last, "2026-11-16T10:00:00.000Z"));
+        assert_eq!(next(supervisor), (last.clone(), opened.clone()));
+        supervisor.remove(metadata(&last, "2026-11-16T10:00:00.000Z"), true);
+        let (reports, _) = reported_until(supervisor, &last, &ClientEvent::Removed);
+        assert_eq!(
+            reports,
+            [killed_by(9), ClientEvent::Ended, ClientEvent::Removed]
+        );
+        assert_eq!(kills(&last), [u64::MAX]);
+        supervisor.start_client(metadata(&spent, "2026-11-16T10:00:01.000Z"));
+        assert_eq!(next(supervisor), (spent.clone(), opened));
+        supervisor.request(spent.clone(), Asked::Acquire);
+        let accepted = presented(Presentation::Answered(Asked::Acquire, Ok(())));
+        assert_eq!(next(supervisor), (spent.clone(), accepted));
+        supervisor.remove(metadata(&spent, "2026-11-16T10:00:01.000Z"), true);
+        let why = "the client's request IDs are exhausted";
+        let refused = ClientEvent::Termination(Termination::Refused(why.into()));
+        assert_eq!(next(supervisor), (spent.clone(), refused));
+        supervisor.stop();
+        assert!(kills(&spent).is_empty());
+    }
+
+    /// LIM-05 and DEL-02 (pure supplement over the fake library; #119 with
+    /// #117): a Kill-only instance needs a fresh connection generation, so
+    /// once a session's are exhausted its Kill is refused unsent, the
+    /// instance reservation admission made for it is freed, and the Delete
+    /// ends.
+    #[test]
+    fn a_kill_only_instance_without_a_generation_refuses_its_kill() {
+        let id = session(53, 1);
+        let lost = Script {
+            drops: true,
+            retry: native::RETRY_PERMANENT,
+            ..Script::default()
+        };
+        script(&id, lost);
+        let limits = climon2_core::config::Limits::default().library();
+        let near = Identifiers {
+            generation: u64::MAX,
+            ..Identifiers::default()
+        };
+        let mut supervised = starting_at(1, 20_000, fake_library(), (limits, NEVER), near);
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(
+            "the client stopped before it opened".into(),
+        ));
+        let (reports, _) = reported_until(supervisor, &id, &rejected);
+        assert_eq!(
+            reports,
+            [
+                ClientEvent::Opened { status: false },
+                ClientEvent::Ended,
+                rejected
+            ]
+        );
+        supervisor.remove(metadata(&id, "2026-11-16T10:00:00.000Z"), true);
+        let exhausted = "connection generations are exhausted";
+        let refused = ClientEvent::Termination(Termination::Refused(exhausted.into()));
+        assert_eq!(next(supervisor), (id.clone(), refused));
+        supervisor.stop();
+        assert_eq!(generations(&id), [u64::MAX]);
+        assert!(kills(&id).is_empty());
+        assert_eq!(supervisor.reserved(), RELEASE);
+    }
+
     /// DEL-02 (pure supplement over the fake library, #117): a refused Kill
     /// ends its Delete at once, the client serving on; a Kill-only
     /// instance's refusal, or its release's, ends it too, and a retry the
