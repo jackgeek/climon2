@@ -328,22 +328,6 @@ impl Screen {
     }
 }
 
-/// The host cursor: the search's while the selector is open, otherwise the
-/// selected session's while the host has room for it; none while the key
-/// introduction covers them.
-fn shown_cursor(
-    scene: &Scene<'_>,
-    session: Option<HostCursor>,
-    search: Option<HostCursor>,
-) -> Option<HostCursor> {
-    let cursor = if scene.selector.is_open() {
-        search
-    } else {
-        session
-    };
-    cursor.filter(|_| !scene.introduction.is_open())
-}
-
 impl Screen {
     /// The session's view below the top row, unless its application's
     /// synchronized update is open: then the canvas last painted for it
@@ -375,6 +359,22 @@ impl Screen {
         });
         cursor
     }
+}
+
+/// The host cursor: the search's while the selector is open, otherwise the
+/// selected session's while the host has room for it; none while the key
+/// introduction covers them.
+fn shown_cursor(
+    scene: &Scene<'_>,
+    session: Option<HostCursor>,
+    search: Option<HostCursor>,
+) -> Option<HostCursor> {
+    let cursor = if scene.selector.is_open() {
+        search
+    } else {
+        session
+    };
+    cursor.filter(|_| !scene.introduction.is_open())
 }
 
 /// The body's state with nothing selected: prefix+j's `notice` while it
