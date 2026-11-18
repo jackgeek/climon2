@@ -210,6 +210,18 @@ _Avoid_: Lifecycle, connection status
 A connected controller's unobstructed, ready presentation of its selected session to the user, distinct from retaining control in the background or under a menu.
 _Avoid_: Attachment, control ownership
 
+**Deferred acknowledgement**:
+An explicit user action's acknowledgement of a session's pending attention (selecting it, jumping to it, or closing the selector back to it), held until the monitor views that session and dropped if the user moves on first.
+_Avoid_: Auto-acknowledgement, acknowledgement on visibility
+
+**Attention jump**:
+Prefix+j: moving to the connected session whose pending attention changed most recently, decided when the key is pressed, never the session a notification named.
+_Avoid_: Next toast, notification target
+
+**Host attention**:
+Whether any connected session needs attention, which a monitor reports to its host as its own program status, never by forwarding a session's.
+_Avoid_: Forwarded status, aggregate session status
+
 **Connection status**:
 A monitor's record of whether its client is connected to a session daemon, distinct from the session's last reported status.
 _Avoid_: Session status, daemon outcome

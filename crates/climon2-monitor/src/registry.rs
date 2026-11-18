@@ -378,6 +378,19 @@ impl Registry {
             .map(|(_, view)| view.id)
     }
 
+    /// The attention jump target (spec #73, "Attention jump target"): the
+    /// first row needing attention in row order, so the connected one whose
+    /// daemon change is newest, the lower full session ID on a tie. Only a
+    /// connected row that is not final shows its status, so acknowledged,
+    /// final, disconnected and not-connected rows never qualify. Whether
+    /// there is one is the host attention state.
+    pub(crate) fn attention(&self) -> Option<SessionId> {
+        self.ordered()
+            .into_iter()
+            .find(|(group, _)| *group == Group::Status(State::NeedsAttention))
+            .map(|(_, view)| view.id)
+    }
+
     /// Whether `id`'s row still awaits its client: Starting, also once
     /// opened with `status-v1` until its status arrives.
     pub(crate) fn starting(&self, id: &SessionId) -> bool {
@@ -608,6 +621,44 @@ mod tests {
         assert_eq!(shown(&registry)[0], "Needs attention|attention newer");
         registry.client(older, status(State::NeedsAttention, 250), at(951));
         assert_eq!(shown(&registry)[0], "Needs attention|attention older");
+    }
+
+    /// NOT-03 and NOT-04 (pure supplement, #114): the attention jump target
+    /// is the connected row needing attention whose daemon change is newest,
+    /// the lower full session ID on a tie; acknowledged, final, disconnected
+    /// (its stale status needing attention) and not-connected rows never
+    /// qualify, and with none left there is no target, so the host is told
+    /// nothing is pending.
+    #[test]
+    fn the_attention_target_is_the_newest_connected_row_needing_attention() {
+        let mut registry = Registry::new(None);
+        assert_eq!(registry.attention(), None);
+        let events = [
+            (1, "acknowledged", status(State::Acknowledged, 900)),
+            (2, "final", ended(Outcome::Exit(0), Some(900))),
+            (3, "lost", status(State::NeedsAttention, 900)),
+            (4, "older", status(State::NeedsAttention, 100)),
+            (6, "tied high", status(State::NeedsAttention, 200)),
+            (5, "tied low", status(State::NeedsAttention, 200)),
+            (7, "running", status(State::Running, 950)),
+        ];
+        let mut keys = BTreeMap::new();
+        for (suffix, command, event) in events {
+            let key = opened(&mut registry, (suffix, command), true, 1);
+            registry.client(&key, event, at(2));
+            keys.insert(command, key);
+        }
+        registry.client(&keys["lost"], ClientEvent::Ended, at(3));
+        let starting = metadata(&id(8), "2026-11-13T12:00:00.000Z", "starting", &[]);
+        registry.discovered(starting, Found::Live, at(4));
+        assert_eq!(registry.attention().as_ref(), Some(&keys["tied low"]));
+        let acknowledged = status(State::Acknowledged, 300);
+        registry.client(&keys["tied low"], acknowledged.clone(), at(5));
+        assert_eq!(registry.attention().as_ref(), Some(&keys["tied high"]));
+        registry.client(&keys["tied high"], acknowledged, at(6));
+        assert_eq!(registry.attention().as_ref(), Some(&keys["older"]));
+        registry.client(&keys["older"], ended(Outcome::Signal(9), None), at(7));
+        assert_eq!(registry.attention(), None);
     }
 
     /// COM-06 (Monitor labels, pure supplement) and final rows (derived):

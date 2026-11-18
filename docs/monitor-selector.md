@@ -44,7 +44,10 @@ Up/Down/PageUp/PageDown without wrapping, the highlight rules for edits and
 live updates, row clicks, the wheel, cancelling by a click outside the box
 (owner decision on #113), and the key-hint footer, which names only select,
 cancel and help (owner decision on #113). Nothing else this document
-specifies is implemented: no Delete, toasts or bell. Initial selection
+specifies is implemented: no Delete, toasts or bell. Prefix+j, viewing,
+acknowledgement and the host attention reports
+([#114](https://github.com/jackgeek/climon2/issues/114)) are implemented as
+below. Initial selection
 ([#266](https://github.com/jackgeek/climon2/issues/266)) selects and
 acquires a row at startup without closing an open selector or moving its
 highlight.
@@ -67,6 +70,7 @@ prefix:
 |---|---|
 | prefix+x | Exit the monitor |
 | prefix+s | Open the session list |
+| prefix+j | Jump to the session that needs attention |
 | prefix+? | Show this dialog |
 
 Below them it lists the selector's own keys under **In the session list**:
@@ -230,8 +234,9 @@ Use the existing once-per-unviewed-episode/final-outcome notification rules.
 The selected terminal continues updating under the modal selector, while
 [viewing](../GLOSSARY.md#status-and-attention) and application keyboard focus
 remain gated. Nonmodal toasts retain the existing viewing/gesture semantics.
-Highlighting, opening/cancelling, dismissing a toast and host focus do not
-acknowledge attention.
+Highlighting, opening, dismissing a toast and host focus do not acknowledge
+attention. Closing or cancelling the selector back to the session does, once
+it is ready and unobstructed (Confirmed 2026-11-08; spec #73).
 
 A toast appears bottom-right outside selector hit targets, in a stable lane.
 Its yellow border draws clockwise from the top-left across top/right/bottom/left;
@@ -277,7 +282,9 @@ Use root `blocked`/`kind=question` while pending, `working` while monitoring
 without pending attention, and root `clear` on orderly exit.
 Report initial state and changes only; no heartbeat or capability query.
 These reports neither acknowledge sessions nor amend the enclosing daemon
-[FSM](protocol/TERMS.md#fsm).
+[FSM](protocol/TERMS.md#fsm). The monitor sends them
+([#114](https://github.com/jackgeek/climon2/issues/114)); the root `clear`
+follows the host's release on exit.
 
 ## Automated acceptance obligations
 
@@ -297,7 +304,7 @@ duplicate suppression, rejection/lost response without Kill replay, definitive
 termination and local cleanup/join before dismissal, no same-run rediscovery,
 non-acquiring fallback, and prohibited connected revoked-cache inspection.
 Include startup help with hints enabled/disabled and suppression saved/unsaved,
-the three actual-prefix bindings, reversible suppression across restarts and
+the four actual-prefix bindings, reversible suppression across restarts and
 releases, explicit save errors, and prefix+? despite either suppression.
 Cover repeated help, Enter/Escape/prefix handling, underlying selector
 search/highlight preservation, background progress, and modal input isolation

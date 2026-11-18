@@ -15,7 +15,7 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), paste, mouse and focus (#111), and the selector's search, navigation and footer (#113). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), and viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -119,7 +119,7 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   (modified F3 sends it, and the monitor never asks the host for its cursor
   position). Prefix+s, x, j and ? (lowercase) are the global
   actions from every screen, the selector and the too-small host; prefix+j
-  is recognised and never forwarded, and its jump arrives with #114. A
+  is recognised and never forwarded, and jumps as [below](#viewing-acknowledgement-and-attention-114). A
   doubled prefix is one literal prefix, a prefix and any other key (`d`,
   `h`, `r`, `J`, the take-control key, a whole cursor key) are both sent
   literally, and a lone prefix waits indefinitely. With `Ctrl+[` as the
@@ -592,6 +592,58 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   Like a host that never reports focus, this limitation is documented here
   only; nothing on screen says so (owner decision on #111).
 
+## Viewing, acknowledgement and attention (#114)
+
+- **Viewing.** The monitor views the selected session only while it
+  controls it with its restoration applied and Ready accepted, the frame
+  just painted shows it uncovered by any modal on a host with room, its
+  view is live (not scrolled back into history), the host has focus
+  (assumed until the host reports otherwise) and no toast covers it (#115
+  draws toasts; `toast.rs` is the seam). After each painted frame, each
+  session whose client opened with `status-v1` is sent Set viewing under
+  its current authority when that changes; a control period starts not
+  viewing, as the daemon's does. Viewing never acknowledges by itself.
+- **Coalesced reports.** Focus and Set viewing are coalesced per session
+  (owner decision on #114): while one of a kind is unanswered no other of
+  that kind is sent, and once it is answered, accepted or refused, the
+  latest desire goes if it differs from the one last sent. Toggling the
+  selector on a slow daemon so puts at most one Focus and one Set viewing
+  per session in the library's operation queue (`queues.operations`), not
+  one per change, which had filled it and got typed keys refused with
+  `queue_full`. The
+  end of the client forgets an unanswered one; a revocation does not, as
+  its answer still comes. Acknowledge is not coalesced: one per explicit
+  action, and a deferred one waits until Set viewing true was sent in the
+  current control period, so the daemon never refuses it as not viewing
+  while a coalesced viewing report is still held back.
+- **Acknowledgement.** Enter on a connected row, prefix+j, and closing or
+  cancelling the selector back to the selected session (Escape or a click
+  outside) each defer one Acknowledge for that session. It is submitted,
+  after the viewing report, once the session is viewed: an action made
+  while the host is unfocused, the view scrolled back, the host too small
+  or the session not yet ready acknowledges once that clears (owner
+  decision on #114). It is cancelled when the target context changes
+  first: another selection, a modal opening, control lost or another
+  control period. An Acknowledge a newer restoration of its period
+  superseded (a resize) is deferred again. Closing help, host focus-in and
+  visibility never acknowledge.
+- **prefix+j.** From any screen, the connected row needing attention with
+  the newest daemon change at the keypress (the lower full session ID on a
+  tie); acknowledged, final, disconnected and not-connected rows never
+  qualify. It closes the selector and the key introduction, selects the
+  session, acquires it only when the monitor neither controls nor is
+  acquiring it, returns its view live and defers its acknowledgement. With
+  none, the selection stays and `No sessions need attention` shows in the
+  top row's error slot, or the body when nothing is selected, for 3 seconds
+  (owner decision on #114). Uppercase J and a pasted prefix+j are input.
+- **Host attention.** After each painted frame the host hears, through a
+  root OSC 7501 report ending in `ESC \`, whether any connected row needs
+  attention: `state=blocked:kind=question:app=climon2-monitor` while one
+  does, otherwise `state=working:app=climon2-monitor`, the first state and
+  then changes only, with no heartbeat or query, and never a session's own
+  report. Once a started monitor has released the host on exit, it writes
+  the root `state=clear`, before main prints any diagnostic.
+
 ## Exit
 
 Prefix+x exits 0; catchable SIGINT, SIGTERM and SIGHUP take the same path with
@@ -640,10 +692,11 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Top-row label or selector row that overflows its cells (#112, owner decision 2026-11-16) | `<text, truncated>…` | `registry.rs` |
 | Top row's error slot: a paste the input queue refused partway (#111, owner decision 2026-11-16) | `Paste truncated` | `terminal.rs` |
 | Selector footer, key hints on (#113, owner decision: only select, cancel and help) | `Enter: select  Esc: cancel  <prefix> then ?: help`; with Ctrl+[ as the prefix `Enter: select  <prefix> then ?: help`; with Ctrl+M as the prefix `<prefix> then <prefix>: select  Esc: cancel  <prefix> then ?: help` | `selector.rs` |
-| Key introduction (#105) | `<prefix> then x  Exit the monitor`, `<prefix> then s  Open the session list`, `<prefix> then ?  Show this dialog`, `[ ] Don't show again (Space)` (`[x]` once saved), `Continue (Enter)`, titled `Keys` | `keys.rs`, `introduction.rs` |
+| Key introduction (#105; prefix+j by owner decision on #114) | `<prefix> then x  Exit the monitor`, `<prefix> then s  Open the session list`, `<prefix> then j  Jump to the session that needs attention`, `<prefix> then ?  Show this dialog`, `[ ] Don't show again (Space)` (`[x]` once saved), `Continue (Enter)`, titled `Keys` | `keys.rs`, `introduction.rs` |
 | Key introduction, the selector's keys (#113, owner decision: help lists what the footer leaves out) | `In the session list:`, `Type or paste  Search by status and title`, `Left, Right, Home, End, Backspace  Edit the search`, `Up, Down, PageUp, PageDown  Move the highlight`, `Enter  Select the highlighted session` (`<prefix> then <prefix>  …` with Ctrl+M as the prefix), `Esc  Cancel` (left out with Ctrl+[ as the prefix), `Click a row  Highlight it`, `Click outside  Cancel`, `Wheel  Scroll the list` | `selector.rs` |
 | Selector footer's row, search refused for its length (#113) | `Search is limited to <N> bytes` | `selector.rs` |
 | Selector rows and footer too long for the box (#113, owner decision on #112) | the text that fits, then `…` | `selector.rs` |
+| Top row's error slot, or the body with nothing selected, for 3 seconds after prefix+j finds no session (#114, owner decision 2026-11-16) | `No sessions need attention` | `attention.rs` |
 
 ## Specification mapping
 
@@ -779,12 +832,22 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | FOC-01, FOC-02 (pure supplement): Focus once per desire under ready authority, a newly ready restoration's current desire once, none without `focus-v1`, control or a running command; `focus-v1` lasts until the client ends; Open says whether `focus-v1` was selected; Focus and paste parts as their native requests | `focus_follows_each_new_desire_under_ready_authority_once`, `focus_support_lasts_until_the_client_ends` (`src/terminal.rs`), `opening_says_whether_focus_and_status_were_selected`, `focus_and_paste_parts_become_their_native_requests` (`src/supervisor/client.rs`) |
 | COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
 | COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor.rs`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
+| NOT-03 (Monitor and Fault), INP-01 (Monitor: prefix+j from the empty, selector, help, placeholder and live screens), STA-08 (Monitor, jump case): the newest connected attention chosen at the keypress, overlays closed, control taken only when not held, acknowledged once ready; acknowledged and disconnected rows never chosen; with none, `No sessions need attention` in the body for 3 seconds, or the top row's error slot with the selection kept | `prefix_j_jumps_to_the_newest_connected_attention_and_acknowledges_it_once_ready` (e2e) |
+| STA-08 (Monitor: acknowledgement timing), SEL-03 (Monitor, acknowledgement case), FOC-01 (Monitor, viewing cases), NOT-03 (deferred acknowledgement cancelled), INP-01 (prefix+j from history and too-small screens): visibility, closing help and host focus-in never acknowledge; cancelling the selector while the host is unfocused or the view scrolled back acknowledges only once focus returns or the view is live; a modal opening cancels a deferred acknowledgement; prefix+j on a too-small host acknowledges once there is room, from history once live | `acknowledgement_waits_until_viewed_and_closing_help_or_focus_in_never_acknowledges` (e2e) |
+| SEL-03 and STA-08 (Monitor, cancel case): cancelling the selector back to a covered session that needs attention acknowledges it once ready | `status_keeps_updating_for_background_covered_and_revoked_rows` (e2e) |
+| NOT-04 (Contract and Monitor): exact root OSC 7501 bytes, the initial state and each aggregate change only, disconnected rows not counted, no session report or bell forwarded, the root clear on exit; every released scenario checks the host heard only those | `the_host_hears_the_attention_state_once_per_change_and_the_clear_on_exit` (e2e); `assert_host_reports` in every `assert_released` |
+| STA-01, STA-03, STA-04, STA-05 (Monitor: representative sequences through a real daemon), INP-01 (Monitor: uppercase J and a pasted prefix+j are input): root `working`, `idle`, `blocked`, `done`, `error` and `clear`, OSC 133 boundaries and accepted input show the right row states | `representative_status_sequences_show_the_right_row_states` (e2e) |
+| NOT-03, NOT-04 (pure supplement): the jump target by newest change then full session ID, excluding acknowledged, final, disconnected and not-connected rows | `the_attention_target_is_the_newest_connected_row_needing_attention` (`src/registry.rs`) |
+| NOT-03, NOT-04, STA-08 (pure supplement): host reports' exact bytes, initial state and changes only; the notice up to 3 seconds and not at them; a deferred acknowledgement submitted once viewed, kept across restorations of its period, cancelled on a context change | `the_host_hears_the_initial_attention_state_and_changes_only`, `the_notice_shows_for_three_seconds`, `a_deferred_acknowledgement_submits_once_its_target_is_viewed`, `a_deferred_acknowledgement_is_cancelled_when_its_target_context_changes` (`src/attention.rs`) |
+| FOC-01, STA-08 (pure supplement): Set viewing on each change within a control period under the current authority, only with `status-v1`; a superseded Acknowledge owed again; Set viewing and Acknowledge as their native requests; Open says `status-v1` was selected | `viewing_is_reported_on_each_change_within_a_control_period`, `an_acknowledge_a_newer_restoration_superseded_is_owed_again` (`src/terminal.rs`), `viewing_and_acknowledge_become_their_native_requests`, `opening_says_whether_focus_and_status_were_selected` (`src/supervisor/client.rs`) |
+| FOC-01, STA-08 (pure supplement; owner decision on #114, 2026-11-17): Focus and Set viewing coalesce per session: none of a kind while one is unanswered, then the latest desire once if it differs from the last sent, each kind waiting only for its own answer; a revocation keeps waiting for the answer, the end of the client does not; an Acknowledge follows only Set viewing true sent in the held control period | `focus_and_viewing_wait_for_their_answers_and_then_send_the_latest_desire`, `only_the_end_of_the_client_forgets_unanswered_focus_and_viewing`, `an_acknowledge_follows_only_viewing_true_submitted_in_the_period` (`src/terminal.rs`) |
+| NOT-03 (pure supplement): the notice in the top row's error slot before the session's own error, or in the body before the startup progress | `a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own`, `the_body_says_the_startup_progress_or_the_state_and_any_incompleteness` (`src/screen.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
-Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), toasts and their gestures (INP-05's
-toast cases, #115), viewing and host focus's effect on it (#114), FOC-01's
-toast cases (#115), FOC-02's host-native
+Not yet claimed: EXT-03's root OSC 7501 `clear` on the fail-stop path (#118), toasts and their gestures (INP-05's
+toast cases, #115), toasts' effect on viewing and their dismissal by prefix+j and Enter (#115; `toast.rs` is the seam), FOC-01's
+toast cases (#115), prefix+j inside the Delete dialog (#117), FOC-02's host-native
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
 else could receive the rest; #116 owns its recovery), global actions from the history screen (#116), Delete in the

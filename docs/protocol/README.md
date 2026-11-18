@@ -25,7 +25,7 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | Client to session daemon: after hello | Wire revision 1 only, agreed and partly implemented; the version-private protocol it replaced is retired ([#104](https://github.com/jackgeek/climon2/issues/104)). Session daemons serve passive monitor connections, interactive attachments and standalone Kill, with the command's final result, heuristic `status-v1` status and acknowledgement, `notification-v1` notifications and `progress-v1` progress ([#98](https://github.com/jackgeek/climon2/issues/98)), and monitors that acquire and inherit control with [canonical presentation](../../GLOSSARY.md#restoration-and-presentation) | [Post-hello boundary](daemon-client/post-hello.md), [complete wire rules](daemon-client/core-v1.md). |
 | Monitor to [client library](../../GLOSSARY.md#sessions) | Complete native revision-1 specification agreed. The library implements its [compatibility check](monitor-client/request-hello.md) bootstrap and description ([#75](https://github.com/jackgeek/climon2/issues/75)) and the instance lifecycle of its [function table](TERMS.md#function-table) ([#85](https://github.com/jackgeek/climon2/issues/85)), opens [passive monitor connections](../../GLOSSARY.md#attachment-and-control) through monitor-mode Open, Leave and their records ([#93](https://github.com/jackgeek/climon2/issues/93)), takes control and relays display through interactive Open, Acquire, Input, Resize, Ready, Focus and the control, restoration, Display and Geometry records ([#94](https://github.com/jackgeek/climon2/issues/94)), relays status with Set viewing and Acknowledge ([#95](https://github.com/jackgeek/climon2/issues/95)), and relays Command final and Kill on its own auxiliary connection ([#96](https://github.com/jackgeek/climon2/issues/96)), and relays notifications and progress ([#98](https://github.com/jackgeek/climon2/issues/98)). The shared loader that finds, opens and validates libraries is implemented ([#84](https://github.com/jackgeek/climon2/issues/84)). The monitor loads libraries through it and opens one passive client per live session ([#106](https://github.com/jackgeek/climon2/issues/106)), and acquires the session selected with Enter, applying its restorations and submitting Ready and Resize ([#108](https://github.com/jackgeek/climon2/issues/108)), Input ([#109](https://github.com/jackgeek/climon2/issues/109), [#111](https://github.com/jackgeek/climon2/issues/111)) and Focus ([#111](https://github.com/jackgeek/climon2/issues/111)); its recovery and admission are not implemented. | [Library embedding](library-embedding.md), [native contract/header/examples](monitor-client/core-v1.md), and [shared communication contract](#shared-in-process-communication-contract). |
 | [Client executable](../../GLOSSARY.md#sessions) to same-release library | Same-release loading implemented: the client executable loads its own version folder's library through the shared loader and drives ordinary attach (interactive Open, Input, Resize, Acquire, Ready and Leave, requiring only `daemon-wire-v1`; [#101](https://github.com/jackgeek/climon2/issues/101)), with Set viewing and one Acknowledge after an explicit attach or takeover when `status-v1` is selected ([#102](https://github.com/jackgeek/climon2/issues/102)), and kill ([#100](https://github.com/jackgeek/climon2/issues/100)) through it, with a fixed `cm1_limits` table | [Library embedding](library-embedding.md). |
-| Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising and toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
+| Monitor to [host](../../GLOSSARY.md#sessions) | Program-status advertising implemented ([#114](https://github.com/jackgeek/climon2/issues/114)); the toast bell agreed, not implemented | [Reports and bell](#monitor-to-host-status-and-bell). |
 
 Current local runtime communication is implemented on macOS and x86_64
 GNU/Linux. The frozen [session metadata](../../GLOSSARY.md#sessions)
@@ -172,6 +172,9 @@ Send initial aggregate state and changes only, without heartbeat or capability
 query. Any connected `needs_attention` session means pending attention,
 independent of toast visibility. Acknowledged, disconnected and final reports
 do not qualify. These are not per-session messages or new daemon-wire operations.
+The monitor sends the three reports ([#114](https://github.com/jackgeek/climon2/issues/114)): the initial state after its
+first frame, each change after the frame that shows it, and the root
+`clear` after it releases the host on exit; the bell is not implemented.
 
 | Monitor -> host operation | When | Reference |
 |---|---|---|
@@ -297,7 +300,7 @@ in the [lifecycle specification](../monitor-lifecycle.md). All are unimplemented
 [Viewing](../../GLOSSARY.md#status-and-attention) is reported per
 [attachment](../../GLOSSARY.md#attachment-and-control);
 retained control alone is not viewing. Merely being visible does not
-acknowledge attention. The planned [viewing operation](monitor-client/request-viewing.md)
+acknowledge attention. The [viewing operation](monitor-client/request-viewing.md), which the monitor uses ([#114](https://github.com/jackgeek/climon2/issues/114)),
 and [status reports](monitor-client/event-session-status.md) map the agreed wire
 through the [native declarations](monitor-client/client-v1.h). Menus clear this monitor's viewing
 without releasing control/restoration. Only this monitor's own unobstructed

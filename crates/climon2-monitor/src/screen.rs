@@ -111,6 +111,8 @@ pub(crate) struct Scene<'a> {
     pub(crate) progress: Option<String>,
     /// Whether the initial collection ended with sessions still starting.
     pub(crate) late: bool,
+    /// Prefix+j's notice that no session needs attention, while it shows.
+    pub(crate) notice: Option<&'a str>,
     pub(crate) session: Option<Session<'a>>,
 }
 
@@ -251,7 +253,7 @@ impl Screen {
                 None
             }
             (Some(_), Some(session)) => {
-                let error = error(session.error, scene.late);
+                let error = error(scene.notice, session.error, scene.late);
                 session_row(&mut buffer, top, session, error, self.top_hint.as_deref());
                 let canvas = (&mut buffer, &mut underlines);
                 self.canvas(session.id, &session.canvas, canvas, below)
@@ -294,7 +296,8 @@ impl Screen {
     fn body(&self, scene: &Scene<'_>, buffer: &mut Buffer, below: Rect) {
         let note = self.hint.as_deref().or(scene.introduction.problem());
         let incomplete = incomplete(scene.incomplete, scene.late);
-        let lines: Vec<_> = std::iter::once(state(scene.progress.as_deref(), scene.rows))
+        let state = state(scene.notice, scene.progress.as_deref(), scene.rows);
+        let lines: Vec<_> = std::iter::once(state)
             .chain(note)
             .chain(incomplete.iter().map(String::as_str))
             .collect();
@@ -374,19 +377,21 @@ fn shown_cursor(
     cursor.filter(|_| !scene.introduction.is_open())
 }
 
-/// The body's state with nothing selected: the startup progress while the
+/// The body's state with nothing selected: prefix+j's `notice` while it
+/// shows (owner decision on #114), otherwise the startup progress while the
 /// initial collection lasts, otherwise the empty state until a row exists,
 /// then that nothing is selected.
-fn state<'a>(progress: Option<&'a str>, rows: &[View]) -> &'a str {
+fn state<'a>(notice: Option<&'a str>, progress: Option<&'a str>, rows: &[View]) -> &'a str {
     let idle = [EMPTY, UNSELECTED][usize::from(!rows.is_empty())];
-    progress.unwrap_or(idle)
+    notice.or(progress).unwrap_or(idle)
 }
 
-/// The top row's error slot: the session's own error, otherwise, while the
-/// initial collection's late sessions still start, that discovery is
+/// The top row's error slot: prefix+j's `notice` while it shows (owner
+/// decision on #114), otherwise the session's own error, otherwise, while
+/// the initial collection's late sessions still start, that discovery is
 /// incomplete (owner decision, 2026-11-16).
-fn error(own: Option<&str>, late: bool) -> Option<&str> {
-    own.or(late.then_some(LATE_INCOMPLETE))
+fn error<'a>(notice: Option<&'a str>, own: Option<&'a str>, late: bool) -> Option<&'a str> {
+    notice.or(own).or(late.then_some(LATE_INCOMPLETE))
 }
 
 /// Why discovery is incomplete: the latest pass's reason, then whether the
@@ -896,7 +901,9 @@ mod tests {
     /// DSC-01 (initial-selection case, pure supplement) and the owner's
     /// wording of 2026-11-16: with nothing selected the body reads the
     /// startup progress while collecting, otherwise the empty state until a
-    /// row exists and then that nothing is selected; an incomplete pass and
+    /// row exists and then that nothing is selected; prefix+j's notice
+    /// replaces either while it shows (NOT-03, owner decision on #114); an
+    /// incomplete pass and
     /// a collection that ended with sessions still starting are each said
     /// as discovery incomplete, the pass first.
     #[test]
@@ -908,10 +915,14 @@ mod tests {
             since: std::time::SystemTime::UNIX_EPOCH,
         };
         let progress = "Connecting to 2 sessions (1 ready)";
-        assert_eq!(state(Some(progress), &[]), progress);
-        assert_eq!(state(Some(progress), std::slice::from_ref(&row)), progress);
-        assert_eq!(state(None, &[]), "No sessions to show.");
-        assert_eq!(state(None, &[row]), "No session selected.");
+        assert_eq!(state(None, Some(progress), &[]), progress);
+        let rows = std::slice::from_ref(&row);
+        assert_eq!(state(None, Some(progress), rows), progress);
+        assert_eq!(state(None, None, &[]), "No sessions to show.");
+        assert_eq!(state(None, None, rows), "No session selected.");
+        let notice = "No sessions need attention";
+        assert_eq!(state(Some(notice), Some(progress), rows), notice);
+        assert_eq!(state(Some(notice), None, &[]), notice);
         assert_eq!(incomplete(None, false), Vec::<String>::new());
         assert_eq!(
             incomplete(Some("the pass deadline passed"), true),
@@ -930,13 +941,18 @@ mod tests {
     /// the initial collection's late sessions still start, the top row's
     /// error slot says discovery is incomplete with a row selected too,
     /// unless the session has its own error, which it never hides.
+    /// Prefix+j's notice shows there first while it shows (NOT-03, owner
+    /// decision on #114).
     #[test]
     fn a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own() {
         let late = "Discovery incomplete: some sessions are still starting";
-        assert_eq!(error(None, false), None);
-        assert_eq!(error(None, true), Some(late));
-        assert_eq!(error(Some("timed out"), true), Some("timed out"));
-        assert_eq!(error(Some("timed out"), false), Some("timed out"));
+        assert_eq!(error(None, None, false), None);
+        assert_eq!(error(None, None, true), Some(late));
+        assert_eq!(error(None, Some("timed out"), true), Some("timed out"));
+        assert_eq!(error(None, Some("timed out"), false), Some("timed out"));
+        let notice = "No sessions need attention";
+        assert_eq!(error(Some(notice), Some("timed out"), true), Some(notice));
+        assert_eq!(error(Some(notice), None, false), Some(notice));
     }
 
     /// What a host `cols` by 4 receives of `model`'s session in one frame:
@@ -969,6 +985,7 @@ mod tests {
             incomplete: None,
             progress: None,
             late: false,
+            notice: None,
             session: Some(Session {
                 id: &id,
                 label: "Paint",
