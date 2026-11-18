@@ -14,6 +14,27 @@ c2 list --json
 c2 monitor
 ```
 
+Every command has a single-letter shortcut that behaves exactly like its full
+name, and `-h` is short for `--headless`:
+
+| Command | Shortcut |
+| --- | --- |
+| `exec` | `x` |
+| `attach` | `a` |
+| `kill` | `k` |
+| `list` | `l` |
+| `monitor` | `m` |
+
+```sh
+c2 x vim
+c2 x -h make test
+c2 a 3f2a9c1e
+c2 l --json
+c2 m
+```
+
+Help is `c2 --help`; `-h` belongs to `exec`.
+
 `c2` is the short command for climon2. The installer creates `c2 -> climon2`;
 the original `climon2` command remains supported without warnings. Both names
 run the same current version. Product names, version output, diagnostic prefixes,
@@ -39,7 +60,7 @@ have tests so far.
 
 `exec` starts the command and attaches to it.
 
-**Headless sessions.** `c2 exec --headless <command> [args...]` starts the
+**Headless sessions.** `c2 exec --headless <command> [args...]` (or `c2 x -h`) starts the
 command in a [headless session](GLOSSARY.md#sessions) without attaching to it.
 It needs no terminal, so scripts and CI can start background work and target it
 later:
@@ -398,7 +419,7 @@ operation fail with 125 and are left undisturbed. `list` needs no client.
 
 ## Monitor
 
-`c2 monitor`, or `c2 mon`, opens the monitor: one terminal that will track
+`c2 monitor`, or `c2 m`, opens the monitor: one terminal that will track
 every live session. It takes no arguments (any is a usage error, 2) and needs a
 terminal on stdin and stdout. The launcher always runs the current version's
 monitor, on macOS and x86-64 GNU/Linux alike. Before your terminal changes, it
