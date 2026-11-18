@@ -3727,6 +3727,20 @@ mod tests {
         }
     }
 
+    /// LIM-04 (pure supplement; #120): a supervisor that has admitted
+    /// nothing reserves nothing of `memory.total_bytes`, even before its
+    /// thread first schedules, so the UI's history budget starts whole.
+    #[test]
+    fn a_fresh_supervisor_reserves_nothing() {
+        for _ in 0..4 {
+            let mut supervised = supervisor(1, 20_000, fake_library());
+            let supervisor = &mut supervised.supervisor;
+            assert_eq!(supervisor.reserved(), 0);
+            supervisor.stop();
+            assert_eq!(supervisor.reserved(), 0);
+        }
+    }
+
     /// LIM-04 and the admission rate limit (#120): a resource-blocked
     /// session or release is reconsidered at most once per
     /// `retry.admission_ms`, never in a loop: with an interval of an hour,
