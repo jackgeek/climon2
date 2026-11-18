@@ -162,7 +162,14 @@ A stalled load must not freeze global monitor actions. It can still prevent
 other releases from starting: the system loader serializes loading, and glibc
 holds one process-wide lock while a library and its initializers load. A load
 that never returns is a native fault, like a crash. There is no load deadline,
-because a load cannot be cancelled.
+because a load cannot be cancelled: `deadlines.load_ms` is diagnostic only. A
+load still running past it is logged and shown on the rows waiting for it as
+`library loading slowly`, and is never aborted (owner decision on
+[#120](https://github.com/jackgeek/climon2/issues/120), implemented there).
+On glibc that lock (its TLS lock) is also taken by every new thread, so while
+a load is stalled no new client or discovery probe can start, even for a
+release already loaded; clients already running continue. Whether the
+monitor should keep threads ready for that is an open question on #120.
 
 Retain every successfully opened library handle until monitor process exit,
 including handles rejected by later compatibility checks. Rejected libraries
@@ -207,8 +214,10 @@ the whole monitor process. Never
 claim a stalled thread joined or a lost Leave response succeeded.
 Load/start concurrency, progress deadlines, and admission/exhaustion policies
 are specified in [operational limits](../monitor-operational-limits.md).
-That agreed, unimplemented specification accounts for thread/worker/descriptor
-reservations and retained per-release resources, not just ordinary queue bytes.
+That specification accounts for thread/worker/descriptor
+reservations and retained per-release resources, not just ordinary queue bytes;
+the monitor reserves them before each load and create
+([#120](https://github.com/jackgeek/climon2/issues/120)).
 
 ## Per-instance inputs and memory
 

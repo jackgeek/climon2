@@ -22,11 +22,22 @@
 //! and been joined, after a backoff (`backoff.rs`), as a fresh instance in a
 //! fresh connection generation. Nothing it held is replayed. A permanent
 //! rejection, a known final outcome, a session discovery proved gone and
-//! shutdown retry nothing. Resource admission and fairness arrive with #120.
+//! shutdown retry nothing.
+//!
+//! Admission and fair scheduling (#120): every load and every create first
+//! reserves what it needs (`admission.rs`); a session that cannot be
+//! admitted, or whose release cannot be, waits resource-blocked and is
+//! reconsidered at most once per `retry.admission_ms`. Waiting sessions
+//! start fairly (`queue.rs`): first starts newest first with the oldest
+//! getting a turn after each burst of newer ones, retries taking turns with
+//! them. A load still running after `deadlines.load_ms` is reported as
+//! loading slowly, never aborted (owner decision on #120).
+mod admission;
 mod backlog;
 mod backoff;
 mod client;
 mod owner;
+mod queue;
 mod stream;
 
 use crate::registry::Report;
@@ -34,12 +45,13 @@ use crate::{
     registry::ClientEvent,
     terminal::{Presentation, Request},
 };
+use admission::{Capacity, Holder, Ledger};
 use backlog::Backlog;
 pub(crate) use backlog::footprint;
 use client::{Client, Drain, Retry, Stop};
 use climon2_core::{
-    SessionId, Timestamp, VersionName,
-    config::{Backoff, Lanes},
+    SessionId, VersionName,
+    config::{Admission, Backoff, Lanes},
     keys::ControlKey,
     layout::HomeLayout,
     metadata::SessionMetadata,
@@ -47,12 +59,13 @@ use climon2_core::{
 };
 use climon2_platform::library::{Failure, Functions};
 use owner::StartupData;
+use queue::{Condition, Entry, Lane, Queue};
 use std::{
-    cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{
         Arc,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, TryRecvError},
     },
     thread::{self, JoinHandle},
@@ -66,8 +79,15 @@ const TICK_MILLISECONDS: i32 = 20;
 
 /// Loads a release's validated client library: the one shared load of
 /// `climon2_platform::library::Loader` in the monitor.
-pub(crate) type Load =
-    Box<dyn Fn(&VersionName) -> Result<&'static Functions, Refusal> + Send + Sync>;
+pub(crate) type Load = Box<dyn Fn(&VersionName) -> Result<Loaded, Refusal> + Send + Sync>;
+
+/// A loaded release: its calls and the qualified requirements its
+/// bootstrap describes.
+#[derive(Clone, Copy)]
+pub(crate) struct Loaded {
+    pub(crate) functions: &'static Functions,
+    pub(crate) requirements: native::Requirements,
+}
 
 /// Why a release cannot be used. The loader's [`Failure`] says whether a
 /// later load could succeed.
@@ -77,13 +97,32 @@ pub(crate) enum Refusal {
     Library(Failure, String),
     /// No worker thread could be started to load it.
     Thread(String),
+    /// Its qualified requirements are ones the configured limits never
+    /// admit (#120).
+    Unqualified(String),
 }
 
 impl Refusal {
     fn message(&self) -> &str {
         match self {
-            Self::Library(_, message) | Self::Thread(message) => message,
+            Self::Library(_, message) | Self::Thread(message) | Self::Unqualified(message) => {
+                message
+            }
         }
+    }
+
+    /// Whether the dynamic loader opened the library's handle, which then
+    /// stays, with its release's reservation, until process exit.
+    fn opened(&self) -> bool {
+        !matches!(
+            self,
+            Self::Library(
+                Failure::MissingLibrary
+                    | Failure::MissingDependency
+                    | Failure::IncompatibleArchitecture,
+                _,
+            ) | Self::Thread(_)
+        )
     }
 
     /// A library the dynamic loader could not open (missing, missing a
@@ -100,7 +139,7 @@ impl Refusal {
                 _,
             )
             | Self::Thread(_) => Retry::Passive,
-            Self::Library(..) => Retry::Permanent,
+            Self::Library(..) | Self::Unqualified(_) => Retry::Permanent,
         }
     }
 }
@@ -136,6 +175,11 @@ pub(crate) struct Context {
     pub(crate) shutdown: Duration,
     pub(crate) retry: Backoff,
     pub(crate) first: Identifiers,
+    /// What admission reserves, and against what.
+    pub(crate) admission: Admission,
+    /// The bytes of `memory.total_bytes` the monitor holds outside
+    /// admission: its one parser.
+    pub(crate) outside: u64,
 }
 
 enum Command {
@@ -160,6 +204,8 @@ pub(crate) struct Supervisor {
     pub(crate) reports: Receiver<(SessionId, ClientEvent)>,
     /// What each client's reports not yet processed hold (#119).
     backlog: Arc<Backlog>,
+    /// The bytes every admitted reservation holds (#120).
+    reserved: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -168,20 +214,28 @@ impl Supervisor {
         let (commands, received) = mpsc::channel();
         let (report, reports) = mpsc::channel();
         let backlog = Arc::new(Backlog::default());
-        let held = Arc::clone(&backlog);
+        let reserved = Arc::new(AtomicU64::new(0));
+        let shared = (report, Arc::clone(&backlog), Arc::clone(&reserved));
         let thread = thread::Builder::new()
             .name("supervisor".into())
             .spawn(move || {
                 tracing::dispatcher::with_default(&dispatch, || {
-                    State::new(context, (report, held)).serve(&received);
+                    State::new(context, shared).serve(&received);
                 });
             })?;
         Ok(Self {
             commands,
             reports,
             backlog,
+            reserved,
             thread: Some(thread),
         })
+    }
+
+    /// The bytes of `memory.total_bytes` that admitted reservations hold:
+    /// releases, load threads and instances (#120).
+    pub(crate) fn reserved(&self) -> u64 {
+        self.reserved.load(Ordering::Relaxed)
     }
 
     /// The bytes every client's reports not yet processed hold together.
@@ -236,7 +290,7 @@ impl Supervisor {
 
 /// What owner and load threads tell the supervisor.
 enum Internal {
-    Loaded(VersionName, Release),
+    Loaded(VersionName, Result<Loaded, Refusal>),
     Published(SessionId, Client),
     /// Run returned, or create failed, with why if it failed and whether
     /// that is retried.
@@ -245,22 +299,29 @@ enum Internal {
     OwnerDone(SessionId, Result<(), String>),
 }
 
+/// Where a release stands.
 enum Release {
-    Loading,
-    Loaded(&'static Functions),
+    /// Admission could not reserve it: its configured reservation before
+    /// its load, or, once `library` is loaded (its handle stays), its
+    /// qualified one. Reconsidered from `until`.
+    Blocked {
+        why: String,
+        until: Instant,
+        library: Option<Loaded>,
+    },
+    /// Loading since then; `slow` once that has lasted
+    /// `deadlines.load_ms`.
+    Loading {
+        since: Instant,
+        slow: bool,
+    },
+    /// Loaded and admitted at its qualified reservation, with what each of
+    /// its instances reserves.
+    Ready {
+        functions: &'static Functions,
+        instance: admission::Instance,
+    },
     Refused(Refusal),
-}
-
-impl Release {
-    fn log(&self, version: &VersionName) {
-        match self {
-            Self::Loading => {}
-            Self::Loaded(_) => tracing::info!(%version, "client library loaded"),
-            Self::Refused(refusal) => {
-                tracing::warn!(%version, ?refusal, "client library refused");
-            }
-        }
-    }
 }
 
 /// A live instance: its handles and, once looked up, its descriptor.
@@ -347,6 +408,9 @@ struct State {
     /// What each client's reports the UI has not processed hold: a client
     /// is drained only while they fit its `queues.event_bytes`.
     backlog: Arc<Backlog>,
+    /// Every admitted reservation (#120), and its bytes for the UI.
+    admitted: Ledger,
+    reserved: Arc<AtomicU64>,
     /// Since when each congested client has not been drained.
     congested: BTreeMap<SessionId, Instant>,
     /// Shutdown has begun: the UI processes nothing more, and every client
@@ -354,7 +418,8 @@ struct State {
     stopping: bool,
     internal: Sender<Internal>,
     internals: Receiver<Internal>,
-    waiting: BTreeMap<(Reverse<Timestamp>, SessionId), SessionMetadata>,
+    /// Sessions waiting for a client, in their lanes.
+    queue: Queue,
     releases: BTreeMap<VersionName, Release>,
     instances: BTreeMap<SessionId, Instance>,
     /// Sessions whose next attempt waits for its backoff to pass.
@@ -370,31 +435,30 @@ struct State {
     ledger: usize,
 }
 
-/// What scheduling does for one waiting session.
-enum Step {
-    Load(VersionName),
-    Refuse(String, Retry),
-    Start(&'static Functions),
-}
-
 impl State {
     fn new(
         context: Context,
-        (report, backlog): (Sender<(SessionId, ClientEvent)>, Arc<Backlog>),
+        (report, backlog, reserved): (
+            Sender<(SessionId, ClientEvent)>,
+            Arc<Backlog>,
+            Arc<AtomicU64>,
+        ),
     ) -> Self {
         let (internal, internals) = mpsc::channel();
         let limits = context.limits;
         let accepted = limits.request_records as usize + limits.operations as usize;
         Self {
             ledger: accepted,
+            queue: Queue::new(context.lanes.newer_start_burst),
             context: Arc::new(context),
             report,
             backlog,
+            admitted: Ledger::default(),
+            reserved,
             congested: BTreeMap::new(),
             stopping: false,
             internal,
             internals,
-            waiting: BTreeMap::new(),
             releases: BTreeMap::new(),
             instances: BTreeMap::new(),
             retrying: BTreeMap::new(),
@@ -480,12 +544,9 @@ impl State {
         self.forgotten.insert(id);
     }
 
+    /// `metadata`'s session waits for its first start.
     fn wait(&mut self, metadata: SessionMetadata) {
-        let key = (
-            Reverse(metadata.created_at.clone()),
-            metadata.session_id.clone(),
-        );
-        self.waiting.insert(key, metadata);
+        self.queue.push(metadata, Lane::First);
     }
 
     /// Submits `request` through an open client's input [`Stream`]: input
@@ -580,62 +641,181 @@ impl State {
 
     fn internal(&mut self, internal: Internal) {
         match internal {
-            Internal::Loaded(version, release) => {
-                release.log(&version);
-                self.releases.insert(version, release);
-            }
+            Internal::Loaded(version, loaded) => self.loaded(version, loaded),
             Internal::Published(id, client) => self.published(&id, client),
             Internal::Stopped(id, ran) => self.stopped(&id, ran),
             Internal::OwnerDone(id, destroyed) => self.owner_done(&id, destroyed),
         }
     }
 
-    /// Starts loads and clients the lanes have room for, newest created
-    /// first, once each retry's backoff has passed. A session waiting on
-    /// its release holds no start slot.
+    /// Loads releases and starts clients the lanes have room for and
+    /// admission admits, once each retry's backoff has passed; then tells
+    /// each waiting row why it waits, if it is resource-blocked or its
+    /// release is loading slowly. A session waiting on its release holds
+    /// no start slot.
     fn schedule(&mut self) {
+        let now = Instant::now();
         self.due();
-        let keys: Vec<_> = self.waiting.keys().cloned().collect();
-        for key in keys {
-            if let Some(step) = self.step(&self.waiting[&key].climon2_version) {
-                self.take(key, step);
-            }
+        for version in self.versions() {
+            self.release(&version, now);
         }
+        self.refusals();
+        self.starts(now);
+        self.slow(now);
+        self.conditions();
+        let reserved = self.admitted.bytes();
+        self.reserved.store(reserved, Ordering::Relaxed);
     }
 
-    /// What a session of `version` can do now, if anything.
-    fn step(&self, version: &VersionName) -> Option<Step> {
-        let lanes = self.context.lanes;
+    /// The releases waiting sessions need, newest session first.
+    fn versions(&mut self) -> Vec<VersionName> {
+        let mut versions = Vec::new();
+        for entry in self.queue.entries() {
+            let version = &entry.metadata.climon2_version;
+            if !versions.contains(version) {
+                versions.push(version.clone());
+            }
+        }
+        versions
+    }
+
+    /// Loads `version` if it is not loaded yet, or reconsiders it once its
+    /// admission interval has passed.
+    fn release(&mut self, version: &VersionName, now: Instant) {
         match self.releases.get(version) {
-            None => room(self.loading(), lanes.loads).then(|| Step::Load(version.clone())),
-            Some(Release::Loading) => None,
-            Some(Release::Refused(refusal)) => {
-                Some(Step::Refuse(refusal.message().to_owned(), refusal.retry()))
+            None => self.load(version, now),
+            Some(Release::Blocked { until, library, .. }) if passed(*until, now) => {
+                let library = *library;
+                self.reconsider(version, library, now);
             }
-            Some(Release::Loaded(functions)) => {
-                room(self.starting(), lanes.starts).then_some(Step::Start(functions))
+            Some(_) => {}
+        }
+    }
+
+    /// A resource-blocked release once its interval has passed: loaded if
+    /// it never was, otherwise qualified again.
+    fn reconsider(&mut self, version: &VersionName, library: Option<Loaded>, now: Instant) {
+        match library {
+            None => self.load(version, now),
+            Some(library) => self.qualify(version, library, now),
+        }
+    }
+
+    /// Every waiting session whose release is refused: Unavailable, and
+    /// retried unless that is permanent.
+    fn refusals(&mut self) {
+        let releases = &self.releases;
+        let refused = self.queue.take(|entry| refusal(releases, entry).is_some());
+        for entry in refused {
+            if let Some(refusal) = refusal(&self.releases, &entry).cloned() {
+                self.unstarted(
+                    entry.metadata,
+                    refusal.message().to_owned(),
+                    refusal.retry(),
+                );
             }
         }
     }
 
-    fn take(&mut self, key: (Reverse<Timestamp>, SessionId), step: Step) {
-        match step {
-            Step::Load(version) => self.load(version),
-            Step::Refuse(why, retry) => {
-                let metadata = self.waiting.remove(&key).expect("a waiting session");
-                self.unstarted(metadata, why, retry);
+    /// Starts the sessions the queue picks while the start lane has room,
+    /// each once admission reserves its instance.
+    fn starts(&mut self, now: Instant) {
+        while room(self.starting(), self.context.lanes.starts) {
+            let releases = &self.releases;
+            let Some(entry) = self.queue.pick(|entry| startable(releases, entry, now)) else {
+                return;
+            };
+            self.admit(entry, now);
+        }
+    }
+
+    /// Reserves `entry`'s instance and starts it, or leaves it
+    /// resource-blocked until the next admission interval.
+    fn admit(&mut self, mut entry: Entry, now: Instant) {
+        let version = &entry.metadata.climon2_version;
+        let Some(&Release::Ready {
+            functions,
+            instance,
+        }) = self.releases.get(version)
+        else {
+            return self.queue.put(entry);
+        };
+        let holder = Holder::Instance(entry.metadata.session_id.clone());
+        match self
+            .admitted
+            .hold(&[(holder, instance.amount)], self.capacity())
+        {
+            Ok(()) => {
+                if entry.told.is_some() {
+                    self.tell(&entry.metadata.session_id, ClientEvent::Starting);
+                }
+                self.spawn_owner(functions, instance.owner_stack, entry.metadata);
             }
-            Step::Start(functions) => {
-                let metadata = self.waiting.remove(&key).expect("a waiting session");
-                self.spawn_owner(functions, metadata);
+            Err(why) => {
+                let id = &entry.metadata.session_id;
+                tracing::info!(session = %id, %why, "client resource-blocked");
+                entry.blocked = Some((why, now + self.interval()));
+                self.queue.put(entry);
             }
+        }
+    }
+
+    /// `retry.admission_ms`: the most often anything blocked is
+    /// reconsidered.
+    fn interval(&self) -> Duration {
+        Duration::from_millis(self.context.admission.admission_ms.into())
+    }
+
+    /// What reservations may hold now: `memory.total_bytes` less what the
+    /// monitor holds outside admission, and the operating system's
+    /// descriptor limit, read afresh, less `resources.descriptor_headroom`.
+    fn capacity(&self) -> Capacity {
+        let admission = &self.context.admission;
+        Capacity {
+            bytes: admission.total_bytes.saturating_sub(self.context.outside),
+            descriptors: descriptor_limit().saturating_sub(admission.descriptor_headroom.into()),
+        }
+    }
+
+    /// Each load running past `deadlines.load_ms` is logged once as loading
+    /// slowly, and its waiting rows are told so; it is never aborted.
+    fn slow(&mut self, now: Instant) {
+        let bound = Duration::from_millis(self.context.lanes.load_ms.into());
+        for (version, release) in &mut self.releases {
+            if let Release::Loading {
+                since,
+                slow: slow @ false,
+            } = release
+                && passed(*since + bound, now)
+            {
+                *slow = true;
+                tracing::warn!(%version, "client library loading slowly");
+            }
+        }
+    }
+
+    /// Tells each waiting row why it waits whenever that changes:
+    /// resource-blocked with why, its release loading slowly, or, once
+    /// neither holds any more, Starting.
+    fn conditions(&mut self) {
+        let mut changed = Vec::new();
+        for entry in self.queue.entries() {
+            let release = self.releases.get(&entry.metadata.climon2_version);
+            let condition = condition(release, entry);
+            if condition != entry.told {
+                entry.told.clone_from(&condition);
+                changed.push((entry.metadata.session_id.clone(), condition));
+            }
+        }
+        for (id, condition) in changed {
+            self.tell(&id, waiting(condition));
         }
     }
 
     fn loading(&self) -> u32 {
         let releases = self.releases.values();
         releases
-            .filter(|release| matches!(release, Release::Loading))
+            .filter(|release| matches!(release, Release::Loading { .. }))
             .count() as u32
     }
 
@@ -646,26 +826,121 @@ impl State {
             .count() as u32
     }
 
-    fn load(&mut self, version: VersionName) {
-        self.releases.insert(version.clone(), Release::Loading);
+    /// Loads `version` on a worker thread while the load lane has room,
+    /// once admission reserves its configured reservation and the load
+    /// thread's stack before the dynamic loader opens it.
+    fn load(&mut self, version: &VersionName, now: Instant) {
+        if !room(self.loading(), self.context.lanes.loads) {
+            return;
+        }
+        let admission = &self.context.admission;
+        let holdings = [
+            (
+                Holder::Release(version.clone()),
+                admission::configured(admission),
+            ),
+            (Holder::Load(version.clone()), admission::loader(admission)),
+        ];
+        match self.admitted.hold(&holdings, self.capacity()) {
+            Ok(()) => self.spawn_load(version.clone(), now),
+            Err(why) => self.block(version, why, None, now),
+        }
+    }
+
+    fn spawn_load(&mut self, version: VersionName, now: Instant) {
+        let loading = Release::Loading {
+            since: now,
+            slow: false,
+        };
+        self.releases.insert(version.clone(), loading);
         let context = Arc::clone(&self.context);
         let internal = self.internal.clone();
         let loading = version.clone();
-        let spawned = thread::Builder::new().name("load".into()).spawn(move || {
-            let release = (context.load)(&loading).map_or_else(Release::Refused, Release::Loaded);
-            let _ = internal.send(Internal::Loaded(loading, release));
-        });
+        let spawned = thread::Builder::new()
+            .name("load".into())
+            .stack_size(stack(self.context.admission.stack_bytes))
+            .spawn(move || {
+                let loaded = (context.load)(&loading);
+                let _ = internal.send(Internal::Loaded(loading, loaded));
+            });
         if let Err(error) = spawned {
-            let refused = Release::Refused(Refusal::Thread(error.to_string()));
-            refused.log(&version);
-            self.releases.insert(version, refused);
+            self.loaded(version, Err(Refusal::Thread(error.to_string())));
+        }
+    }
+
+    /// `version`'s release is resource-blocked with why, `library` once
+    /// loaded; reconsidered after the admission interval.
+    fn block(&mut self, version: &VersionName, why: String, library: Option<Loaded>, now: Instant) {
+        tracing::info!(%version, %why, "client library resource-blocked");
+        let until = now + self.interval();
+        let blocked = Release::Blocked {
+            why,
+            until,
+            library,
+        };
+        self.releases.insert(version.clone(), blocked);
+    }
+
+    /// A load returned: its thread's reservation is freed, and the release
+    /// is qualified, or refused.
+    fn loaded(&mut self, version: VersionName, loaded: Result<Loaded, Refusal>) {
+        self.admitted.free(&Holder::Load(version.clone()));
+        match loaded {
+            Ok(library) => {
+                tracing::info!(%version, "client library loaded");
+                self.qualify(&version, library, Instant::now());
+            }
+            Err(refusal) => self.refuse(version, refusal),
+        }
+    }
+
+    /// Refuses `version`'s release; a reservation whose handle the dynamic
+    /// loader never opened is freed, the others stay.
+    fn refuse(&mut self, version: VersionName, refusal: Refusal) {
+        tracing::warn!(%version, ?refusal, "client library refused");
+        if !refusal.opened() {
+            self.admitted.free(&Holder::Release(version.clone()));
+        }
+        self.releases.insert(version, Release::Refused(refusal));
+    }
+
+    /// Relaxed qualification (#120): the loaded release's requirements are
+    /// checked against the limits, and its reservation raised to the
+    /// greater of configured and qualified before any create; a raise
+    /// admission refuses leaves it resource-blocked, its handle loaded.
+    fn qualify(&mut self, version: &VersionName, library: Loaded, now: Instant) {
+        let admission = self.context.admission;
+        let requirements = &library.requirements;
+        let instance = match admission::instance(&admission, requirements, &self.context.limits) {
+            Ok(instance) => instance,
+            Err(why) => return self.refuse(version.clone(), Refusal::Unqualified(why)),
+        };
+        let raised = (
+            Holder::Release(version.clone()),
+            admission::qualified(&admission, requirements),
+        );
+        match self.admitted.hold(&[raised], self.capacity()) {
+            Ok(()) => {
+                let ready = Release::Ready {
+                    functions: library.functions,
+                    instance,
+                };
+                self.releases.insert(version.clone(), ready);
+            }
+            Err(why) => self.block(version, why, Some(library), now),
         }
     }
 
     /// Starts an instance for `metadata`'s session in its next connection
     /// generation, the first 1. Generations never wrap: once a session's
     /// are exhausted, it is never attempted again (LIM-05).
-    fn spawn_owner(&mut self, functions: &'static Functions, metadata: SessionMetadata) {
+    /// Its owner thread gets the stack admission reserved for it.
+    fn spawn_owner(
+        &mut self,
+        functions: &'static Functions,
+        stack: u64,
+        metadata: SessionMetadata,
+    ) {
         let id = metadata.session_id.clone();
         let latest = self.generations.get(&id);
         let Some(generation) = latest.map_or(Some(self.context.first.generation), |latest| {
@@ -683,6 +958,7 @@ impl State {
         let spawned = started.and_then(|startup| {
             thread::Builder::new()
                 .name("client".into())
+                .stack_size(self::stack(stack))
                 .spawn(move || owner::owner(functions, &startup, owned, &internal, &release))
         });
         match spawned {
@@ -705,9 +981,10 @@ impl State {
     }
 
     /// A session whose client could not start: Unavailable, and retried
-    /// unless that is permanent.
+    /// unless that is permanent. Anything admitted for it is freed.
     fn unstarted(&mut self, metadata: SessionMetadata, why: String, retry: Retry) {
         let id = metadata.session_id.clone();
+        self.admitted.free(&Holder::Instance(id.clone()));
         self.tell(&id, ClientEvent::Unavailable(why.clone()));
         self.recover(&id, why, retry);
         if retry == Retry::Passive {
@@ -754,7 +1031,7 @@ impl State {
                 self.releases.remove(version);
             }
             self.tell(&id, ClientEvent::Starting);
-            self.wait(metadata);
+            self.queue.push(metadata, Lane::Retry);
         }
     }
 
@@ -991,6 +1268,7 @@ impl State {
             return;
         };
         let _ = instance.owner.join();
+        self.admitted.free(&Holder::Instance(id.clone()));
         if instance.retry != Some(Retry::Passive) {
             return;
         }
@@ -1025,7 +1303,7 @@ impl State {
     /// closes every unconfirmed owner's release channel, so it never
     /// destroys an instance whose handles may be unreleased.
     fn shut_down(mut self) {
-        self.waiting.clear();
+        self.queue.clear();
         let deadline = Instant::now() + self.context.shutdown;
         while !self.instances.is_empty() && before(deadline) {
             let live = self
@@ -1053,6 +1331,70 @@ fn before(deadline: Instant) -> bool {
 /// Whether a lane of `bound` has room beside the `used` slots it holds.
 fn room(used: u32, bound: u32) -> bool {
     used < bound
+}
+
+/// Why `entry`'s release is refused, if it is.
+fn refusal<'a>(releases: &'a BTreeMap<VersionName, Release>, entry: &Entry) -> Option<&'a Refusal> {
+    match releases.get(&entry.metadata.climon2_version) {
+        Some(Release::Refused(refusal)) => Some(refusal),
+        _ => None,
+    }
+}
+
+/// Whether `entry` may start now: its release is ready, and it is not
+/// waiting out an admission interval.
+fn startable(releases: &BTreeMap<VersionName, Release>, entry: &Entry, now: Instant) -> bool {
+    let release = releases.get(&entry.metadata.climon2_version);
+    let ready = matches!(release, Some(Release::Ready { .. }));
+    ready
+        && entry
+            .blocked
+            .as_ref()
+            .is_none_or(|(_, until)| passed(*until, now))
+}
+
+/// Whether `now` has reached `until`.
+fn passed(until: Instant, now: Instant) -> bool {
+    now.checked_duration_since(until).is_some()
+}
+
+/// Why a waiting session waits, as its row shows it: resource-blocked,
+/// itself or its release; its release loading slowly; or neither.
+fn condition(release: Option<&Release>, entry: &Entry) -> Option<Condition> {
+    match (release, &entry.blocked) {
+        (Some(Release::Blocked { why, .. }), _) | (_, Some((why, _))) => {
+            Some(Condition::AwaitingResources(why.clone()))
+        }
+        (Some(Release::Loading { slow: true, .. }), None) => Some(Condition::LoadingSlowly),
+        _ => None,
+    }
+}
+
+/// What a row is told when why it waits changes.
+fn waiting(condition: Option<Condition>) -> ClientEvent {
+    match condition {
+        Some(Condition::AwaitingResources(why)) => ClientEvent::AwaitingResources(why),
+        Some(Condition::LoadingSlowly) => ClientEvent::LoadingSlowly,
+        None => ClientEvent::Starting,
+    }
+}
+
+/// The operating system's soft limit on this process's descriptors, read
+/// afresh so that a raised limit admits more. A limit that cannot be read
+/// reads as none left, so nothing more is admitted.
+fn descriptor_limit() -> u64 {
+    let mut limit = libc::rlimit {
+        rlim_cur: u64::MIN,
+        rlim_max: u64::MIN,
+    };
+    // SAFETY: getrlimit writes only `limit`.
+    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
+    limit.rlim_cur
+}
+
+/// A thread stack of `bytes`, saturating.
+fn stack(bytes: u64) -> usize {
+    usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
 /// Waits one tick for any of `table`'s descriptors, or simply one tick.
@@ -1741,6 +2083,22 @@ mod tests {
         failure(native::UNSUPPORTED_OPERATION, b"unsupported_operation", b"")
     }
 
+    /// The fake library as its load hands it over, with the shipped
+    /// library's requirements.
+    const FAKE_LIBRARY: Loaded = Loaded {
+        functions: &FAKE,
+        requirements: native::Requirements {
+            release_bytes: 64 << 20,
+            instance_bytes: 1 << 20,
+            owner_stack_bytes: 2 << 20,
+            worker_stack_bytes: 2 << 20,
+            workers: 2,
+            instance_descriptors: 8,
+            load_descriptors: 4,
+            reserved: 0,
+        },
+    };
+
     static FAKE: Functions = Functions {
         create,
         run,
@@ -1856,6 +2214,26 @@ mod tests {
         (limits, retry): (native::Limits, Backoff),
         first: Identifiers,
     ) -> Supervised {
+        configured(starts, shutdown_ms, load, (limits, retry), first, |_| {})
+    }
+
+    /// A supervisor over `load` with `starts` start slots and default
+    /// limits, its context changed by `adjust`.
+    fn adjusted(starts: u32, load: Load, adjust: impl FnOnce(&mut Context)) -> Supervised {
+        let limits = climon2_core::config::Limits::default().library();
+        let first = Identifiers::default();
+        configured(starts, 20_000, load, (limits, NEVER), first, adjust)
+    }
+
+    /// [`starting_at`], its context changed by `adjust`.
+    fn configured(
+        starts: u32,
+        shutdown_ms: u64,
+        load: Load,
+        (limits, retry): (native::Limits, Backoff),
+        first: Identifiers,
+        adjust: impl FnOnce(&mut Context),
+    ) -> Supervised {
         let directory = tempfile::tempdir().unwrap();
         let home = HomeLayout::resolve(Some(directory.path().as_os_str()), Path::new("/")).unwrap();
         let log = climon2_platform::logging::LogFile::monitor(directory.path()).unwrap();
@@ -1870,12 +2248,18 @@ mod tests {
             lanes: Lanes {
                 loads: 1,
                 starts,
+                newer_start_burst: 8,
+                load_ms: 10_000,
                 shutdown_ms: 0,
             },
             shutdown: Duration::from_millis(shutdown_ms),
             retry,
             first,
+            admission: climon2_core::config::Limits::default().admission(),
+            outside: 0,
         };
+        let mut context = context;
+        adjust(&mut context);
         let dispatch = log.dispatch(Some("info")).unwrap();
         let supervisor = Supervisor::start(context, dispatch).unwrap();
         Supervised {
@@ -1886,7 +2270,7 @@ mod tests {
     }
 
     fn fake_library() -> Load {
-        Box::new(|_| Ok(&FAKE))
+        Box::new(|_| Ok(FAKE_LIBRARY))
     }
 
     /// The next report, waiting at most [`WAIT`].
@@ -2461,7 +2845,7 @@ mod tests {
     fn refusing_old() -> Load {
         Box::new(|version| match version.as_str() {
             "0.0.1" => Err(Refusal::Library(Failure::WrongRelease, "old".into())),
-            _ => Ok(&FAKE),
+            _ => Ok(FAKE_LIBRARY),
         })
     }
 
@@ -2878,7 +3262,7 @@ mod tests {
             match (version.as_str(), earlier) {
                 ("0.0.2", _) => Err(Refusal::Library(Failure::WrongRelease, "wrong".into())),
                 (_, 1) => Err(Refusal::Library(Failure::MissingLibrary, "missing".into())),
-                _ => Ok(&FAKE),
+                _ => Ok(FAKE_LIBRARY),
             }
         });
         let quick = Backoff {
@@ -3343,5 +3727,329 @@ mod tests {
                 .all(|failure| retry(failure) == Retry::Permanent)
         );
         assert_eq!(Refusal::Thread("no thread".into()).retry(), Retry::Passive);
+        let unqualified = Refusal::Unqualified("too many workers".into());
+        assert_eq!(unqualified.retry(), Retry::Permanent);
+        assert_eq!(unqualified.message(), "too many workers");
+    }
+
+    /// LIM-04 (pure supplement; #120): a refused release whose handle the
+    /// dynamic loader never opened frees its reservation, as does a load
+    /// thread that never started; any other handle stays loaded until exit,
+    /// and its release's configured reservation with it.
+    #[test]
+    fn only_a_handle_the_loader_opened_keeps_its_reservation() {
+        let opened = |failure| Refusal::Library(failure, String::new()).opened();
+        let closed = [
+            Failure::MissingLibrary,
+            Failure::MissingDependency,
+            Failure::IncompatibleArchitecture,
+        ];
+        let open = [
+            Failure::BootstrapFailure,
+            Failure::SubstitutedImage,
+            Failure::MissingSymbol,
+            Failure::UnsupportedRevision,
+            Failure::WrongRelease,
+            Failure::MalformedDescription,
+        ];
+        assert!(closed.into_iter().all(|failure| !opened(failure)));
+        assert!(open.into_iter().all(opened));
+        assert!(!Refusal::Thread(String::new()).opened());
+        assert!(Refusal::Unqualified(String::new()).opened());
+        for (test, failure, kept) in [
+            (1, Failure::MissingLibrary, 0),
+            (2, Failure::WrongRelease, RELEASE),
+        ] {
+            let id = session(45, test);
+            let load: Load = Box::new(move |_| Err(Refusal::Library(failure, "no".into())));
+            let mut supervised = adjusted(8, load, |_| {});
+            let supervisor = &mut supervised.supervisor;
+            supervisor.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+            let unavailable = ClientEvent::Unavailable("no".into());
+            assert_eq!(next(supervisor), (id, unavailable));
+            supervisor.stop();
+            assert_eq!(supervisor.reserved(), kept);
+        }
+    }
+
+    /// LIM-04 (pure supplement; #120): a supervisor that has admitted
+    /// nothing reserves nothing of `memory.total_bytes`, even before its
+    /// thread first schedules, so the UI's history budget starts whole.
+    #[test]
+    fn a_fresh_supervisor_reserves_nothing() {
+        for _ in 0..4 {
+            let mut supervised = supervisor(1, 20_000, fake_library());
+            let supervisor = &mut supervised.supervisor;
+            assert_eq!(supervisor.reserved(), 0);
+            supervisor.stop();
+            assert_eq!(supervisor.reserved(), 0);
+        }
+    }
+
+    /// LIM-04 and the admission rate limit (#120): a resource-blocked
+    /// session or release is reconsidered at most once per
+    /// `retry.admission_ms`, never in a loop: with an interval of an hour,
+    /// capacity freed meanwhile admits nothing, and each was blocked once.
+    #[test]
+    fn blocked_work_is_reconsidered_at_most_once_per_admission_interval() {
+        let [first, second] = [session(46, 1), session(46, 2)];
+        let drops = Script {
+            drops: true,
+            ..Script::default()
+        };
+        script(&first, drops);
+        let mut supervised = adjusted(8, fake_library(), |context| {
+            context.admission.total_bytes = RELEASE + INSTANCE + 1000;
+            context.outside = 1000;
+            context.admission.admission_ms = 3_600_000;
+        });
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&first, "2026-11-16T10:00:02.000Z"));
+        supervisor.start_client(metadata(&second, "2026-11-16T10:00:01.000Z"));
+        until(|world| world.seen.contains(&(guid(&first), Seen::OwnerExited)));
+        // Ten ticks: an earlier reconsideration would have started it.
+        thread::sleep(Duration::from_millis(200));
+        supervisor.stop();
+        assert!(!supervised.started(&second));
+        let log = supervised.log();
+        assert_eq!(log.matches("client resource-blocked").count(), 1, "{log}");
+        let id = session(46, 3);
+        let mut blocked = adjusted(8, fake_library(), |context| {
+            context.admission.release_bytes = 1 << 20;
+            context.admission.total_bytes = RELEASE - 1;
+            context.admission.admission_ms = 3_600_000;
+        });
+        blocked
+            .supervisor
+            .start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let (_, event) = next(&blocked.supervisor);
+        assert!(matches!(event, ClientEvent::AwaitingResources(_)));
+        thread::sleep(Duration::from_millis(200));
+        blocked.supervisor.stop();
+        let log = blocked.log();
+        let once = "client library resource-blocked";
+        assert_eq!(log.matches(once).count(), 1, "{log}");
+    }
+
+    /// What one instance of the fake (the shipped library's requirements)
+    /// reserves by default: the library's share of `memory.client_bytes`,
+    /// its owner's and two workers' 2 MiB stacks.
+    const INSTANCE: u64 = 3_407_872 + 3 * (2 << 20);
+    /// What its release reserves once loaded: 64 MiB.
+    const RELEASE: u64 = 64 << 20;
+
+    /// `id`'s reports, in order, until `last` (included), each within
+    /// [`WAIT`]; other sessions' reports go to `others`.
+    fn reports_of(
+        supervisor: &Supervisor,
+        id: &SessionId,
+        last: &ClientEvent,
+        others: &mut Vec<(SessionId, ClientEvent)>,
+    ) -> Vec<ClientEvent> {
+        let mut reports = Vec::new();
+        while reports.last() != Some(last) {
+            let (from, event) = next(supervisor);
+            if from == *id {
+                reports.push(event);
+            } else {
+                others.push((from, event));
+            }
+        }
+        reports
+    }
+
+    /// LIM-04 (Monitor, Fault; #120): admission reserves each instance
+    /// before its create. With room for the release and exactly one
+    /// instance, the newer session starts and the older one is
+    /// resource-blocked, saying what is short; once the first instance is
+    /// cleaned up its reservation is freed, and the blocked session is
+    /// admitted at its next admission interval. Every reservation the
+    /// ledger holds is visible to the UI's pressure policy.
+    #[test]
+    fn a_session_admission_cannot_reserve_is_resource_blocked_until_capacity_is_freed() {
+        let [first, second] = [session(40, 1), session(40, 2)];
+        let drops = Script {
+            drops: true,
+            ..Script::default()
+        };
+        script(&first, drops);
+        let mut supervised = adjusted(8, fake_library(), |context| {
+            context.admission.total_bytes = RELEASE + INSTANCE;
+            context.admission.admission_ms = 20;
+        });
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&first, "2026-11-16T10:00:02.000Z"));
+        supervisor.start_client(metadata(&second, "2026-11-16T10:00:01.000Z"));
+        let opened = ClientEvent::Opened { status: false };
+        let mut others = Vec::new();
+        let reports = reports_of(supervisor, &second, &opened, &mut others);
+        let short = "not enough memory: 9699328 bytes needed, 0 bytes available";
+        assert_eq!(
+            reports,
+            [
+                ClientEvent::AwaitingResources(short.into()),
+                ClientEvent::Starting,
+                opened.clone(),
+            ]
+        );
+        assert_eq!(
+            others[..2],
+            [(first.clone(), opened), (first, ClientEvent::Ended)]
+        );
+        assert_eq!(supervisor.reserved(), RELEASE + INSTANCE);
+        supervisor.stop();
+    }
+
+    /// Relaxed pre-load qualification (#120, confirmed scenario; LIM-04):
+    /// a release whose configured reservation and load thread do not fit
+    /// is never loaded, its sessions resource-blocked; one whose
+    /// configured reservation fits is loaded, then raised to its qualified
+    /// 64 MiB before any create. A raise one byte short leaves its session
+    /// resource-blocked, its library loaded once however often it is
+    /// reconsidered; with the raise admitted, an instance one byte short is
+    /// resource-blocked, and at exactly the raised reservation and one
+    /// instance it starts.
+    #[test]
+    fn a_release_is_raised_to_its_qualified_reservation_before_any_create() {
+        let loads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = |loads: &Arc<std::sync::atomic::AtomicUsize>| -> Load {
+            let loads = Arc::clone(loads);
+            Box::new(move |_| {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(FAKE_LIBRARY)
+            })
+        };
+        let configured_mib = |total: u64| {
+            move |context: &mut Context| {
+                context.admission.release_bytes = 1 << 20;
+                context.admission.total_bytes = total;
+                context.admission.admission_ms = 1;
+            }
+        };
+        let id = session(41, 1);
+        let mut unloaded = adjusted(8, counting(&loads), configured_mib((3 << 20) - 1));
+        let unloaded = &mut unloaded.supervisor;
+        unloaded.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let short = "not enough memory: 3145728 bytes needed, 3145727 bytes available";
+        let blocked = ClientEvent::AwaitingResources(short.into());
+        assert_eq!(next(unloaded), (id.clone(), blocked));
+        unloaded.stop();
+        assert_eq!(loads.load(Ordering::SeqCst), 0);
+        let id = session(41, 2);
+        let mut short = adjusted(8, counting(&loads), configured_mib(RELEASE - 1));
+        let unraised = &mut short.supervisor;
+        unraised.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let why = "not enough memory: 67108864 bytes needed, 67108863 bytes available";
+        let blocked = ClientEvent::AwaitingResources(why.into());
+        assert_eq!(next(unraised), (id.clone(), blocked));
+        // Reconsidered every millisecond meanwhile.
+        thread::sleep(Duration::from_millis(50));
+        unraised.stop();
+        assert!(unraised.reports.try_iter().next().is_none());
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        assert!(seen(&guid(&id)).is_empty());
+        let id = session(41, 3);
+        let mut no_instance = adjusted(8, counting(&loads), configured_mib(RELEASE + INSTANCE - 1));
+        let raised = &mut no_instance.supervisor;
+        raised.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let why = "not enough memory: 9699328 bytes needed, 9699327 bytes available";
+        let blocked = ClientEvent::AwaitingResources(why.into());
+        assert_eq!(next(raised), (id.clone(), blocked));
+        raised.stop();
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
+        let id = session(41, 4);
+        let mut exact = adjusted(8, counting(&loads), configured_mib(RELEASE + INSTANCE));
+        let raised = &mut exact.supervisor;
+        raised.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let opened = ClientEvent::Opened { status: false };
+        assert_eq!(next(raised), (id, opened));
+        assert_eq!(raised.reserved(), RELEASE + INSTANCE);
+        raised.stop();
+        assert_eq!(loads.load(Ordering::SeqCst), 3);
+    }
+
+    /// Relaxed qualification and LIM-01 (Monitor; #120): a release that
+    /// needs more workers for each client than
+    /// `resources.max_workers_per_client` allows is rejected explicitly
+    /// and for good, before any create; the limit is never raised.
+    #[test]
+    fn too_many_qualified_workers_is_an_explicit_rejection() {
+        let id = session(42, 1);
+        let mut supervised = adjusted(8, fake_library(), |context| {
+            context.admission.max_workers_per_client = 1;
+        });
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let why = "the release needs 2 worker threads for each client; \
+                   monitor.limits.resources.max_workers_per_client allows 1";
+        assert_eq!(
+            next(supervisor),
+            (id.clone(), ClientEvent::Unavailable(why.into()))
+        );
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(why.into()));
+        assert_eq!(next(supervisor), (id.clone(), rejected));
+        supervisor.stop();
+        assert!(seen(&guid(&id)).is_empty());
+    }
+
+    /// LIM-04 (Monitor, operating-system limits; #120): descriptors are
+    /// admitted only within the process's descriptor limit less
+    /// `resources.descriptor_headroom`, so with a headroom past any limit
+    /// nothing is loaded and the session is resource-blocked.
+    #[test]
+    fn the_descriptor_headroom_below_the_os_limit_bounds_admission() {
+        let id = session(43, 1);
+        let mut supervised = adjusted(8, fake_library(), |context| {
+            context.admission.descriptor_headroom = u32::MAX;
+        });
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-16T10:00:00.000Z"));
+        let why = "not enough file descriptors: 4 needed, 0 available";
+        let blocked = ClientEvent::AwaitingResources(why.into());
+        assert_eq!(next(supervisor), (id, blocked));
+        supervisor.stop();
+    }
+
+    /// DSC-02 (Monitor, Fault: one release stalled) and the owner decision
+    /// on `deadlines.load_ms` (#120): a load past it is logged once and its
+    /// waiting session told `LoadingSlowly`, but never aborted; meanwhile
+    /// sessions of a release already loaded still start, and once the load
+    /// returns its session starts too.
+    #[test]
+    fn a_slow_load_is_reported_and_never_blocks_a_loaded_release() {
+        let [loaded, stalled, older] = [session(44, 1), session(44, 2), session(44, 3)];
+        let (release, held) = mpsc::channel::<()>();
+        let held = std::sync::Mutex::new(held);
+        let load: Load = Box::new(move |version| {
+            if version.as_str() == "0.0.9" {
+                let _ = held.lock().unwrap().recv();
+            }
+            Ok(FAKE_LIBRARY)
+        });
+        let mut supervised = adjusted(8, load, |context| {
+            context.lanes.loads = 2;
+            context.lanes.load_ms = 30;
+        });
+        let supervisor = &mut supervised.supervisor;
+        let opened = ClientEvent::Opened { status: false };
+        supervisor.start_client(metadata(&loaded, "2026-11-16T10:00:02.000Z"));
+        assert_eq!(next(supervisor), (loaded.clone(), opened.clone()));
+        supervisor.start_client(versioned(&stalled, "2026-11-16T10:00:03.000Z", "0.0.9"));
+        assert_eq!(
+            next(supervisor),
+            (stalled.clone(), ClientEvent::LoadingSlowly)
+        );
+        supervisor.start_client(metadata(&older, "2026-11-16T10:00:01.000Z"));
+        assert_eq!(next(supervisor), (older.clone(), opened.clone()));
+        release.send(()).unwrap();
+        assert_eq!(next(supervisor), (stalled.clone(), ClientEvent::Starting));
+        assert_eq!(next(supervisor), (stalled, opened));
+        supervisor.stop();
+        let log = supervised.log();
+        assert_eq!(
+            log.matches("client library loading slowly").count(),
+            1,
+            "{log}"
+        );
     }
 }

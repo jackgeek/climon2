@@ -375,8 +375,41 @@ pub struct Lanes {
     pub loads: u32,
     /// `scheduling.starts`: client starts at once.
     pub starts: u32,
+    /// `scheduling.newer_start_burst`: newer first starts before the oldest
+    /// waiting one gets a turn (#120).
+    pub newer_start_burst: u32,
+    /// `deadlines.load_ms`: past it a load still running is reported as
+    /// loading slowly, never aborted (owner decision on #120).
+    pub load_ms: u32,
     /// `deadlines.shutdown_ms`: how long clients may take to shut down.
     pub shutdown_ms: u32,
+}
+
+/// What admission reserves before each release load and each instance's
+/// create, and against what (#120): the configured reservations
+/// (`resources`), which the greater qualified requirement of a loaded
+/// release raises, within `memory.total_bytes`, and the reconsideration
+/// interval `retry.admission_ms`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Admission {
+    /// `memory.total_bytes`: every reservation consumes it.
+    pub total_bytes: u64,
+    /// `resources.stack_bytes`: each owner, worker and load thread's stack.
+    pub stack_bytes: u64,
+    /// `resources.max_workers_per_client`: never raised for a release.
+    pub max_workers_per_client: u32,
+    /// `resources.descriptors_per_client`.
+    pub descriptors_per_client: u32,
+    /// `resources.descriptors_per_load`.
+    pub descriptors_per_load: u32,
+    /// `resources.descriptor_headroom`: descriptors left to the rest of the
+    /// monitor below the operating system's limit.
+    pub descriptor_headroom: u32,
+    /// `resources.release_bytes`.
+    pub release_bytes: u64,
+    /// `retry.admission_ms`: the most often a blocked row or release is
+    /// reconsidered.
+    pub admission_ms: u32,
 }
 
 /// The monitor's passive retry backoff (`retry`).
@@ -537,7 +570,28 @@ impl Limits {
         Lanes {
             loads: self.0.scheduling.loads,
             starts: self.0.scheduling.starts,
+            newer_start_burst: self.0.scheduling.newer_start_burst,
+            load_ms: self.0.deadlines.load_ms,
             shutdown_ms: self.0.deadlines.shutdown_ms,
+        }
+    }
+
+    pub fn admission(&self) -> Admission {
+        let Groups {
+            memory,
+            resources,
+            retry,
+            ..
+        } = self.0;
+        Admission {
+            total_bytes: memory.total_bytes,
+            stack_bytes: resources.stack_bytes,
+            max_workers_per_client: resources.max_workers_per_client,
+            descriptors_per_client: resources.descriptors_per_client,
+            descriptors_per_load: resources.descriptors_per_load,
+            descriptor_headroom: resources.descriptor_headroom,
+            release_bytes: resources.release_bytes,
+            admission_ms: retry.admission_ms,
         }
     }
 }

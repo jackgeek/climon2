@@ -1861,6 +1861,9 @@ enum Act {
     Raw(u8, Vec<u8>),
     /// Wait until this file exists, for at most [`TIMEOUT`].
     Await(PathBuf),
+    /// Wait until this file exists, for at most five [`TIMEOUT`]s: through a
+    /// whole scenario.
+    Hold(PathBuf),
     /// Hang up.
     Close,
 }
@@ -1914,6 +1917,16 @@ struct FakeDaemon {
 /// Valid metadata for `id` created at `created`, of this package's version,
 /// whose daemon socket is `socket`.
 fn fake_metadata(package: &Package, id: &str, created: &str, socket: &Path) -> PathBuf {
+    fake_metadata_of(package, (id, VERSION), created, socket)
+}
+
+/// [`fake_metadata`] of release `version`.
+fn fake_metadata_of(
+    package: &Package,
+    (id, version): (&str, &str),
+    created: &str,
+    socket: &Path,
+) -> PathBuf {
     let sessions = package.isolation.climon2_home().join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let path = sessions.join(format!("{id}.pty"));
@@ -1922,7 +1935,7 @@ fn fake_metadata(package: &Package, id: &str, created: &str, socket: &Path) -> P
         "daemon_pid": std::process::id(), "daemon_start_time": 1,
         "daemon_linux_identity": {"boot_id": "00000000-0000-4000-8000-000000000000", "start_ticks": 1},
         "command": "fake", "args": [id], "cwd": package.isolation.home(), "depth": 1,
-        "created_at": created, "climon2_version": VERSION,
+        "created_at": created, "climon2_version": version,
     });
     fs::write(&path, serde_json::to_vec(&metadata).unwrap()).unwrap();
     path
@@ -1936,11 +1949,22 @@ impl FakeDaemon {
         answer: Answer,
         ear: &Ear,
     ) -> Self {
+        Self::of(package, (id, VERSION), created, answer, ear)
+    }
+
+    /// [`FakeDaemon::start`] for a session of release `version`.
+    fn of(
+        package: &Package,
+        (id, version): (&'static str, &'static str),
+        created: &str,
+        answer: Answer,
+        ear: &Ear,
+    ) -> Self {
         let socket = package
             .isolation
             .home()
             .join(format!("{}.sock", &id[id.len() - 4..]));
-        let metadata = fake_metadata(package, id, created, &socket);
+        let metadata = fake_metadata_of(package, (id, version), created, &socket);
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1961,7 +1985,9 @@ impl FakeDaemon {
                     _ => answer.clone(),
                 };
                 let stopped = stopped.clone();
-                thread::spawn(move || answer_once(&mut connection, id, &answer, &ear, &stopped));
+                thread::spawn(move || {
+                    answer_once(&mut connection, (id, version), &answer, &ear, &stopped);
+                });
             }
         });
         Self {
@@ -1975,7 +2001,7 @@ impl FakeDaemon {
 
 fn answer_once(
     connection: &mut std::os::unix::net::UnixStream,
-    id: &'static str,
+    (id, version): (&'static str, &'static str),
     answer: &Answer,
     ear: &Ear,
     stopped: &std::sync::atomic::AtomicBool,
@@ -1992,28 +2018,28 @@ fn answer_once(
                 Family::StatusV1,
                 Family::FocusV1,
             ];
-            if hello(connection, id, families) {
+            if hello(connection, (id, version), families) {
                 serve(connection, acts);
             }
         }
         Answer::Unfocused(acts) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
-            if hello(connection, id, families) {
+            if hello(connection, (id, version), families) {
                 serve(connection, acts);
             }
         }
         Answer::Bare(answered) => {
-            let _ = hello(connection, answered, []);
+            let _ = hello(connection, (answered, version), []);
             let _ = connection.read_to_end(&mut Vec::new());
         }
         Answer::Turns(turns) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
-            if hello(connection, id, families) {
+            if hello(connection, (id, version), families) {
                 serve_heard(connection, || turns.next(), Some((ear, id)));
             }
         }
         Answer::Hello(answered) => {
-            let _ = hello(connection, answered, [Family::MonitorV1]);
+            let _ = hello(connection, (answered, version), [Family::MonitorV1]);
             if connection.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
                 hear(ear, id, Heard::Client);
                 hear(ear, id, Heard::HangingUp);
@@ -2048,7 +2074,7 @@ fn answer_once(
             hear(ear, id, Heard::Closed);
         }
         Answer::Held(answered) => {
-            let _ = hello(connection, answered, [Family::MonitorV1]);
+            let _ = hello(connection, (answered, version), [Family::MonitorV1]);
             let _ = connection.set_read_timeout(Some(Duration::from_millis(20)));
             while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 match connection.read(&mut [0; 256]) {
@@ -2063,11 +2089,11 @@ fn answer_once(
     }
 }
 
-/// Answers the hello as session `id`, advertising `daemon-wire-v1` and
-/// `families`; whether the answer was written.
+/// Answers the hello as session `id` of release `version`, advertising
+/// `daemon-wire-v1` and `families`; whether the answer was written.
 fn hello(
     connection: &mut std::os::unix::net::UnixStream,
-    id: &str,
+    (id, version): (&str, &str),
     families: impl IntoIterator<Item = climon2_core::wire::Family>,
 ) -> bool {
     use climon2_core::{
@@ -2077,7 +2103,7 @@ fn hello(
     };
     let reply = HelloReply {
         session_id: id.parse().unwrap(),
-        climon2_version: VERSION.parse().unwrap(),
+        climon2_version: version.parse().unwrap(),
         protocol: 1,
     };
     let limit = FrameLimit::new(1_048_576).unwrap();
@@ -2126,8 +2152,9 @@ fn serve_heard(
             Act::Raw(code, body) => {
                 write_frame(connection, &Frame::new(*code, body.clone()), limit).is_ok()
             }
-            Act::Await(path) => {
-                let deadline = Instant::now() + TIMEOUT;
+            Act::Await(path) | Act::Hold(path) => {
+                let bound = [TIMEOUT, 5 * TIMEOUT][usize::from(matches!(act, Act::Hold(_)))];
+                let deadline = Instant::now() + bound;
                 while !path.exists() && Instant::now() < deadline {
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -8369,5 +8396,425 @@ fn representative_status_sequences_show_the_right_row_states() {
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// A host wide enough for a fake session's label and its error slot.
+const WIDE: u16 = 200;
+
+/// An idle fake session titled `title`, served until the monitor leaves.
+fn idle(title: &str) -> Answer {
+    with_status(title, wire_status("idle", &utc(1)), None, Vec::new())
+}
+
+/// Every client the fakes heard Open from, in order.
+fn served(ear: &Ear) -> Vec<&'static str> {
+    heard(ear, Heard::Served)
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect()
+}
+
+/// Waits, within a bound, until `ear` has heard `count` Opens.
+fn until_served(ear: &Ear, count: usize) {
+    let deadline = Instant::now() + 3 * TIMEOUT;
+    while served(ear).len() < count {
+        assert!(Instant::now() < deadline, "served only {:?}", served(ear));
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until a whole frame's top row starts with `start`.
+fn top_row_starts(terminal: &Terminal, start: &str) {
+    whole_frame_shows(terminal, start, |screen| screen.starts_with(start));
+}
+
+/// DSC-02 (Monitor) and LIM-06 (Monitor, start case; #120): with one start
+/// slot and `scheduling.newer_start_burst` at 1, four sessions whose starts
+/// all stall (their daemons never answer Open, so each start lasts its
+/// `deadlines.start_ms`) start newest first, except that after each newer
+/// start the oldest waiting one has its turn: 4, 1, 3, 2 by creation.
+/// Every session is started, none capped or left out, and while the starts
+/// stall the selector opens and lists them and prefix+x exits at once.
+#[test]
+fn stalled_newer_starts_give_the_oldest_session_its_turn_while_the_monitor_responds() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "scheduling": {"starts": 1, "newer_start_burst": 1},
+            "deadlines": {"start_ms": 1000},
+            "retry": {"initial_ms": 3_600_000, "cap_ms": 3_600_000},
+        }),
+    );
+    let never = package.isolation.home().join("never");
+    let ear = Ear::default();
+    let ids = [0xe1, 0xe2, 0xe3, 0xe4].map(fake_id);
+    let fakes: Vec<_> = (1..)
+        .zip(ids)
+        .map(|(second, id)| {
+            let stalls = Turns::answer(vec![vec![Act::Await(never.clone())]]);
+            let created = format!("2026-01-01T00:00:0{second}.000Z");
+            FakeDaemon::start(&package, id, &created, stalls, &ear)
+        })
+        .collect();
+    let mut terminal = outer(&package, "c2 monitor");
+    until_served(&ear, 1);
+    terminal.send("\x1ds").unwrap();
+    whole_frame_shows(&terminal, "every session listed", |screen| {
+        ids.iter().all(|id| screen.contains(&format!(" fake {id}")))
+    });
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    until_served(&ear, 4);
+    assert_eq!(served(&ear), [ids[3], ids[0], ids[2], ids[1]]);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// Has the dynamic loader's blocked open of the FIFO `library` return, as
+/// often as it is opened again, until `terminal` shows `shown`.
+fn unstall(terminal: &Terminal, library: &Path, shown: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let deadline = Instant::now() + TIMEOUT;
+    while !terminal.screen().contains(shown) {
+        assert!(Instant::now() < deadline, "{shown} never shown");
+        // A reader waiting in open lets this writer in; closing it at once
+        // gives the reader end of file. With no reader it fails at once.
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(library);
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// DSC-02 (Monitor, Fault: one release stalled), the Linux amendment (a
+/// load that never returns is a native fault: load workers have no
+/// deadline, the system loader serializes loading) and the owner decision
+/// on `deadlines.load_ms` (#120): release 0.0.98's library is a FIFO, so
+/// the dynamic loader's open of it does not return. Its session, the
+/// newest, stays Starting and, once selected, says `library loading
+/// slowly`; the load is never aborted. Meanwhile the monitor stays
+/// responsive (the selector lists and selects, prefix+x exits) and the
+/// client of the release already loaded keeps working: its status change
+/// still arrives. A session created during the stall starts once the open
+/// returns, when the stalled release is refused and its session
+/// Unavailable. On glibc the stalled loader also holds up every new thread
+/// (its TLS lock), so no new client or discovery probe can start until then:
+/// an open owner question on #120.
+#[test]
+fn a_stalled_release_load_is_reported_and_never_holds_up_the_monitor() {
+    const STALLED: &str = "0.0.98";
+    let package = Package::private();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "deadlines": {"load_ms": 1000, "operation_ms": 300_000},
+            "retry": {"initial_ms": 3_600_000, "cap_ms": 3_600_000},
+        }),
+    );
+    let folder = package.executable_home().join(STALLED);
+    fs::create_dir_all(&folder).unwrap();
+    let library = folder.join(support::LIBRARY);
+    let mode = nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR;
+    nix::unistd::mkfifo(&library, mode).unwrap();
+    let ear = Ear::default();
+    let [loaded, stalled, older] = [0xf1, 0xf2, 0xf3].map(fake_id);
+    let change = package.isolation.home().join("loaded.change");
+    let changes = with_status(
+        "Loaded",
+        wire_status("idle", &utc(1)),
+        None,
+        vec![
+            Act::Hold(change.clone()),
+            Act::Send(
+                STATUS_CHANGED,
+                json!({"status": wire_status("running", &utc(10))}),
+            ),
+        ],
+    );
+    let mut fakes = vec![FakeDaemon::start(
+        &package,
+        loaded,
+        "2026-01-01T00:00:02.000Z",
+        changes,
+        &ear,
+    )];
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    top_row_starts(&terminal, "Loaded ");
+    fakes.push(FakeDaemon::of(
+        &package,
+        (stalled, STALLED),
+        "2026-01-01T00:00:03.000Z",
+        idle("Stalled"),
+        &ear,
+    ));
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, stalled);
+    let slowly = format!("fake {stalled} | library loading slowly ");
+    top_row_starts(&terminal, &slowly);
+    fakes.push(FakeDaemon::start(
+        &package,
+        older,
+        "2026-01-01T00:00:01.000Z",
+        idle("Older"),
+        &ear,
+    ));
+    fs::write(&change, b"").unwrap();
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Loaded");
+    listed_with(&terminal, "Starting", &format!("fake {stalled}"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    top_row_starts(&terminal, &slowly);
+    unstall(&terminal, &library, "Unavailable");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, STATUS, "Older");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// What one client instance reserves by default: its library's share of
+/// `memory.client_bytes` (3,407,872 bytes), and its owner's and two
+/// workers' 2 MiB stacks.
+const INSTANCE: u64 = 3_407_872 + 3 * 2_097_152;
+/// The monitor's parser and one release's 64 MiB reservation.
+const RELEASE_AND_PARSER: u64 = 2_097_152 + 67_108_864;
+
+/// LIM-04 (Monitor, Fault: memory), relaxed qualification's raised
+/// reservation, and the Awaiting resources rows of #120 (confirmed
+/// not-connected scenario; derived Enter scenario): with
+/// `memory.total_bytes` holding the parser, the release's qualified 64 MiB
+/// (raised from a configured 1 MiB) and exactly two instances, two
+/// sessions start and a third, arriving later, is resource-blocked. It is
+/// listed as `Awaiting resources` among the not-connected rows; Enter
+/// selects it read-only, with no terminal content, its condition and what
+/// is short, and never acquires. Once one session ends its reservation is
+/// freed and the blocked session is admitted: it shows the non-controller
+/// placeholder, sending no Acquire, until the take-control key acquires it.
+#[test]
+fn a_resource_blocked_session_awaits_resources_until_capacity_is_freed() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "memory": {
+                "total_bytes": RELEASE_AND_PARSER + 2 * INSTANCE,
+                "history_bytes_total": 16_777_216,
+            },
+            "resources": {"release_bytes": 1_048_576},
+            "deadlines": {"operation_ms": 300_000},
+            "retry": {"admission_ms": 100},
+        }),
+    );
+    let ear = Ear::default();
+    let [alpha, beta, gamma] = [0xa7, 0xa8, 0xa9].map(fake_id);
+    let go = package.isolation.home().join("alpha.go");
+    let ends = with_status(
+        "Alpha",
+        wire_status("idle", &utc(2)),
+        None,
+        vec![
+            Act::Hold(go.clone()),
+            Act::Send(
+                COMMAND_FINAL,
+                json!({"command_result": exited(0), "status": null}),
+            ),
+        ],
+    );
+    let mut fakes = vec![
+        FakeDaemon::start(&package, alpha, "2026-01-01T00:00:02.000Z", ends, &ear),
+        FakeDaemon::start(
+            &package,
+            beta,
+            "2026-01-01T00:00:01.000Z",
+            idle("Beta"),
+            &ear,
+        ),
+    ];
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    top_row_starts(&terminal, "Alpha ");
+    let watched = Turns::answer(vec![vec![
+        opened_selecting(true, false),
+        initial_metadata("Gamma", Some(wire_status("idle", &utc(3))), None),
+    ]]);
+    fakes.push(FakeDaemon::start(
+        &package,
+        gamma,
+        "2026-01-01T00:00:03.000Z",
+        watched,
+        &ear,
+    ));
+    terminal.send("\x1ds").unwrap();
+    let awaiting = "Awaiting resources";
+    listed_with(&terminal, awaiting, &format!("fake {gamma}"));
+    listed_with(&terminal, STATUS, "Beta");
+    let screen = terminal.screen();
+    let at = |text: &str| screen.find(text).unwrap();
+    assert!(
+        at("Alpha") < at(awaiting) && at("Beta") < at(awaiting),
+        "{screen}"
+    );
+    enter_on(&mut terminal, gamma);
+    let short = "not enough memory: 9699328 bytes needed, 0 bytes available";
+    let top = session_top_row(
+        usize::from(WIDE),
+        &format!("fake {gamma} | {short}"),
+        &[awaiting, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&top, ROWS, WIDE, &[NO_CONTENT, awaiting]),
+    );
+    assert!(served(&ear).iter().all(|id| *id != gamma));
+    fs::write(&go, b"").unwrap();
+    let top = session_top_row(
+        usize::from(WIDE),
+        "Gamma",
+        &[STATUS, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&top, ROWS, WIDE, &[VIEWED_ELSEWHERE, TAKEOVER_HINT]),
+    );
+    const ACQUIRE: u8 = 0x33;
+    assert!(!requests_by_turn(&ear, gamma).concat().contains(&ACQUIRE));
+    terminal.send("\x14").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !requests_by_turn(&ear, gamma).concat().contains(&ACQUIRE) {
+        assert!(
+            Instant::now() < deadline,
+            "the take-control key sent no Acquire"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// Relaxed qualification and LIM-01 (Monitor; #120): with
+/// `resources.max_workers_per_client` at 1, below the release's qualified
+/// two workers, the session is rejected explicitly and for good before any
+/// client is created (no library log), never by raising the limit.
+#[test]
+fn too_many_qualified_workers_is_an_explicit_rejection_before_any_create() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"resources": {"max_workers_per_client": 1}}),
+    );
+    let ear = Ear::default();
+    let id = fake_id(0xb7);
+    let fake = FakeDaemon::start(
+        &package,
+        id,
+        "2026-01-01T00:00:01.000Z",
+        idle("Never"),
+        &ear,
+    );
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    whole_frame_shows(&terminal, "the row", |screen| {
+        screen.contains("No session selected.")
+    });
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, id);
+    let why = "the release needs 2 worker threads for each client; \
+               monitor.limits.resources.max_workers_per_client allows 1";
+    top_row_starts(
+        &terminal,
+        &format!("fake {id} | the release needs 2 worker"),
+    );
+    whole_frame_shows(&terminal, "not reconnecting", |screen| {
+        screen.contains(&format!("Not reconnecting: {why}"))
+    });
+    assert!(library_logs(&package, id).is_empty());
+    assert!(served(&ear).is_empty());
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fake);
+    package.assert_clean();
+}
+
+/// LIM-04 (Monitor, Fault: operating-system limits; #120): admission keeps
+/// descriptors within the process's soft descriptor limit less
+/// `resources.descriptor_headroom` (64). With the limit at 84, the
+/// release's 4 and two clients' 8 each fill it: two sessions start and a
+/// third is resource-blocked, saying so. Raising the running monitor's
+/// limit to exactly 92 admits it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_operating_system_descriptor_limit_bounds_admission_until_it_rises() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "deadlines": {"operation_ms": 300_000},
+            "retry": {"admission_ms": 100},
+        }),
+    );
+    let ear = Ear::default();
+    let [one, two, three] = [0xc1, 0xc2, 0xc3].map(fake_id);
+    let mut fakes = vec![
+        FakeDaemon::start(&package, one, "2026-01-01T00:00:01.000Z", idle("One"), &ear),
+        FakeDaemon::start(&package, two, "2026-01-01T00:00:02.000Z", idle("Two"), &ear),
+    ];
+    let mut terminal = outer_sized(&package, "ulimit -Sn 84; c2 monitor", WIDE);
+    top_row_starts(&terminal, "One ");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, STATUS, "One");
+    listed_with(&terminal, STATUS, "Two");
+    fakes.push(FakeDaemon::start(
+        &package,
+        three,
+        "2026-01-01T00:00:03.000Z",
+        idle("Three"),
+        &ear,
+    ));
+    listed_with(&terminal, "Awaiting resources", &format!("fake {three}"));
+    enter_on(&mut terminal, three);
+    let short = "not enough file descriptors: 8 needed, 0 available";
+    top_row_starts(&terminal, &format!("fake {three} | {short}"));
+    let (pid, _) = monitor_process(&package);
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: prlimit reads the monitor's limit into `limit` only.
+    assert_eq!(
+        unsafe { libc::prlimit(pid, libc::RLIMIT_NOFILE, std::ptr::null(), &mut limit) },
+        0
+    );
+    limit.rlim_cur = 92;
+    // SAFETY: prlimit sets only the monitor's soft limit, keeping its hard one.
+    assert_eq!(
+        unsafe { libc::prlimit(pid, libc::RLIMIT_NOFILE, &limit, std::ptr::null_mut()) },
+        0
+    );
+    let top = session_top_row(
+        usize::from(WIDE),
+        "Three",
+        &[STATUS, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&top, ROWS, WIDE, &[VIEWED_ELSEWHERE, TAKEOVER_HINT]),
+    );
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fakes);
     package.assert_clean();
 }

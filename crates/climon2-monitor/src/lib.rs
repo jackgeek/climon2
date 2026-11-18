@@ -675,8 +675,12 @@ impl Monitor {
             histories: within(self.memory.history_bytes_total),
             total: within(self.memory.total_bytes),
         };
-        // Beside the models: the one parser and every unapplied report.
-        let fixed = Parser::BYTES + self.supervisor.backlog();
+        // Beside the models: the one parser, every unapplied report and
+        // every admitted reservation (#120).
+        let reserved = within(self.supervisor.reserved());
+        let fixed = [Parser::BYTES, self.supervisor.backlog(), reserved]
+            .into_iter()
+            .sum();
         let caches = self.caches();
         pressure::relieve(&mut self.terminals, &caches, fixed, budgets);
     }
@@ -1154,6 +1158,7 @@ fn shown<'a>(registry: &'a Registry, id: &SessionId) -> Option<Shown<'a>> {
         kind: registry.kind(id)?,
         finished: registry.finished(id),
         recovery: registry.recovery(id),
+        condition: registry.condition(id),
     })
 }
 
@@ -1163,6 +1168,9 @@ struct Shown<'a> {
     /// Its final outcome is known.
     finished: bool,
     recovery: Option<&'a Recovery>,
+    /// Why it waits for its client: resource-blocked, or its release
+    /// loading slowly (#120).
+    condition: Option<&'a str>,
 }
 
 /// The selected row as the top row shows it: its label, its row status
@@ -1182,7 +1190,7 @@ fn selected<'a>(
         },
         Canvas::View,
     );
-    let diagnostic = shown.recovery.map(screen::diagnostic);
+    let diagnostic = shown.condition.or(shown.recovery.map(screen::diagnostic));
     Session {
         id: &row.id,
         label: &row.label,
@@ -1252,6 +1260,8 @@ fn context(startup: &Startup, filter: String) -> io::Result<Context> {
         shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
         retry: limits.retry(),
         first: first_identifiers(),
+        admission: limits.admission(),
+        outside: Parser::BYTES as u64,
     })
 }
 
@@ -1305,7 +1315,10 @@ fn loader(executables: climon2_core::layout::ExecutableHome) -> Load {
     Box::new(move |version| {
         loader
             .load(version)
-            .map(climon2_platform::library::Library::functions)
+            .map(|library| supervisor::Loaded {
+                functions: library.functions(),
+                requirements: *library.requirements(),
+            })
             .map_err(|error| Refusal::Library(error.failure(), error.to_string()))
     })
 }
@@ -1391,6 +1404,7 @@ mod tests {
                 kind,
                 finished: false,
                 recovery: Some(&retrying),
+                condition: None,
             };
             let view = cached.then(|| model.view());
             shape(without_view(&shown, "Status", control, view))
