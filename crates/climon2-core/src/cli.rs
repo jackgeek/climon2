@@ -33,7 +33,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon";
+pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -51,30 +51,73 @@ impl CliArgs {
         let subcommand = arguments.next().ok_or(UsageError)?;
         let remaining: Vec<_> = arguments.collect();
         let name = subcommand.to_str();
-        match SUBCOMMANDS.iter().find(|(known, _)| Some(*known) == name) {
-            Some((_, parse)) => parse(remaining),
+        match SUBCOMMANDS
+            .iter()
+            .find(|command| name.is_some_and(|name| command.is_named(name)))
+        {
+            Some(command) => (command.parse)(remaining),
             None => parse_flag(name, &remaining),
         }
     }
 }
 
+/// Each command's full name and its single-letter shortcut, in usage order:
+/// the one list the parser and the usage line's test share.
+pub fn commands() -> impl Iterator<Item = (&'static str, &'static str)> {
+    SUBCOMMANDS
+        .iter()
+        .map(|command| (command.name, command.shortcut))
+}
+
 type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
 
-const SUBCOMMANDS: [(&str, Parser); 6] = [
-    ("exec", parse_exec),
-    ("list", parse_list),
-    ("attach", |arguments| {
-        parse_selector(arguments, CliArgs::Attach)
-    }),
-    ("kill", |arguments| parse_selector(arguments, CliArgs::Kill)),
-    ("monitor", parse_monitor),
-    ("mon", parse_monitor),
+/// A command: its full name, its single-letter shortcut (a pure synonym) and
+/// its parser.
+struct Subcommand {
+    name: &'static str,
+    shortcut: &'static str,
+    parse: Parser,
+}
+
+impl Subcommand {
+    fn is_named(&self, name: &str) -> bool {
+        name == self.name || name == self.shortcut
+    }
+}
+
+/// Every command, in usage order. `r` is reserved for `relay`.
+const SUBCOMMANDS: [Subcommand; 5] = [
+    Subcommand {
+        name: "exec",
+        shortcut: "x",
+        parse: parse_exec,
+    },
+    Subcommand {
+        name: "attach",
+        shortcut: "a",
+        parse: |arguments| parse_selector(arguments, CliArgs::Attach),
+    },
+    Subcommand {
+        name: "kill",
+        shortcut: "k",
+        parse: |arguments| parse_selector(arguments, CliArgs::Kill),
+    },
+    Subcommand {
+        name: "list",
+        shortcut: "l",
+        parse: parse_list,
+    },
+    Subcommand {
+        name: "monitor",
+        shortcut: "m",
+        parse: parse_monitor,
+    },
 ];
 
 /// Help and version flags accept no further arguments.
 fn parse_flag(name: Option<&str>, remaining: &[OsString]) -> Result<CliArgs, UsageError> {
     match (name, remaining.is_empty()) {
-        (Some("--help" | "-h"), true) => Ok(CliArgs::Help),
+        (Some("--help"), true) => Ok(CliArgs::Help),
         (Some("--version" | "-V"), true) => Ok(CliArgs::Version),
         _ => Err(UsageError),
     }
@@ -89,9 +132,10 @@ fn parse_exec(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     })
 }
 
-/// `--headless` is exec's only option, and only as the first argument.
+/// `--headless`, or its short form `-h`, is exec's only option, and only as
+/// the first argument.
 fn lifetime(args: &mut Peekable<vec::IntoIter<OsString>>) -> Lifetime {
-    args.next_if_eq("--headless")
+    args.next_if(|arg| arg == "--headless" || arg == "-h")
         .map_or(Lifetime::Ordinary, |_| Lifetime::Headless)
 }
 
@@ -118,7 +162,7 @@ fn parse_list(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     }
 }
 
-/// `monitor` and its alias `mon` take no arguments.
+/// `monitor` takes no arguments.
 fn parse_monitor(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     arguments
         .is_empty()

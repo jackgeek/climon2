@@ -1127,6 +1127,64 @@ fn installed_library_times_commands_out_again_once_waiting_records_are_queued() 
     assert_all_released(&report["ledger"]);
 }
 
+/// REC-01 Fault (a final outcome outlives the connection): the daemon
+/// sends a Command final and closes while a Display chunk ahead of it waits
+/// for event room, so the library has read neither; a Focus the caller
+/// then submits (its outcome still fits) cannot be written to the closed
+/// connection. That write failure must not discard what the daemon sent
+/// before closing: once the caller drains, the Command final is delivered
+/// and the close stops the stream cleanly, never a passive retry of a
+/// session that is already gone.
+#[test]
+fn installed_library_keeps_a_final_the_daemon_sent_before_a_write_failed() {
+    let package = Package::new();
+    let chunk = 8192;
+    let metadata = 1024;
+    let one_display = CHARGE + chunk;
+    let reserve = CHARGE + metadata;
+    let mut records = attach_records(&ATTACHED);
+    records.push(shown(PERIOD, 2, &"41".repeat(2 * chunk as usize)));
+    records.push(command_final(json!({ "kind": "exit", "code": 3 })));
+    records.push(json!("close"));
+    let mut peer = attached_peer(json!({}));
+    peer["open"] = json!(records);
+    // Room for the attach's records, one chunk and one outcome, never two
+    // chunks.
+    let limits = json!({
+        "chunk_bytes": chunk,
+        "metadata_record_bytes": metadata,
+        "event_bytes": 12 * CHARGE + 2048 + one_display + reserve,
+        "progress_bytes": 1,
+        "delivery_stall_ms": 5000,
+    });
+    let focus = json!({ "tag": "focus", "request_id": 2, "authority": [1, PERIOD, 2], "value": 1 });
+    let steps = vec![
+        json!({ "do": "create", "peer": peer, "startup": { "limits": limits } }),
+        json!({ "do": "submit", "request": interactive(1, 80, 24) }),
+        json!({ "do": "run" }),
+        json!({ "do": "await_snapshot", "gauge": "event_records", "value": 7 }),
+        // The hello, the Open, then the peer's own close.
+        json!({ "do": "await_peer", "frames": 3 }),
+        json!({ "do": "submit", "request": focus }),
+        json!({ "do": "drain", "until": "terminal", "as": "drained" }),
+        json!({ "do": "finish", "as": "finished" }),
+    ];
+    let report = script(&package, &root(&package), json!(steps));
+    assert_success(step(&report, 5));
+    let records = drained(&report, &steps, "drained");
+    let finals: Vec<_> = records.iter().filter(|r| r["tag"] == FINAL).collect();
+    assert_eq!(finals.len(), 1, "{records:#?}");
+    assert_eq!(
+        finals[0]["final"]["command_result"],
+        native_command(EXIT, 3, None),
+        "{records:#?}"
+    );
+    let (_, terminal) = finished(labelled(&report, &steps, "finished"));
+    assert_eq!(terminal["client_outcome"], CLIENT_STOPPED, "{terminal:#}");
+    assert_eq!(terminal["retry"], RETRY_NONE, "{terminal:#}");
+    assert_all_released(&report["ledger"]);
+}
+
 /// LIB-04 Fault (control and screen records are charged their header
 /// twice and only the bytes they own): with an attach's records, a
 /// Geometry and a Control revoked (`session_ending`) all still queued, the
