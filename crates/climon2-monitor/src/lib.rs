@@ -1393,9 +1393,11 @@ struct Shown<'a> {
 
 /// The selected row as the top row shows it: its label, its row status
 /// (#107), its control, any error (why its Delete's Kill fell short, #117,
-/// otherwise its terminal's own, otherwise why it waits for its client,
-/// #120, or its recovery's diagnostic, owner decision on #116), and what
-/// its canvas shows.
+/// otherwise that its daemon is gone, otherwise its terminal's own,
+/// otherwise why it waits for its client, #120, or its recovery's
+/// diagnostic, owner decision on #116), and what its canvas shows. A gone
+/// daemon outranks the terminal's own error, which its lost connection may
+/// have left: a request the stream's end cancelled.
 fn selected<'a>(
     row: &'a registry::View,
     shown: Shown<'a>,
@@ -1409,7 +1411,9 @@ fn selected<'a>(
         },
         Canvas::View,
     );
-    let diagnostic = shown.condition.or(shown.recovery.map(screen::diagnostic));
+    let recovery = shown.recovery.map(screen::diagnostic);
+    let gone = recovery.filter(|_| shown.recovery == Some(&Recovery::Gone));
+    let diagnostic = shown.condition.or(recovery);
     Session {
         id: &row.id,
         label: &row.label,
@@ -1417,6 +1421,7 @@ fn selected<'a>(
         control: control.label(),
         error: shown
             .refused
+            .or(gone)
             .or_else(|| terminal.and_then(Terminal::error))
             .or(diagnostic),
         canvas,
@@ -1573,8 +1578,8 @@ fn incomplete(progress: &Progress) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, also, cache,
-        control, inspected, placeholder, retained, revealed, terminal, without_view,
+        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, View, also, cache,
+        control, inspected, placeholder, retained, revealed, selected, terminal, without_view,
     };
     use climon2_core::SessionId;
     use std::time::Instant;
@@ -1733,6 +1738,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// REC-01 (Monitor: a gone daemon, pure supplement, #116): a request
+    /// the stream's end cancelled while control was held leaves the
+    /// terminal's own error, but once discovery proves the daemon gone the
+    /// top row's error slot says `Session no longer exists`, as the
+    /// overlay over its history does (owner decision on #116).
+    #[test]
+    fn a_gone_session_says_so_in_its_error_slot_over_a_cancelled_request() {
+        let mut parser = climon2_vt::Parser::new();
+        let mut terminal = Terminal::new(climon2_vt::Limits {
+            bytes: 64 << 20,
+            history_rows: 200,
+        });
+        let held = terminal::Authority {
+            generation: 1,
+            period: 1,
+            restoration: 1,
+        };
+        let geometry = climon2_vt::Geometry::for_host(10, 3).unwrap();
+        terminal.present(&mut parser, Presentation::Granted(held, geometry));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry));
+        terminal.present(&mut parser, Presentation::Complete);
+        let cancelled = "the request was accepted but never executed";
+        let viewing = terminal::Request::Viewing(held, true);
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(viewing, Err(cancelled.into())),
+        );
+        terminal.present(&mut parser, Presentation::Ended);
+        let row = View {
+            id: SessionId::from_bytes([1; 16]),
+            status: "Unavailable".into(),
+            label: "Lost".into(),
+            since: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let error = |recovery| {
+            let shown = Shown {
+                kind: Kind::Unconnected,
+                finished: false,
+                recovery: Some(recovery),
+                condition: None,
+                refused: None,
+            };
+            selected(&row, shown, Some(&terminal)).error
+        };
+        // The connection's end also ended the terminal's errors, so the
+        // cancelled request no longer shows either way.
+        let retrying = Recovery::Retrying("transport io_error: reset".into());
+        assert_eq!(error(&retrying), Some("transport io_error: reset"));
+        assert_eq!(error(&Recovery::Gone), Some("Session no longer exists"));
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the
