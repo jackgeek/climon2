@@ -497,12 +497,20 @@ impl<'a> Driver<'a> {
         self.expire();
     }
 
+    /// A write the socket refuses means the daemon closed its end. A Leave
+    /// under way is lost at once; otherwise what the daemon sent before
+    /// closing (a Command final among it) is still read, and the close the
+    /// reading then meets decides how the stream ends (#108, #116). What
+    /// could not be written is dropped.
     fn flush(&mut self) {
-        let flushed = self
-            .connection
-            .as_mut()
-            .map(|connection| connection.link.flush());
-        if let Some(Err(fault)) = flushed {
+        let Some(connection) = self.connection.as_mut() else {
+            return;
+        };
+        let Err(fault) = connection.link.flush() else {
+            return;
+        };
+        connection.link.abandon();
+        if self.stream.leaving() {
             self.broken(fault);
         }
     }
