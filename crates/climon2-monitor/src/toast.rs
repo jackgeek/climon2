@@ -468,6 +468,9 @@ mod tests {
         Rect::new(0, 1, cols, rows - 1)
     }
 
+    /// More toasts than any test queues: the waiting ones, then [`MORE`].
+    const SHOWN_AT_MOST: usize = 8;
+
     /// Whether a toast begins in the frame at `now`.
     fn begins(toasts: &mut Toasts, now: Instant) -> bool {
         let before = toasts.shown.as_ref().map(|shown| shown.began);
@@ -477,11 +480,13 @@ mod tests {
     }
 
     /// The label of each toast shown, in turn, until none is left, each
-    /// title written as soon as it is drawn.
+    /// title written as soon as it is drawn. It stops after [`SHOWN_AT_MOST`],
+    /// so a queue that never empties fails its test instead of growing
+    /// without bound.
     fn shown_in_turn(toasts: &mut Toasts, start: Instant) -> Vec<String> {
         let mut labels = Vec::new();
         let mut now = start;
-        while begins(toasts, now) {
+        while labels.len() < SHOWN_AT_MOST && begins(toasts, now) {
             labels.push(toasts.shown.as_ref().unwrap().content.label.clone());
             toasts.titled(now + DRAW);
             now += ms(3100);
