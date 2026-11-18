@@ -8,6 +8,7 @@
 //! (#266).
 
 mod attention;
+mod cadence;
 mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -18,6 +19,7 @@ mod keys;
 mod mouse;
 mod paint;
 mod preference;
+mod pressure;
 mod registry;
 mod router;
 mod screen;
@@ -33,7 +35,7 @@ use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
 use climon2_vt::{
     Limits, Parser,
-    view::{self as vt, Modes},
+    view::{self as vt, Modes, MouseReporting},
 };
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
@@ -42,7 +44,7 @@ use introduction::KeyIntroduction;
 use keys::Action;
 use mouse::{Area, Gestures, Mouse, Wheel};
 use ratatui::layout::Rect;
-use registry::{ClientEvent, Kind, Registry, Report};
+use registry::{ClientEvent, Kind, Recovery, Registry, Report};
 use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
@@ -171,6 +173,15 @@ struct Monitor {
     toasts: Toasts,
     /// Whether a toast rings the host bell as it begins (`monitor.bell`).
     bell: bool,
+    /// When the next frame may be painted: at most `ui.fps` a second.
+    frames: cadence::Frames,
+    /// Client reports waiting to be applied, in fair turns within the work
+    /// quanta (#119).
+    work: cadence::Work<SessionId, ClientEvent>,
+    /// The memory budgets history is kept within (#119).
+    memory: climon2_core::config::MemoryLimits,
+    /// When each session was last inspected: painted selected.
+    inspected: BTreeMap<SessionId, Instant>,
 }
 
 /// A session under the authority it takes input with.
@@ -243,6 +254,10 @@ impl Monitor {
             host_report: HostReport::default(),
             toasts: Toasts::new(jump),
             bell: config.settings().bell,
+            frames: cadence::Frames::new(limits.cadence().fps),
+            work: work(limits.cadence()),
+            memory: limits.memory(),
+            inspected: BTreeMap::new(),
         };
         monitor.show().map(|()| monitor)
     }
@@ -267,11 +282,13 @@ impl Monitor {
     /// discovery and the supervisor reported meanwhile.
     fn step(&mut self, host: &mut Host) -> io::Result<Option<Ending>> {
         let event = host.next()?;
+        let read = matches!(event, Event::Input(_));
         let ending = self.handle(event)?;
         if ending.is_none() {
             self.collect();
+            self.relieve();
             self.retarget();
-            self.show()?;
+            self.frame(read)?;
         }
         Ok(ending)
     }
@@ -312,12 +329,30 @@ impl Monitor {
         }
     }
 
+    /// Each step's frame: at once after a host read, so input, the
+    /// selector and exit respond without waiting, and otherwise once one is
+    /// due (at most `ui.fps` a second, #119): one not due is skipped, and a
+    /// later step's paints the scene as it is then. Frames an action needs
+    /// at once (a revealed canvas that the rest of a read may type into, a
+    /// resize) are painted when they happen. Every frame counts toward the
+    /// cadence, so output alone never paints faster than it.
+    fn frame(&mut self, read: bool) -> io::Result<()> {
+        if read || self.frames.due(Instant::now()) {
+            return self.show();
+        }
+        Ok(())
+    }
+
     /// Paints the current scene when it differs from what the screen shows.
     /// Each terminal first learns whether this frame shows its applied
     /// restoration, so its control and input readiness describe the frame
     /// being painted.
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
+        self.frames.painted(now);
+        if let Some(id) = self.selected.clone() {
+            self.inspected.insert(id, now);
+        }
         self.menus();
         self.toasts.frame(now, self.screen.overlay());
         let titling = self.toasts.titling(now, self.screen.overlay());
@@ -328,11 +363,10 @@ impl Monitor {
             .selected
             .as_ref()
             .and_then(|id| rows.iter().find(|row| &row.id == id));
-        let kind = self.selected.as_ref().and_then(|id| self.registry.kind(id));
-        let terminal = self.selected.as_ref().and_then(|id| self.terminals.get(id));
-        let session = row
-            .zip(kind)
-            .map(|(row, kind)| selected(row, kind, terminal));
+        let session = row.and_then(|row| {
+            let shown = shown(&self.registry, &row.id)?;
+            Some(selected(row, shown, self.terminals.get(&row.id)))
+        });
         let scene = Scene {
             introduction: &self.introduction,
             rows: &rows,
@@ -549,10 +583,10 @@ impl Monitor {
 
     /// Enter acts on the row's condition when pressed (spec #73, "Enter"):
     /// a connected row not known to be final is selected and acquired; a
-    /// Starting or Unavailable row with no connected client is selected
-    /// without acquiring. Disconnected and final rows are ignored until
-    /// #116, which owns their retained history. This monitor's own session
-    /// has no row (owner decision on #110).
+    /// Starting or Unavailable row with no connected client, and a
+    /// disconnected or final row, are selected without acquiring, read-only
+    /// (#116). This monitor's own session has no row (owner decision on
+    /// #110).
     /// Enter on a connected row also dismisses a toast covering it and
     /// acknowledges its attention once viewed (#114).
     fn enter(&mut self, id: SessionId) {
@@ -563,8 +597,8 @@ impl Monitor {
                 self.acquire(&id);
                 self.defer_acknowledgement();
             }
-            Some(Kind::Unconnected) => self.choose(id),
-            Some(Kind::Retained) | None => {}
+            Some(Kind::Unconnected | Kind::Retained) => self.choose(id),
+            None => {}
         }
     }
 
@@ -616,18 +650,72 @@ impl Monitor {
 
     /// Applies a client's control and display report to its terminal,
     /// submitting the Ready that follows an applied restoration, then
-    /// keeps the selected controller's size.
+    /// keeps the selected controller's size. An update the terminal's model
+    /// refused drops the session's client, to be retried passively, while
+    /// its last safe content stays read-only (#119).
     fn present(&mut self, id: &SessionId, presentation: Presentation) {
-        let ready =
-            terminal(&mut self.terminals, self.model, id).present(&mut self.parser, presentation);
+        let terminal = terminal(&mut self.terminals, self.model, id);
+        let ready = terminal.present(&mut self.parser, presentation);
+        if let Some(why) = terminal.take_rejection() {
+            self.supervisor.drop_client(id.clone(), why);
+        }
         self.request(id, ready);
         self.resize();
     }
 
-    /// Applies what discovery and the supervisor reported since the last
-    /// event, asking for a client for each session that now needs one.
+    /// Keeps history within its budgets (#119): each session's within
+    /// `memory.history_bytes_per_session`, shortening its own, then all
+    /// histories together within `history_bytes_total` and everything the
+    /// monitor tracks within `total_bytes`, shortening caches in the
+    /// pressure order ([`pressure::order`]). No cache ever gives up the
+    /// chunk holding its newest page.
+    fn relieve(&mut self) {
+        let budgets = pressure::Budgets {
+            per_session: within(self.memory.history_bytes_per_session),
+            histories: within(self.memory.history_bytes_total),
+            total: within(self.memory.total_bytes),
+        };
+        // Beside the models: the one parser and every unapplied report.
+        let fixed = Parser::BYTES + self.supervisor.backlog();
+        let caches = self.caches();
+        pressure::relieve(&mut self.terminals, &caches, fixed, budgets);
+    }
+
+    /// Every terminal's cache as the pressure policy sees it.
+    fn caches(&self) -> Vec<pressure::Cache<SessionId>> {
+        let selected = self.selected.as_ref();
+        let cache = |id: &SessionId| {
+            let inspected = self.inspected.get(id).copied();
+            cache(id, self.registry.kind(id), selected, inspected)
+        };
+        self.terminals.keys().map(cache).collect()
+    }
+
+    /// Applies what discovery reported since the last event, asking for a
+    /// client for each session that now needs one, then client reports in
+    /// fair turns: each client's at most `ui.client_quantum_ms` at a time,
+    /// all at most `ui.background_quantum_ms` this turn (#119). The rest
+    /// waits for the next turn, still charged to its client, which is not
+    /// drained meanwhile once its reports fill its allowance.
     fn collect(&mut self) {
         let now = SystemTime::now();
+        self.discover(now);
+        while let Ok((id, event)) = self.supervisor.reports.try_recv() {
+            self.work.push(id, event);
+        }
+        self.work.begin(Instant::now());
+        while let Some((id, event)) = self.work.next(Instant::now()) {
+            let bytes = supervisor::footprint(&id, &event);
+            self.report(&id, event, now);
+            self.supervisor.processed(&id, bytes);
+        }
+        self.selector.update(&self.registry.rows());
+        self.initialise();
+    }
+
+    /// What discovery found since the last turn: batches of sessions, and
+    /// the end of each pass.
+    fn discover(&mut self, now: SystemTime) {
         while let Ok(found) = self.discovery.found.try_recv() {
             match found {
                 Found::Batch(batch) => self.batch(batch, now),
@@ -637,11 +725,6 @@ impl Monitor {
                 }
             }
         }
-        while let Ok((id, event)) = self.supervisor.reports.try_recv() {
-            self.report(&id, event, now);
-        }
-        self.selector.update(&self.registry.rows());
-        self.initialise();
     }
 
     /// Control and display go to the session's terminal, everything else to
@@ -679,7 +762,10 @@ impl Monitor {
                 tracing::info!(session = %metadata.session_id, ?uncertainty, "session uncertain");
                 (metadata, registry::Found::Uncertain)
             }
-            Outcome::Stale(metadata, _) => (metadata, registry::Found::Stale),
+            Outcome::Stale(metadata, _) => {
+                self.supervisor.forget(metadata.session_id.clone());
+                (metadata, registry::Found::Stale)
+            }
         };
         if let Some(metadata) = self.registry.discovered(metadata, found, now) {
             self.initial
@@ -816,13 +902,32 @@ impl Monitor {
     }
 
     /// A mouse report the monitor keeps: one the shown toast took is its
-    /// own, never selecting, acquiring or acknowledging; any other goes to
+    /// own, never selecting, acquiring or acknowledging; any other scrolls
+    /// a selected read-only history with no modal open (#116), or goes to
     /// the open modal.
     fn local(&mut self, mouse: Mouse, toasted: bool) -> io::Result<()> {
         if toasted {
             return Ok(());
         }
+        self.inspect(mouse);
         self.modal(&Routed::Mouse(mouse))
+    }
+
+    /// A vertical wheel notch, with no modal open, scrolls the selected
+    /// session's read-only history a row (#116), as it does a live one.
+    fn inspect(&mut self, mouse: Mouse) {
+        if let Some((id, rows)) = self.scrolls(mouse) {
+            self.terminal(&id).scroll(rows);
+        }
+    }
+
+    /// The selected session whose read-only history `mouse` scrolls, with
+    /// no modal open, and by how many rows.
+    fn scrolls(&self, mouse: Mouse) -> Option<(SessionId, isize)> {
+        let id = self.selected.as_ref().filter(|_| !self.covered())?;
+        let shown = shown(&self.registry, id)?;
+        let view = retained(shown.kind, shown.finished, self.terminals.get(id))?;
+        inspected(mouse, &view).map(|rows| (id.clone(), rows))
     }
 
     fn keyed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
@@ -1027,25 +1132,73 @@ fn terminal<'a>(
         .or_insert_with(|| Terminal::new(model))
 }
 
+/// The rows a mouse report scrolls read-only history `view` by: a vertical
+/// wheel notch over its normal screen, as over a live one whose
+/// application does not report the mouse; nothing on its alternate screen,
+/// as nothing reaches the application.
+fn inspected(mouse: Mouse, view: &vt::View<'_>) -> Option<isize> {
+    let modes = Modes {
+        mouse_reporting: MouseReporting::Off,
+        ..view.modes()
+    };
+    let alternate = matches!(view.screen(), vt::Screen::Alternate { .. });
+    match mouse::wheel(mouse, &modes, alternate)? {
+        Wheel::History(rows) => Some(rows),
+        Wheel::Key(_) | Wheel::Nothing => None,
+    }
+}
+
+/// What `registry` says of `id`'s row beyond its view, if it has one.
+fn shown<'a>(registry: &'a Registry, id: &SessionId) -> Option<Shown<'a>> {
+    Some(Shown {
+        kind: registry.kind(id)?,
+        finished: registry.finished(id),
+        recovery: registry.recovery(id),
+    })
+}
+
+/// What the registry says of a selected row beyond its view.
+struct Shown<'a> {
+    kind: Kind,
+    /// Its final outcome is known.
+    finished: bool,
+    recovery: Option<&'a Recovery>,
+}
+
 /// The selected row as the top row shows it: its label, its row status
-/// (#107), its control, any error, and what its canvas shows.
+/// (#107), its control, any error (its terminal's own, otherwise its
+/// recovery's diagnostic, owner decision on #116), and what its canvas
+/// shows.
 fn selected<'a>(
     row: &'a registry::View,
-    kind: Kind,
+    shown: Shown<'a>,
     terminal: Option<&'a Terminal>,
 ) -> Session<'a> {
     let control = control(terminal);
-    let canvas = terminal
-        .and_then(Terminal::view)
-        .map_or_else(|| without_view(kind, &row.status, control), Canvas::View);
+    let canvas = terminal.and_then(Terminal::view).map_or_else(
+        || {
+            let retained = retained(shown.kind, shown.finished, terminal);
+            without_view(&shown, &row.status, control, retained)
+        },
+        Canvas::View,
+    );
+    let diagnostic = shown.recovery.map(screen::diagnostic);
     Session {
         id: &row.id,
         label: &row.label,
         status: &row.status,
         control: control.label(),
-        error: terminal.and_then(Terminal::error),
+        error: terminal.and_then(Terminal::error).or(diagnostic),
         canvas,
     }
+}
+
+/// The read-only history a selected row shows (#116): a row not connected
+/// and not known final keeps its retained cache, if it ever had one. A
+/// final row shows only the view frozen at its end (#108).
+fn retained(kind: Kind, finished: bool, terminal: Option<&Terminal>) -> Option<vt::View<'_>> {
+    let inspected = kind != Kind::Connected && !finished;
+    terminal.filter(|_| inspected).and_then(Terminal::retained)
 }
 
 /// The control the monitor holds through `terminal`: a session it never
@@ -1054,17 +1207,22 @@ fn control(terminal: Option<&Terminal>) -> Control {
     terminal.map_or(Control::NotControlling, Terminal::control)
 }
 
-/// The canvas of a selected row of `kind` whose terminal has no view: the
-/// placeholder while the monitor does not control a connected session,
-/// never its cache; no terminal content and the row's `status` for a row
-/// selected without a connected client; otherwise nothing yet.
-fn without_view(kind: Kind, status: &str, control: Control) -> Canvas<'_> {
-    if placeholder(kind, control) {
-        Canvas::Placeholder
-    } else if kind == Kind::Unconnected {
-        Canvas::NoContent(status)
-    } else {
-        Canvas::Nothing
+/// The canvas of a selected row whose terminal has no live or frozen view:
+/// the placeholder while the monitor does not control a connected session,
+/// never its cache; nothing yet while it acquires a connected one; for any
+/// other row its `retained` history read-only, or no terminal content and
+/// its `status`, under its recovery's overlay.
+fn without_view<'a>(
+    shown: &Shown<'a>,
+    status: &'a str,
+    control: Control,
+    retained: Option<vt::View<'a>>,
+) -> Canvas<'a> {
+    match (shown.kind, retained) {
+        (Kind::Connected, _) if placeholder(shown.kind, control) => Canvas::Placeholder,
+        (Kind::Connected, _) => Canvas::Nothing,
+        (_, Some(view)) => Canvas::Retained(view, shown.recovery),
+        (_, None) => Canvas::NoContent(status, shown.recovery),
     }
 }
 
@@ -1092,7 +1250,53 @@ fn context(startup: &Startup, filter: String) -> io::Result<Context> {
         filter,
         lanes,
         shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
+        retry: limits.retry(),
+        first: first_identifiers(),
     })
+}
+
+/// Where the monitor's identifiers start: as test hooks ask (LIM-05).
+#[cfg(feature = "test-hooks")]
+fn first_identifiers() -> supervisor::Identifiers {
+    hooks::identifiers(supervisor::Identifiers::default())
+}
+
+/// Where the monitor's identifiers start: connection generations at 1,
+/// request IDs after Open's.
+#[cfg(not(feature = "test-hooks"))]
+fn first_identifiers() -> supervisor::Identifiers {
+    supervisor::Identifiers::default()
+}
+
+/// `id`'s cache as the pressure policy sees it, its session of `kind`
+/// with `selected` selected: it yields to other sessions unless its session
+/// is connected, and yields last if it is the selected one.
+fn cache(
+    id: &SessionId,
+    kind: Option<Kind>,
+    selected: Option<&SessionId>,
+    inspected: Option<Instant>,
+) -> pressure::Cache<SessionId> {
+    pressure::Cache {
+        key: id.clone(),
+        retained: kind != Some(Kind::Connected),
+        selected: selected == Some(id),
+        inspected,
+    }
+}
+
+/// A byte budget as a `usize`, saturating.
+fn within(budget: u64) -> usize {
+    usize::try_from(budget).unwrap_or(usize::MAX)
+}
+
+/// Client work in fair turns within the `ui` quanta.
+fn work(cadence: climon2_core::config::Cadence) -> cadence::Work<SessionId, ClientEvent> {
+    let millis = |quantum: u32| Duration::from_millis(quantum.into());
+    cadence::Work::new(
+        millis(cadence.client_quantum_ms),
+        millis(cadence.background_quantum_ms),
+    )
 }
 
 /// The monitor's one validated loader, shared by every release it loads.
@@ -1123,7 +1327,12 @@ fn incomplete(progress: &Progress) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Canvas, Control, Kind, control, placeholder, revealed, without_view};
+    use super::{
+        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, cache, control,
+        inspected, placeholder, retained, revealed, terminal, without_view,
+    };
+    use climon2_core::SessionId;
+    use std::time::Instant;
 
     const CONTROLS: [Control; 5] = [
         Control::Acquiring,
@@ -1151,35 +1360,120 @@ mod tests {
         assert_eq!(control(None), Control::NotControlling);
     }
 
-    /// Spec #73 Enter and placeholders (pure supplement, #110): with no view
-    /// to paint, a connected row the monitor does not control shows the
-    /// placeholder, a row selected without a connected client says it has
-    /// no terminal content and its status, and any other shows nothing yet.
+    /// Spec #73 Enter and placeholders (pure supplement, #110, #116): with
+    /// no live or frozen view to paint, a connected row the monitor does not
+    /// control shows the placeholder, never a cache, and one it is acquiring
+    /// nothing yet; any other row shows its retained history read-only, or
+    /// that it has no terminal content and its status, under its recovery's
+    /// overlay.
     #[test]
-    fn a_selected_row_without_a_view_shows_the_placeholder_its_condition_or_nothing() {
+    fn a_selected_row_without_a_view_shows_the_placeholder_its_history_or_no_content() {
+        let model = climon2_vt::Model::new(
+            climon2_vt::Geometry::for_host(10, 3).unwrap(),
+            climon2_vt::Limits {
+                bytes: 64 << 20,
+                history_rows: 200,
+            },
+        )
+        .unwrap();
+        let retrying = Recovery::Retrying("lost".into());
         let shape = |canvas: Canvas<'_>| match canvas {
             Canvas::View(_) => "view".to_owned(),
             Canvas::Placeholder => "placeholder".to_owned(),
-            Canvas::NoContent(condition) => format!("no content, {condition}"),
+            Canvas::Retained(_, recovery) => format!("history, {recovery:?}"),
+            Canvas::NoContent(condition, recovery) => {
+                format!("no content, {condition}, {recovery:?}")
+            }
             Canvas::Nothing => "nothing".to_owned(),
         };
-        let shown = |kind, status, control| shape(without_view(kind, status, control));
+        let shown = |kind, control, cached: bool| {
+            let shown = Shown {
+                kind,
+                finished: false,
+                recovery: Some(&retrying),
+            };
+            let view = cached.then(|| model.view());
+            shape(without_view(&shown, "Status", control, view))
+        };
         assert_eq!(
-            shown(Kind::Connected, "Unavailable", Control::NotControlling),
+            shown(Kind::Connected, Control::NotControlling, true),
             "placeholder"
         );
-        assert_eq!(
-            shown(Kind::Connected, "Unavailable", Control::Acquiring),
-            "nothing"
-        );
-        assert_eq!(
-            shown(Kind::Unconnected, "Starting", Control::NotControlling),
-            "no content, Starting"
-        );
-        assert_eq!(
-            shown(Kind::Retained, "Disconnected", Control::NotControlling),
-            "nothing"
-        );
+        assert_eq!(shown(Kind::Connected, Control::Acquiring, true), "nothing");
+        for kind in [Kind::Unconnected, Kind::Retained] {
+            assert_eq!(
+                shown(kind, Control::NotControlling, true),
+                "history, Some(Retrying(\"lost\"))"
+            );
+            assert_eq!(
+                shown(kind, Control::NotControlling, false),
+                "no content, Status, Some(Retrying(\"lost\"))"
+            );
+        }
+    }
+
+    /// REC-02 (pure supplement, #116): only a row neither connected nor
+    /// known final shows a retained cache, and only once one exists; a
+    /// final row keeps to the view frozen at its end (#108).
+    #[test]
+    fn only_a_row_neither_connected_nor_final_shows_its_retained_history() {
+        let mut parser = climon2_vt::Parser::new();
+        let mut terminal = Terminal::new(climon2_vt::Limits {
+            bytes: 64 << 20,
+            history_rows: 200,
+        });
+        assert!(retained(Kind::Retained, false, Some(&terminal)).is_none());
+        let held = terminal::Authority {
+            generation: 1,
+            period: 1,
+            restoration: 1,
+        };
+        let geometry = climon2_vt::Geometry::for_host(10, 3).unwrap();
+        terminal.present(&mut parser, Presentation::Granted(held, geometry));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry));
+        terminal.present(&mut parser, Presentation::Complete);
+        terminal.present(&mut parser, Presentation::Ended);
+        let cases = [
+            (Kind::Retained, false, true),
+            (Kind::Unconnected, false, true),
+            (Kind::Connected, false, false),
+            (Kind::Retained, true, false),
+            (Kind::Unconnected, true, false),
+        ];
+        for (kind, finished, expected) in cases {
+            let shown = retained(kind, finished, Some(&terminal)).is_some();
+            assert_eq!(shown, expected, "{kind:?}, finished {finished}");
+        }
+        assert!(retained(Kind::Retained, false, None).is_none());
+    }
+
+    /// History budgets under aggregate pressure (pure supplement, #119):
+    /// a terminal's cache yields to other sessions only while its session is
+    /// not connected (unconnected, retained or no longer listed), and yields
+    /// last only while its session is the selected one.
+    #[test]
+    fn only_a_disconnected_cache_yields_and_only_the_selected_one_yields_last() {
+        let id: SessionId = "0d5c0000-0000-4000-8000-000000000001".parse().unwrap();
+        let other: SessionId = "0d5c0000-0000-4000-8000-000000000002".parse().unwrap();
+        let inspected = Some(Instant::now());
+        let kinds = [
+            (Some(Kind::Connected), false),
+            (Some(Kind::Unconnected), true),
+            (Some(Kind::Retained), true),
+            (None, true),
+        ];
+        for (kind, retained) in kinds {
+            for (selected, last) in [(Some(&id), true), (Some(&other), false), (None, false)] {
+                let seen = cache(&id, kind, selected, inspected);
+                assert_eq!(seen.key, id);
+                assert_eq!(seen.inspected, inspected);
+                assert_eq!(
+                    (seen.retained, seen.selected),
+                    (retained, last),
+                    "{kind:?}, selected {selected:?}"
+                );
+            }
+        }
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the
@@ -1191,5 +1485,40 @@ mod tests {
         assert!(!revealed(true, true));
         assert!(!revealed(false, true));
         assert!(!revealed(false, false));
+    }
+
+    /// REC-02 and TRM-05 (pure supplement, #116): a vertical wheel notch
+    /// scrolls read-only history a row, up going back, on its normal screen
+    /// whatever mouse reporting its application left on; nothing on its
+    /// alternate screen, even with alternate scroll; any other report
+    /// nothing.
+    #[test]
+    fn the_wheel_scrolls_read_only_history_only_on_its_normal_screen() {
+        let model = |bytes: &[u8]| {
+            let mut model = climon2_vt::Model::new(
+                climon2_vt::Geometry::for_host(10, 3).unwrap(),
+                climon2_vt::Limits {
+                    bytes: 64 << 20,
+                    history_rows: 200,
+                },
+            )
+            .unwrap();
+            model.feed(&mut climon2_vt::Parser::new(), bytes).unwrap();
+            model
+        };
+        let report = |code| Mouse {
+            code,
+            column: 1,
+            row: 2,
+            released: false,
+        };
+        let reporting = model(b"\x1b[?1000h");
+        assert_eq!(inspected(report(64), &reporting.view()), Some(1));
+        assert_eq!(inspected(report(65), &reporting.view()), Some(-1));
+        assert_eq!(inspected(report(0), &reporting.view()), None);
+        let alternate = model(b"\x1b[?1049h\x1b[?1007h");
+        assert_eq!(inspected(report(64), &alternate.view()), None);
+        let alternate = model(b"\x1b[?1049h");
+        assert_eq!(inspected(report(64), &alternate.view()), None);
     }
 }

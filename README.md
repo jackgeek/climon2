@@ -316,17 +316,23 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
     `progress_bytes`, that ordinary capacity and `drain_payload_bytes`;
   - `ui.client_quantum_ms` fits `ui.background_quantum_ms`, and
     `retry.initial_ms` fits `retry.cap_ms`.
+- `memory.client_bytes` is split between a session's client library and
+  its terminal model in the monitor: the library gets its request and event
+  queues, one wire frame and its 1048576-byte instance allocation (3407872
+  bytes by default), which must fit `client_bytes`, and the model the rest.
 - The monitor also refuses limits too small for one session's terminal model
   at the largest session size, 500x200 (`exec` does not check this):
   `memory.client_bytes` must hold its current model and the history holding
-  its recent page, 16966087 bytes together, `memory.total_bytes` those and
-  the monitor's one shared parser, 19063239 bytes, and
+  its recent page, 16966087 bytes together, beside the library's share
+  (20373959 bytes by default), `memory.total_bytes` those and the monitor's
+  one shared parser (22471111 bytes by default), and
   `memory.history_bytes_total` and `history_bytes_per_session` that history,
   12115200 bytes. The refusal names the first limit to raise. Limits that
   only just pass admit such a session, but restoring it beside its current
-  model needs at least 33932174 bytes in a client's budget (36029326 in the
-  total, with the parser), and the monitor will restore it
-  whenever the session's size changes.
+  model needs at least 33932174 bytes in the model's share of a client's
+  budget (36029326 in the total, with the parser, and the library's share
+  beside both), and the monitor will restore it whenever the session's size
+  changes.
 
 `exec` validates the whole file before starting the session. `attach`
 validates only `client`; the monitor validates `client` and `monitor`, and

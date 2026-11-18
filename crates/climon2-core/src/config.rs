@@ -8,7 +8,10 @@ use crate::{
     keys::{ClientSettings, ControlKey, SettingsError},
     layout::HomeLayout,
 };
-pub use limits::{Assembly, DiscoveryLimits, Lanes, Limits, MandatoryAllocation, ModelLimits};
+pub use limits::{
+    Assembly, Backoff, Cadence, DiscoveryLimits, Lanes, Limits, MandatoryAllocation, MemoryLimits,
+    ModelLimits,
+};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{DeserializeOwned, Error as _},

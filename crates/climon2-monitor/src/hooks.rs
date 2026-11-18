@@ -23,3 +23,21 @@ pub(crate) fn poll_table(table: *mut libc::pollfd) -> *mut libc::pollfd {
     }
     table
 }
+
+/// The monitor's identifiers starting where `CLIMON2_MONITOR_FIRST_GENERATION`
+/// and `CLIMON2_MONITOR_FIRST_REQUEST` say, near exhaustion (LIM-05),
+/// otherwise as `defaults` start them.
+pub(crate) fn identifiers(
+    defaults: crate::supervisor::Identifiers,
+) -> crate::supervisor::Identifiers {
+    let first = |name: &str, default: u64| {
+        let value = std::env::var(name).ok();
+        value
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    crate::supervisor::Identifiers {
+        generation: first("CLIMON2_MONITOR_FIRST_GENERATION", defaults.generation),
+        request: first("CLIMON2_MONITOR_FIRST_REQUEST", defaults.request),
+    }
+}

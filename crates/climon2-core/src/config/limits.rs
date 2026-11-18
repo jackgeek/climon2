@@ -36,6 +36,15 @@ const QUANTUM: Range = Range { min: 1, max: 50 };
 const FPS: Range = Range { min: 1, max: 120 };
 /// A jitter percentage, 0 through 50.
 const PERCENT: Range = Range { min: 0, max: 50 };
+/// The client library's own instance allocation, which its share of
+/// `memory.client_bytes` holds beside its queues and one wire frame: this
+/// release's qualified `instance_bytes` (#119).
+const LIBRARY_INSTANCE_BYTES: u64 = 1_048_576;
+
+/// What names the client library's share of `memory.client_bytes` in
+/// refusals.
+const LIBRARY_SHARE: &str = "the client library's share (monitor.limits.queues.request_bytes + monitor.limits.queues.event_bytes + monitor.limits.payload.wire_frame_bytes + its 1048576-byte instance allocation)";
+
 /// Local history rows, 200 through 100,000.
 const HISTORY_ROWS: Range = Range {
     min: 200,
@@ -370,14 +379,49 @@ pub struct Lanes {
     pub shutdown_ms: u32,
 }
 
+/// The monitor's passive retry backoff (`retry`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Backoff {
+    /// `retry.initial_ms`: the first delay.
+    pub initial_ms: u32,
+    /// `retry.cap_ms`: no delay is longer.
+    pub cap_ms: u32,
+    /// `retry.jitter_percent`: each delay varies by up to this much.
+    pub jitter_percent: u32,
+}
+
+/// The monitor's own memory budgets (`memory`) its pressure policy keeps
+/// to (#119).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryLimits {
+    /// `memory.total_bytes`: everything the monitor tracks.
+    pub total_bytes: u64,
+    /// `memory.history_bytes_per_session`: one session's history.
+    pub history_bytes_per_session: u64,
+    /// `memory.history_bytes_total`: every session's history together.
+    pub history_bytes_total: u64,
+}
+
+/// The monitor UI's cadence (`ui`): frames a second and the work quanta.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cadence {
+    /// `ui.fps`: the most frames painted a second.
+    pub fps: u32,
+    /// `ui.client_quantum_ms`: one client's work at a turn.
+    pub client_quantum_ms: u32,
+    /// `ui.background_quantum_ms`: all clients' work at one UI turn.
+    pub background_quantum_ms: u32,
+}
+
 impl Limits {
     /// The effective `cm1_limits` of every library instance, each field from
-    /// the setting the native contract names. The monitor reserves no model,
-    /// history or staging capacity yet, so the library's share is the whole
-    /// `memory.client_bytes`.
+    /// the setting the native contract names. `client_bytes` is the
+    /// library's share of `memory.client_bytes`: its request and event
+    /// queues, one wire frame and its instance allocation; the session's
+    /// terminal model takes the rest ([`Limits::model`]), never a second
+    /// allowance (#119).
     pub fn library(&self) -> crate::native::Limits {
         let Groups {
-            memory,
             resources,
             queues,
             transfer,
@@ -386,7 +430,7 @@ impl Limits {
             ..
         } = self.0;
         crate::native::Limits {
-            client_bytes: memory.client_bytes,
+            client_bytes: self.0.library_share(),
             request_bytes: queues.request_bytes,
             event_bytes: queues.event_bytes,
             progress_bytes: queues.progress_bytes,
@@ -432,13 +476,55 @@ impl Limits {
         }
     }
 
-    /// Each session's terminal model: until admission divides
-    /// `memory.client_bytes` between the library and the model (#120), the
-    /// model may hold all of it too, and `history.max_rows` rows.
+    /// Each session's terminal model: `memory.client_bytes` less the
+    /// client library's share ([`Limits::library`]), with its staged
+    /// restoration, and `history.max_rows` rows.
     pub fn model(&self) -> ModelLimits {
         ModelLimits {
-            bytes: self.0.memory.client_bytes,
+            bytes: self.0.memory.client_bytes - self.0.library_share(),
             history_rows: self.0.history.max_rows,
+        }
+    }
+
+    pub fn retry(&self) -> Backoff {
+        let Retry {
+            initial_ms,
+            cap_ms,
+            jitter_percent,
+            ..
+        } = self.0.retry;
+        Backoff {
+            initial_ms,
+            cap_ms,
+            jitter_percent,
+        }
+    }
+
+    pub fn memory(&self) -> MemoryLimits {
+        let Memory {
+            total_bytes,
+            history_bytes_per_session,
+            history_bytes_total,
+            ..
+        } = self.0.memory;
+        MemoryLimits {
+            total_bytes,
+            history_bytes_per_session,
+            history_bytes_total,
+        }
+    }
+
+    pub fn cadence(&self) -> Cadence {
+        let Ui {
+            fps,
+            client_quantum_ms,
+            background_quantum_ms,
+            ..
+        } = self.0.ui;
+        Cadence {
+            fps,
+            client_quantum_ms,
+            background_quantum_ms,
         }
     }
 
@@ -512,6 +598,20 @@ fn first_broken<const N: usize>(rules: [Option<String>; N]) -> Option<String> {
 }
 
 impl Groups {
+    /// The client library's share of `memory.client_bytes`: its request and
+    /// event queues, one wire frame and its instance allocation, what #99's
+    /// create requires; saturating, so an oversized share is refused.
+    fn library_share(&self) -> u64 {
+        [
+            self.queues.request_bytes,
+            self.queues.event_bytes,
+            self.payload.wire_frame_bytes.into(),
+            LIBRARY_INSTANCE_BYTES,
+        ]
+        .into_iter()
+        .fold(0, u64::saturating_add)
+    }
+
     /// The first rule these limits break: a setting outside its range, or
     /// else settings that disagree.
     fn violation(&self) -> Option<String> {
@@ -602,8 +702,10 @@ impl Groups {
     /// The first rule between settings these limits break, in this order:
     /// sub-budgets, reservations and every other monitor byte budget fit the
     /// totals that include them (each client's queues fit both the aggregate
-    /// queue budget and the client's own; the daemon's notification
-    /// assembly limits are not monitor budgets); progress reserves leave room for ordinary work; the
+    /// queue budget and the client's own, and the client library's whole
+    /// share fits the client's budget; the daemon's notification assembly
+    /// limits are not monitor budgets); progress reserves leave room for
+    /// ordinary work; the
     /// largest chunk fits one request, the ordinary event capacity and one
     /// delivery, and the largest metadata record fits the reserve, that
     /// capacity and one delivery; the per-client quantum fits the aggregate
@@ -651,6 +753,13 @@ impl Groups {
             at_most(events, queued),
             at_most(request, client),
             at_most(events, client),
+            at_most(
+                Named {
+                    name: LIBRARY_SHARE,
+                    value: self.library_share(),
+                },
+                client,
+            ),
             below(reserve, events),
             below(
                 named!(queues.progress_records),
@@ -754,21 +863,23 @@ impl Limits {
     }
 
     /// Refuses limits that cannot hold one session's `mandatory` allocation:
-    /// the total must hold the parser and the session's current model and
-    /// recent page together, then the client budget the model and page, the
-    /// history total, then the per-session history budget, the page. Each
-    /// total comes before the budgets it contains, so a refusal names the
-    /// limit to raise.
+    /// the total must hold the parser and the session's current model,
+    /// recent page and client library share together, then the client
+    /// budget the model, page and library share, the history total, then
+    /// the per-session history budget, the page. Each total comes before the
+    /// budgets it contains, so a refusal names the limit to raise.
     pub fn hold(&self, mandatory: MandatoryAllocation) -> Result<(), ConfigError> {
         let memory = &self.0.memory;
         let TerminalSize { cols, rows } = mandatory.size;
         let session = format!("a {cols}x{rows} session");
-        let model_and_page = format!("the current model and recent page of {session}");
+        let model_and_page = format!(
+            "the current model and recent page of {session} and its client library's share"
+        );
         let with_parser = format!("the parser and {model_and_page}");
         let recent_page = format!("the recent page of {session}");
         let model_and_page = Named {
             name: &model_and_page,
-            value: mandatory.current_model + mandatory.recent_page,
+            value: mandatory.current_model + mandatory.recent_page + self.0.library_share(),
         };
         let with_parser = Named {
             name: &with_parser,

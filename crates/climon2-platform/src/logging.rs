@@ -98,17 +98,18 @@ fn general_log_name(role: Role, at: SystemTime, pid: u32) -> io::Result<String> 
     }
 }
 
-/// Where the monitor's library instance for session `id` logs: a new
-/// `library-<stamp>-<pid>.log` in that session's private log directory, which
-/// this creates, named apart from the monitor's own general log. The library
-/// creates the file itself.
-pub fn library_log(home: &Path, id: &SessionId) -> io::Result<PathBuf> {
+/// Where the monitor's library instance for session `id` in connection
+/// `generation` logs: a new `library-<stamp>-<pid>-<generation>.log` in that
+/// session's private log directory, which this creates, named apart from the
+/// monitor's own general log and from the session's other generations, even
+/// within one second (#116's retries). The library creates the file itself.
+pub fn library_log(home: &Path, id: &SessionId, generation: u64) -> io::Result<PathBuf> {
     let logs = home.join("logs");
     crate::runtime::private_directory(&logs)?;
     let directory = logs.join(id.as_str());
     crate::runtime::private_directory(&directory)?;
     let name = format!(
-        "library-{}-{}.log",
+        "library-{}-{}-{generation}.log",
         file_stamp(SystemTime::now())?,
         std::process::id()
     );

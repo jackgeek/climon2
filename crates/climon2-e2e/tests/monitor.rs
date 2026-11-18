@@ -358,10 +358,12 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
 
 /// One 500x200 session's mandatory allocation, as documented in
 /// docs/monitor-operational-limits.md: its 4,850,887-byte current model and
-/// the 12,115,200-byte history chunk that holds its recent page, and beside
-/// them, in the aggregate budget only, the monitor's one 2 MiB parser (#166).
-const MODEL_AND_PAGE: u64 = 16_966_087;
-const WITH_PARSER: u64 = 19_063_239;
+/// the 12,115,200-byte history chunk that holds its recent page, beside its
+/// client library's 3,407,872-byte default share of the client's budget
+/// (#119), and beside them, in the aggregate budget only, the monitor's one
+/// 2 MiB parser (#166).
+const MODEL_AND_PAGE: u64 = 20_373_959;
+const WITH_PARSER: u64 = 22_471_111;
 const PAGE: u64 = 12_115_200;
 
 /// Memory limits of `total` bytes, `client` bytes per client, `history`
@@ -381,9 +383,11 @@ fn memory([total, client, history, per_session]: [u64; 4]) -> String {
     .to_string()
 }
 
-/// CFG-01 (Monitor): limits that cannot hold one session's mandatory
-/// allocation at the largest session geometry, 500x200, beside the monitor's
-/// one parser, are refused like every other invalid configuration: one byte
+/// CFG-01 (Monitor), LIM-01 (Monitor: the client budget split, #119):
+/// limits that cannot hold one session's mandatory allocation at the
+/// largest session geometry, 500x200, beside its client library's share
+/// and the monitor's one parser, are refused like every other invalid
+/// configuration: one byte
 /// short of the total, a client's
 /// budget, the history total or a session's history budget, the monitor
 /// prints one diagnostic naming that limit and exits with the climon2 error
@@ -397,11 +401,11 @@ fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model()
     for (limits, expected) in [
         (
             [WITH_PARSER - 1, MODEL_AND_PAGE, PAGE, PAGE],
-            "the parser and the current model and recent page of a 500x200 session (19063239) may not exceed monitor.limits.memory.total_bytes (19063238)",
+            "the parser and the current model and recent page of a 500x200 session and its client library's share (22471111) may not exceed monitor.limits.memory.total_bytes (22471110)",
         ),
         (
             [WITH_PARSER, MODEL_AND_PAGE - 1, PAGE, PAGE],
-            "the current model and recent page of a 500x200 session (16966087) may not exceed monitor.limits.memory.client_bytes (16966086)",
+            "the current model and recent page of a 500x200 session and its client library's share (20373959) may not exceed monitor.limits.memory.client_bytes (20373958)",
         ),
         (
             [WITH_PARSER, MODEL_AND_PAGE, PAGE - 1, PAGE - 1],
@@ -1817,6 +1821,33 @@ enum Answer {
     Serve(std::sync::Arc<Vec<Act>>),
     /// As [`Answer::Serve`], without advertising `focus-v1`.
     Unfocused(std::sync::Arc<Vec<Act>>),
+    /// The hello as `id`, advertising `daemon-wire-v1` alone, so a monitor
+    /// client never sends its Open; then hold until the peer hangs up.
+    Bare(&'static str),
+    /// As [`Answer::Serve`], each client taking its turn's acts and
+    /// recording that it was served and each request it sent after them.
+    Turns(std::sync::Arc<Turns>),
+}
+
+/// Each client's acts in turn, the last list for every later client.
+struct Turns {
+    taken: std::sync::atomic::AtomicUsize,
+    acts: Vec<Vec<Act>>,
+}
+
+impl Turns {
+    fn answer(acts: Vec<Vec<Act>>) -> Answer {
+        Answer::Turns(std::sync::Arc::new(Self {
+            taken: std::sync::atomic::AtomicUsize::new(0),
+            acts,
+        }))
+    }
+
+    /// The next client's acts.
+    fn next(&self) -> Vec<Act> {
+        let turn = self.taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.acts[turn.min(self.acts.len() - 1)].clone()
+    }
 }
 
 /// What a serving fake daemon does after a client's Open, as the daemon
@@ -1826,6 +1857,8 @@ enum Act {
     /// A frame of `code` with a JSON body, in which the string `"$open"` is
     /// the Open's request ID.
     Send(u8, Value),
+    /// A frame of `code` with this binary body.
+    Raw(u8, Vec<u8>),
     /// Wait until this file exists, for at most [`TIMEOUT`].
     Await(PathBuf),
     /// Hang up.
@@ -1843,6 +1876,10 @@ enum Heard {
     HangingUp,
     /// The peer hung up a silent connection.
     Closed,
+    /// A turn-taking fake read a client's Open and began its turn.
+    Served,
+    /// After its acts, a turn-taking fake read a request with this code.
+    Request(u8),
     /// A watched first connection was still open after the test's request
     /// was sent.
     Requested,
@@ -1965,6 +2002,16 @@ fn answer_once(
                 serve(connection, acts);
             }
         }
+        Answer::Bare(answered) => {
+            let _ = hello(connection, answered, []);
+            let _ = connection.read_to_end(&mut Vec::new());
+        }
+        Answer::Turns(turns) => {
+            let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
+            if hello(connection, id, families) {
+                serve_heard(connection, || turns.next(), Some((ear, id)));
+            }
+        }
         Answer::Hello(answered) => {
             let _ = hello(connection, answered, [Family::MonitorV1]);
             if connection.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
@@ -2046,11 +2093,25 @@ fn hello(
 /// Serves one client: reads its Open, performs `acts`, then answers its
 /// Leave and hangs up.
 fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
+    serve_heard(connection, || acts.to_vec(), None);
+}
+
+/// [`serve`] with the acts `acts` gives once the Open is read, recording
+/// in `heard`, if given, the Open and every later request.
+fn serve_heard(
+    connection: &mut std::os::unix::net::UnixStream,
+    acts: impl FnOnce() -> Vec<Act>,
+    heard: Option<(&Ear, &'static str)>,
+) {
     use climon2_core::wire::{Frame, FrameLimit, read_frame, write_frame};
     let limit = FrameLimit::new(1_048_576).unwrap();
     let Ok(Some(open)) = read_frame(connection, limit) else {
         return;
     };
+    if let Some((ear, id)) = heard {
+        hear(ear, id, Heard::Served);
+    }
+    let acts = acts();
     // The client stays until it leaves or the monitor exits.
     let _ = connection.set_read_timeout(None);
     let open: Value = serde_json::from_slice(open.body()).unwrap();
@@ -2059,9 +2120,12 @@ fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
         let body = body.to_string().replace("\"$open\"", &request);
         write_frame(connection, &Frame::new(code, body.into_bytes()), limit).is_ok()
     };
-    for act in acts {
+    for act in &acts {
         let sent = match act {
             Act::Send(code, body) => send(connection, *code, body),
+            Act::Raw(code, body) => {
+                write_frame(connection, &Frame::new(*code, body.clone()), limit).is_ok()
+            }
             Act::Await(path) => {
                 let deadline = Instant::now() + TIMEOUT;
                 while !path.exists() && Instant::now() < deadline {
@@ -2076,6 +2140,9 @@ fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
         }
     }
     while let Ok(Some(frame)) = read_frame(connection, limit) {
+        if let Some((ear, id)) = heard {
+            hear(ear, id, Heard::Request(frame.code()));
+        }
         if frame.code() == LEAVE {
             let leave: Value = serde_json::from_slice(frame.body()).unwrap();
             let left = json!({
@@ -2264,11 +2331,20 @@ fn uncertain_discovery_is_explicit_and_never_deletes_metadata_or_clients() {
 /// breaking ties; each start waits for the one before it to open or fail.
 /// The fake daemons are the oracle: each records a client (a peer that sends
 /// Open after the hello, which a probe never does) before hanging up on it.
+/// Each failed client's passive retry (#116) waits a minute, beyond the
+/// test, so the oracle hears the four first starts and nothing after them
+/// however slowly the test reads it.
 #[test]
 fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
     let package = Package::new();
     without_introduction(&package);
-    limits_config(&package, serde_json::json!({"scheduling": {"starts": 1}}));
+    limits_config(
+        &package,
+        serde_json::json!({
+            "scheduling": {"starts": 1},
+            "retry": {"initial_ms": 60_000, "cap_ms": 60_000},
+        }),
+    );
     let ids = [
         (
             "0d5c0000-0000-4000-8000-0000000000a2",
@@ -3006,11 +3082,10 @@ fn async_updates_clear_the_highlight_and_enter_pins_the_highlighted_session() {
 /// initial selection, and Alpha then Gamma appear above it. A session lost
 /// while its row is highlighted (Gamma's daemon killed) turns Disconnected
 /// and moves below the connected rows, and the highlight moves with it.
-/// Enter there acquires nothing, neither that session (Enter on
-/// Disconnected rows is #116's) nor Alpha, which the loss moved into the
-/// highlighted row's old place: the selector stays open over Beta. Up twice
-/// then highlights Alpha, and Enter acquires exactly Alpha. No selector key
-/// reached a session.
+/// Enter there selects that session read-only, acquiring nothing (#116),
+/// never Alpha, which the loss moved into the highlighted row's old place.
+/// Reopened on Gamma, Up twice then highlights Alpha, and Enter acquires
+/// exactly Alpha. No selector key reached a session.
 #[test]
 fn enter_pins_the_highlighted_session_while_it_is_lost() {
     let package = Package::new();
@@ -3037,11 +3112,17 @@ fn enter_pins_the_highlighted_session_while_it_is_lost() {
         ("Disconnected", "Gamma"),
     ];
     boxed_as(&terminal, ROWS, &listing(&lost), &[7]);
-    // Up after Enter shows that Enter was read and left the selector open.
-    terminal.send("\r\x1b[A").unwrap();
-    boxed_as(&terminal, ROWS, &listing(&lost), &[6]);
-    top_row_is(&mut terminal, &controlled("Beta", RUNNING));
-    terminal.send("\x1b[A\r").unwrap();
+    terminal.send("\r").unwrap();
+    selector_closed(&terminal);
+    whole_frame_shows(&terminal, "Gamma read-only", |screen| {
+        screen.lines().next().is_some_and(|top| {
+            top.starts_with("Gamma")
+                && top.ends_with(&format!(" | {NOT_CONTROLLING} | {SESSIONS_HINT}"))
+        })
+    });
+    terminal.send("\x1ds").unwrap();
+    boxed_as(&terminal, ROWS, &listing(&lost), &[7]);
+    terminal.send("\x1b[A\x1b[A\r").unwrap();
     ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
     terminal.send("z").unwrap();
     received_by(&package, "Alpha", b"z");
@@ -5493,10 +5574,15 @@ fn not_connected_rows_and_untimed_finals_sort_by_when_the_monitor_recorded_them(
     let package = Package::new();
     without_introduction(&package);
     // The acquisition initial selection starts is never granted, nor timed
-    // out while the test runs.
+    // out while the test runs. Nor is lost's client retried: each retry its
+    // fake daemon accepts would lose it again and re-record when, so on a
+    // slow host lost could sort as newer than rows the test adds after it.
     limits_config(
         &package,
-        serde_json::json!({"deadlines": {"operation_ms": 120_000}}),
+        serde_json::json!({
+            "deadlines": {"operation_ms": 120_000},
+            "retry": {"initial_ms": 120_000, "cap_ms": 120_000},
+        }),
     );
     let home = package.isolation.home().to_owned();
     let (lost_go, late_go) = (home.join("lost.go"), home.join("late.go"));
@@ -5852,6 +5938,700 @@ fn a_disconnect_discards_a_pending_prefix() {
     // A real listing reclaims the killed daemon's stale metadata.
     assert_eq!(package.list().len(), 1);
     finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Over a lost session's retained history, while a passive retry is
+/// scheduled or running (#116).
+const RECONNECTING: &str = "Reconnecting...";
+/// A lost session's daemon proven gone (owner decision on #116).
+const GONE: &str = "Session no longer exists";
+
+/// The requests each client of fake `id` sent after its turn's acts, by
+/// turn, as `ear` recorded them.
+fn requests_by_turn(ear: &Ear, id: &str) -> Vec<Vec<u8>> {
+    let mut turns: Vec<Vec<u8>> = Vec::new();
+    for (_, heard_by, heard) in ear.lock().unwrap().iter() {
+        match heard {
+            Heard::Served if *heard_by == id => turns.push(Vec::new()),
+            Heard::Request(code) if *heard_by == id => turns.last_mut().unwrap().push(*code),
+            _ => {}
+        }
+    }
+    turns
+}
+
+/// How many client instances the monitor `pid` made for session `id`: its
+/// library logs, apart from any other process's, such as `climon2 kill`'s.
+fn instances(package: &Package, id: &str, pid: i32) -> usize {
+    let infix = format!("-{pid}-");
+    let logs = library_logs(package, id);
+    logs.iter()
+        .filter(|log| log.to_string_lossy().contains(&infix))
+        .count()
+}
+
+/// Waits until a whole frame's top row ends with the slots `status` and
+/// `control` (and the sessions hint) and its rows satisfy `rows`.
+fn read_only_frame(
+    terminal: &Terminal,
+    (status, control): (&str, &str),
+    what: &str,
+    rows: impl Fn(&[&str]) -> bool,
+) {
+    let slots = format!(" | {status:<18} | {control:<15} | {SESSIONS_HINT}");
+    whole_frame_shows(terminal, what, |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.len() == usize::from(ROWS) && lines[0].ends_with(&slots) && rows(&lines)
+    });
+}
+
+/// The middle canvas row of a 30-row host holds only `overlay`, centred.
+fn overlaid_by(lines: &[&str], overlay: &str) -> bool {
+    let middle = lines.get(15).copied().unwrap_or_default();
+    let start = (usize::from(COLS) - overlay.len() - 2) / 2 + 1;
+    middle
+        .get(start..)
+        .is_some_and(|rest| rest.trim_end() == overlay)
+}
+
+/// REC-01 (Monitor, Fault: transport loss), REC-02 (Monitor, Fault: full
+/// history, reconnecting while scheduled and running, placeholder after the
+/// reconnect), COM-03 and COM-05 (Monitor cases: indeterminate work never
+/// replayed, a fresh attempt sees no old delivery), DSC-05 (Monitor, Fault:
+/// loss keeps the selection) and Enter on disconnected and unconnected
+/// Starting rows (derived scenarios), against a fake daemon: its first
+/// client is granted control by succession in the background and restored,
+/// then selected, so the monitor's Acquire is left unanswered, and the
+/// connection is lost. The row stays selected, Disconnected, its retained
+/// history read-only under exactly `Reconnecting...` while the retry is
+/// scheduled, and still while the retry runs and the row is Starting.
+/// Typed keys reach no session. Once the new client opens, the overlay and
+/// the cache give way to the non-controller placeholder: the second client
+/// was never sent the Acquire, Ready or any input, only its Leave at exit.
+#[test]
+fn a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect() {
+    const ID: &str = "0d5c0000-0000-4000-8000-0000000000d1";
+    let package = Package::new();
+    without_introduction(&package);
+    // The fake never answers a request: operations wait as long as the
+    // test may.
+    limits_config(
+        &package,
+        json!({
+            "retry": {"initial_ms": 300, "cap_ms": 300, "jitter_percent": 0},
+            "deadlines": {"operation_ms": 600_000},
+        }),
+    );
+    let home = package.isolation.home();
+    let authority = json!({"period": "1", "restoration_id": "1"});
+    let geometry = json!({"cols": 120, "rows": 29});
+    let mut display = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1].to_vec();
+    display.extend(b"CACHED-LINE\r\nsecond");
+    let first = vec![
+        opened_selecting(false, false),
+        initial_metadata("Kept", None, None),
+        Act::Send(
+            0x46,
+            json!({"period": "1", "restoration_id": "1", "geometry": geometry, "reason": "successor"}),
+        ),
+        Act::Send(
+            0x48,
+            json!({"period": "1", "restoration_id": "1", "geometry": geometry}),
+        ),
+        Act::Raw(0x49, display),
+        Act::Send(0x4a, authority),
+        Act::Await(home.join("drop")),
+        Act::Close,
+    ];
+    let later = vec![
+        Act::Await(home.join("answer")),
+        opened_selecting(false, false),
+        initial_metadata("Kept", None, None),
+    ];
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        ID,
+        "2099-01-01T00:00:00.000Z",
+        Turns::answer(vec![first, later]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Kept");
+    // Reopened over its row, the selector highlights it.
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Kept");
+    let cached =
+        |lines: &[&str]| lines[1].starts_with("CACHED-LINE") && lines[2].trim_end() == "second";
+    read_only_frame(
+        &terminal,
+        ("Unavailable", "Restoring"),
+        "the background restoration",
+        cached,
+    );
+    fs::write(home.join("drop"), b"").unwrap();
+    read_only_frame(
+        &terminal,
+        ("Disconnected", NOT_CONTROLLING),
+        "the retained history, reconnecting",
+        |lines| cached(lines) && overlaid_by(lines, RECONNECTING),
+    );
+    // The retry's client is held at its Open, still Starting.
+    let deadline = Instant::now() + TIMEOUT;
+    while heard(&ear, Heard::Served).len() < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the retry never reached the daemon"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    read_only_frame(
+        &terminal,
+        ("Starting", NOT_CONTROLLING),
+        "the retained history while the retry is held",
+        |lines| cached(lines) && overlaid_by(lines, RECONNECTING),
+    );
+    terminal.send("typed\r").unwrap();
+    fs::write(home.join("answer"), b"").unwrap();
+    read_only_frame(
+        &terminal,
+        ("Unavailable", NOT_CONTROLLING),
+        "the placeholder after the reconnect",
+        |lines| {
+            lines.iter().any(|line| line.trim() == VIEWED_ELSEWHERE)
+                && !lines
+                    .iter()
+                    .any(|line| line.contains("CACHED") || line.contains(RECONNECTING))
+        },
+    );
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    let turns = requests_by_turn(&ear, ID);
+    assert_eq!(turns.len(), 2, "{turns:?}");
+    // The first client was held in its acts until it was lost; the second
+    // was sent nothing but its Leave at exit: no Acquire, Ready or input.
+    assert_eq!(turns[1], [LEAVE]);
+    drop(fake);
+    package.assert_clean();
+}
+
+/// REC-02 (Monitor: full history, cache loss to a gone daemon), REC-01
+/// (Monitor: a definitive outcome and a gone daemon stop retry), HDL-01
+/// (Monitor case), COM-06 (Monitor: a known outcome survives, the loss is
+/// never completion), DSC-05 (Monitor: loss and completion keep the
+/// selection; with every row final or gone the monitor stays open and
+/// keeps discovering) and Enter on final rows (derived scenario): after an
+/// empty start, Lost is selected and acquired, writes forty lines and its
+/// daemon is killed. Lost stays selected with its retained history
+/// read-only under exactly `Reconnecting...` while retries run, then, once
+/// discovery proves its daemon gone, under `Session no longer exists`,
+/// which its top row's error slot also says, and retries stop. A wheel
+/// notch scrolls the read-only history. `climon2 kill` from another
+/// terminal ends Ended, which stays listed Failed with its signal; Enter
+/// selects it read-only with no terminal content, the monitor never having
+/// controlled it, and it is never retried. A session created then still
+/// appears.
+#[test]
+fn killed_and_ended_sessions_stay_read_only_and_are_never_retried() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"retry": {"initial_ms": 100, "cap_ms": 100}}),
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let lost = headless(&package, &watched("Lost"), "finish");
+    ready_at(&mut terminal, "Lost", RUNNING, "29 120");
+    emit(&package, "Lost", &numbered(1..=40));
+    frame_rows(&terminal, &controlled("Lost", RUNNING), &[(29, "line40")]);
+    let ended = headless(&package, &watched("Ended"), "finish");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Ended"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    kill(Pid::from_raw(daemon_of(&package, &lost)), Signal::SIGKILL).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !contains(&terminal.received(), RECONNECTING.as_bytes()) {
+        assert!(Instant::now() < deadline, "never reconnecting");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let history = |lines: &[&str], first: &str| {
+        lines[1].starts_with(first) && lines[29].starts_with("line40")
+    };
+    let gone = |status: &str| {
+        let label = format!("Lost | {GONE}");
+        session_top_row(
+            usize::from(COLS),
+            &label,
+            &[status, NOT_CONTROLLING, SESSIONS_HINT],
+        )
+    };
+    whole_frame_shows(&terminal, "the gone session's history", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        if lines.len() != usize::from(ROWS) {
+            return false;
+        }
+        let top = [gone("Disconnected"), gone("Unavailable")];
+        top.iter().any(|top| lines[0] == top)
+            && history(&lines, "line12")
+            && overlaid_by(&lines, GONE)
+    });
+    let monitor = monitor_process(&package).0;
+    let logs = instances(&package, &lost, monitor);
+    terminal.send(WHEEL_UP).unwrap();
+    whole_frame_shows(&terminal, "the scrolled history", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        if lines.len() != usize::from(ROWS) {
+            return false;
+        }
+        lines[0].contains(" | History ")
+            && lines[1].starts_with("line11")
+            && overlaid_by(&lines, GONE)
+    });
+
+    support::kill_session(&package, &ended);
+    terminal.send("\x1ds").unwrap();
+    // The final row is listed first; the selector opens on Lost, selected,
+    // the row below it, and the read-only history shows beside its box.
+    shows_row(&mut terminal, "║Failed (signal 1) Ended");
+    highlight_at(&terminal, 6);
+    terminal.send("\x1b[A\r").unwrap();
+    whole_frame_shows(&terminal, "Ended read-only", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        if lines.is_empty() {
+            return false;
+        }
+        let top = session_top_row(
+            usize::from(COLS),
+            "Ended",
+            &["Failed (signal 1)", "Ended", SESSIONS_HINT],
+        );
+        lines[0] == top
+            && lines.iter().any(|line| line.trim() == NO_CONTENT)
+            && lines.iter().any(|line| line.trim() == "Failed (signal 1)")
+    });
+    headless(&package, &watched("Later"), "finish");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "Later");
+    // Retrying would make another library log at least every 100 ms.
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(instances(&package, &lost, monitor), logs);
+    assert_eq!(instances(&package, &ended, monitor), 1);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    // A real listing reclaims the killed daemon's stale metadata.
+    package.list();
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The delays the monitor's general log says it scheduled for `id`'s
+/// retries, in order.
+fn retry_delays(package: &Package, id: &str) -> Vec<u64> {
+    let session = format!("session={id}");
+    monitor_logs(package)
+        .lines()
+        .filter(|line| line.contains("client retry scheduled") && line.contains(&session))
+        .map(|line| {
+            let delay = line.split("delay_ms=").nth(1).unwrap();
+            delay.split_whitespace().next().unwrap().parse().unwrap()
+        })
+        .collect()
+}
+
+/// REC-01 (Monitor, Fault: missing library, repaired installation,
+/// permanently rejected protocol; visible exponential retry with jitter and
+/// cap), LIB-02 (Monitor: a library error stays on its rows) and DSC-05
+/// (Monitor, Fault: every row unavailable): with its version's client
+/// library missing, every row is Unavailable and the monitor stays open,
+/// still discovering a newly appearing session; selected, that row shows no
+/// terminal content, its condition and exactly `Reconnecting...`, the
+/// loader's diagnostic in its top row's error slot. Once the installation
+/// is repaired, the real session connects by itself and is listed Running,
+/// not selected, as an explicit selection came first. The other row's
+/// daemon lacks
+/// `monitor-v1`, a permanent rejection: it says it is not reconnecting and
+/// is never retried, while a session whose daemon keeps hanging up before
+/// answering its Open is retried with delays doubling from
+/// `retry.initial_ms`, each within its jitter, held at `retry.cap_ms`.
+#[test]
+fn failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good() {
+    const REJECTING: &str = "0d5c0000-0000-4000-8000-0000000000d2";
+    const FLAKY: &str = "0d5c0000-0000-4000-8000-0000000000d3";
+    let package = Package::private();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"retry": {"initial_ms": 200, "cap_ms": 800, "jitter_percent": 10}}),
+    );
+    headless(&package, &watched("Fixed"), "finish");
+    let library = package
+        .executable_home()
+        .join(VERSION)
+        .join("libclimon2_client.so");
+    let moved = library.with_extension("so.moved");
+    fs::rename(&library, &moved).unwrap();
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    whole_frame_shows(&terminal, "Fixed unavailable", |screen| {
+        screen
+            .lines()
+            .any(|row| row.starts_with(" ║Unavailable /bin/bash") && row.contains("Fixed"))
+    });
+    let ear = Ear::default();
+    let rejecting = FakeDaemon::start(
+        &package,
+        REJECTING,
+        "2099-01-01T00:00:00.000Z",
+        Answer::Bare(REJECTING),
+        &ear,
+    );
+    listed_with(&terminal, "Unavailable", &format!("fake {REJECTING}"));
+    // Opened before any row existed, the selector highlights none until
+    // it is opened again.
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, REJECTING);
+    let missing = |lines: &[&str]| {
+        lines[0].starts_with(&format!("fake {REJECTING} | "))
+            && lines.iter().any(|line| line.trim() == NO_CONTENT)
+            && lines.iter().any(|line| line.trim() == RECONNECTING)
+    };
+    read_only_frame(
+        &terminal,
+        ("Unavailable", NOT_CONTROLLING),
+        "the missing library",
+        missing,
+    );
+    fs::rename(&moved, &library).unwrap();
+    read_only_frame(
+        &terminal,
+        ("Unavailable", NOT_CONTROLLING),
+        "the permanent rejection",
+        |lines| {
+            lines
+                .iter()
+                .any(|line| line.trim().starts_with("Not reconnecting: "))
+                && !lines.iter().any(|line| line.contains(RECONNECTING))
+        },
+    );
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Fixed");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    let monitor = monitor_process(&package).0;
+    let rejected = instances(&package, REJECTING, monitor);
+    let flaky = FakeDaemon::start(
+        &package,
+        FLAKY,
+        "2099-01-01T00:00:01.000Z",
+        Turns::answer(vec![vec![Act::Close]]),
+        &ear,
+    );
+    let deadline = Instant::now() + TIMEOUT;
+    while retry_delays(&package, FLAKY).len() < 5 {
+        assert!(
+            Instant::now() < deadline,
+            "the flaky session was not retried"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let delays = retry_delays(&package, FLAKY);
+    let ranges = [180..=220, 360..=440, 720..=800, 720..=800, 720..=800];
+    for (delay, range) in delays.iter().zip(ranges) {
+        assert!(range.contains(delay), "{delays:?}");
+    }
+    assert_eq!(instances(&package, REJECTING, monitor), rejected);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop((rejecting, flaky));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// REC-01 (Monitor, Fault: a contained panic) and LIB-05 (Monitor: a
+/// panicking instance stays on its own row): with the hooked library
+/// panicking once in the monitor's process as a connection handles its
+/// first frame, that session's first client fails, contained, while the
+/// other session connects; the failed one is retried passively, connects,
+/// and the first row to become eligible is selected and acquired. Fault
+/// hooks are absent from release archives, so this returns early there.
+#[test]
+fn a_contained_panic_is_retried_on_its_own_row() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    let first = headless(&package, &watched("First"), "finish");
+    let second = headless(&package, &watched("Second"), "finish");
+    let mut terminal = outer(&package, "CLIMON2_LIBRARY_FAULT=panic:receive c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    for label in ["First", "Second"] {
+        listed_with(&terminal, RUNNING, label);
+    }
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    let retried: Vec<_> = [&first, &second]
+        .into_iter()
+        .filter(|id| !retry_delays(&package, id).is_empty())
+        .collect();
+    assert_eq!(retried.len(), 1, "{retried:?}");
+    let monitor = monitor_process(&package).0;
+    assert_eq!(instances(&package, retried[0], monitor), 2);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The memory limits that admit the largest session at exactly its
+/// mandatory allocation (#167): a session's model may hold 16,966,087
+/// bytes, its client budget less the library's share; quick, unjittered
+/// retries; and operations the fakes never answer, and deliveries a loaded
+/// host applies slowly, waiting as long as a test may.
+fn tight_model(package: &Package) {
+    limits_config(
+        package,
+        json!({
+            "memory": {"client_bytes": MODEL_AND_PAGE},
+            "retry": {"initial_ms": 300, "cap_ms": 300, "jitter_percent": 0},
+            "deadlines": {"operation_ms": 600_000, "delivery_stall_ms": 600_000},
+        }),
+    );
+}
+
+/// A Display of the restoration or output of period 1, restoration 1.
+fn display(bytes: &[u8]) -> Act {
+    display_of(1, bytes)
+}
+
+/// A Display of period 1's restoration `restoration`, or of its output.
+fn display_of(restoration: u8, bytes: &[u8]) -> Act {
+    let mut body = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, restoration].to_vec();
+    body.extend(bytes);
+    Act::Raw(0x49, body)
+}
+
+/// A first client granted control by succession in the background and
+/// restored to `text` at 120x29.
+fn restored_by_succession(title: &str, text: &[u8]) -> Vec<Act> {
+    let authority = json!({"period": "1", "restoration_id": "1"});
+    let geometry = json!({"cols": 120, "rows": 29});
+    vec![
+        opened_selecting(false, false),
+        initial_metadata(title, None, None),
+        Act::Send(
+            0x46,
+            json!({"period": "1", "restoration_id": "1", "geometry": geometry, "reason": "successor"}),
+        ),
+        Act::Send(
+            0x48,
+            json!({"period": "1", "restoration_id": "1", "geometry": geometry}),
+        ),
+        display(text),
+        Act::Send(0x4a, authority),
+    ]
+}
+
+/// LIM-03 (Monitor, Fault: rejected updates, little received history; owner
+/// decisions on #119: retried passively with backoff, the client budget
+/// split), LIM-01 (Monitor: the model's share of the client budget), REC-01
+/// and REC-02 (Monitor: the recovery overlay and reconnect), against fake
+/// daemons: with the client budget at the largest session's mandatory
+/// allocation, Bloated's model may hold 16,966,087 bytes. Restored and
+/// selected, it receives a line, then a second restoration, staged beside
+/// the first, with more combining marks on one cell than that limit holds
+/// (1,280,000, 16 bytes each). The session becomes unavailable: its row
+/// keeps the lines its applied restoration and output left read-only, the
+/// refused restoration never shown, under exactly
+/// `Reconnecting...`, its top row's error slot says the model is over its
+/// 16,966,087-byte limit, and its client is retried passively in a new
+/// instance, which opens to the non-controller placeholder. The other
+/// session's client goes on: its later title reaches the selector.
+#[test]
+fn a_session_over_its_memory_limit_becomes_unavailable_read_only_and_is_retried() {
+    const ID: &str = "0d5c0000-0000-4000-8000-0000000000e1";
+    const OTHER: &str = "0d5c0000-0000-4000-8000-0000000000e2";
+    let package = Package::new();
+    without_introduction(&package);
+    tight_model(&package);
+    let home = package.isolation.home();
+    let mut first = restored_by_succession("Bloated", b"SAFE-LINE");
+    first.push(Act::Await(home.join("bloat")));
+    first.push(display(b"\r\nLIVE-LINE"));
+    first.push(Act::Send(
+        0x48,
+        json!({"period": "1", "restoration_id": "2", "geometry": {"cols": 120, "rows": 29}}),
+    ));
+    let marks = "\u{301}".repeat(32_000);
+    first.push(display_of(2, format!("e{marks}").as_bytes()));
+    for _ in 1..40 {
+        first.push(display_of(2, marks.as_bytes()));
+    }
+    let later = vec![
+        opened_selecting(false, false),
+        initial_metadata("Bloated", None, None),
+    ];
+    let ear = Ear::default();
+    let bloated = FakeDaemon::start(
+        &package,
+        ID,
+        "2099-01-01T00:00:00.000Z",
+        Turns::answer(vec![first, later]),
+        &ear,
+    );
+    let other = FakeDaemon::start(
+        &package,
+        OTHER,
+        "2098-01-01T00:00:00.000Z",
+        serving(vec![
+            opened_selecting(false, false),
+            initial_metadata("Other", None, None),
+            Act::Await(home.join("retitle")),
+            Act::Send(TITLE_CHANGED, json!({"title": "Other later"})),
+        ]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Bloated");
+    listed_with(&terminal, "Unavailable", "Other");
+    // Reopened over its rows, the selector highlights one.
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Bloated");
+    read_only_frame(
+        &terminal,
+        ("Unavailable", "Restoring"),
+        "the background restoration",
+        |lines| lines[1].trim_end() == "SAFE-LINE",
+    );
+    fs::write(home.join("bloat"), b"").unwrap();
+    let error = "Bloated | terminal model over its limit: ";
+    let kept =
+        |lines: &[&str]| lines[1].trim_end() == "SAFE-LINE" && lines[2].trim_end() == "LIVE-LINE";
+    whole_frame_shows(&terminal, "the dropped session read-only", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.len() == usize::from(ROWS)
+            && lines[0].starts_with(error)
+            && kept(&lines)
+            && overlaid_by(&lines, RECONNECTING)
+    });
+    let reasons = monitor_logs(&package);
+    assert!(
+        reasons.contains("16966087 allowed"),
+        "the model's limit is its share: {reasons}"
+    );
+    fs::write(home.join("retitle"), b"").unwrap();
+    read_only_frame(
+        &terminal,
+        ("Unavailable", NOT_CONTROLLING),
+        "the placeholder after the passive retry",
+        |lines| {
+            lines.iter().any(|line| line.trim() == VIEWED_ELSEWHERE)
+                && !lines.iter().any(|line| line.contains(RECONNECTING))
+        },
+    );
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Other later");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(heard(&ear, Heard::Served).len(), 2, "one passive retry");
+    drop((bloated, other));
+    package.assert_clean();
+}
+
+/// LIM-05 (Monitor, Fault: generation exhaustion; hooked only, as test
+/// hooks start the monitor's generations near exhaustion), REC-02 (Monitor:
+/// the protected cache survives), against a fake daemon that hangs up on
+/// every client: the first, in generation 18,446,744,073,709,551,614,
+/// restores Kept in the background and is lost once selected; its passive
+/// retry, in the last generation, is lost too. The next attempt is never
+/// made: Kept keeps its restored line read-only under exactly `Not
+/// reconnecting: connection generations are exhausted`, which its top
+/// row's error slot also says, and no third client ever reaches the daemon
+/// or makes a library log.
+#[test]
+fn a_session_whose_generations_are_exhausted_keeps_its_cache_and_stops() {
+    if archive() {
+        return;
+    }
+    const ID: &str = "0d5c0000-0000-4000-8000-0000000000e3";
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "retry": {"initial_ms": 300, "cap_ms": 300, "jitter_percent": 0},
+            "deadlines": {"operation_ms": 600_000},
+        }),
+    );
+    let home = package.isolation.home();
+    let mut first = restored_by_succession("Kept", b"CACHED-LINE");
+    first.extend([Act::Await(home.join("drop")), Act::Close]);
+    let later = vec![
+        opened_selecting(false, false),
+        initial_metadata("Kept", None, None),
+        Act::Close,
+    ];
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        ID,
+        "2099-01-01T00:00:00.000Z",
+        Turns::answer(vec![first, later]),
+        &ear,
+    );
+    let mut terminal = outer(
+        &package,
+        "CLIMON2_MONITOR_FIRST_GENERATION=18446744073709551614 c2 monitor",
+    );
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Kept");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Kept");
+    let cached = |lines: &[&str]| lines[1].trim_end() == "CACHED-LINE";
+    read_only_frame(
+        &terminal,
+        ("Unavailable", "Restoring"),
+        "the background restoration",
+        cached,
+    );
+    fs::write(home.join("drop"), b"").unwrap();
+    let exhausted = "connection generations are exhausted";
+    let overlay = format!("Not reconnecting: {exhausted}");
+    let top = session_top_row(
+        usize::from(COLS),
+        &format!("Kept | {exhausted}"),
+        &["Unavailable", NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    whole_frame_shows(&terminal, "the exhausted session read-only", |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.len() == usize::from(ROWS)
+            && lines[0] == top
+            && cached(&lines)
+            && overlaid_by(&lines, &overlay)
+    });
+    let monitor = monitor_process(&package).0;
+    // A retry would start within 300 ms.
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(heard(&ear, Heard::Served).len(), 2);
+    assert_eq!(instances(&package, ID, monitor), 2);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fake);
     package.assert_clean();
 }
 
@@ -6266,6 +7046,135 @@ fn the_wheel_scrolls_anchored_history_and_typing_returns_live() {
     package.assert_clean();
 }
 
+/// LIM-03 (Monitor: history bounded by its bytes, explicit truncation, the
+/// newest page kept; #119): with `memory.history_bytes_per_session` at its
+/// least, the history holding a 500x200 session's page (12,115,200
+/// bytes), a 120x29 session that writes 8,000 lines, far fewer than
+/// `history.max_rows`, keeps only the newest of them: its live page ends
+/// at the last line, and scrolled to its oldest row the view shows the
+/// truncation notice above a line written after the first thousand.
+#[test]
+fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"memory": {"history_bytes_per_session": 12_115_200}}),
+    );
+    headless(&package, &watched("Deep"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Deep", RUNNING, "29 120");
+    let live = controlled("Deep", RUNNING);
+    emit(&package, "Deep", &numbered(1..=8000));
+    frame_rows(&terminal, &live, &[(29, "line8000")]);
+    let history = session_top_row(
+        usize::from(COLS),
+        "Deep",
+        &[RUNNING, "History", SESSIONS_HINT],
+    );
+    let oldest_kept = |screen: &str| {
+        let lines: Vec<_> = screen.lines().collect();
+        let oldest = lines
+            .get(2)
+            .and_then(|line| line.trim_end().strip_prefix("line"));
+        lines.first() == Some(&history.as_str())
+            && lines.get(1).is_some_and(|line| line.starts_with(NOTICE))
+            && oldest
+                .and_then(|number| number.parse::<u32>().ok())
+                .is_some_and(|number| number > 1000)
+    };
+    // Eight batches of a thousand notches reach the oldest row. Each batch
+    // follows a whole frame that scrolled or shows the oldest row kept, and
+    // the test then waits while the view still scrolls: a loaded host is
+    // never asked to work through all the notches within one wait.
+    let shown = std::cell::RefCell::new(String::new());
+    let scrolled = |terminal: &Terminal| {
+        whole_frame_shows(terminal, "the oldest row kept", |screen| {
+            let moved = screen != *shown.borrow();
+            if moved {
+                screen.clone_into(&mut shown.borrow_mut());
+            }
+            moved || oldest_kept(screen)
+        });
+    };
+    for _ in 0..8 {
+        terminal.send(WHEEL_UP.repeat(1000)).unwrap();
+        scrolled(&terminal);
+    }
+    while !oldest_kept(&shown.borrow()) {
+        scrolled(&terminal);
+    }
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// LIM-06 (Monitor: notification work; #119), NOT-02 (Monitor: the toast
+/// queue under a storm): eight fake sessions each report 25 attention
+/// episodes at once, each under a new title, 200 in all, while the
+/// selector is opened and closed. Every row ends on its last episode, the
+/// toasts stay within the queue's bound (the one shown, three waiting and
+/// `More events occurred. Check sessions list`, so at most five bells),
+/// and prefix+x exits.
+#[test]
+fn a_notification_storm_stays_within_the_toast_bound_while_input_responds() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"operation_ms": 120_000}}));
+    let go = package.isolation.home().join("storm.go");
+    let ear = Ear::default();
+    let daemons: Vec<_> = (0..8u8)
+        .map(|index| {
+            let mut storm = vec![Act::Await(go.clone())];
+            for episode in 1..=25u32 {
+                if episode > 1 {
+                    storm.push(episode_status("acknowledged", (episode - 1).into(), 2));
+                }
+                let title = format!("S{index}E{episode}");
+                storm.push(Act::Send(TITLE_CHANGED, json!({"title": title})));
+                storm.push(episode_status("needs_attention", episode.into(), 3));
+            }
+            let answer = with_status(
+                &format!("S{index}"),
+                wire_status("running", &utc(1)),
+                None,
+                storm,
+            );
+            FakeDaemon::start(
+                &package,
+                fake_id(0xf0 + index),
+                "2026-01-01T00:00:00.000Z",
+                answer,
+                &ear,
+            )
+        })
+        .collect();
+    let mut terminal = outer(&package, "c2 monitor");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "S7");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    fs::write(&go, b"").unwrap();
+    terminal.send("\x1ds").unwrap();
+    for index in 0..8 {
+        listed_with(&terminal, ATTENTION, &format!("S{index}E25"));
+    }
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    // The first toast's bell rings once its title has been written (owner
+    // decision on #115, 2026-11-17).
+    terminal
+        .wait_for_host_signals(TIMEOUT, |signals| signals.contains(&HostSignal::Bell))
+        .unwrap();
+    assert!(bells(&terminal) <= 5, "{} bells", bells(&terminal));
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert!(bells(&terminal) <= 5, "{} bells", bells(&terminal));
+    drop(daemons);
+    package.assert_clean();
+}
+
 /// The top row of the selected, controlled session whose label the host
 /// shows as `label` over `cells` cells (its row text has a wide
 /// character's covered cell as a blank, and no combining mark), in the 55
@@ -6480,6 +7389,56 @@ fn resizes_under_continuous_output_show_only_coherent_frames() {
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// How many frames the monitor has painted on `terminal`: each begins by
+/// hiding the host cursor, which nothing else the monitor writes does.
+fn frames_painted(terminal: &Terminal) -> usize {
+    let received = terminal.received();
+    received
+        .windows(6)
+        .filter(|window| window == b"\x1b[?25l")
+        .count()
+}
+
+/// LIM-06 (Monitor: render cadence; #119): with `ui.fps` 5, a selected
+/// session ticking 50 lines a second is painted at most 5 frames a second,
+/// one more for a frame already due when counting began, yet keeps being
+/// painted (its later ticks show); the selector opens, closes and prefix+x
+/// exits while it ticks.
+#[test]
+fn rendering_keeps_to_its_frame_rate_while_input_the_selector_and_exit_respond() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"ui": {"fps": 5}}));
+    headless(&package, &ticking("Tick"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    let top = controlled("Tick", RUNNING);
+    whole_frame_shows(&terminal, "the first ticks", |screen| {
+        screen.lines().next() == Some(top.as_str()) && screen.contains("\ntick ")
+    });
+    let (before, began) = (frames_painted(&terminal), Instant::now());
+    thread::sleep(Duration::from_secs(2));
+    let (after, elapsed) = (frames_painted(&terminal), began.elapsed());
+    let most = (elapsed.as_secs_f64() * 5.0).floor() as usize + 1;
+    assert!(
+        after - before <= most,
+        "{} frames in {elapsed:?}",
+        after - before
+    );
+    assert!(
+        after - before >= 2,
+        "{} frames in {elapsed:?}",
+        after - before
+    );
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING} Tick"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
