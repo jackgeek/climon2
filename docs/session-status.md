@@ -609,9 +609,9 @@ title in the menu; otherwise use command plus arguments. Unsupported title
 delivery on older daemons does not block takeover. Render titles literally and
 mark cached data stale when delivery becomes uncertain.
 The monitor's permanent top row shows the title/fallback as a label only,
-marqueeing only overflowing label text with
-[display-cell](protocol/TERMS.md#display-cell)-safe clipping and
-restart on label changes; status/control/error remain stationary. Full details
+truncating overflowing label text statically, ending with `…` at a
+[display-cell](protocol/TERMS.md#display-cell)-safe width (nothing
+marquees); status/control/error remain stationary. Full details
 stay in the selector. Never change the host title.
 
 Users do not set terminal titles through climon2. Future user-assigned,

@@ -28,13 +28,16 @@ mod terminal;
 
 use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
-use climon2_vt::{Limits, Parser, view::Modes};
+use climon2_vt::{
+    Limits, Parser,
+    view::{self as vt, Modes},
+};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
-use mouse::{Area, Gestures, Mouse};
+use mouse::{Area, Gestures, Mouse, Wheel};
 use registry::{ClientEvent, Kind, Registry, Report};
 use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
@@ -156,11 +159,13 @@ struct Pasting {
     bracketed: bool,
 }
 
-/// The target taking application input now, its modes and the area of its
-/// canvas that the host shows.
+/// The target taking application input now, its modes, whether its
+/// alternate screen is active and the area of its canvas that the host
+/// shows.
 struct Taking {
     target: Target,
     modes: Modes,
+    alternate: bool,
     area: Area,
 }
 
@@ -565,6 +570,7 @@ impl Monitor {
         self.submit(typed);
         let ends = pasted.ends;
         if let Some(Pasting { target, bracketed }) = &self.pasting {
+            terminal(&mut self.terminals, self.model, &target.0).return_live();
             let part = Paste {
                 bracketed: *bracketed,
                 starts,
@@ -599,7 +605,9 @@ impl Monitor {
     /// A mouse report goes to its gesture's owner (`mouse.rs`): to the
     /// target taking input, at its cell below the top row, as its modes ask,
     /// or nowhere; chrome and overlays keep theirs, and an open modal
-    /// takes them (#113).
+    /// takes them (#113). Over an application that does not report the
+    /// mouse, a wheel notch scrolls its history a row, or on its alternate
+    /// screen is a cursor key with alternate scroll on (#112).
     fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) -> io::Result<()> {
         let taking = self.taking();
         let target = taking.as_ref().map(|taking| (&taking.target, taking.area));
@@ -607,7 +615,12 @@ impl Monitor {
         let Some((cell, taking)) = cell.zip(taking) else {
             return self.modal(&Routed::Mouse(mouse));
         };
-        mouse::encode(mouse, cell, &taking.modes, typed);
+        match mouse::wheel(mouse, &taking.modes, taking.alternate) {
+            Some(Wheel::History(rows)) => self.terminal(&taking.target.0).scroll(rows),
+            Some(Wheel::Key(key)) => Key::Cursor(key).encode(&taking.modes, typed),
+            Some(Wheel::Nothing) => {}
+            None => mouse::encode(mouse, cell, &taking.modes, typed),
+        }
         Ok(())
     }
 
@@ -646,6 +659,7 @@ impl Monitor {
             .map(|(view, geometry)| Taking {
                 target: (id.clone(), authority),
                 modes: view.modes(),
+                alternate: matches!(view.screen(), vt::Screen::Alternate { .. }),
                 area: Area {
                     cols: geometry.cols(),
                     rows: geometry.rows(),
@@ -674,6 +688,7 @@ impl Monitor {
             .target()
             .map(|(id, _, authority)| (id.clone(), authority));
         if let Some((id, authority)) = target {
+            self.terminal(&id).return_live();
             self.request(&id, Some(Request::Input(authority, bytes)));
         }
     }
@@ -788,6 +803,7 @@ fn selected<'a>(
         .and_then(Terminal::view)
         .map_or_else(|| without_view(kind, &row.status, control), Canvas::View);
     Session {
+        id: &row.id,
         label: &row.label,
         status: &row.status,
         control: control.label(),

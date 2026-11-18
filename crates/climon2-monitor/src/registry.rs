@@ -5,8 +5,8 @@
 //! is never shown.
 use crate::terminal::Presentation;
 use climon2_core::{SessionId, metadata::SessionMetadata};
-use std::{cmp::Reverse, collections::BTreeMap, time::SystemTime};
-use unicode_width::UnicodeWidthChar;
+use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, time::SystemTime};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// What one discovery probe found about a session with valid metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -430,6 +430,21 @@ fn literal(text: &str) -> String {
             escaped
         })
         .collect()
+}
+
+/// `text` as it fits `cells` display cells: whole when it fits, otherwise
+/// statically truncated to end with `…` within them (owner decision on
+/// #112, 2026-11-16: nothing marquees).
+/// Text with no cell at all is empty.
+pub(crate) fn truncate(text: &str, cells: usize) -> Cow<'_, str> {
+    if text.width() <= cells {
+        Cow::Borrowed(text)
+    } else if cells == 0 {
+        Cow::Borrowed("")
+    } else {
+        // The ellipsis takes one cell.
+        Cow::Owned(format!("{}…", clip(text, cells - 1)))
+    }
 }
 
 /// The leading part of `text` that fits `cells` display cells, never
@@ -911,14 +926,23 @@ mod tests {
         assert!(!registry.rows()[0].label.contains(key.as_str()));
     }
 
-    /// TRM-06 / SEL-01 (cell-safe clipping): clipping never splits a wide
-    /// character and keeps combining marks with their base.
+    /// TRM-06 / SEL-01 (cell-safe truncation; owner decision on #112,
+    /// 2026-11-16: nothing marquees): text that fits its cells is kept
+    /// whole, at the limit too; one cell past it, it ends with `…` within
+    /// them. Truncation never splits a wide character, so a wide character
+    /// that would cross the limit leaves a blank cell's room, and combining
+    /// marks stay with their base. No cell holds nothing at all.
     #[test]
-    fn clipping_is_display_cell_safe() {
-        assert_eq!(clip("日本語", 5), "日本");
-        assert_eq!(clip("日本語", 4), "日本");
-        assert_eq!(clip("e\u{301}x", 1), "e\u{301}");
-        assert_eq!(clip("abc", 0), "");
-        assert_eq!(clip("abc", 3), "abc");
+    fn overflowing_text_is_truncated_display_cell_safe_with_an_ellipsis() {
+        assert_eq!(truncate("abc", 3), "abc");
+        assert_eq!(truncate("abcd", 3), "ab…");
+        assert_eq!(truncate("日本語", 6), "日本語");
+        assert_eq!(truncate("日本語", 5), "日本…");
+        assert_eq!(truncate("日本語", 4), "日…");
+        assert_eq!(truncate("e\u{301}xy", 2), "e\u{301}…");
+        assert_eq!(truncate("e\u{301}x", 2), "e\u{301}x");
+        assert_eq!(truncate("ab", 1), "…");
+        assert_eq!(truncate("ab", 0), "");
+        assert_eq!(truncate("", 0), "");
     }
 }

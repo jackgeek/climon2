@@ -257,7 +257,8 @@ If there is too little supported application space, show explicit
 `Terminal too small`, retain clients/control/models, set
 [viewing](../../GLOSSARY.md#status-and-attention) false, and send neither
 application input nor invalid resize. Global commands remain usable.
-Marquee applies only to overflowing chrome labels, never to the application canvas.
+Nothing marquees, neither chrome nor the application canvas
+([owner decision on #112](https://github.com/jackgeek/climon2/issues/112), 2026-11-16).
 
 During resize/restoration retain the last coherent frame clipped/padded to the
 current area; do not repeatedly blank or flash a restoring screen. Construct the
@@ -289,7 +290,25 @@ Respect supported synchronized updates for coherent frames, but do not stall
 required UI, selector, or exit progress. Numerical scheduling/rendering budgets
 are in [operational limits](../monitor-operational-limits.md#ui-sampling-and-responsiveness).
 
+**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)):** while the application's synchronized update
+(`CSI ? 2026 h`) is open in the monitor's model, the monitor keeps painting
+the canvas it painted before the update, for that session at that host
+size, and draws the top row and overlays as ever; the update shows whole at
+its end (`CSI ? 2026 l`), which the session daemon sends a controller once
+vte's 150 ms timeout passes. The monitor never writes a synchronized update
+to its host. Resize and restoration keep the last coherent frame clipped or
+padded until the restoration at the new geometry is applied, and the
+monitor submits each desired size at once, so no resize intent is ever
+unsent to coalesce.
+
 ## Normal history, alternate screen, and stale inspection
+
+**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)), except stale inspection and recovery below:**
+normal history scrolling, anchoring, eviction, return to live, the
+alternate-screen wheel and the cursor rules of this section and the next.
+The wheel moves one row a notch; while scrolled back the top row's control
+slot says `History`; the truncation notice sits above the oldest kept row
+(owner decisions, 2026-11-16).
 
 Normal-screen history is bounded internal
 [retained history](../../GLOSSARY.md#restoration-and-presentation), not host
@@ -331,10 +350,11 @@ replayed. Numerical backoff/budgets are in
 
 ## Chrome, cursor, and host copy
 
-Only the title/fallback **label** text marquees on overflow.
-Status/control/error information stays stationary. Short labels remain static;
-label changes restart the marquee; offsets and clipping respect
+Nothing marquees ([owner decision on #112](https://github.com/jackgeek/climon2/issues/112), 2026-11-16).
+A title/fallback **label** that overflows its room is truncated statically:
+it ends with `…` at the available width, and truncation respects
 [display cells](TERMS.md#display-cell), including wide/combining characters.
+Status/control/error information stays stationary.
 Full details remain accessible in the selector. Session titles are inert labels,
 not host-title updates.
 

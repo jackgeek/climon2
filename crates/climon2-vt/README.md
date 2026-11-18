@@ -239,6 +239,28 @@ only, so items a macro generates are not checked.
   nothing, even when it fills them exactly, and a model whose first chunk
   awaits its first scroll has pushed no row (#166). Applying a restoration
   replaces the history and its state whole.
+- `View::scrolled()` is how many rows the normal screen's view is scrolled
+  back into its history (#112): 0 for the live screen and on the alternate
+  screen, which never shows history and keeps the normal view's place.
+  `Model::scroll(rows)` moves it, back for positive `rows`, between the
+  live screen and the oldest row shown, or one row further, the
+  [truncation notice](../../GLOSSARY.md#restoration-and-presentation)'s
+  place above it, once the history is truncated; `Model::return_live()`
+  returns it. Output keeps a scrolled view anchored: each row it pushes
+  into history moves the view back one, counted exactly per engine step
+  from the engine's own display offset (which moves back with every row
+  it pushes and is never shown), and only for a scroll region that starts
+  at the top row. When the rows a view shows are discarded (beyond
+  `history_rows`, refused by the bound, shortened), it moves to the notice
+  above the oldest row retained, never to the live screen; clearing the
+  history (`CSI 3 J`, RIS) returns it live, and an applied restoration is
+  live. A step's count stops one row short of the engine's history limit
+  (a chunk is 1000 rows), so a single step pushing that many rows can
+  leave a view on the oldest row below the notice.
+- `View::synchronizing()` says the application's synchronized update
+  (`CSI ? 2026 h`) is open until its end (`CSI ? 2026 l`) or RIS, so the
+  screen may be half drawn. The session daemon ends an update its
+  controller still has open once vte's 150 ms timeout passes.
 
 ## Scenario-to-test mapping
 
@@ -290,6 +312,8 @@ monitor's evidence.
 | TRM-05 (crate case): alternate scroll off in a fresh model and the daemon's virtual terminal, as xterm starts; set by `CSI ? 1007 h`, reset by `CSI ? 1007 l` and RIS; restorations send it as the application left it, `CSI ? 1007 l` before the application set it (#179) | `tests/view.rs`: `alternate_scroll_follows_mode_1007`; `tests/restore.rs`: `a_restoration_sends_alternate_scroll_only_once_the_application_set_it` |
 | TRM-05 (crate case): normal history rows as cells; alternate scroll mode; no history over the alternate screen; cleared history starting again complete | `tests/view.rs`: `rows_scrolled_off_the_normal_screen_are_its_history`, `alternate_scroll_follows_mode_1007`, `the_alternate_screen_shows_no_history_until_it_is_left`, `cleared_history_starts_again_with_nothing_discarded` |
 | TRM-05, LIM-03 (crate cases): explicit history truncation at the row limit and one past it, when the allocation bound refuses growth (at the bound and one byte below), when shortening discards rows and not when it discards none, while the alternate screen is active, and replaced whole by an applied restoration, whose first scroll took room from that history (#166); none when output exactly fills the admitted chunks (SU, ED 2, line feeds); a history full at its limit reporting it once output could push a row out (owner decision) | `tests/view.rs`: `history_is_truncated_one_row_past_its_limit`, `history_the_bound_stops_growing_is_truncated`, `shortened_history_is_truncated_only_when_rows_are_discarded`, `the_alternate_screen_shows_no_history_until_it_is_left`, `a_restoration_replaces_a_truncated_history_whole`, `output_filling_the_admitted_history_exactly_discards_nothing`, `a_history_full_at_its_limit_reports_truncation_once_output_could_push_a_row_out` |
+| TRM-05 (crate cases, #112): the normal screen's view scrolls a row at a time between the live screen and the oldest row (the notice above it once truncated), never on the alternate screen, which keeps its place; it stays anchored while output pushes rows (one at a time, several in one read, by wrapping), not for a scroll region below the top row or cursor movement; eviction one row past its anchor moves it to the notice above the oldest row retained, and so does shortening beneath it; clearing history or RIS returns it live, and so does an applied restoration | `tests/scrolled.rs`: `scrolling_stays_within_history_and_live`, `a_scrolled_view_stays_anchored_while_output_continues`, `eviction_moves_the_view_to_the_notice_above_the_oldest_row`, `clearing_history_returns_a_scrolled_view_to_live`, `the_alternate_screen_is_never_scrolled`, `shortening_history_beneath_a_scrolled_view_moves_it_to_the_notice`, `an_applied_restoration_is_live` |
+| TRM-01 (crate case, #112): a synchronized update is open from `CSI ? 2026 h` to `CSI ? 2026 l` or RIS, a second begin changing nothing | `tests/scrolled.rs`: `a_synchronized_update_is_open_from_its_begin_to_its_end` |
 | ADR 0007 (#83): no engine type in the public interface, the views included | `xtask/tests/vt_interface.rs`: `the_virtual_terminal_interface_names_no_engine_type` |
 
 ## Limitations
@@ -308,7 +332,8 @@ the monitor's default 10,000, ten whole chunks) or the bound refuses it, a
 full history loses its oldest row to each row pushed without the engine
 reporting it, so it reports truncation as soon as output that could push a
 row out leaves it full, even before one is lost (the owner's decision on
-#83; exact counting is decided with #112). A model keeping no history reports
+#83; the anchored view counts pushed rows exactly, [above](#read-only-views),
+#112). A model keeping no history reports
 it as soon as it is fed.
 
 Titles are decoded by Alacritty 0.26.0: it trims surrounding whitespace,

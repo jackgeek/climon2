@@ -15,7 +15,7 @@
 use crate::{
     mouse::{Gesture, Mouse},
     paint::HostCursor,
-    registry::{View, clip},
+    registry::{View, truncate},
     router::{Begin, Key, Pasted, Routed},
     search::{Edit, Search},
 };
@@ -526,12 +526,7 @@ fn separator(area: Rect, buffer: &mut Buffer) {
 /// (owner decision on #112), never splitting a wide character.
 fn text_at(buffer: &mut Buffer, area: Rect, text: &str, style: Style) {
     let cells = usize::from(area.width);
-    let fitted = if clip(text, cells).len() == text.len() {
-        text.to_owned()
-    } else {
-        format!("{}…", clip(text, cells.saturating_sub(1)))
-    };
-    buffer.set_stringn(area.x, area.y, fitted, cells, style);
+    buffer.set_stringn(area.x, area.y, truncate(text, cells), cells, style);
 }
 
 /// The selector's command for `key`, if it has one: a bare Escape, a cursor

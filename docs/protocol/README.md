@@ -349,10 +349,10 @@ Session daemons already send it over wire revision 1 as
 consumes it yet.
 Cached titles must be marked stale/unavailable when delivery becomes uncertain.
 An empty title restores the command/arguments fallback.
-The permanent top row uses title/fallback as a label only, with
-[display-cell](TERMS.md#display-cell)-safe
-marquee solely for overflowing label text; status/control/error stay stationary
-and full details remain in the selector. No host-title change is made.
+The permanent top row uses title/fallback as a label only; overflowing label
+text is truncated statically, ending with `…` at a
+[display-cell](TERMS.md#display-cell)-safe width, and nothing marquees;
+status/control/error stay stationary and full details remain in the selector. No host-title change is made.
 
 Plugin implementation, configuration, and interface examples are deferred;
 the earlier title-plugin release requirement is superseded. Older daemons

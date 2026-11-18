@@ -269,11 +269,19 @@ a full history for each row pushed without reporting it. **Decided (owner,
 2026-11-13, #83):** such a history reports truncation as soon as output that
 could push a row out leaves it full, even before a row is lost. While the
 first chunk awaits the first scroll (#166), no token pushes a row, since one
-that could have admitted the chunk, so nothing is truncated then. Exact
-counting, which would need counting headroom like the daemon's
-([below](#restoration-three-phases-produced-incrementally)), is decided with
-[#112](https://github.com/jackgeek/climon2/issues/112), whose anchored
-viewport (TRM-05) may need it.
+that could have admitted the chunk, so nothing is truncated then. The flag
+keeps that meaning. **Implemented
+([#112](https://github.com/jackgeek/climon2/issues/112)):** the anchored
+viewport (TRM-05) counts the rows each engine step pushes exactly, with no
+counting headroom like the daemon's
+([below](#restoration-three-phases-produced-incrementally)): only while a
+view is scrolled back, the step starts the engine's own display offset one
+row back, and Alacritty moves it back by each row it pushes into history
+(for a scroll region at the top row; one below it moves the offset without
+pushing, so it is not counted). The count stops one row short of the
+engine's history limit, so a single step pushing a whole chunk can leave a
+view on the oldest row instead of the notice above it. The offset is never
+shown.
 
 ## Live output policy and query authority
 
