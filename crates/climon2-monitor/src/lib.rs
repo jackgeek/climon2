@@ -28,14 +28,15 @@ mod terminal;
 
 use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
-use climon2_vt::{Limits, Parser};
+use climon2_vt::{Limits, Parser, view::Modes};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
+use mouse::{Area, Gestures, Mouse};
 use registry::{ClientEvent, Kind, Registry, Report};
-use router::{Key, Routed, Router};
+use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
 use startup::Startup;
@@ -45,7 +46,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
-use terminal::{Control, Presentation, Request, Terminal};
+use terminal::{Authority, Control, Paste, Presentation, Request, Terminal};
 
 /// A one-line diagnostic that the thin main prints, after the host is
 /// restored, with the climon2 error code.
@@ -126,6 +127,41 @@ struct Monitor {
     /// The one vte parser every terminal's model is fed through (#166),
     /// counted once beside their footprints at startup.
     parser: Parser,
+    /// The paste under way and the target it goes to, while that target
+    /// takes input; none while none is, or once its target changed.
+    pasting: Option<Pasting>,
+    /// The mouse gesture under way and its owner.
+    gestures: Gestures<Target>,
+    /// Whether the host has focus: assumed until it reports otherwise, since
+    /// a host that never reports focus cannot be detected (owner decision on
+    /// #111).
+    host_focused: bool,
+    /// What received application input after the last read; a change
+    /// before the next read is a target change.
+    context: InputContext,
+}
+
+/// A session under the authority it takes input with.
+type Target = (SessionId, Authority);
+
+/// The selected session, whether a modal covers it, and the authority its
+/// control period and restoration hold, if any: any change is a target
+/// change (spec #73, "Target changes").
+type InputContext = (Option<SessionId>, bool, Option<Authority>);
+
+/// A paste going to its target.
+struct Pasting {
+    target: Target,
+    /// The application had bracketed paste on when the paste began.
+    bracketed: bool,
+}
+
+/// The target taking application input now, its modes and the area of its
+/// canvas that the host shows.
+struct Taking {
+    target: Target,
+    modes: Modes,
+    area: Area,
 }
 
 impl Monitor {
@@ -163,6 +199,10 @@ impl Monitor {
             },
             take_control: take_control.map(climon2_core::keys::ControlKey::byte),
             parser: Parser::new(),
+            pasting: None,
+            gestures: Gestures::default(),
+            host_focused: true,
+            context: InputContext::default(),
         };
         monitor.show().map(|()| monitor)
     }
@@ -190,9 +230,33 @@ impl Monitor {
         let ending = self.handle(event)?;
         if ending.is_none() {
             self.collect();
+            self.retarget();
             self.show()?;
         }
         Ok(ending)
+    }
+
+    /// A target change since the last read discards a pending prefix (spec
+    /// #73, "Target changes"); one the read itself made came before any
+    /// prefix it left pending. An open paste or gesture learns of a change
+    /// when its next part arrives.
+    fn retarget(&mut self) {
+        let current = self.taking().map(|taking| taking.target);
+        self.cut(current.as_ref());
+        let context = self.context();
+        if context != self.context {
+            self.router.retarget();
+        }
+        self.context = context;
+    }
+
+    fn context(&self) -> InputContext {
+        let id = self.selected.clone();
+        let authority = id
+            .as_ref()
+            .and_then(|id| self.terminals.get(id))
+            .and_then(Terminal::authority);
+        (id, self.covered(), authority)
     }
 
     fn handle(&mut self, event: Event<'_>) -> io::Result<Option<Ending>> {
@@ -214,6 +278,7 @@ impl Monitor {
     /// being painted.
     fn show(&mut self) -> io::Result<()> {
         self.mark_shown();
+        self.synchronise();
         let rows = self.registry.rows();
         let row = self
             .selected
@@ -237,6 +302,23 @@ impl Monitor {
             session,
         };
         self.screen.show(&scene)
+    }
+
+    /// What each terminal owes its application before the frame: the end
+    /// marker of a paste cut short ([`Terminal::paste_end`]), then
+    /// application focus (spec #73, "Application focus"). The selected
+    /// session is focused while no modal covers it and the host has focus;
+    /// every other is not. Each ready controller with `focus-v1` is told of
+    /// each change once, a newly ready one of the current desire.
+    fn synchronise(&mut self) {
+        let focused = self.host_focused && !self.covered();
+        for (id, terminal) in &mut self.terminals {
+            let desired = focused && self.selected.as_ref() == Some(id);
+            let owed = terminal.paste_end();
+            for request in owed.into_iter().chain(terminal.focus(desired)) {
+                self.supervisor.request(id.clone(), request);
+            }
+        }
     }
 
     /// Only the [`Monitor::shown`] terminal is shown.
@@ -421,6 +503,7 @@ impl Monitor {
             let released = self.router.release();
             self.route(released.into_iter().collect())?;
         }
+        self.context = self.context();
         Ok(ending)
     }
 
@@ -442,7 +525,93 @@ impl Monitor {
         Ok(ending)
     }
 
+    /// Pastes, mouse reports and host focus reports bypass keys.
     fn routed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
+        match routed {
+            Routed::Paste(pasted) => self.paste(pasted, typed).map(|()| None),
+            Routed::Mouse(mouse) => self.mouse(mouse, typed).map(|()| None),
+            Routed::Focus(focused) => {
+                self.host_focused = focused;
+                Ok(None)
+            }
+            keyed => self.keyed(keyed, typed),
+        }
+    }
+
+    /// A paste is data for the target that took input when it began, sent
+    /// with that target's markers while it still takes input; once it does
+    /// not, the paste is [cut](Monitor::cut) (spec #73, "Paste rules",
+    /// "Target changes"). A modal owns a paste: the selector's search takes
+    /// it (#113), the key introduction discards it; a paste a modal covers
+    /// part-way is cut, and the search ignores the rest of it, which it
+    /// never saw begin. A prefix the paste discarded reaches its target as
+    /// one literal prefix first.
+    fn paste(&mut self, pasted: Pasted, typed: &mut Vec<u8>) -> io::Result<()> {
+        if self.covered() {
+            self.cut(None);
+            return self.modal(&Routed::Paste(pasted));
+        }
+        let taking = self.taking();
+        let starts = pasted.begin != Begin::Continued;
+        if starts {
+            self.pasting = taking.as_ref().map(|taking| Pasting {
+                target: taking.target.clone(),
+                bracketed: taking.modes.bracketed_paste,
+            });
+            typed.extend(pasted.begin.prefix());
+        }
+        let current = taking.map(|taking| taking.target);
+        self.cut(current.as_ref());
+        self.submit(typed);
+        let ends = pasted.ends;
+        if let Some(Pasting { target, bracketed }) = &self.pasting {
+            let part = Paste {
+                bracketed: *bracketed,
+                starts,
+                bytes: pasted.bytes,
+                ends,
+            };
+            self.supervisor
+                .request(target.0.clone(), Request::Paste(target.1, part));
+        }
+        self.pasting = self.pasting.take().filter(|_| !ends);
+        Ok(())
+    }
+
+    /// A paste whose target no longer takes input as `current` (spec #73,
+    /// "Target changes") is cut: the rest of it is discarded through its
+    /// end, never sent elsewhere, even if the target takes input again. An
+    /// application that had bracketed paste on is owed the end marker
+    /// (owner decision on #111), which its terminal pays.
+    fn cut(&mut self, current: Option<&Target>) {
+        let cut = self
+            .pasting
+            .take_if(|pasting| Some(&pasting.target) != current);
+        if let Some(Pasting {
+            target: (id, authority),
+            bracketed: true,
+        }) = cut
+        {
+            self.terminal(&id).cut_paste(authority);
+        }
+    }
+
+    /// A mouse report goes to its gesture's owner (`mouse.rs`): to the
+    /// target taking input, at its cell below the top row, as its modes ask,
+    /// or nowhere; chrome and overlays keep theirs, and an open modal
+    /// takes them (#113).
+    fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) -> io::Result<()> {
+        let taking = self.taking();
+        let target = taking.as_ref().map(|taking| (&taking.target, taking.area));
+        let cell = self.gestures.route(mouse, target);
+        let Some((cell, taking)) = cell.zip(taking) else {
+            return self.modal(&Routed::Mouse(mouse));
+        };
+        mouse::encode(mouse, cell, &taking.modes, typed);
+        Ok(())
+    }
+
+    fn keyed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
         if let Some(modes) = self
             .accepting()
             .filter(|_| !matches!(routed, Routed::Action(_)))
@@ -461,19 +630,37 @@ impl Monitor {
     /// The selected session's terminal modes while it accepts application
     /// input: no modal is open, the host has room for it, and its control
     /// period's restoration is applied, ready and painted.
-    fn accepting(&self) -> Option<climon2_vt::view::Modes> {
-        let (_, terminal) = self.target()?;
-        terminal.view().map(|view| view.modes())
+    fn accepting(&self) -> Option<Modes> {
+        self.taking().map(|taking| taking.modes)
     }
 
-    /// The selected session and its terminal, while nothing covers it, the
-    /// host has room for it and it may take input. `Terminal::input` alone
+    /// The target taking application input, its modes and its canvas's
+    /// area: its geometry, which the host shows below the top row as far as
+    /// it has room, so the host reports no cell beyond it.
+    fn taking(&self) -> Option<Taking> {
+        let (id, terminal, authority) = self.target()?;
+        let geometry = terminal.geometry();
+        terminal
+            .view()
+            .zip(geometry)
+            .map(|(view, geometry)| Taking {
+                target: (id.clone(), authority),
+                modes: view.modes(),
+                area: Area {
+                    cols: geometry.cols(),
+                    rows: geometry.rows(),
+                },
+            })
+    }
+
+    /// The [`Monitor::shown`] session, its terminal and the authority it
+    /// takes input with, while it may take input. `Terminal::input` alone
     /// learns of a modal or a small host only at the next frame; within one
     /// read, a key after prefix+s must already reach the selector.
-    fn target(&self) -> Option<(&SessionId, &Terminal)> {
+    fn target(&self) -> Option<(&SessionId, &Terminal, Authority)> {
         let id = self.shown()?;
         let terminal = self.terminals.get(id)?;
-        terminal.input().map(|_| (id, terminal))
+        terminal.input().map(|authority| (id, terminal, authority))
     }
 
     /// Submits the application bytes gathered so far to the target they
@@ -485,7 +672,7 @@ impl Monitor {
         let bytes = mem::take(typed);
         let target = self
             .target()
-            .and_then(|(id, terminal)| Some((id.clone(), terminal.input()?)));
+            .map(|(id, _, authority)| (id.clone(), authority));
         if let Some((id, authority)) = target {
             self.request(&id, Some(Request::Input(authority, bytes)));
         }

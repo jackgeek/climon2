@@ -8,7 +8,7 @@ use crate::{
     selector::Selector,
 };
 use climon2_core::{keys::ControlKey, protocol::TerminalSize};
-use climon2_vt::view::{self as vt, Content, CursorShape};
+use climon2_vt::view::{self as vt, Content, CursorShape, Modes, MouseReporting};
 use ratatui::{
     buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Rect},
@@ -24,6 +24,9 @@ use unicode_width::UnicodeWidthStr;
 
 /// The permanent top row's height.
 const TOP_ROW: u16 = 1;
+/// The monitor's own host mouse tracking: button events (DEC 1002), as it
+/// entered the host.
+const OWN_TRACKING: u16 = 1002;
 const NO_SELECTION: &str = "No session selected";
 const EMPTY: &str = "No sessions to show.";
 /// The body once rows exist, while nothing is selected (#107).
@@ -192,6 +195,7 @@ impl Screen {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
         let mut bytes = keypad_mode(self.painted.keypad, frame.keypad).to_vec();
+        bytes.extend(tracking_mode(self.painted.tracking, frame.tracking));
         bytes.extend(paint(&frame));
         let mut output = io::stdout().lock();
         output.write_all(&bytes)?;
@@ -229,23 +233,26 @@ impl Screen {
         };
         let search = scene.selector.render(scene.rows, below, &mut buffer);
         scene.introduction.render(below, &mut buffer);
+        let modes = self.followed(scene);
         Frame {
             buffer,
             cursor: shown_cursor(scene, cursor.filter(|_| self.desire().is_some()), search),
-            keypad: self.keypad(scene),
+            keypad: modes.is_some_and(|modes| modes.application_keypad),
+            tracking: modes.and_then(|modes| tracking(modes.mouse_reporting)),
         }
     }
 
-    /// Whether the host keypad should be in application mode: while the
-    /// selected session's canvas is shown uncovered and its application
-    /// asked for it. Modal UI gets the host's own numeric keypad.
-    fn keypad(&self, scene: &Scene<'_>) -> bool {
+    /// The modes of the application whose canvas is shown uncovered, which
+    /// the host follows: its keypad mode, and its mouse tracking level
+    /// (owner decision on #111). Modal UI and every other screen get the
+    /// host's own numeric keypad and the monitor's own mouse tracking.
+    fn followed(&self, scene: &Scene<'_>) -> Option<Modes> {
+        let shown = self.shows_canvas(scene.covered());
         let view = scene
             .session
             .as_ref()
             .and_then(|session| session.canvas.view());
-        self.shows_canvas(scene.covered())
-            && view.is_some_and(|view| view.modes().application_keypad)
+        view.filter(|_| shown).map(|view| view.modes())
     }
 
     /// The body with nothing selected, centred: its [`state`], then any
@@ -327,6 +334,29 @@ fn centred(lines: &[&str], buffer: &mut Buffer, area: Rect) {
     Paragraph::new(lines)
         .centered()
         .render(area.centered_vertically(height), buffer);
+}
+
+/// The host mouse tracking an application with `reporting` asks for: none
+/// while it reports nothing, when the monitor's own tracking applies.
+fn tracking(reporting: MouseReporting) -> Option<u16> {
+    match reporting {
+        MouseReporting::Off => None,
+        MouseReporting::Clicks => Some(1000),
+        MouseReporting::Drag => Some(1002),
+        MouseReporting::Motion => Some(1003),
+    }
+}
+
+/// When the host's mouse tracking changes, the old mode reset, then the new
+/// one set, so a terminal that keeps one tracking mode and one that keeps
+/// each separately both end in the new one; otherwise nothing.
+fn tracking_mode(painted: Option<u16>, next: Option<u16>) -> Vec<u8> {
+    let from = painted.unwrap_or(OWN_TRACKING);
+    let to = next.unwrap_or(OWN_TRACKING);
+    if from == to {
+        return Vec::new();
+    }
+    format!("\x1b[?{from}l\x1b[?{to}h").into_bytes()
 }
 
 /// DECKPAM or DECKPNM when the host keypad's mode changes, otherwise nothing.
@@ -485,6 +515,33 @@ mod tests {
     use super::*;
     use crate::terminal::Control;
     use climon2_vt::{Geometry, Limits, Model, Parser};
+
+    /// INP-05 (pure supplement; owner decision on #111): the host's mouse
+    /// tracking is switched only when it changes, the old mode reset and
+    /// the new one set; an application that reports nothing leaves the
+    /// monitor's own button-event tracking.
+    #[test]
+    fn the_host_mouse_tracking_is_written_when_it_changes() {
+        assert_eq!(tracking_mode(None, Some(1003)), b"\x1b[?1002l\x1b[?1003h");
+        assert_eq!(tracking_mode(Some(1003), None), b"\x1b[?1003l\x1b[?1002h");
+        assert_eq!(
+            tracking_mode(Some(1000), Some(1003)),
+            b"\x1b[?1000l\x1b[?1003h"
+        );
+        assert_eq!(tracking_mode(None, Some(1002)), b"");
+        assert_eq!(tracking_mode(Some(1000), Some(1000)), b"");
+        assert_eq!(tracking_mode(None, None), b"");
+        let levels = [
+            MouseReporting::Off,
+            MouseReporting::Clicks,
+            MouseReporting::Drag,
+            MouseReporting::Motion,
+        ];
+        assert_eq!(
+            levels.map(tracking),
+            [None, Some(1000), Some(1002), Some(1003)]
+        );
+    }
 
     /// INP-02 (pure supplement): the host keypad's mode is written only when
     /// it changes.

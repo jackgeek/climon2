@@ -28,6 +28,9 @@ pub(crate) struct Frame {
     /// taking input asked: the host sends its keypad keys as that
     /// application expects them.
     pub(crate) keypad: bool,
+    /// The host's mouse tracking (DEC 1000, 1002 or 1003) while it mirrors
+    /// the session taking input; none for the monitor's own (1002).
+    pub(crate) tracking: Option<u16>,
 }
 
 /// The cursor is hidden while cells are written, every cell's rendition is
@@ -205,6 +208,7 @@ mod tests {
             buffer,
             cursor: None,
             keypad: false,
+            tracking: None,
         }));
         let expected = [
             "\x1b[?25l\x1b[1;1H",
@@ -236,6 +240,7 @@ mod tests {
                 style: 6,
             }),
             keypad: false,
+            tracking: None,
         }));
         assert_eq!(
             painted,
@@ -264,6 +269,7 @@ mod tests {
             buffer,
             cursor: None,
             keypad: false,
+            tracking: None,
         }));
         assert_eq!(
             painted,
@@ -280,6 +286,7 @@ mod tests {
                 buffer,
                 cursor: None,
                 keypad: false,
+                tracking: None,
             })),
             "\x1b[?25l\x1b[1;1H\x1b[0;39;49m  \x1b[2;1H  \x1b[0m"
         );
