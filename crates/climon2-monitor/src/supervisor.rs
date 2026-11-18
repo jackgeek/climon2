@@ -1988,7 +1988,9 @@ mod tests {
 
     extern "C" fn drain(communication: *mut Communication, out: *mut Drained) -> Call {
         let fake = fake(communication);
-        *world().drains.entry(fake.id).or_default() += 1;
+        changed(&mut world(), |world| {
+            *world.drains.entry(fake.id).or_default() += 1;
+        });
         if fake.script.drain_fails {
             return failure(native::INTERNAL_ERROR, b"internal_error", b"drain failed");
         }
@@ -3600,6 +3602,49 @@ mod tests {
         thread::sleep(Duration::from_millis(500));
         let drained = drains() - before;
         assert!(drained < 100, "{drained} drains in 500 ms");
+        supervisor.stop();
+    }
+
+    /// LIM-02 (Monitor, Fault: delivery congestion; pure supplement over
+    /// the fake library, #119): throttling holds back only a client whose
+    /// row still follows its reports. Once its delivery stall fails it, the
+    /// closing client is drained again although its unprocessed reports
+    /// still fill its allowance, even while its run has not yet returned,
+    /// and it is then released and destroyed.
+    #[test]
+    fn a_client_failed_for_congestion_is_drained_while_it_closes() {
+        let id = session(61, 1);
+        let stalls = Script {
+            presents: true,
+            stalls: true,
+            ..Script::default()
+        };
+        script(&id, stalls);
+        let mut limits = climon2_core::config::Limits::default().library();
+        limits.event_bytes = one_report(&id);
+        limits.delivery_stall_ms = 200;
+        let mut supervised = limited(1, 20_000, fake_library(), limits);
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&id, "2026-11-13T10:00:00.000Z"));
+        let opened = ClientEvent::Opened { status: false };
+        assert_eq!(next(supervisor), (id.clone(), opened));
+        let why = "delivery congestion lasted past 200 ms";
+        assert_eq!(
+            next(supervisor),
+            (id.clone(), ClientEvent::Unavailable(why.into()))
+        );
+        let instance = guid(&id);
+        let drains = |world: &World| world.drains.get(&instance).copied().unwrap_or(0);
+        let closed = drains(&world());
+        until(|world| drains(world) > closed);
+        let_go(&id);
+        until(|world| world.seen.contains(&(instance, Seen::OwnerExited)));
+        let destroyed = [
+            Seen::Created,
+            Seen::Destroyed(native::SUCCESS),
+            Seen::OwnerExited,
+        ];
+        assert_eq!(seen(&instance), destroyed);
         supervisor.stop();
     }
 
