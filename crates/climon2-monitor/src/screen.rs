@@ -276,13 +276,19 @@ impl Screen {
     /// decision on #118), alone in the middle of the host: nothing else is
     /// shown or takes input any more.
     pub(crate) fn exiting(&mut self, waiting: usize) -> io::Result<()> {
+        let frame = self.exit_frame(waiting);
+        self.present(frame)
+    }
+
+    /// The exit screen's frame: the count alone, centred on the host.
+    fn exit_frame(&self, waiting: usize) -> Frame {
         let area = Rect::new(0, 0, self.size.cols, self.size.rows);
         let mut buffer = Buffer::empty(area);
         centred(&[&exiting(waiting)], &mut buffer, area);
-        self.present(Frame {
+        Frame {
             buffer,
             ..Frame::default()
-        })
+        }
     }
 
     /// Paints `frame` unless it is the one painted.
@@ -1094,6 +1100,24 @@ mod tests {
         assert_eq!(exiting(0), "Exiting: waiting for 0 sessions");
         assert_eq!(exiting(1), "Exiting: waiting for 1 session");
         assert_eq!(exiting(2), "Exiting: waiting for 2 sessions");
+    }
+
+    /// Owner decision on #118 (pure supplement): the exit screen covers the
+    /// whole host with its count alone, centred across and down it.
+    #[test]
+    fn the_exit_screen_is_its_count_alone_in_the_middle_of_the_host() {
+        let prefix = ControlKey::from_byte(0x1d).unwrap();
+        let screen = Screen::new(TerminalSize { cols: 40, rows: 9 }, prefix, None, true);
+        let buffer = screen.exit_frame(1).buffer;
+        assert_eq!(buffer.area, Rect::new(0, 0, 40, 9));
+        let rows: Vec<String> = (0..9)
+            .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let middle = format!("{:5}{:<35}", "", "Exiting: waiting for 1 session");
+        for (y, row) in rows.iter().enumerate() {
+            let expected = if y == 4 { middle.as_str() } else { "" };
+            assert_eq!(row.trim_end(), expected.trim_end(), "row {y}");
+        }
     }
 
     /// DSC-01 (initial-selection case, pure supplement) and the owner's
