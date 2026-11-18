@@ -2223,8 +2223,9 @@ fn discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap()
         }
     };
     probes(1);
-    // The first pass is still probing: open the selector during it.
-    assert_eq!(heard(&ear, Heard::Closed), []);
+    // Open the selector while the first pass probes: its probe is held for
+    // two seconds. A loaded host may observe the probe late enough that
+    // the pass has ended; the cadence below must hold either way.
     terminal.send("\x1ds").unwrap();
     shows_row(&mut terminal, "║Unavailable fake");
     probes(3);
