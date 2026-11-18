@@ -87,6 +87,11 @@ impl Link {
         Ok(())
     }
 
+    /// Drops what waits to be written: the peer will never read it.
+    pub(super) fn abandon(&mut self) {
+        self.outgoing.clear();
+    }
+
     /// The next whole frame `limit` admits, once all its bytes are here.
     pub(super) fn receive(&mut self, limit: FrameLimit) -> Result<Option<Frame>, Fault> {
         while self.more(limit)? {}

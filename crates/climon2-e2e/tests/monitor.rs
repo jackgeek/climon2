@@ -1,4 +1,4 @@
-//! Spec #73 / #74: the packaged monitor, reached as `c2 monitor`, `c2 mon` or
+//! Spec #73 / #74: the packaged monitor, reached as `c2 monitor`, `c2 m` or
 //! their `climon2` spellings through the installed launcher, driven through
 //! real PTYs from outer shells with isolated homes (the Monitor layer), on
 //! macOS and Linux. Every scenario ends with `assert_clean()`.
@@ -33,7 +33,7 @@ const COLS: u16 = 120;
 const TITLE: &str = "OUTER-TITLE";
 const BEFORE: &[u8] = b"BEFORE-MONITOR\r\n";
 const DONE: &[u8] = b"OUTER-DONE=";
-const USAGE: &str = "climon2: error: usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon\r\n";
+const USAGE: &str = "climon2: error: usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m\r\n";
 const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n";
 /// Three bracketed pastes with the default prefix: one holding prefix+x, one
 /// after a typed prefix and followed by a typed x, and one holding the prefix
@@ -151,12 +151,12 @@ fn refusal(terminal: &mut Terminal) -> String {
 }
 
 /// Derived scenario: monitor argument refusal (INP-01 refusals, Monitor layer).
-/// Any argument after `monitor` or its alias `mon` exits 2 with the usage line
-/// before a monitor starts.
+/// Any argument after `monitor` or its shortcut `m` exits 2 with the usage
+/// line before a monitor starts, and so does the removed alias `mon` (#287).
 #[test]
 fn installed_monitor_arguments_are_a_usage_error() {
     let package = Package::new();
-    for command in ["c2 monitor extra", "climon2 mon --help"] {
+    for command in ["c2 monitor extra", "climon2 m --help", "c2 mon"] {
         let mut terminal = outer(&package, command);
         assert_eq!(refusal(&mut terminal), USAGE);
         assert_released(&package, &mut terminal, 2);
@@ -199,7 +199,7 @@ fn installed_monitor_refuses_a_non_terminal_stdin_or_stdout() {
     let stdout = package.isolation.home().join("monitor stdout");
     for command in [
         "c2 monitor < /dev/null".to_owned(),
-        format!("climon2 mon > {}", quote(&stdout)),
+        format!("climon2 m > {}", quote(&stdout)),
     ] {
         let mut terminal = outer(&package, &command);
         assert_eq!(refusal(&mut terminal), NO_TERMINAL);
@@ -797,14 +797,14 @@ fn monitor_process(package: &Package) -> (i32, String) {
     processes.into_iter().next().unwrap()
 }
 
-/// ENT-01 (Monitor layer): from an installed release, `c2 monitor`, `c2 mon`,
-/// `climon2 monitor` and `climon2 mon` all open the same monitor through the
+/// ENT-01 (Monitor layer): from an installed release, `c2 monitor`, `c2 m`,
+/// `climon2 monitor` and `climon2 m` all open the same monitor through the
 /// launcher, the CLI and the version's installed `climon2-monitor`: one
 /// permanent top row above the explicit empty state, whose hint names the
 /// default prefix. Prefix+x exits 0 and releases the host even split across
 /// reads: the monitor has read the prefix alone before x is typed.
 #[test]
-fn installed_monitor_and_mon_open_the_same_monitor() {
+fn installed_monitor_and_m_open_the_same_monitor() {
     let package = Package::new();
     without_introduction(&package);
     let installed = package
@@ -814,7 +814,7 @@ fn installed_monitor_and_mon_open_the_same_monitor() {
         .join(VERSION)
         .join("climon2-monitor");
     let expected = expected_screen(ROWS, COLS, "Ctrl+]");
-    for command in ["c2 monitor", "c2 mon", "climon2 monitor", "climon2 mon"] {
+    for command in ["c2 monitor", "c2 m", "climon2 monitor", "climon2 m"] {
         let mut terminal = outer(&package, command);
         opened(&mut terminal);
         let (monitor, executable) = monitor_process(&package);

@@ -1,8 +1,11 @@
 # climon2-cli
 
 CLI orchestration for `exec [--headless] COMMAND [ARG...]`, `attach SESSION-ID`,
-`kill SESSION-ID`, `list [--json]` and `monitor` (alias `mon`). The usage string is
-`usage: c2 exec [--headless] <command> [args...] | attach <session-id> | kill <session-id> | list [--json] | monitor | mon`.
+`kill SESSION-ID`, `list [--json]` and `monitor`. Each command has a
+single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`; `r` is
+reserved for `relay`), `-h` is the short form of `--headless`, and help has
+only `--help` (#287). The usage string is
+`usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -140,9 +143,9 @@ its scenario table is in that crate's README.
 The monitor acceptance-matrix cases proven here are listed under
 [Specification mapping](#specification-mapping).
 
-The `monitor`/`mon` hand-off is proven through the installed launcher, as `c2`
+The `monitor`/`m` hand-off is proven through the installed launcher, as `c2`
 and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
-`installed_monitor_and_mon_open_the_same_monitor` (ENT-01),
+`installed_monitor_and_m_open_the_same_monitor` (ENT-01),
 `installed_monitor_arguments_are_a_usage_error` (derived argument refusal) and
 `missing_installed_monitor_fails_naming_its_version`.
 `tests/scaffold.rs` checks the exact usage line.
