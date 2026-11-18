@@ -3815,4 +3815,45 @@ mod tests {
             "{after:?}"
         );
     }
+
+    /// DEL-02 (pure supplement over the fake library, #117): only a retry
+    /// owed when a Delete's instance ends waits again once its Kill is
+    /// refused. A session rejected for good, deleted, whose Kill-only
+    /// instance (never retried) ends with its Kill refused, is never
+    /// started again.
+    #[test]
+    fn a_refused_kill_restarts_nothing_its_instances_were_not_owed() {
+        let rejected_for_good = session(34, 1);
+        let refusing = Script {
+            refuses_open: true,
+            retry: native::RETRY_PERMANENT,
+            ..Script::default()
+        };
+        let at_submit = Script {
+            kills: Killing::RefusedAtSubmit,
+            ..Script::default()
+        };
+        scripts(&rejected_for_good, &[refusing, at_submit]);
+        let Supervised {
+            mut supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        let created = "2026-11-13T10:00:00.000Z";
+        supervisor.start_client(metadata(&rejected_for_good, created));
+        let rejected = ClientEvent::Recovery(Recovery::Rejected(
+            "the client stopped before it opened".into(),
+        ));
+        reported_until(&supervisor, &rejected_for_good, &rejected);
+        supervisor.remove(metadata(&rejected_for_good, created), true);
+        let full =
+            ClientEvent::Termination(Termination::Refused("full: no room for a kill".into()));
+        assert_eq!(next(&supervisor), (rejected_for_good.clone(), full));
+        // Stopping joins every owner, so the Kill-only instance's end, and
+        // any restart it caused, is reported by then.
+        supervisor.stop();
+        let after: Vec<_> = supervisor.reports.try_iter().collect();
+        assert!(after.is_empty(), "{after:?}");
+        assert_eq!(generations(&rejected_for_good), [1, 2]);
+    }
 }
