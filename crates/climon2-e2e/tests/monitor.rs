@@ -65,7 +65,9 @@ fn outer_sized(package: &Package, command: &str, cols: u16) -> Terminal {
 
 /// After `command` returned `status`: the host released as
 /// [`support::assert_released`] checks, with the outer title untouched, no OSC
-/// output beyond the outer shell's own title, and the host's earlier content.
+/// output beyond the outer shell's own title and the monitor's root clear,
+/// which came once, after the monitor left its alternate screen (EXT-03,
+/// #118), and the host's earlier content.
 fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
     support::assert_released(package, terminal, status);
     assert_title_untouched(terminal);
@@ -648,7 +650,14 @@ fn key_introduction(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<S
         _ => "Enter  Select the highlighted session".to_owned(),
     });
     lines.extend((prefix != "Ctrl+[").then(|| "Esc  Cancel".to_owned()));
+    // Forward Delete, fn+⌫ on a Mac (owner decision on #117).
+    let delete = if cfg!(target_os = "macos") {
+        "Del (fn+⌫)"
+    } else {
+        "Del"
+    };
     lines.extend([
+        format!("{delete}  Delete the highlighted session"),
         "Click a row  Highlight it".to_owned(),
         "Click outside  Cancel".to_owned(),
         "Wheel  Scroll the list".to_owned(),
@@ -1167,8 +1176,9 @@ fn the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_sav
     shows(&mut hidden, &opened);
     let monitor = monitor_process(&package).0;
     read_alone(&mut hidden, monitor, b"\x1d?");
-    hidden.resize(21, 71).unwrap();
-    let small = empty_monitor(21, 71, &[EMPTY]);
+    // The dialog's 21 rows, with Delete listed (#117), leave one spare.
+    hidden.resize(23, 71).unwrap();
+    let small = empty_monitor(23, 71, &[EMPTY]);
     let still_open = overlaid(&small, &key_introduction("Ctrl+]", false, None));
     shows(&mut hidden, &still_open);
     hidden.send(b"\r").unwrap();
@@ -1829,17 +1839,26 @@ enum Answer {
     Turns(std::sync::Arc<Turns>),
 }
 
-/// Each client's acts in turn, the last list for every later client.
+/// Each client's acts in turn, the last list for every later client, and
+/// what a Kill's own connection is answered with.
 struct Turns {
     taken: std::sync::atomic::AtomicUsize,
     acts: Vec<Vec<Act>>,
+    kills: Vec<Act>,
 }
 
 impl Turns {
     fn answer(acts: Vec<Vec<Act>>) -> Answer {
+        Self::killing(acts, Vec::new())
+    }
+
+    /// [`Turns::answer`], answering each Kill (#117) with `kills`, in which
+    /// `"$open"` is the Kill's request ID.
+    fn killing(acts: Vec<Vec<Act>>, kills: Vec<Act>) -> Answer {
         Answer::Turns(std::sync::Arc::new(Self {
             taken: std::sync::atomic::AtomicUsize::new(0),
             acts,
+            kills,
         }))
     }
 
@@ -1861,8 +1880,17 @@ enum Act {
     Raw(u8, Vec<u8>),
     /// Wait until this file exists, for at most [`TIMEOUT`].
     Await(PathBuf),
+    /// Wait until this file exists, for at most five [`TIMEOUT`]s: through a
+    /// whole scenario.
+    Hold(PathBuf),
+    /// Answer the client's Leave only once this file exists, for at most
+    /// [`TIMEOUT`]: its cleanup waits meanwhile.
+    HoldLeave(PathBuf),
     /// Hang up.
     Close,
+    /// Read every later request and answer none, a Leave included, until
+    /// the peer hangs up.
+    Unanswered,
 }
 
 /// What a fake daemon heard, in the order its threads recorded it.
@@ -1880,6 +1908,8 @@ enum Heard {
     Served,
     /// After its acts, a turn-taking fake read a request with this code.
     Request(u8),
+    /// A turn-taking fake read a Kill on its own connection (#117).
+    Kill,
     /// A watched first connection was still open after the test's request
     /// was sent.
     Requested,
@@ -1914,6 +1944,16 @@ struct FakeDaemon {
 /// Valid metadata for `id` created at `created`, of this package's version,
 /// whose daemon socket is `socket`.
 fn fake_metadata(package: &Package, id: &str, created: &str, socket: &Path) -> PathBuf {
+    fake_metadata_of(package, (id, VERSION), created, socket)
+}
+
+/// [`fake_metadata`] of release `version`.
+fn fake_metadata_of(
+    package: &Package,
+    (id, version): (&str, &str),
+    created: &str,
+    socket: &Path,
+) -> PathBuf {
     let sessions = package.isolation.climon2_home().join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let path = sessions.join(format!("{id}.pty"));
@@ -1922,7 +1962,7 @@ fn fake_metadata(package: &Package, id: &str, created: &str, socket: &Path) -> P
         "daemon_pid": std::process::id(), "daemon_start_time": 1,
         "daemon_linux_identity": {"boot_id": "00000000-0000-4000-8000-000000000000", "start_ticks": 1},
         "command": "fake", "args": [id], "cwd": package.isolation.home(), "depth": 1,
-        "created_at": created, "climon2_version": VERSION,
+        "created_at": created, "climon2_version": version,
     });
     fs::write(&path, serde_json::to_vec(&metadata).unwrap()).unwrap();
     path
@@ -1936,11 +1976,22 @@ impl FakeDaemon {
         answer: Answer,
         ear: &Ear,
     ) -> Self {
+        Self::of(package, (id, VERSION), created, answer, ear)
+    }
+
+    /// [`FakeDaemon::start`] for a session of release `version`.
+    fn of(
+        package: &Package,
+        (id, version): (&'static str, &'static str),
+        created: &str,
+        answer: Answer,
+        ear: &Ear,
+    ) -> Self {
         let socket = package
             .isolation
             .home()
             .join(format!("{}.sock", &id[id.len() - 4..]));
-        let metadata = fake_metadata(package, id, created, &socket);
+        let metadata = fake_metadata_of(package, (id, version), created, &socket);
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1961,7 +2012,9 @@ impl FakeDaemon {
                     _ => answer.clone(),
                 };
                 let stopped = stopped.clone();
-                thread::spawn(move || answer_once(&mut connection, id, &answer, &ear, &stopped));
+                thread::spawn(move || {
+                    answer_once(&mut connection, (id, version), &answer, &ear, &stopped);
+                });
             }
         });
         Self {
@@ -1975,7 +2028,7 @@ impl FakeDaemon {
 
 fn answer_once(
     connection: &mut std::os::unix::net::UnixStream,
-    id: &'static str,
+    (id, version): (&'static str, &'static str),
     answer: &Answer,
     ear: &Ear,
     stopped: &std::sync::atomic::AtomicBool,
@@ -1992,28 +2045,35 @@ fn answer_once(
                 Family::StatusV1,
                 Family::FocusV1,
             ];
-            if hello(connection, id, families) {
+            if hello(connection, (id, version), families) {
                 serve(connection, acts);
             }
         }
         Answer::Unfocused(acts) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
-            if hello(connection, id, families) {
+            if hello(connection, (id, version), families) {
                 serve(connection, acts);
             }
         }
         Answer::Bare(answered) => {
-            let _ = hello(connection, answered, []);
+            let _ = hello(connection, (answered, version), []);
             let _ = connection.read_to_end(&mut Vec::new());
         }
         Answer::Turns(turns) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
-            if hello(connection, id, families) {
-                serve_heard(connection, || turns.next(), Some((ear, id)));
+            if hello(connection, (id, version), families) {
+                let acts = |kill: bool| {
+                    if kill {
+                        turns.kills.clone()
+                    } else {
+                        turns.next()
+                    }
+                };
+                serve_heard(connection, acts, Some((ear, id)));
             }
         }
         Answer::Hello(answered) => {
-            let _ = hello(connection, answered, [Family::MonitorV1]);
+            let _ = hello(connection, (answered, version), [Family::MonitorV1]);
             if connection.read(&mut [0; 1]).is_ok_and(|read| read > 0) {
                 hear(ear, id, Heard::Client);
                 hear(ear, id, Heard::HangingUp);
@@ -2048,7 +2108,7 @@ fn answer_once(
             hear(ear, id, Heard::Closed);
         }
         Answer::Held(answered) => {
-            let _ = hello(connection, answered, [Family::MonitorV1]);
+            let _ = hello(connection, (answered, version), [Family::MonitorV1]);
             let _ = connection.set_read_timeout(Some(Duration::from_millis(20)));
             while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 match connection.read(&mut [0; 256]) {
@@ -2063,11 +2123,11 @@ fn answer_once(
     }
 }
 
-/// Answers the hello as session `id`, advertising `daemon-wire-v1` and
-/// `families`; whether the answer was written.
+/// Answers the hello as session `id` of release `version`, advertising
+/// `daemon-wire-v1` and `families`; whether the answer was written.
 fn hello(
     connection: &mut std::os::unix::net::UnixStream,
-    id: &str,
+    (id, version): (&str, &str),
     families: impl IntoIterator<Item = climon2_core::wire::Family>,
 ) -> bool {
     use climon2_core::{
@@ -2077,7 +2137,7 @@ fn hello(
     };
     let reply = HelloReply {
         session_id: id.parse().unwrap(),
-        climon2_version: VERSION.parse().unwrap(),
+        climon2_version: version.parse().unwrap(),
         protocol: 1,
     };
     let limit = FrameLimit::new(1_048_576).unwrap();
@@ -2093,14 +2153,15 @@ fn hello(
 /// Serves one client: reads its Open, performs `acts`, then answers its
 /// Leave and hangs up.
 fn serve(connection: &mut std::os::unix::net::UnixStream, acts: &[Act]) {
-    serve_heard(connection, || acts.to_vec(), None);
+    serve_heard(connection, |_| acts.to_vec(), None);
 }
 
-/// [`serve`] with the acts `acts` gives once the Open is read, recording
-/// in `heard`, if given, the Open and every later request.
+/// [`serve`] with the acts `acts` gives once the Open, or a Kill on its own
+/// connection, is read, recording in `heard`, if given, the Open or the
+/// Kill and every later request.
 fn serve_heard(
     connection: &mut std::os::unix::net::UnixStream,
-    acts: impl FnOnce() -> Vec<Act>,
+    acts: impl FnOnce(bool) -> Vec<Act>,
     heard: Option<(&Ear, &'static str)>,
 ) {
     use climon2_core::wire::{Frame, FrameLimit, read_frame, write_frame};
@@ -2108,10 +2169,12 @@ fn serve_heard(
     let Ok(Some(open)) = read_frame(connection, limit) else {
         return;
     };
+    let kill = open.code() == KILL;
     if let Some((ear, id)) = heard {
-        hear(ear, id, Heard::Served);
+        hear(ear, id, [Heard::Served, Heard::Kill][usize::from(kill)]);
     }
-    let acts = acts();
+    let acts = acts(kill);
+    let mut leave_after = None;
     // The client stays until it leaves or the monitor exits.
     let _ = connection.set_read_timeout(None);
     let open: Value = serde_json::from_slice(open.body()).unwrap();
@@ -2126,14 +2189,27 @@ fn serve_heard(
             Act::Raw(code, body) => {
                 write_frame(connection, &Frame::new(*code, body.clone()), limit).is_ok()
             }
-            Act::Await(path) => {
-                let deadline = Instant::now() + TIMEOUT;
+            Act::Await(path) | Act::Hold(path) => {
+                let bound = [TIMEOUT, 5 * TIMEOUT][usize::from(matches!(act, Act::Hold(_)))];
+                let deadline = Instant::now() + bound;
                 while !path.exists() && Instant::now() < deadline {
                     thread::sleep(Duration::from_millis(10));
                 }
                 true
             }
+            Act::HoldLeave(path) => {
+                leave_after = Some(path);
+                true
+            }
             Act::Close => false,
+            Act::Unanswered => {
+                while let Ok(Some(frame)) = read_frame(connection, limit) {
+                    if let Some((ear, id)) = heard {
+                        hear(ear, id, Heard::Request(frame.code()));
+                    }
+                }
+                false
+            }
         };
         if !sent {
             return;
@@ -2144,6 +2220,9 @@ fn serve_heard(
             hear(ear, id, Heard::Request(frame.code()));
         }
         if frame.code() == LEAVE {
+            if let Some(path) = leave_after {
+                await_file(path);
+            }
             let leave: Value = serde_json::from_slice(frame.body()).unwrap();
             let left = json!({
                 "request_id": leave["request_id"], "outcome": "ok",
@@ -2155,8 +2234,17 @@ fn serve_heard(
     }
 }
 
+/// Waits until `path` exists, for at most [`TIMEOUT`].
+fn await_file(path: &Path) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !path.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Daemon wire revision 1 frame types, from the daemon wire reference.
 const LEAVE: u8 = 0x37;
+const KILL: u8 = 0x38;
 const RESPONSE: u8 = 0x40;
 const INITIAL_METADATA: u8 = 0x41;
 const STATUS_CHANGED: u8 = 0x43;
@@ -4206,22 +4294,26 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
 
 /// Spec #73 exit (owner decision on #109): input accepted before prefix+x
 /// holds shutdown only until it is answered or `deadlines.operation_ms`
-/// passes. With the session's daemon stopped, a key read with prefix+x is
-/// never answered, and the monitor still exits with status 0 within the
-/// ten-second operation deadline plus the two-second shutdown deadline
-/// (and a few seconds' margin for the host's release), well before the
-/// test's own bound. The deadline also bounds every operation before the
-/// daemon stops, Acquire, Ready and Focus among them, so it is long enough
-/// for a loaded host to answer those.
+/// passes, inside `deadlines.shutdown_ms` (owner decision on #118).
+/// EXT-02 and EXT-04 (Monitor, Fault; #118): with the session's daemon
+/// stopped, a key read with prefix+x is never answered, so its ten-second
+/// operation deadline fails the client's connection during the twelve-second
+/// shutdown, with no Leave confirmed: the monitor releases the host and
+/// clears it within the deadlines (and a few seconds' margin for the host's
+/// release), well before the test's own bound, then exits with the climon2
+/// error code and one diagnostic naming the session and why, never status
+/// 0. The operation deadline also bounds every operation before the daemon
+/// stops, Acquire, Ready and Focus among them, so it is long enough for a
+/// loaded host to answer those.
 #[test]
 fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let package = Package::new();
     without_introduction(&package);
     limits_config(
         &package,
-        serde_json::json!({"deadlines": {"operation_ms": 10_000, "shutdown_ms": 2000}}),
+        serde_json::json!({"deadlines": {"operation_ms": 10_000, "shutdown_ms": 12_000}}),
     );
-    headless(&package, &recorder("Keys"), "finish");
+    let id = headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid as i32;
     let mut terminal = outer(&package, "c2 monitor");
     record(&mut terminal, "Keys", COLS);
@@ -4233,7 +4325,20 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let took = started.elapsed();
     kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
     assert!(took < Duration::from_secs(17), "{took:?}");
-    assert_released(&package, &mut terminal, 0);
+    // Whether the client sent its Leave before the operation deadline failed
+    // it depends on scheduling (release builds usually do): either way the
+    // departure is unconfirmed, and the diagnostic says which evidence is
+    // missing.
+    let leave = ["", "Leave unconfirmed, "]
+        [usize::from(written(&mut terminal).contains(": Leave unconfirmed, client failed"))];
+    assert_diagnosed_after_release(
+        &mut terminal,
+        &format!(
+            "climon2: error: monitor shutdown unconfirmed: session {id}: {leave}client \
+             failed: timeout: the session daemon did not answer in time (logs: "
+        ),
+    );
+    assert_released(&package, &mut terminal, 125);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }
@@ -8369,5 +8474,1319 @@ fn representative_status_sequences_show_the_right_row_states() {
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// A host wide enough for a fake session's label and its error slot.
+const WIDE: u16 = 200;
+
+/// An idle fake session titled `title`, served until the monitor leaves.
+fn idle(title: &str) -> Answer {
+    with_status(title, wire_status("idle", &utc(1)), None, Vec::new())
+}
+
+/// Every client the fakes heard Open from, in order.
+fn served(ear: &Ear) -> Vec<&'static str> {
+    heard(ear, Heard::Served)
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect()
+}
+
+/// Waits, within a bound, until `ear` has heard `count` Opens.
+fn until_served(ear: &Ear, count: usize) {
+    let deadline = Instant::now() + 3 * TIMEOUT;
+    while served(ear).len() < count {
+        assert!(Instant::now() < deadline, "served only {:?}", served(ear));
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// DSC-02 (Monitor) and LIM-06 (Monitor, start case; #120): with one start
+/// slot and `scheduling.newer_start_burst` at 1, four sessions whose starts
+/// all stall (their daemons never answer Open, so each start lasts its
+/// `deadlines.start_ms`) start newest first, except that after each newer
+/// start the oldest waiting one has its turn: 4, 1, 3, 2 by creation.
+/// Every session is started, none capped or left out, and while the starts
+/// stall the selector opens and lists them and prefix+x exits at once.
+#[test]
+fn stalled_newer_starts_give_the_oldest_session_its_turn_while_the_monitor_responds() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "scheduling": {"starts": 1, "newer_start_burst": 1},
+            "deadlines": {"start_ms": 1000},
+            "retry": {"initial_ms": 3_600_000, "cap_ms": 3_600_000},
+        }),
+    );
+    let never = package.isolation.home().join("never");
+    let ear = Ear::default();
+    let ids = [0xe1, 0xe2, 0xe3, 0xe4].map(fake_id);
+    let fakes: Vec<_> = (1..)
+        .zip(ids)
+        .map(|(second, id)| {
+            let stalls = Turns::answer(vec![vec![Act::Await(never.clone())]]);
+            let created = format!("2026-01-01T00:00:0{second}.000Z");
+            FakeDaemon::start(&package, id, &created, stalls, &ear)
+        })
+        .collect();
+    let mut terminal = outer(&package, "c2 monitor");
+    until_served(&ear, 1);
+    terminal.send("\x1ds").unwrap();
+    whole_frame_shows(&terminal, "every session listed", |screen| {
+        ids.iter().all(|id| screen.contains(&format!(" fake {id}")))
+    });
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    until_served(&ear, 4);
+    assert_eq!(served(&ear), [ids[3], ids[0], ids[2], ids[1]]);
+    // Exit once the last start has failed: no connection is left whose
+    // departure shutdown could not confirm (#118), so exit is clean.
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", &format!("fake {}", ids[1]));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// Has the dynamic loader's blocked open of the FIFO `library` return, as
+/// often as it is opened again, until `terminal` shows `shown`.
+fn unstall(terminal: &Terminal, library: &Path, shown: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let deadline = Instant::now() + TIMEOUT;
+    while !terminal.screen().contains(shown) {
+        assert!(Instant::now() < deadline, "{shown} never shown");
+        // A reader waiting in open lets this writer in; closing it at once
+        // gives the reader end of file. With no reader it fails at once.
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(library);
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// DSC-02 (Monitor, Fault: one release stalled), the Linux amendment (a
+/// load that never returns is a native fault: load workers have no
+/// deadline, the system loader serializes loading) and the owner decision
+/// on `deadlines.load_ms` (#120): release 0.0.98's library is a FIFO, so
+/// the dynamic loader's open of it does not return. Its session, the
+/// newest, stays Starting and, once selected, says `library loading
+/// slowly`; the load is never aborted. Meanwhile the monitor stays
+/// responsive (the selector lists and selects, prefix+x exits) and the
+/// client of the release already loaded keeps working: its status change
+/// still arrives. A session created during the stall starts once the open
+/// returns, when the stalled release is refused and its session
+/// Unavailable. On glibc the stalled loader also holds up every new thread
+/// (its TLS lock), so no new client or discovery probe can start until then:
+/// an open owner question on #120.
+#[test]
+fn a_stalled_release_load_is_reported_and_never_holds_up_the_monitor() {
+    const STALLED: &str = "0.0.98";
+    let package = Package::private();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "deadlines": {"load_ms": 1000, "operation_ms": 300_000},
+            "retry": {"initial_ms": 3_600_000, "cap_ms": 3_600_000},
+        }),
+    );
+    let folder = package.executable_home().join(STALLED);
+    fs::create_dir_all(&folder).unwrap();
+    let library = folder.join(support::LIBRARY);
+    let mode = nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR;
+    nix::unistd::mkfifo(&library, mode).unwrap();
+    let ear = Ear::default();
+    let [loaded, stalled, older] = [0xf1, 0xf2, 0xf3].map(fake_id);
+    let change = package.isolation.home().join("loaded.change");
+    let changes = with_status(
+        "Loaded",
+        wire_status("idle", &utc(1)),
+        None,
+        vec![
+            Act::Hold(change.clone()),
+            Act::Send(
+                STATUS_CHANGED,
+                json!({"status": wire_status("running", &utc(10))}),
+            ),
+        ],
+    );
+    let mut fakes = vec![FakeDaemon::start(
+        &package,
+        loaded,
+        "2026-01-01T00:00:02.000Z",
+        changes,
+        &ear,
+    )];
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    top_row_starts(&terminal, "Loaded ");
+    fakes.push(FakeDaemon::of(
+        &package,
+        (stalled, STALLED),
+        "2026-01-01T00:00:03.000Z",
+        idle("Stalled"),
+        &ear,
+    ));
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, stalled);
+    let slowly = format!("fake {stalled} | library loading slowly ");
+    top_row_starts(&terminal, &slowly);
+    fakes.push(FakeDaemon::start(
+        &package,
+        older,
+        "2026-01-01T00:00:01.000Z",
+        idle("Older"),
+        &ear,
+    ));
+    fs::write(&change, b"").unwrap();
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Loaded");
+    listed_with(&terminal, "Starting", &format!("fake {stalled}"));
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    top_row_starts(&terminal, &slowly);
+    unstall(&terminal, &library, "Unavailable");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, STATUS, "Older");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// What one client instance reserves by default: its library's share of
+/// `memory.client_bytes` (3,407,872 bytes), and its owner's and two
+/// workers' 2 MiB stacks.
+const INSTANCE: u64 = 3_407_872 + 3 * 2_097_152;
+/// The monitor's parser and one release's 64 MiB reservation.
+const RELEASE_AND_PARSER: u64 = 2_097_152 + 67_108_864;
+
+/// LIM-04 (Monitor, Fault: memory), relaxed qualification's raised
+/// reservation, and the Awaiting resources rows of #120 (confirmed
+/// not-connected scenario; derived Enter scenario): with
+/// `memory.total_bytes` holding the parser, the release's qualified 64 MiB
+/// (raised from a configured 1 MiB) and exactly two instances, two
+/// sessions start and a third, arriving later, is resource-blocked. It is
+/// listed as `Awaiting resources` among the not-connected rows; Enter
+/// selects it read-only, with no terminal content, its condition and what
+/// is short, and never acquires. Once one session ends its reservation is
+/// freed and the blocked session is admitted: it shows the non-controller
+/// placeholder, sending no Acquire, until the take-control key acquires it.
+#[test]
+fn a_resource_blocked_session_awaits_resources_until_capacity_is_freed() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "memory": {
+                "total_bytes": RELEASE_AND_PARSER + 2 * INSTANCE,
+                "history_bytes_total": 16_777_216,
+            },
+            "resources": {"release_bytes": 1_048_576},
+            "deadlines": {"operation_ms": 300_000},
+            "retry": {"admission_ms": 100},
+        }),
+    );
+    let ear = Ear::default();
+    let [alpha, beta, gamma] = [0xa7, 0xa8, 0xa9].map(fake_id);
+    let go = package.isolation.home().join("alpha.go");
+    let ends = with_status(
+        "Alpha",
+        wire_status("idle", &utc(2)),
+        None,
+        vec![
+            Act::Hold(go.clone()),
+            Act::Send(
+                COMMAND_FINAL,
+                json!({"command_result": exited(0), "status": null}),
+            ),
+        ],
+    );
+    let mut fakes = vec![
+        FakeDaemon::start(&package, alpha, "2026-01-01T00:00:02.000Z", ends, &ear),
+        FakeDaemon::start(
+            &package,
+            beta,
+            "2026-01-01T00:00:01.000Z",
+            idle("Beta"),
+            &ear,
+        ),
+    ];
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    top_row_starts(&terminal, "Alpha ");
+    let watched = Turns::answer(vec![vec![
+        opened_selecting(true, false),
+        initial_metadata("Gamma", Some(wire_status("idle", &utc(3))), None),
+    ]]);
+    fakes.push(FakeDaemon::start(
+        &package,
+        gamma,
+        "2026-01-01T00:00:03.000Z",
+        watched,
+        &ear,
+    ));
+    terminal.send("\x1ds").unwrap();
+    let awaiting = "Awaiting resources";
+    listed_with(&terminal, awaiting, &format!("fake {gamma}"));
+    listed_with(&terminal, STATUS, "Beta");
+    let screen = terminal.screen();
+    let at = |text: &str| screen.find(text).unwrap();
+    assert!(
+        at("Alpha") < at(awaiting) && at("Beta") < at(awaiting),
+        "{screen}"
+    );
+    enter_on(&mut terminal, gamma);
+    let short = "not enough memory: 9699328 bytes needed, 0 bytes available";
+    let top = session_top_row(
+        usize::from(WIDE),
+        &format!("fake {gamma} | {short}"),
+        &[awaiting, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&top, ROWS, WIDE, &[NO_CONTENT, awaiting]),
+    );
+    assert!(served(&ear).iter().all(|id| *id != gamma));
+    fs::write(&go, b"").unwrap();
+    let top = session_top_row(
+        usize::from(WIDE),
+        "Gamma",
+        &[STATUS, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&top, ROWS, WIDE, &[VIEWED_ELSEWHERE, TAKEOVER_HINT]),
+    );
+    const ACQUIRE: u8 = 0x33;
+    assert!(!requests_by_turn(&ear, gamma).concat().contains(&ACQUIRE));
+    terminal.send("\x14").unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !requests_by_turn(&ear, gamma).concat().contains(&ACQUIRE) {
+        assert!(
+            Instant::now() < deadline,
+            "the take-control key sent no Acquire"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// Relaxed qualification and LIM-01 (Monitor; #120): with
+/// `resources.max_workers_per_client` at 1, below the release's qualified
+/// two workers, the session is rejected explicitly and for good before any
+/// client is created (no library log), never by raising the limit.
+#[test]
+fn too_many_qualified_workers_is_an_explicit_rejection_before_any_create() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"resources": {"max_workers_per_client": 1}}),
+    );
+    let ear = Ear::default();
+    let id = fake_id(0xb7);
+    let fake = FakeDaemon::start(
+        &package,
+        id,
+        "2026-01-01T00:00:01.000Z",
+        idle("Never"),
+        &ear,
+    );
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    whole_frame_shows(&terminal, "the row", |screen| {
+        screen.contains("No session selected.")
+    });
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, id);
+    let why = "the release needs 2 worker threads for each client; \
+               monitor.limits.resources.max_workers_per_client allows 1";
+    top_row_starts(
+        &terminal,
+        &format!("fake {id} | the release needs 2 worker"),
+    );
+    whole_frame_shows(&terminal, "not reconnecting", |screen| {
+        screen.contains(&format!("Not reconnecting: {why}"))
+    });
+    assert!(library_logs(&package, id).is_empty());
+    assert!(served(&ear).is_empty());
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fake);
+    package.assert_clean();
+}
+
+/// LIM-04 (Monitor, Fault: operating-system limits; #120): admission keeps
+/// descriptors within the process's soft descriptor limit less
+/// `resources.descriptor_headroom` (64). With the limit at 84, the
+/// release's 4 and two clients' 8 each fill it: two sessions start and a
+/// third is resource-blocked, saying so. Raising the running monitor's
+/// limit to exactly 92 admits it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_operating_system_descriptor_limit_bounds_admission_until_it_rises() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({
+            "deadlines": {"operation_ms": 300_000},
+            "retry": {"admission_ms": 100},
+        }),
+    );
+    let ear = Ear::default();
+    let [one, two, three] = [0xc1, 0xc2, 0xc3].map(fake_id);
+    let mut fakes = vec![
+        FakeDaemon::start(&package, one, "2026-01-01T00:00:01.000Z", idle("One"), &ear),
+        FakeDaemon::start(&package, two, "2026-01-01T00:00:02.000Z", idle("Two"), &ear),
+    ];
+    let mut terminal = outer_sized(&package, "ulimit -Sn 84; c2 monitor", WIDE);
+    top_row_starts(&terminal, "One ");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, STATUS, "One");
+    listed_with(&terminal, STATUS, "Two");
+    fakes.push(FakeDaemon::start(
+        &package,
+        three,
+        "2026-01-01T00:00:03.000Z",
+        idle("Three"),
+        &ear,
+    ));
+    listed_with(&terminal, "Awaiting resources", &format!("fake {three}"));
+    enter_on(&mut terminal, three);
+    let short = "not enough file descriptors: 8 needed, 0 available";
+    top_row_starts(&terminal, &format!("fake {three} | {short}"));
+    let (pid, _) = monitor_process(&package);
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: prlimit reads the monitor's limit into `limit` only.
+    assert_eq!(
+        unsafe { libc::prlimit(pid, libc::RLIMIT_NOFILE, std::ptr::null(), &mut limit) },
+        0
+    );
+    limit.rlim_cur = 92;
+    // SAFETY: prlimit sets only the monitor's soft limit, keeping its hard one.
+    assert_eq!(
+        unsafe { libc::prlimit(pid, libc::RLIMIT_NOFILE, &limit, std::ptr::null_mut()) },
+        0
+    );
+    let top = session_top_row(
+        usize::from(WIDE),
+        "Three",
+        &[STATUS, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&top, ROWS, WIDE, &[VIEWED_ELSEWHERE, TAKEOVER_HINT]),
+    );
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    drop(fakes);
+    package.assert_clean();
+}
+
+/// Forward Delete, as a host sends it (`CSI 3 ~`).
+const DELETE: &str = "\x1b[3~";
+/// The Delete confirmation's offer for a session not known to be over, and
+/// for one final or gone (#117).
+const TERMINATE: &str = "Terminate and remove";
+const REMOVE: &str = "Remove";
+/// The Delete confirmation's buttons as they read focused.
+const CANCEL_FOCUSED: &str = "[ Cancel ]";
+const TERMINATE_FOCUSED: &str = "[ Terminate and remove ]";
+const REMOVE_FOCUSED: &str = "[ Remove ]";
+
+/// The Delete confirmation's four lines inside its border for `label`,
+/// `status` and `offer`, as `label` and `status` would show if they were
+/// the widest (#117).
+fn confirmation(label: &str, status: &str, offer: &str) -> [String; 4] {
+    let buttons = format!("[ Cancel ]  [ {offer} ]");
+    let width = [label, status, &buttons]
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap();
+    [label, status, "", buttons.as_str()].map(|line| format!("│ {line:<width$} │"))
+}
+
+/// Waits until a whole frame shows the Delete confirmation, titled, for
+/// `label` with `status` (any status when `None`) offering `offer`, with
+/// the button `focused` reversed.
+fn asks(terminal: &Terminal, (label, status): (&str, Option<&str>), offer: &str, focused: &str) {
+    let lines = confirmation(label, status.unwrap_or_default(), offer);
+    let reversed = |screen: &str| {
+        let rows: Vec<_> = screen.lines().collect();
+        let at = rows.windows(5).position(|window| {
+            window[0].contains("┌ Delete session")
+                && window[1].contains(lines[0].as_str())
+                && status.is_none_or(|_| window[2].contains(lines[1].as_str()))
+                && window[4].contains(lines[3].as_str())
+        })?;
+        let row = rows[at + 4];
+        let start = row[..row.find(lines[3].as_str())?].chars().count();
+        let width = lines[3].chars().count();
+        let cells = terminal.cells(at + 4);
+        let text: String = cells[start..start + width]
+            .iter()
+            .filter(|cell| cell.rendition.inverse)
+            .map(|cell| cell.text.as_str())
+            .collect();
+        Some(text)
+    };
+    let what = format!("{} focused on {focused}", lines[3]);
+    whole_frame_shows(terminal, &what, |screen| {
+        reversed(screen).as_deref() == Some(focused)
+    });
+}
+
+/// Sets a hooked daemon's status `clock` to `millis` whole, and waits
+/// until its daemon has read it (its `.ack`); a release archive's daemons
+/// have no such clock.
+fn set_clock(clock: &Path, millis: u64) {
+    let staged = clock.with_extension("new");
+    fs::write(&staged, millis.to_string()).unwrap();
+    fs::rename(staged, clock).unwrap();
+    if archive() {
+        return;
+    }
+    let mut ack = clock.as_os_str().to_owned();
+    ack.push(".ack");
+    let deadline = Instant::now() + TIMEOUT;
+    while fs::read_to_string(&ack).ok().as_deref().map(str::trim) != Some(&millis.to_string()) {
+        assert!(Instant::now() < deadline, "the daemon never read its clock");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits until a whole frame shows no Delete confirmation.
+fn not_asking(terminal: &Terminal) {
+    frame_lacks(terminal, "Delete session");
+}
+
+/// DEL-01 (Monitor: default Cancel, nothing sent on cancel, no input
+/// leaking out of the dialog, the confirmed session's identity), DEL-02
+/// (Monitor: removal only after definitive termination, a gone session only
+/// removed, run-local dismissal against rediscovery, a non-acquiring
+/// fallback selection, nothing deleted beyond normal daemon cleanup) and
+/// #116's owner decision (a gone session's Delete offers Remove), against
+/// real daemons. Bravo, the newer, is the initial selection. Delete on it
+/// asks with Cancel focused, hiding the search's cursor; keys, a paste and
+/// a click inside the dialog
+/// decide nothing, and Enter then cancels back to the selector: Bravo is
+/// still running, and once the selector closes the first thing it receives
+/// is what is typed then. Confirmed, Bravo is killed and its row removed;
+/// the selection falls to Alpha, now at Bravo's place, which shows the
+/// placeholder, never acquired. Alpha's daemon killed and proven gone,
+/// Delete offers only Remove, which removes its row though its stale
+/// metadata stays: two later discovery passes, which list new sessions,
+/// never list it again. Bravo's library logs stay.
+#[test]
+fn delete_terminates_or_removes_only_the_confirmed_session() {
+    let package = Package::new();
+    without_introduction(&package);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    let bravo = headless(&package, &watched("Bravo"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Bravo", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Alpha");
+    terminal.send(DELETE).unwrap();
+    let bravo_running = ("Bravo", Some(RUNNING));
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    // The dialog hides the search's cursor.
+    assert!(!terminal.modes().cursor_visible);
+    terminal
+        .send("xy\x1b[A \x1b[200~pasted\r\x1b[201~")
+        .unwrap();
+    click(&mut terminal, 14, 60);
+    terminal.send("\t\t").unwrap();
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\r").unwrap();
+    not_asking(&terminal);
+    listed_with(&terminal, RUNNING, "Bravo");
+    assert!(terminal.modes().cursor_visible);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("after").unwrap();
+    received_by(&package, "Bravo", b"after");
+
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Bravo");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, bravo_running, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, bravo_running, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Bravo removed", |screen| {
+        !screen.contains("Bravo") && screen.contains(&format!("║{RUNNING} Alpha"))
+    });
+    let sessions = package.isolation.climon2_home().join("sessions");
+    assert!(!sessions.join(format!("{bravo}.pty")).exists());
+    assert!(!library_logs(&package, &bravo).is_empty());
+    terminal.send(ESCAPE).unwrap();
+    shows(&mut terminal, &placeholder_screen("Alpha", RUNNING));
+
+    kill(Pid::from_raw(daemon_of(&package, &alpha)), Signal::SIGKILL).unwrap();
+    whole_frame_shows(&terminal, "Alpha gone", |screen| {
+        screen
+            .lines()
+            .next()
+            .is_some_and(|top| top.starts_with(&format!("Alpha | {GONE}")))
+    });
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, ("Alpha", None), REMOVE, CANCEL_FOCUSED);
+    terminal.send("\x1b[C").unwrap();
+    asks(&terminal, ("Alpha", None), REMOVE, REMOVE_FOCUSED);
+    terminal.send("\r").unwrap();
+    whole_frame_shows(&terminal, "Alpha removed", |screen| {
+        !screen.contains("Alpha") && screen.contains('║')
+    });
+    terminal.send(ESCAPE).unwrap();
+    shows(
+        &mut terminal,
+        &empty_monitor(ROWS, COLS, &[EMPTY, "Press Ctrl+] then x to exit."]),
+    );
+    assert!(sessions.join(format!("{alpha}.pty")).exists());
+    for later in ["Charlie", "Delta"] {
+        headless(&package, &watched(later), "finish");
+        terminal.send("\x1ds").unwrap();
+        listed_with(&terminal, RUNNING, later);
+        terminal.send(ESCAPE).unwrap();
+        selector_closed(&terminal);
+    }
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Delta");
+    assert!(!terminal.screen().contains("Alpha"));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    // A real listing reclaims the killed daemon's stale metadata.
+    package.list();
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-01 and NOT-03 (Monitor, Delete-dialog cases; owner decision on
+/// #117) and the confirmed scenario that cancelling Delete never
+/// acknowledges attention, against real daemons. Calm, the newer, is the
+/// initial selection, which acknowledges nothing, and comes to need
+/// attention under the open selector. Inside Delete's dialog on Calm,
+/// prefix+s and prefix+? do nothing (Tab moves the focus as before, and no
+/// key introduction shows), and Escape cancels back to the selector with
+/// Calm still needing attention. Once Asking needs attention too, its
+/// daemon's clock moved past Calm's,
+/// prefix+j inside the dialog on Calm cancels it and jumps to Asking,
+/// acknowledging it once viewed, while Calm still needs attention; inside
+/// the dialog again, prefix+x exits the monitor, and Calm was never killed.
+#[test]
+fn inside_the_delete_dialog_prefix_j_cancels_and_jumps_and_prefix_x_exits() {
+    let package = Package::new();
+    without_introduction(&package);
+    let asking_clock = clock(&package, None);
+    headless_on(&package, &watched("Asking"), "finish", &asking_clock);
+    headless(&package, &watched("Calm"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Calm", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Asking");
+    report_state(&package, "Calm", "idle");
+    listed_with(&terminal, ATTENTION, "Calm");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    let calm = ("Calm", Some(ATTENTION));
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1ds\t").unwrap();
+    asks(&terminal, calm, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\x1d?\t").unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    assert!(!terminal.screen().contains("Exit the monitor"));
+    terminal.send(ESCAPE).unwrap();
+    not_asking(&terminal);
+    listed_with(&terminal, ATTENTION, "Calm");
+
+    // Asking's attention is the newer (a release archive's daemons use the
+    // real clock, on which it is later anyway).
+    set_clock(&asking_clock, T0 + 10_000);
+    report_state(&package, "Asking", "idle");
+    listed_with(&terminal, ATTENTION, "Asking");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Asking", ACKNOWLEDGED, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Calm");
+    highlight_on(&mut terminal, "Calm");
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, calm, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Calm", &detached);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// How many times fake `id` heard `what`.
+fn times_heard(ear: &Ear, id: &str, what: Heard) -> usize {
+    heard(ear, what)
+        .into_iter()
+        .filter(|(_, heard_by)| *heard_by == id)
+        .count()
+}
+
+/// Waits until fake `id` has heard `what` at least `count` times.
+fn until_heard(ear: &Ear, id: &str, what: Heard, count: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    while times_heard(ear, id, what) < count {
+        assert!(Instant::now() < deadline, "{id} never heard {what:?}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Opens the selector until it lists `label` with `status`, then opens it
+/// again, so that it opens with a highlight.
+fn listed_on_reopening(terminal: &mut Terminal, status: &str, label: &str) {
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(terminal);
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+}
+
+/// Waits until a whole frame's top row starts with `start`.
+fn top_row_starts(terminal: &Terminal, start: &str) {
+    whole_frame_shows(terminal, start, |screen| {
+        screen
+            .lines()
+            .next()
+            .is_some_and(|top| top.starts_with(start))
+    });
+}
+
+/// A fake session's turn: its Open answered without `status-v1` or
+/// `focus-v1`, which a turn-taking fake does not advertise, titled `title`,
+/// then `after`.
+fn titled_turn(title: &str, after: Vec<Act>) -> Vec<Act> {
+    let mut acts = vec![
+        opened_selecting(false, false),
+        initial_metadata(title, None, None),
+    ];
+    acts.extend(after);
+    acts
+}
+
+/// DEL-01 (Fault: a repeated Delete deduplicated, other sessions usable)
+/// and DEL-02 (Fault: a rejected Kill keeps the row and its error), against
+/// a fake daemon holding its Kill's answer. Once confirmed, Held shows
+/// Terminating, and Delete on it again opens nothing: the keys after it
+/// reach the search. Meanwhile Other, a real session, still takes typed
+/// keys. The Kill refused, Held is back to its status, its top row's error
+/// slot says why once selected, and Delete may ask again. The fake heard
+/// one Kill.
+#[test]
+fn a_held_kill_is_sent_once_and_a_refused_one_keeps_its_row_with_why() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e1";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let refused = json!({
+        "request_id": "$open", "outcome": "rejected", "result": null,
+        "error": {"code": "invalid_state", "message": "refused by the fake"},
+    });
+    let kills = vec![
+        Act::Await(home.join("refuse")),
+        Act::Send(RESPONSE, refused),
+    ];
+    // The real session first, as its daemon wants a private sessions
+    // directory.
+    headless(&package, &watched("Other"), "finish");
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        HELD,
+        "2020-01-01T00:00:00.000Z",
+        Turns::killing(vec![titled_turn("Held", Vec::new())], kills),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Other", RUNNING, "29 120");
+    terminal.send("\x1ds").unwrap();
+    highlight_on(&mut terminal, "Held");
+    terminal.send(DELETE).unwrap();
+    let held = ("Held", Some("Unavailable"));
+    asks(&terminal, held, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, held, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Terminating", "Held");
+    until_heard(&ear, HELD, Heard::Kill, 1);
+    terminal.send(format!("{DELETE}zz")).unwrap();
+    whole_frame_shows(&terminal, "the search", |screen| {
+        screen
+            .lines()
+            .nth(3)
+            .is_some_and(|line| line.starts_with(" ║zz "))
+    });
+    assert!(!terminal.screen().contains("Delete session"));
+    terminal.send("\x7f\x7f").unwrap();
+    listed_with(&terminal, "Terminating", "Held");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("still").unwrap();
+    received_by(&package, "Other", b"still");
+
+    fs::write(home.join("refuse"), b"").unwrap();
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Held");
+    enter_on(&mut terminal, "Held");
+    top_row_starts(&terminal, "Held | Termination refused: refused by the fake");
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    asks(&terminal, held, TERMINATE, CANCEL_FOCUSED);
+    terminal.send(ESCAPE).unwrap();
+    not_asking(&terminal);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, HELD, Heard::Kill), 1);
+    drop(fake);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// DEL-02 (Fault: a lost Kill answer never replayed, only the passive
+/// client learning the outcome, cleanup before dismissal, dismissal
+/// against rediscovery, a fallback selection that never acquires), against
+/// fake daemons. Lost, selected, is confirmed: its fake hangs up its Kill's
+/// own connection unanswered, so the row stays Terminating and its top
+/// row's error slot says the termination was not confirmed. Its passive
+/// client then hears the command's final result: the monitor asks it to
+/// stop, and while its Leave is unanswered the row stays. Once answered,
+/// the row is removed and the selection falls to Next, which shows the
+/// placeholder and was never sent Acquire. Lost's daemon, still answering,
+/// is probed by two more discovery passes and never listed or served again.
+#[test]
+fn a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup() {
+    const LOST: &str = "0d5c0000-0000-4000-8000-0000000000e2";
+    const NEXT: &str = "0d5c0000-0000-4000-8000-0000000000e3";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let ended = json!({"command_result": {"kind": "signal", "number": 9, "name": "SIGKILL"}, "status": null});
+    let lost_acts = titled_turn(
+        "Lost",
+        vec![
+            Act::Await(home.join("final")),
+            Act::Send(COMMAND_FINAL, ended),
+            Act::HoldLeave(home.join("leave")),
+        ],
+    );
+    let ear = Ear::default();
+    let lost = FakeDaemon::start(
+        &package,
+        LOST,
+        "2020-01-01T00:00:01.000Z",
+        Turns::killing(vec![lost_acts], vec![Act::Close]),
+        &ear,
+    );
+    let next = FakeDaemon::start(
+        &package,
+        NEXT,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Next", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Next");
+    enter_on(&mut terminal, "Lost");
+    top_row_starts(&terminal, "Lost ");
+    terminal.send("\x1ds").unwrap();
+    terminal.send(DELETE).unwrap();
+    let asked = ("Lost", Some("Unavailable"));
+    asks(&terminal, asked, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\x1b[C").unwrap();
+    asks(&terminal, asked, TERMINATE, TERMINATE_FOCUSED);
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Terminating", "Lost");
+    terminal.send(ESCAPE).unwrap();
+    top_row_starts(&terminal, "Lost | Termination not confirmed: ");
+
+    fs::write(home.join("final"), b"").unwrap();
+    until_heard(&ear, LOST, Heard::Request(LEAVE), 1);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Terminating", "Lost");
+    fs::write(home.join("leave"), b"").unwrap();
+    whole_frame_shows(&terminal, "Lost removed", |screen| {
+        !screen.contains("Lost") && screen.contains("Unavailable Next")
+    });
+    terminal.send(ESCAPE).unwrap();
+    shows(&mut terminal, &placeholder_screen("Next", "Unavailable"));
+    let probed = times_heard(&ear, LOST, Heard::Connected);
+    until_heard(&ear, LOST, Heard::Connected, probed + 2);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Unavailable", "Next");
+    assert!(!terminal.screen().contains("Lost"));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, LOST, Heard::Kill), 1);
+    assert_eq!(times_heard(&ear, LOST, Heard::Served), 1);
+    assert_eq!(requests_by_turn(&ear, NEXT), [vec![LEAVE]]);
+    drop((lost, next));
+    package.assert_clean();
+}
+
+/// DEL-01 (Monitor and Fault: the session finishing while asked switches
+/// the offer to Remove for the same session, through a reorder) and DEL-02
+/// (Fault: an already-final session's local cleanup before dismissal),
+/// against fake daemons. Asked on Ending with Terminate and remove
+/// focused, Ending's command ends: the dialog offers Remove for Ending,
+/// now Succeeded and listed first, its focus kept. Confirmed, no Kill is
+/// sent; Ending shows Removing while its Leave is unanswered, and is
+/// removed once it is answered. Stay is left alone.
+#[test]
+fn a_session_ending_while_asked_is_only_removed_after_its_cleanup() {
+    const ENDING: &str = "0d5c0000-0000-4000-8000-0000000000e4";
+    const STAY: &str = "0d5c0000-0000-4000-8000-0000000000e5";
+    let package = Package::new();
+    without_introduction(&package);
+    let home = package.isolation.home();
+    let ending_acts = titled_turn(
+        "Ending",
+        vec![
+            Act::Await(home.join("end")),
+            Act::Send(
+                COMMAND_FINAL,
+                json!({"command_result": exited(0), "status": null}),
+            ),
+            Act::HoldLeave(home.join("leave")),
+        ],
+    );
+    let ear = Ear::default();
+    let ending = FakeDaemon::start(
+        &package,
+        ENDING,
+        "2020-01-01T00:00:01.000Z",
+        Turns::answer(vec![ending_acts]),
+        &ear,
+    );
+    let stay = FakeDaemon::start(
+        &package,
+        STAY,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Stay", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Stay");
+    highlight_on(&mut terminal, "Ending");
+    terminal.send(DELETE).unwrap();
+    let asked = ("Ending", Some("Unavailable"));
+    asks(&terminal, asked, TERMINATE, CANCEL_FOCUSED);
+    terminal.send("\t").unwrap();
+    asks(&terminal, asked, TERMINATE, TERMINATE_FOCUSED);
+    fs::write(home.join("end"), b"").unwrap();
+    asks(
+        &terminal,
+        ("Ending", Some("Succeeded")),
+        REMOVE,
+        REMOVE_FOCUSED,
+    );
+    whole_frame_shows(&terminal, "Ending first", |screen| {
+        screen
+            .lines()
+            .nth(5)
+            .is_some_and(|line| line.contains("Succeeded   Ending"))
+    });
+    terminal.send("\r").unwrap();
+    listed_with(&terminal, "Removing", "Ending");
+    until_heard(&ear, ENDING, Heard::Request(LEAVE), 1);
+    listed_with(&terminal, "Removing", "Ending");
+    fs::write(home.join("leave"), b"").unwrap();
+    whole_frame_shows(&terminal, "Ending removed", |screen| {
+        !screen.contains("Ending") && screen.contains("Unavailable Stay")
+    });
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(times_heard(&ear, ENDING, Heard::Kill), 0);
+    assert_eq!(requests_by_turn(&ear, STAY), [vec![LEAVE]]);
+    drop((ending, stay));
+    package.assert_clean();
+}
+
+/// DEL-01 (Fault: the dialog keeps its session's identity): a Delete
+/// dialog on a session whose client never connected closes, retargeting
+/// nothing, once discovery proves that session gone and drops its row;
+/// keys typed then reach the selector's search. EXT-02 (Monitor, Fault;
+/// #118): the dropped row's client is still waiting for its Open when
+/// prefix+x asks it to leave, and the held daemon never answers, so its
+/// cleanup is unconfirmed at the shutdown deadline and the monitor
+/// fail-stops with the climon2 error code, naming that session.
+#[test]
+fn a_dialog_whose_row_is_dropped_closes_without_retargeting() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e6";
+    const STAY: &str = "0d5c0000-0000-4000-8000-0000000000e7";
+    let package = Package::new();
+    without_introduction(&package);
+    // The held client's start outlasts the test and its shutdown. The
+    // shutdown deadline leaves a loaded host time to finish everything
+    // else, so only the held client is unconfirmed.
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"start_ms": 120_000, "shutdown_ms": 10_000}}),
+    );
+    let ear = Ear::default();
+    let held = FakeDaemon::start(
+        &package,
+        HELD,
+        "2020-01-01T00:00:01.000Z",
+        Answer::Held(HELD),
+        &ear,
+    );
+    let stay = FakeDaemon::start(
+        &package,
+        STAY,
+        "2020-01-01T00:00:02.000Z",
+        Turns::answer(vec![titled_turn("Stay", Vec::new())]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    listed_on_reopening(&mut terminal, "Unavailable", "Stay");
+    let label = format!("fake {HELD}");
+    highlight_on(&mut terminal, &label);
+    terminal.send(DELETE).unwrap();
+    asks(
+        &terminal,
+        (&label, Some("Starting")),
+        TERMINATE,
+        CANCEL_FOCUSED,
+    );
+    // Its metadata now names a socket nobody serves: its daemon is gone.
+    fake_metadata(
+        &package,
+        HELD,
+        "2020-01-01T00:00:01.000Z",
+        &package.isolation.home().join("gone.sock"),
+    );
+    whole_frame_shows(&terminal, "the dialog closed with its row", |screen| {
+        !screen.contains(HELD) && !screen.contains("Delete session")
+    });
+    terminal.send("st").unwrap();
+    whole_frame_shows(&terminal, "the search", |screen| {
+        screen
+            .lines()
+            .nth(3)
+            .is_some_and(|line| line.starts_with(" ║st "))
+    });
+    listed_with(&terminal, "Unavailable", "Stay");
+    terminal.send("\x1dx").unwrap();
+    assert_diagnosed_after_release(
+        &mut terminal,
+        &format!(
+            "climon2: error: monitor shutdown unconfirmed: session {HELD}: no terminal \
+             evidence, handles not released, run not returned, not destroyed, thread not \
+             joined (logs: "
+        ),
+    );
+    assert_released(&package, &mut terminal, 125);
+    assert_eq!(times_heard(&ear, HELD, Heard::Kill), 0);
+    drop((held, stay));
+    package.assert_clean();
+}
+
+/// A fake daemon whose client opens, titled `title`, then `after`.
+fn opening(title: &str, after: Vec<Act>) -> Answer {
+    let mut acts = vec![
+        opened_selecting(false, false),
+        initial_metadata(title, None, None),
+    ];
+    acts.extend(after);
+    Turns::answer(vec![acts])
+}
+
+/// The general log's evidence record for session `id` (#118).
+fn evidence(package: &Package, id: &str) -> String {
+    let log = monitor_log(package);
+    let prefix = format!("client shutdown evidence session={id} ");
+    let line = log.lines().find(|line| line.contains(&prefix));
+    let line = line.unwrap_or_else(|| panic!("no evidence for {id} in {log}"));
+    line[line.find(&prefix).unwrap() + prefix.len()..].to_owned()
+}
+
+/// EXT-01 (Monitor; #118), EXT-03 (Monitor: orderly exit) and EXT-04
+/// (Monitor: no inherited status): prefix+x leaves a passive client (a
+/// fake daemon's) and a controlling one (a real session the initial
+/// selection acquired) on one shutdown path. Each kind of evidence is
+/// recorded on its own for each: the daemon's acceptance of the Leave,
+/// closure, the client outcome, worker cleanup, handle release, destroy
+/// and the owner thread's join. The fake daemon heard nothing but the
+/// Leave after Open; the controlled session's Leave detached its
+/// attachment. The exit is 0, with the host restored and cleared and
+/// nothing printed, though the session's command never exits 0.
+#[test]
+fn exit_leaves_every_client_and_records_each_kind_of_evidence_alone() {
+    const PASSIVE: &str = "0d5c0000-0000-4000-8000-0000000000e1";
+    let package = Package::new();
+    without_introduction(&package);
+    let attached = headless(&package, &recorder("Keys"), "finish");
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        PASSIVE,
+        "2099-01-01T00:00:00.000Z",
+        opening("Passive", Vec::new()),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    record(&mut terminal, "Keys", COLS);
+    until_served(&ear, 1);
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_text("OUTER-DONE=0", TIMEOUT).unwrap();
+    assert!(!written(&mut terminal).contains("climon2: error"));
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(requests_by_turn(&ear, PASSIVE), [[LEAVE]]);
+    let confirmed = |detached: bool| {
+        format!(
+            "leave=Some(Confirmed) detached=Some({detached}) closed=Some(true) \
+             failed=Some(false) workers=Some(true) released=true destroyed=Some(true) \
+             joined=true"
+        )
+    };
+    assert_eq!(evidence(&package, PASSIVE), confirmed(false));
+    assert_eq!(evidence(&package, &attached), confirmed(true));
+    assert!(monitor_log(&package).contains("monitor stopped status=0"));
+    drop(fake);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// EXT-02 (Monitor, Fault; #118) and LIB-06 (Monitor, Fault: a stall
+/// beyond the cleanup budget): a daemon that never answers the Leave, with
+/// `deadlines.leave_ms` far beyond a four-second `deadlines.shutdown_ms`,
+/// stalls its client's shutdown. The monitor shows `Exiting: waiting for 1
+/// session`, reads and discards repeated prefix+x and catchable signals
+/// (none restarts the deadline, changes the status or reaches the shell),
+/// does not give up before the deadline, then restores and clears the
+/// host and fail-stops with the climon2 error code and one diagnostic
+/// naming the session and exactly what is unconfirmed: no join, release or
+/// destroy is claimed.
+#[test]
+fn a_stalled_leave_fail_stops_at_the_deadline_however_often_exit_is_repeated() {
+    const HELD: &str = "0d5c0000-0000-4000-8000-0000000000e2";
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        json!({"deadlines": {"leave_ms": 600_000, "shutdown_ms": 4000}}),
+    );
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        HELD,
+        "2099-01-01T00:00:00.000Z",
+        opening("Held", vec![Act::Unanswered]),
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    until_served(&ear, 1);
+    let monitor = Pid::from_raw(monitor_process(&package).0);
+    let started = Instant::now();
+    terminal.send("\x1dx").unwrap();
+    terminal
+        .wait_for_text("Exiting: waiting for 1 session", TIMEOUT)
+        .unwrap();
+    let repeat = |terminal: &mut Terminal| {
+        for signal in [Signal::SIGTERM, Signal::SIGINT, Signal::SIGHUP] {
+            kill(monitor, signal).unwrap();
+        }
+        terminal.send("\x1dx").unwrap();
+    };
+    repeat(&mut terminal);
+    // At least two seconds still pass with no exit, so the deadline is not
+    // cut short; then repeats come again, two seconds before it.
+    assert!(
+        terminal
+            .wait_for_bytes(DONE, Duration::from_secs(2))
+            .is_err()
+    );
+    let repeated = started.elapsed();
+    assert!(repeated < Duration::from_millis(3500), "{repeated:?}");
+    repeat(&mut terminal);
+    terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(4), "{took:?}");
+    // A deadline restarted by the later repeats would end four seconds
+    // after them.
+    assert!(took < repeated + Duration::from_secs(4), "{took:?}");
+    assert_diagnosed_after_release(
+        &mut terminal,
+        &format!(
+            "climon2: error: monitor shutdown unconfirmed: session {HELD}: no terminal \
+             evidence, handles not released, run not returned, not destroyed, thread not \
+             joined (logs: "
+        ),
+    );
+    assert_released(&package, &mut terminal, 125);
+    assert_eq!(requests_by_turn(&ear, HELD), [[LEAVE]]);
+    assert_eq!(
+        evidence(&package, HELD),
+        "leave=None detached=None closed=None failed=None workers=None released=false \
+         destroyed=None joined=false"
+    );
+    drop(fake);
+    package.assert_clean();
+}
+
+/// EXT-02 and LIB-06 (Monitor, Fault; #118; hooked library only): a
+/// client whose worker cleanup outlives `deadlines.cleanup_ms`
+/// (`stall-cleanup`) leaves with its Leave confirmed, but its run reports
+/// cleanup incomplete and destroy stays busy: the monitor never claims the
+/// worker joined or kills it, and fail-stops, restoring and clearing the
+/// host first, with the climon2 error code and one diagnostic naming the
+/// session, the worker cleanup and the destroy.
+#[test]
+fn unconfirmed_worker_cleanup_fail_stops_without_claiming_it() {
+    const STUCK: &str = "0d5c0000-0000-4000-8000-0000000000e3";
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"cleanup_ms": 200}}));
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        STUCK,
+        "2099-01-01T00:00:00.000Z",
+        opening("Stuck", Vec::new()),
+        &ear,
+    );
+    let mut terminal = outer(&package, "CLIMON2_LIBRARY_FAULT=stall-cleanup c2 monitor");
+    until_served(&ear, 1);
+    terminal.send("\x1dx").unwrap();
+    assert_diagnosed_after_release(
+        &mut terminal,
+        &format!(
+            "climon2: error: monitor shutdown unconfirmed: session {STUCK}: worker cleanup \
+             unconfirmed: worker cleanup incomplete, not destroyed: busy: run, workers, \
+             handles or deliveries are still outstanding (logs: "
+        ),
+    );
+    assert_released(&package, &mut terminal, 125);
+    assert_eq!(requests_by_turn(&ear, STUCK), [[LEAVE]]);
+    assert_eq!(
+        evidence(&package, STUCK),
+        "leave=Some(Confirmed) detached=Some(false) closed=Some(true) failed=Some(false) \
+         workers=Some(false) released=true destroyed=Some(false) joined=true"
+    );
+    drop(fake);
+    package.assert_clean();
+}
+
+/// EXT-02 (Monitor, Fault; #118; hooked monitor only): a discovery pass
+/// that never ends (`CLIMON2_MONITOR_FAULT=discovery`) is never joined or
+/// claimed: at the half-second shutdown deadline the monitor restores and
+/// clears the host and fail-stops with the climon2 error code and one
+/// diagnostic naming the unfinished pass.
+#[test]
+fn debug_hook_stalled_discovery_fail_stops_at_the_deadline() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"shutdown_ms": 500}}));
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=discovery c2 monitor");
+    terminal
+        .wait_for_text("Connecting to 0 sessions", TIMEOUT)
+        .unwrap();
+    terminal.send("\x1dx").unwrap();
+    assert_diagnosed_after_release(
+        &mut terminal,
+        "climon2: error: monitor shutdown unconfirmed: discovery pass unfinished (logs: ",
+    );
+    assert_released(&package, &mut terminal, 125);
+    package.assert_clean();
+}
+
+/// EXT-03 (Fault; #118; hooked monitor only): host restoration that never
+/// finishes (`CLIMON2_MONITOR_FAULT=release`) ends the whole process with
+/// the climon2 error code once `deadlines.final_host_ms` has passed,
+/// never described as a restored host: the general log says the final host
+/// restoration was unfinished, and nothing claims the monitor stopped.
+#[test]
+fn debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance() {
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"deadlines": {"final_host_ms": 300}}));
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=release c2 monitor");
+    terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
+    let started = Instant::now();
+    terminal.send("\x1dx").unwrap();
+    terminal.wait_for_bytes(b"OUTER-DONE=125", TIMEOUT).unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(terminal.modes().alternate_screen, "never restored");
+    let home = package.isolation.home();
+    assert_ne!(
+        fs::read(home.join("after")).unwrap(),
+        fs::read(home.join("before")).unwrap(),
+        "termios never restored"
+    );
+    terminal.send("plain words\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    let log = monitor_log(&package);
+    assert!(
+        log.contains("final host restoration unfinished within_ms=300"),
+        "{log}"
+    );
+    assert!(!log.contains("monitor stopped"), "{log}");
+    package.assert_clean();
+}
+
+/// LIB-06 (Monitor, Fault; #118; hooked library only): a native crash in
+/// the client library (`abort:receive`, as the client handles its
+/// daemon's first frame), run in this disposable monitor process, ends the
+/// whole monitor: the shell reports the abort (128 + SIGABRT), and nothing
+/// promises the host was restored.
+#[test]
+fn a_native_abort_in_a_client_library_ends_the_whole_monitor() {
+    const CRASH: &str = "0d5c0000-0000-4000-8000-0000000000e4";
+    if archive() {
+        return;
+    }
+    let package = Package::new();
+    without_introduction(&package);
+    let ear = Ear::default();
+    let fake = FakeDaemon::start(
+        &package,
+        CRASH,
+        "2099-01-01T00:00:00.000Z",
+        opening("Crash", Vec::new()),
+        &ear,
+    );
+    let mut terminal = outer(
+        &package,
+        "ulimit -c 0; CLIMON2_LIBRARY_FAULT=abort:receive c2 monitor",
+    );
+    terminal.wait_for_bytes(b"OUTER-DONE=134", TIMEOUT).unwrap();
+    assert!(!monitor_log(&package).contains("monitor stopped"));
+    terminal.send("plain words\n").unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    drop(fake);
     package.assert_clean();
 }

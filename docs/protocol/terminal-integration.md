@@ -1,6 +1,6 @@
 # Monitor terminal integration
 
-**Status: agreed specification from [#63](https://github.com/jackgeek/climon2/issues/63), almost entirely unimplemented.**
+**Status: agreed specification from [#63](https://github.com/jackgeek/climon2/issues/63), implemented as stated below.**
 This also records the confirmed input/configuration amendments to
 [#64](https://github.com/jackgeek/climon2/issues/64) and
 [attention](../../GLOSSARY.md#status-and-attention)-jump amendment to
@@ -8,8 +8,8 @@ This also records the confirmed input/configuration amendments to
 executable changes or evidence itself.
 
 **Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74), [#105](https://github.com/jackgeek/climon2/issues/105)):**
-only the empty [monitor](../../GLOSSARY.md#sessions), which has no
-[sessions](../../GLOSSARY.md#sessions) to show. It takes its own alternate screen
+the [monitor](../../GLOSSARY.md#sessions)'s own screen and exits, first
+with no [sessions](../../GLOSSARY.md#sessions) to show. It takes its own alternate screen
 with one permanent top row, enables [host](../../GLOSSARY.md#sessions)
 bracketed-paste, mouse and focus reporting, and never changes the host title.
 Only the typed [client escape prefix](../../GLOSSARY.md#attachment-and-control)
@@ -53,13 +53,14 @@ any byte at it.
 
 **Implemented with packaged evidence ([#108](https://github.com/jackgeek/climon2/issues/108)):** selection
 and painting. Enter in the selector on a connected row not known to be final
-selects it and takes [control](../../GLOSSARY.md#attachment-and-control); nothing
-is selected at startup, and no arrival moves the selection. Since
+selects it and takes [control](../../GLOSSARY.md#attachment-and-control); at
+startup only initial selection ([#266](https://github.com/jackgeek/climon2/issues/266)) selects a row, and no arrival moves
+the selection. Since
 [#110](https://github.com/jackgeek/climon2/issues/110), Enter on a Starting
 row or an Unavailable row without a connected client selects it without
 acquiring (no terminal content, its condition), and the monitor's own
-session has no row; Enter on disconnected and final rows waits for
-[#116](https://github.com/jackgeek/climon2/issues/116). A
+session has no row; Enter on disconnected and final rows selects them
+read-only ([#116](https://github.com/jackgeek/climon2/issues/116)). A
 selected connected session the monitor does not control shows only the
 [placeholder](../../GLOSSARY.md#attachment-and-control) (with the
 [take-control key](../../GLOSSARY.md#attachment-and-control)'s hint while
@@ -88,8 +89,8 @@ controller, as the host width by its height less one, after every grant too; a
 host under four rows or five columns shows `Terminal too small` and sends no
 resize. Input readiness (applied, Ready accepted and a frame that shows the
 restoration now: selected, uncovered and with room) is tracked for the input
-router ([#109](https://github.com/jackgeek/climon2/issues/109)), which forwards
-nothing yet.
+router ([#109](https://github.com/jackgeek/climon2/issues/109)), which
+forwards keys to the selected session only while that readiness holds.
 
 **Implemented with packaged evidence ([#111](https://github.com/jackgeek/climon2/issues/111)):**
 [exact paste](#transparent-keyboard-and-exact-paste), mouse and focus for
@@ -122,8 +123,15 @@ covering the selected session's canvas clears viewing while ready keys still
 reach it, a gesture begun before a toast appeared keeps its target over it,
 and a new click on a toast only dismisses it.
 
-Everything else in this document remains agreed and unimplemented, including
-Escape closing the dialog when Escape is not the prefix.
+**Implemented ([#109](https://github.com/jackgeek/climon2/issues/109), [#112](https://github.com/jackgeek/climon2/issues/112) to [#116](https://github.com/jackgeek/climon2/issues/116)):** the input router,
+including Escape closing the dialog when Escape is not the prefix
+([#109](https://github.com/jackgeek/climon2/issues/109)); history and synchronized updates ([#112](https://github.com/jackgeek/climon2/issues/112)); the selector
+([#113](https://github.com/jackgeek/climon2/issues/113)); the attention jump, hints and host reports ([#114](https://github.com/jackgeek/climon2/issues/114)); toasts
+and the bell ([#115](https://github.com/jackgeek/climon2/issues/115)); and read-only disconnected history with passive
+recovery ([#116](https://github.com/jackgeek/climon2/issues/116)), as each section below says. Native host selection and
+copy is a manual check, not an automated test. The
+[monitor README](../../crates/climon2-monitor/README.md#specification-mapping)
+lists the cases its tests do not yet claim.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
 confirms the captionless double-bordered selector, always-focused search,
@@ -131,8 +139,8 @@ explicit read-only disconnected/final history selection and animated
 [toasts](TERMS.md#toast).
 It also adds the monitor's own
 [host program-status reports and configurable bell](README.md#monitor-to-host-status-and-bell).
-These are planned presentation/host signals, not session-byte passthrough or changed daemon
-[FSMs](TERMS.md#fsm); the shipped empty monitor emits none of them.
+These are presentation/host signals, not session-byte passthrough or changed daemon
+[FSMs](TERMS.md#fsm); the monitor emits them ([#114](https://github.com/jackgeek/climon2/issues/114), [#115](https://github.com/jackgeek/climon2/issues/115)).
 
 The [monitor](../../GLOSSARY.md#sessions) provides an
 [RDP-like](TERMS.md#rdp) remote terminal experience, not a read-only viewer.
@@ -306,7 +314,7 @@ unsent to coalesce.
 
 ## Normal history, alternate screen, and stale inspection
 
-**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)), except stale inspection and recovery below:**
+**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)), with stale inspection and recovery below by [#116](https://github.com/jackgeek/climon2/issues/116):**
 normal history scrolling, anchoring, eviction, return to live, the
 alternate-screen wheel and the cursor rules of this section and the next.
 The wheel moves one row a notch; while scrolled back the top row's control
@@ -349,7 +357,8 @@ transport loss, recoverable startup failure (including missing libraries), and
 safe worker panics; permanent rejection/invalid configuration and final outcomes
 stop it. Fresh instances wait for prior cleanup/join. No indeterminate work is
 replayed. Numerical backoff/budgets are in
-[operational limits](../monitor-operational-limits.md); all behavior is unimplemented.
+[operational limits](../monitor-operational-limits.md). The monitor implements
+this behavior ([#116](https://github.com/jackgeek/climon2/issues/116)).
 
 ## Chrome, cursor, and host copy
 

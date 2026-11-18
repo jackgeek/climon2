@@ -297,11 +297,11 @@ A token is classified by the sequence vte dispatches for it. Between `ESC` and t
 
 The engine is fed in steps of at most 64 bytes of text and C0 controls; every escape sequence is its own step(s).
 
-### Agreed terminal-status extension, not implemented
+### Agreed terminal-status extension
 
 The [session-status revision](../session-status.md) adds daemon-core observation
 of OSC 7501, OSC 133, and OSC 9/99/777 before host-output filtering. The daemon
-will answer OSC 7501 capability queries locally. Root program reports and
+answers OSC 7501 capability queries locally. Root program reports and
 shell lifecycle select explicit or heuristic activity detection; recognized
 notifications request attention, while progress alone does not.
 
@@ -312,11 +312,13 @@ not the permission to send host-dependent requests to an outer terminal.
 The [agreed daemon wire](../protocol/daemon-client/core-v1.md) now specifies
 structured schemas and source normalization;
 [native declarations](../protocol/monitor-client/core-v1.md) are also agreed.
-The current filter and query
-implementation above are not evidence that these planned signals are supported.
+The session daemon implements this extension
+([#92](https://github.com/jackgeek/climon2/issues/92),
+[#98](https://github.com/jackgeek/climon2/issues/98)); the filter and query
+implementation above are not evidence for it.
 
-The [monitor](../../GLOSSARY.md#sessions)'s planned per-session `climon2-vt` copy for retained disconnected
-inspection is an explicit exception to the current no-client-emulator rule,
+The [monitor](../../GLOSSARY.md#sessions)'s per-session `climon2-vt` copy for retained disconnected
+inspection (#108, #116) is an explicit exception to the current no-client-emulator rule,
 not a competing terminal-query authority. Forwarding to other monitors and
 xterm.js browsers is a future consumer boundary, not permission for revoked
 core screen mirroring or a native library in a browser. The [agreed #63 terminal contract](../protocol/terminal-integration.md) now selects
@@ -338,7 +340,7 @@ effective size. The session daemon implements this
 [canonical presentation](#canonical-monitor-presentation)
 ([#89](https://github.com/jackgeek/climon2/issues/89)); ordinary direct/derived
 attach, native history and release below are unchanged.
-The planned monitor uses its own alternate screen and internal normal history, replaces
+The monitor uses its own alternate screen and internal normal history, replaces
 whole models/history transactionally, and never writes session bytes directly
 to the host or emits duplicate query replies. Selected input also waits for
 coherent paint, while applied background models can report Ready without paint.
@@ -350,8 +352,8 @@ permanent rejection instead shows a disconnected/error overlay. Recovery removes
 the overlay but requires explicit acquisition for a non-controller's live
 presentation. No history/retry binding is added. Selector removal discards cache
 only after definitive termination and local instance cleanup/join, for this
-monitor run only. These monitor behaviors are unimplemented and leave daemon
-query authority and ordinary presentation unchanged.
+monitor run only. The monitor implements these behaviors (#108, #112, #116,
+#117), which leave daemon query authority and ordinary presentation unchanged.
 
 ## Restoration: three phases, produced incrementally
 

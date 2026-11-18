@@ -226,6 +226,7 @@ dependencies = [
  "climon2-install",
  "climon2-second-release",
  "climon2-test-term",
+ "libc",
  "nix 0.31.3",
  "portable-pty",
  "serde_json",
@@ -255,6 +256,20 @@ dependencies = [
 [[package]]
 name = "climon2-launcher"
 version = "0.1.0"
+
+[[package]]
+name = "climon2-measure"
+version = "0.1.0"
+dependencies = [
+ "climon2-core",
+ "climon2-platform",
+ "climon2-test-term",
+ "libc",
+ "portable-pty",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "climon2-monitor"
@@ -1802,6 +1817,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
+ "sha2",
  "syn 2.0.119",
  "tempfile",
 ]

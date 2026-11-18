@@ -5,7 +5,12 @@
 //! is never shown.
 use crate::terminal::Presentation;
 use climon2_core::{SessionId, metadata::SessionMetadata};
-use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, time::SystemTime};
+use std::{
+    borrow::Cow,
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+    time::SystemTime,
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// What one discovery probe found about a session with valid metadata.
@@ -23,8 +28,13 @@ pub(crate) enum Found {
 pub(crate) enum ClientEvent {
     /// Monitor Open succeeded, selecting `status-v1` or not.
     Opened { status: bool },
-    /// A passive retry started a fresh client for the session.
+    /// The session waits for, or a passive retry started, a fresh client.
     Starting,
+    /// The session is resource-blocked (#120): admission cannot reserve
+    /// its client, or its release, yet; with why.
+    AwaitingResources(String),
+    /// Its release has been loading longer than `deadlines.load_ms`.
+    LoadingSlowly,
     /// Whether the client that is over is retried.
     Recovery(Recovery),
     /// The client cannot serve this session, with why.
@@ -36,7 +46,79 @@ pub(crate) enum ClientEvent {
     /// Control and display, for the session's terminal: never row state.
     Presentation(Presentation),
     /// A request's answer, matched to its request by the supervisor.
-    Answer(u64, Result<(), String>),
+    Answer(u64, Answer),
+    /// A confirmed Delete's Kill was refused, or its outcome is unknown
+    /// (#117).
+    Termination(Termination),
+    /// A confirmed Delete is done: the session is definitively terminated,
+    /// known final or proven gone, and its client is cleaned up and joined,
+    /// so its row is dismissed (#117).
+    Removed,
+}
+
+/// A request's answer, as the library reported it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Answer {
+    pub(crate) verdict: Verdict,
+    /// The command's final outcome the answer carries: a Kill's
+    /// termination result, or a known-final rejection.
+    pub(crate) ended: Option<Outcome>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Verdict {
+    Accepted,
+    /// Refused without effect, with why.
+    Rejected(String),
+    /// Failed or indeterminate: it may have had effects, with why.
+    Uncertain(String),
+}
+
+impl Answer {
+    /// Accepted, or why not: what a request other than Kill learns.
+    pub(crate) fn result(self) -> Result<(), String> {
+        match self.verdict {
+            Verdict::Accepted => Ok(()),
+            Verdict::Rejected(why) | Verdict::Uncertain(why) => Err(why),
+        }
+    }
+}
+
+/// What became of a confirmed Delete's Kill short of its session's end
+/// (#117).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Termination {
+    /// Refused without effect: the row stays, no longer pending.
+    Refused(String),
+    /// Failed or lost: the row stays pending until its outcome is learned
+    /// passively; the Kill is never sent again.
+    Unconfirmed(String),
+}
+
+/// What Delete offers for a row (selector document, "Delete: terminate and
+/// remove").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Offer {
+    TerminateAndRemove,
+    /// The session is already final, or proven gone (owner decision on
+    /// #116): nothing is left to terminate.
+    Remove,
+}
+
+/// A confirmed Delete under way, as its row shows it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Deleting {
+    Terminating,
+    Removing,
+}
+
+impl Deleting {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Terminating => "Terminating",
+            Self::Removing => "Removing",
+        }
+    }
 }
 
 /// Where recovery of a row's lost or failed client stands (spec #73,
@@ -51,6 +133,10 @@ pub(crate) enum Recovery {
     /// (owner decision on #116, 2026-11-16).
     Gone,
 }
+
+/// The top row's error slot for a row whose release is loading slowly
+/// (owner decision on #120, 2026-11-16).
+const LOADING_SLOWLY: &str = "library loading slowly";
 
 /// What a daemon reports about its session over a connected client.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,6 +242,10 @@ enum Connection {
     /// No client: discovery has not proven the session live.
     None,
     Starting,
+    /// Starting, its release loading slowly.
+    LoadingSlowly,
+    /// Resource-blocked, awaiting its client, with why (#120).
+    AwaitingResources(String),
     Connected {
         status: bool,
     },
@@ -164,12 +254,23 @@ enum Connection {
 }
 
 impl Connection {
+    /// Whether moving to `next` enters another condition: a
+    /// resource-blocked row whose reason changes stays blocked since it
+    /// was first blocked.
+    fn entered(&self, next: &Self) -> bool {
+        match (self, next) {
+            (Self::AwaitingResources(_), Self::AwaitingResources(_)) => false,
+            (current, next) => current != next,
+        }
+    }
+
     /// The not-connected label of a row with no current status and no final
     /// outcome. A client opened with `status-v1` is still Starting until its
     /// Initial metadata reports the status; one without it is Unavailable.
     fn label(&self) -> &'static str {
         match self {
-            Self::Starting | Self::Connected { status: true } => "Starting",
+            Self::Starting | Self::LoadingSlowly | Self::Connected { status: true } => "Starting",
+            Self::AwaitingResources(_) => "Awaiting resources",
             Self::Disconnected => "Disconnected",
             Self::None | Self::Connected { status: false } | Self::Unavailable(_) => "Unavailable",
         }
@@ -198,6 +299,10 @@ struct Row {
     running: bool,
     /// Recovery of its lost or failed client, until a client opens.
     recovery: Option<Recovery>,
+    /// A confirmed Delete under way.
+    deleting: Option<Deleting>,
+    /// Why a confirmed Delete's Kill was refused or is unconfirmed.
+    kill_error: Option<String>,
 }
 
 impl Row {
@@ -212,14 +317,24 @@ impl Row {
             ended: None,
             running: false,
             recovery: None,
+            deleting: None,
+            kill_error: None,
         }
     }
 
     /// The row's ordering group, the time it sorts by within it, and its
-    /// display status: a final outcome first, then a connected row's
-    /// current status, otherwise its not-connected condition since the
-    /// monitor recorded entering it.
+    /// display status, which a confirmed Delete under way replaces (#117).
     fn standing(&self) -> (Group, SystemTime, String) {
+        let (group, at, status) = self.undeleted();
+        let deleting = self.deleting.map(|deleting| deleting.label().to_owned());
+        (group, at, deleting.unwrap_or(status))
+    }
+
+    /// The row's ordering group, the time it sorts by within it, and its
+    /// status: a final outcome first, then a connected row's current
+    /// status, otherwise its not-connected condition since the monitor
+    /// recorded entering it.
+    fn undeleted(&self) -> (Group, SystemTime, String) {
         let connected = matches!(self.connection, Connection::Connected { .. });
         match (self.ended, self.status.filter(|_| connected)) {
             (Some((outcome, at)), _) => {
@@ -258,9 +373,19 @@ impl Row {
             self.status = None;
             self.recovery = None;
         }
-        if self.connection != connection {
-            self.connection = connection;
+        if self.connection.entered(&connection) {
             self.since = now;
+        }
+        self.connection = connection;
+    }
+
+    /// Why the row waits, for the top row's error slot: resource-blocked,
+    /// or its release loading slowly (#120).
+    fn condition(&self) -> Option<&str> {
+        match &self.connection {
+            Connection::AwaitingResources(why) => Some(why),
+            Connection::LoadingSlowly => Some(LOADING_SLOWLY),
+            _ => None,
         }
     }
 
@@ -269,7 +394,9 @@ impl Row {
     fn starting(&self) -> bool {
         let waiting = matches!(
             self.connection,
-            Connection::Starting | Connection::Connected { status: true }
+            Connection::Starting
+                | Connection::LoadingSlowly
+                | Connection::Connected { status: true }
         );
         waiting && self.recovery.is_none() && self.standing().0 == Group::Disconnected
     }
@@ -291,13 +418,18 @@ impl Row {
         match event {
             ClientEvent::Report(report) => return self.learn(report, now),
             ClientEvent::Recovery(recovery) => self.recover(recovery),
-            event => {
-                if let Some(connection) = connection(event) {
-                    self.connect(connection, now);
-                }
-            }
+            ClientEvent::Termination(termination) => self.terminated(termination),
+            event => self.reconnect(event, now),
         }
         None
+    }
+
+    /// A connection event moves the row's connection; anything else, such
+    /// as control, display or an answer, changes nothing.
+    fn reconnect(&mut self, event: ClientEvent, now: SystemTime) {
+        if let Some(connection) = connection(event) {
+            self.connect(connection, now);
+        }
     }
 
     /// Keeps the latest nonempty title and the latest status, whose
@@ -332,6 +464,27 @@ impl Row {
         self.status
             .filter(|_| connected)
             .and_then(Status::attention)
+    }
+
+    /// A refused Kill ends the Delete, keeping its row; an unconfirmed one
+    /// keeps it pending. Either shows why.
+    fn terminated(&mut self, termination: Termination) {
+        let error = match termination {
+            Termination::Refused(why) => {
+                self.deleting = None;
+                format!("Termination refused: {why}")
+            }
+            Termination::Unconfirmed(why) => format!("Termination not confirmed: {why}"),
+        };
+        self.kill_error = Some(error);
+    }
+
+    /// What Delete offers, unless a Delete is already under way: Remove
+    /// alone once the session is final or proven gone.
+    fn offer(&self) -> Option<Offer> {
+        let over = self.ended.is_some() || self.recovery == Some(Recovery::Gone);
+        let offer = [Offer::TerminateAndRemove, Offer::Remove][usize::from(over)];
+        self.deleting.is_none().then_some(offer)
     }
 
     fn recover(&mut self, recovery: Recovery) {
@@ -387,6 +540,9 @@ pub(crate) struct View {
 pub(crate) struct Registry {
     own: Option<SessionId>,
     rows: BTreeMap<SessionId, Row>,
+    /// Sessions a confirmed Delete removed: run-local dismissal, never
+    /// listed again in this run and never persisted (#117).
+    dismissed: BTreeSet<SessionId>,
     /// Why the latest discovery pass was incomplete, if it was.
     incomplete: Option<String>,
 }
@@ -397,6 +553,7 @@ impl Registry {
         Self {
             own,
             rows: BTreeMap::new(),
+            dismissed: BTreeSet::new(),
             incomplete: None,
         }
     }
@@ -406,7 +563,8 @@ impl Registry {
     /// changes a client's connection. A session proven gone drops its row
     /// unless it was ever connected, and adds none; this monitor's own
     /// session never has a row (owner decision on #110), so it can be
-    /// neither listed nor selected.
+    /// neither listed nor selected. A dismissed session is never listed
+    /// again in this run (#117).
     pub(crate) fn discovered(
         &mut self,
         metadata: SessionMetadata,
@@ -414,6 +572,9 @@ impl Registry {
         now: SystemTime,
     ) -> Option<SessionMetadata> {
         let id = metadata.session_id.clone();
+        if self.dismissed.contains(&id) {
+            return None;
+        }
         let own = self.own.as_ref() == Some(&id);
         if own || matches!(found, Found::Stale) {
             self.gone(&id);
@@ -479,6 +640,46 @@ impl Registry {
     /// for such a row, as for a final one (owner decision on #116).
     pub(crate) fn recovery(&self, id: &SessionId) -> Option<&Recovery> {
         self.rows.get(id)?.recovery.as_ref()
+    }
+
+    /// Why `id`'s row waits for its client, if it is resource-blocked or
+    /// its release is loading slowly (#120).
+    pub(crate) fn condition(&self, id: &SessionId) -> Option<&str> {
+        self.rows.get(id)?.condition()
+    }
+
+    /// What Delete offers on `id`'s row: none without a row, or while a
+    /// Delete is under way, so repeated Delete never sends another Kill.
+    pub(crate) fn offer(&self, id: &SessionId) -> Option<Offer> {
+        self.rows.get(id)?.offer()
+    }
+
+    /// Confirms Delete on `id`'s row as [`Registry::offer`] offers it now,
+    /// so a session that became final meanwhile is only removed: the row
+    /// shows the Delete under way. Returns its metadata and the offer
+    /// confirmed, unless nothing was offered.
+    pub(crate) fn confirm(&mut self, id: &SessionId) -> Option<(SessionMetadata, Offer)> {
+        let row = self.rows.get_mut(id)?;
+        let offer = row.offer()?;
+        let deleting = match offer {
+            Offer::TerminateAndRemove => Deleting::Terminating,
+            Offer::Remove => Deleting::Removing,
+        };
+        row.deleting = Some(deleting);
+        row.kill_error = None;
+        Some((row.metadata.clone(), offer))
+    }
+
+    /// Why a confirmed Delete's Kill on `id` was refused or is unconfirmed.
+    pub(crate) fn error(&self, id: &SessionId) -> Option<&str> {
+        self.rows.get(id)?.kill_error.as_deref()
+    }
+
+    /// Dismisses `id` for the rest of this run: its row goes, and
+    /// discovery never adds it again (#117).
+    pub(crate) fn dismiss(&mut self, id: &SessionId) {
+        self.rows.remove(id);
+        self.dismissed.insert(id.clone());
     }
 
     /// Records whether the latest pass reached every entry.
@@ -553,9 +754,11 @@ fn connection(event: ClientEvent) -> Option<Connection> {
     match event {
         ClientEvent::Opened { status } => Some(Connection::Connected { status }),
         ClientEvent::Unavailable(why) => Some(Connection::Unavailable(why)),
+        ClientEvent::AwaitingResources(why) => Some(Connection::AwaitingResources(why)),
         event => {
             let plain = [
                 (ClientEvent::Starting, Connection::Starting),
+                (ClientEvent::LoadingSlowly, Connection::LoadingSlowly),
                 (ClientEvent::Ended, Connection::Disconnected),
             ];
             let mut plain = plain.into_iter();
@@ -1051,6 +1254,62 @@ mod tests {
         assert_eq!(registry.rows()[0].since, at(5));
     }
 
+    /// Awaiting resources rows (#120; LIM-04 Monitor, confirmed
+    /// not-connected scenario): labelled `Awaiting resources`, they sort in
+    /// the not-connected group by when they entered their condition, which
+    /// a changed reason does not move, and carry that reason for the top
+    /// row. They are settled, not starting, for the startup wait, Enter
+    /// selects them without acquiring, and they are never the initial
+    /// selection or the attention target, even with a stale status that
+    /// needs attention. A release loading slowly keeps its rows Starting,
+    /// still awaited, with `library loading slowly`.
+    #[test]
+    fn awaiting_resources_rows_are_settled_and_never_chosen() {
+        let mut registry = Registry::new(None);
+        let blocked = opened(&mut registry, (1, "blocked"), true, 1);
+        registry.client(&blocked, episode(State::NeedsAttention, 2), at(2));
+        assert_eq!(registry.attention(), Some(blocked.clone()));
+        registry.client(&blocked, ClientEvent::Ended, at(3));
+        let slow = metadata(&id(2), "2026-11-13T10:00:00.000Z", "slow", &[]);
+        let slow = registry.discovered(slow, Found::Live, at(3)).unwrap();
+        let slow = slow.session_id;
+        let later = metadata(&id(3), "2026-11-13T10:00:00.000Z", "later", &[]);
+        let later = registry.discovered(later, Found::Live, at(3)).unwrap();
+        let later = later.session_id;
+        let short = |why: &str| ClientEvent::AwaitingResources(why.into());
+        registry.client(&blocked, ClientEvent::Starting, at(4));
+        registry.client(&blocked, short("not enough memory: 2 bytes needed"), at(5));
+        registry.client(&later, short("not enough memory: 1 bytes needed"), at(6));
+        registry.client(
+            &later,
+            short("not enough file descriptors: 1 needed"),
+            at(7),
+        );
+        registry.client(&slow, ClientEvent::LoadingSlowly, at(8));
+        assert_eq!(
+            shown(&registry),
+            [
+                "Starting|slow",
+                "Awaiting resources|later",
+                "Awaiting resources|blocked"
+            ]
+        );
+        assert_eq!(registry.rows()[1].since, at(6));
+        assert_eq!(
+            registry.condition(&later),
+            Some("not enough file descriptors: 1 needed")
+        );
+        assert_eq!(registry.condition(&slow), Some("library loading slowly"));
+        assert!(!registry.starting(&blocked) && !registry.starting(&later));
+        assert!(registry.starting(&slow));
+        assert_eq!(registry.kind(&blocked), Some(Kind::Unconnected));
+        assert_eq!(registry.eligible(), None);
+        assert_eq!(registry.attention(), None);
+        registry.client(&later, ClientEvent::Starting, at(9));
+        assert_eq!(registry.condition(&later), None);
+        assert!(registry.starting(&later));
+    }
+
     /// REC-01, REC-02 (pure supplement; #107's review; owner decisions on
     /// #116): a lost client's row keeps its recovery, with its diagnostic,
     /// through a retry's Starting, which is no first start and makes the
@@ -1149,7 +1408,13 @@ mod tests {
         registry.client(&key(4), ClientEvent::Ended, at(3));
         for event in [
             ClientEvent::Presentation(Presentation::Revoked),
-            ClientEvent::Answer(2, Ok(())),
+            ClientEvent::Answer(
+                2,
+                Answer {
+                    verdict: Verdict::Accepted,
+                    ended: None,
+                },
+            ),
         ] {
             registry.client(&key(0), event, at(4));
         }
@@ -1208,6 +1473,81 @@ mod tests {
         assert!(!registry.starting(&awaiting));
         assert_eq!(registry.eligible(), Some(awaiting));
         assert!(!registry.starting(&id(9).parse().unwrap()));
+    }
+
+    /// DEL-01 and DEL-02 (pure supplement, #117): Delete offers Terminate
+    /// and remove on a live row and Remove alone on a final row or one whose
+    /// daemon is proven gone (owner decision on #116); confirming takes the
+    /// offer made at that moment and shows the row Terminating or Removing in
+    /// place, and nothing more is offered while it is under way, so a
+    /// repeated Delete sends nothing. An unconfirmed Kill keeps it pending
+    /// with why; a refused one ends it with why, and confirming again clears
+    /// that. Dismissal drops the row for the run: rediscovery, live or
+    /// stale, never lists it again.
+    #[test]
+    fn delete_offers_remove_once_final_or_gone_and_dismissal_is_run_local() {
+        let mut registry = Registry::new(None);
+        let live = opened(&mut registry, (1, "live"), true, 1);
+        registry.client(&live, status(State::Running, 5), at(5));
+        let refused = opened(&mut registry, (2, "refused"), true, 1);
+        registry.client(&refused, status(State::Idle, 4), at(4));
+        let finished = opened(&mut registry, (3, "finished"), true, 1);
+        registry.client(&finished, ended(Outcome::Exit(0), Some(3)), at(3));
+        let lost = opened(&mut registry, (4, "lost"), true, 1);
+        registry.client(&lost, ClientEvent::Ended, at(2));
+        assert_eq!(registry.offer(&lost), Some(Offer::TerminateAndRemove));
+        let stale = metadata(&id(4), "2026-11-13T10:00:00.000Z", "lost", &[]);
+        registry.discovered(stale, Found::Stale, at(6));
+        let offers = [&live, &refused, &finished, &lost].map(|id| registry.offer(id));
+        assert_eq!(
+            offers,
+            [
+                Some(Offer::TerminateAndRemove),
+                Some(Offer::TerminateAndRemove),
+                Some(Offer::Remove),
+                Some(Offer::Remove),
+            ]
+        );
+        let confirmed = registry
+            .confirm(&live)
+            .map(|(metadata, offer)| (metadata.session_id, offer));
+        assert_eq!(confirmed, Some((live.clone(), Offer::TerminateAndRemove)));
+        assert_eq!(registry.offer(&live), None);
+        assert_eq!(registry.confirm(&live), None);
+        let unconfirmed = ClientEvent::Termination(Termination::Unconfirmed("lost".into()));
+        registry.client(&live, unconfirmed, at(6));
+        assert_eq!(
+            registry.error(&live),
+            Some("Termination not confirmed: lost")
+        );
+        assert_eq!(registry.offer(&live), None);
+        registry.confirm(&refused);
+        let refusal = ClientEvent::Termination(Termination::Refused("busy".into()));
+        registry.client(&refused, refusal, at(6));
+        assert_eq!(registry.error(&refused), Some("Termination refused: busy"));
+        assert_eq!(registry.offer(&refused), Some(Offer::TerminateAndRemove));
+        let removed = registry.confirm(&finished).map(|(_, offer)| offer);
+        assert_eq!(removed, Some(Offer::Remove));
+        assert_eq!(
+            shown(&registry),
+            [
+                "Terminating|live",
+                "Idle|refused",
+                "Removing|finished",
+                "Disconnected|lost"
+            ]
+        );
+        registry.confirm(&refused);
+        assert_eq!(registry.error(&refused), None);
+        registry.dismiss(&live);
+        let again = metadata(&id(1), "2026-11-13T10:00:00.000Z", "live", &[]);
+        assert_eq!(registry.discovered(again.clone(), Found::Live, at(7)), None);
+        registry.discovered(again, Found::Stale, at(8));
+        registry.client(&live, ClientEvent::Opened { status: true }, at(8));
+        assert_eq!(registry.kind(&live), None);
+        assert_eq!(registry.offer(&live), None);
+        assert_eq!(registry.error(&live), None);
+        assert_eq!(registry.rows().len(), 3);
     }
 
     /// TRM-06 label cases: the latest nonempty title, otherwise command and

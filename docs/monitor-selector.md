@@ -1,14 +1,14 @@
 # Monitor selector and attention presentation
 
-**Agreed planning specification from [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).**
-The [monitor](../GLOSSARY.md#sessions) ships only as the empty walking skeleton of
+**Agreed specification from [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).**
+The [monitor](../GLOSSARY.md#sessions) grew from the empty walking skeleton of
 [#74](https://github.com/jackgeek/climon2/issues/74), whose packaged tests show
 that typed prefix+x exits it, with the
 [key introduction and help](#key-introduction-and-help) of
-[#105](https://github.com/jackgeek/climon2/issues/105) over its empty state.
+[#105](https://github.com/jackgeek/climon2/issues/105).
 That dialog closes on a bare Escape when Escape is not the prefix
-([#109](https://github.com/jackgeek/climon2/issues/109)); it does not yet open
-over a selector. The basic [selector](../GLOSSARY.md#attachment-and-control) of
+([#109](https://github.com/jackgeek/climon2/issues/109)), and opens over the
+selector ([#113](https://github.com/jackgeek/climon2/issues/113)). The basic [selector](../GLOSSARY.md#attachment-and-control) of
 [#106](https://github.com/jackgeek/climon2/issues/106) is implemented: prefix+s
 overlays the captionless double border with status and title columns and a
 reversed highlight, Up and Down move it without wrapping, and Escape closes
@@ -36,15 +36,17 @@ go to it at once. Enter selects the highlighted row
 known to be final is acquired, and a Starting row or an Unavailable row
 without a connected client is selected without acquiring
 ([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
-final rows wait for [#116](https://github.com/jackgeek/climon2/issues/116). The full selector of
+final rows are selected read-only
+([#116](https://github.com/jackgeek/climon2/issues/116)). The full selector of
 [#113](https://github.com/jackgeek/climon2/issues/113) is implemented: the
 always-focused search with its separator, `SkimMatcherV2` ordered-subsequence
 matching in row order, typed and pasted search text within `ui.search_bytes`,
 Up/Down/PageUp/PageDown without wrapping, the highlight rules for edits and
 live updates, row clicks, the wheel, cancelling by a click outside the box
 (owner decision on #113), and the key-hint footer, which names only select,
-cancel and help (owner decision on #113). Nothing else this document
-specifies is implemented: no Delete. Toasts, their four-row lane below the
+cancel and help (owner decision on #113). Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)) is implemented as
+[below](#delete-terminate-and-remove). Toasts, their four-row lane below the
 selector and the bell
 ([#115](https://github.com/jackgeek/climon2/issues/115)) are implemented as
 [below](#toasts-and-bell). Prefix+j, viewing,
@@ -59,8 +61,10 @@ primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and
 [session-status mechanics](session-status.md) for existing authority and attention rules.
 The later [lifecycle specification](monitor-lifecycle.md) amends history,
-recovery, exit and selector termination/removal. Apart from the empty monitor's
-exits and key introduction, all remain unimplemented.
+recovery, exit and selector termination/removal, implemented by
+[#116](https://github.com/jackgeek/climon2/issues/116),
+[#117](https://github.com/jackgeek/climon2/issues/117) and
+[#118](https://github.com/jackgeek/climon2/issues/118).
 
 ## Key introduction and help
 
@@ -78,9 +82,10 @@ prefix:
 
 Below them it lists the selector's own keys under **In the session list**:
 typing or pasting to search, the search's editing keys, Up/Down/PageUp/PageDown,
-the select and cancel keys (as the footer names them), clicking a row or
-outside the box, and the wheel (owner decision on #113: the footer names only
-select, cancel and help, and help lists everything else).
+the select and cancel keys (as the footer names them), Delete (`Del`, or
+`Del (fn+⌫)` on macOS, owner decision on #117), clicking a row or outside the
+box, and the wheel (owner decision on #113: the footer names only select,
+cancel and help, and help lists everything else).
 
 Provide an initially unchecked **Don't show again** checkbox. Persist the
 selected preference separately from the user's configuration, per climon2 home
@@ -205,6 +210,17 @@ There are no selector create/rename actions.
 
 The [lifecycle decision](monitor-lifecycle.md#selector-delete-terminate-and-remove)
 explicitly reopens the planning map's earlier selector killing/removal exclusion.
+[#117](https://github.com/jackgeek/climon2/issues/117) implements this section
+with these owner decisions: only forward Delete (`CSI 3 ~`) opens the
+confirmation; Tab and Left/Right move its focus, Enter activates and Escape
+cancels; either decision returns to the selector, a confirmed one showing the
+row as pending termination; inside it prefix+x exits, prefix+j cancels it and
+jumps, and prefix+s and prefix+? do nothing; a session whose daemon discovery
+proved gone is offered Remove, as a final one is (owner decision on #116). The
+monitor's own enclosing session is not listed, so Delete never reaches it: spec
+#73's scenario deleting it through a Kill-only instance is dropped (owner
+decision, 2026-11-16). The exact strings are in the
+[monitor README](../crates/climon2-monitor/README.md#on-screen-strings).
 Delete captures the highlighted session's immutable GUID and opens a modal
 showing its title and state. Default to **Cancel**; offer **Terminate and remove**,
 or **Remove** when already final. Cancel/Escape changes nothing and sends nothing.

@@ -206,9 +206,29 @@ impl Selector {
     }
 
     fn choose(&mut self, rows: &[View], _: Rect) -> Option<SessionId> {
+        self.highlighted(rows)
+    }
+
+    /// The highlighted row's identity, while it matches.
+    pub(crate) fn highlighted(&self, rows: &[View]) -> Option<SessionId> {
         let matching = self.matching(rows);
         self.index(&matching)
             .map(|index| matching[index].id.clone())
+    }
+
+    /// A confirmed Delete removed `id` (#117): a highlight on it falls back
+    /// to the matching row now at its place, else the one before it, and
+    /// is otherwise kept.
+    pub(crate) fn dismissed(&mut self, id: &SessionId, before: &[View], after: &[View]) {
+        if self.highlight.as_ref() == Some(id) {
+            let ids = |rows| {
+                self.matching(rows)
+                    .into_iter()
+                    .map(|row| &row.id)
+                    .collect::<Vec<_>>()
+            };
+            self.highlight = crate::delete::fallback(id, &ids(before), &ids(after));
+        }
     }
 
     fn cancel(&mut self, _: &[View], _: Rect) -> Option<SessionId> {
@@ -486,6 +506,7 @@ pub(crate) fn help(prefix: ControlKey) -> Vec<String> {
         select_key(prefix)
     ));
     lines.extend(escape_cancels(prefix).then(|| "Esc  Cancel".to_owned()));
+    lines.push(format!("{DELETE_KEY}  Delete the highlighted session"));
     lines.extend(
         [
             "Click a row  Highlight it",
@@ -496,6 +517,14 @@ pub(crate) fn help(prefix: ControlKey) -> Vec<String> {
     );
     lines
 }
+
+/// Forward Delete, as the key introduction names it: on macOS the key
+/// most keyboards send it with (owner decision on #117).
+const DELETE_KEY: &str = if cfg!(target_os = "macos") {
+    "Del (fn+⌫)"
+} else {
+    "Del"
+};
 
 /// What selects: Enter, or the prefix twice when Enter is the prefix.
 fn select_key(prefix: ControlKey) -> String {
@@ -759,7 +788,8 @@ mod tests {
     /// HLP-02 and SEL-02 (pure supplement; owner decision on #113, "help
     /// lists everything else"): the key introduction lists the selector's
     /// keys under their own heading, naming Enter as the prefix twice when it
-    /// is the prefix and leaving out Escape when the prefix consumes it.
+    /// is the prefix and leaving out Escape when the prefix consumes it,
+    /// and Delete (#117).
     #[test]
     fn help_lists_every_selector_key_with_the_actual_prefix() {
         let help = |prefix: &str| help(ControlKey::from_name(prefix).unwrap());
@@ -772,6 +802,13 @@ mod tests {
                 format!("{select}  Select the highlighted session"),
             ];
             lines.extend(cancel.iter().map(|line| (*line).to_owned()));
+            // Owner decision on #117: forward Delete, fn+⌫ on a Mac.
+            let delete = if cfg!(target_os = "macos") {
+                "Del (fn+⌫)  Delete the highlighted session"
+            } else {
+                "Del  Delete the highlighted session"
+            };
+            lines.push(delete.to_owned());
             lines.extend(
                 [
                     "Click a row  Highlight it",
@@ -788,6 +825,39 @@ mod tests {
             help("Ctrl+M"),
             lines("Ctrl+M then Ctrl+M", &["Esc  Cancel"])
         );
+    }
+
+    /// DEL-02 (pure supplement, #117): a confirmed Delete's removal moves
+    /// a highlight on its row to the matching row now at its place, else
+    /// the matching row before it, else none; a highlight on another row
+    /// stays.
+    #[test]
+    fn a_dismissed_highlighted_row_falls_back_among_the_matching_rows() {
+        let all = rows(&[
+            ("Idle", "ax"),
+            ("Idle", "b"),
+            ("Idle", "ay"),
+            ("Idle", "az"),
+        ]);
+        let without = |index: usize| {
+            let mut rows = all.clone();
+            rows.remove(index);
+            rows
+        };
+        let mut selector = selector("Ctrl+]", false);
+        selector.open(&all, None, SMALL);
+        text(&mut selector, "a", &all);
+        selector.key(&DOWN, &all, SMALL);
+        assert_eq!(selector.highlighted(&all), Some(all[2].id.clone()));
+        selector.dismissed(&all[2].id, &all, &without(2));
+        assert_eq!(selector.highlighted(&without(2)), Some(all[3].id.clone()));
+        selector.dismissed(&all[0].id, &without(2), &without(0));
+        assert_eq!(selector.highlighted(&all), Some(all[3].id.clone()));
+        let last = &all[3..];
+        selector.dismissed(&all[3].id, &all, &all[..3]);
+        assert_eq!(selector.highlighted(&all), Some(all[2].id.clone()));
+        selector.dismissed(&all[2].id, &all[2..3], &[]);
+        assert_eq!(selector.highlighted(last), None);
     }
 
     /// SEL-02 (pure supplement, navigation): Up and Down move the highlight

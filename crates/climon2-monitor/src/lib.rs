@@ -9,7 +9,9 @@
 
 mod attention;
 mod cadence;
+mod delete;
 mod discovery;
+mod failstop;
 #[cfg(feature = "test-hooks")]
 mod hooks;
 mod host;
@@ -25,6 +27,7 @@ mod router;
 mod screen;
 mod search;
 mod selector;
+mod shutdown;
 mod startup;
 mod supervisor;
 mod terminal;
@@ -37,6 +40,7 @@ use climon2_vt::{
     Limits, Parser,
     view::{self as vt, Modes, MouseReporting},
 };
+use delete::{Asking, Confirmation, Decision};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use initial::Initial;
@@ -44,14 +48,17 @@ use introduction::KeyIntroduction;
 use keys::Action;
 use mouse::{Area, Gestures, Mouse, Wheel};
 use ratatui::layout::Rect;
-use registry::{ClientEvent, Kind, Recovery, Registry, Report};
+use registry::{ClientEvent, Kind, Offer, Recovery, Registry, Report, View};
 use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
+use shutdown::Verdict;
 use startup::Startup;
 use std::{
     collections::BTreeMap,
     io, mem,
+    path::Path,
+    thread,
     time::{Duration, Instant, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
@@ -63,7 +70,10 @@ use toast::Toasts;
 pub use climon2_core::failure::Failure as Error;
 
 /// The CLI execs the monitor with no arguments. Returns the exit status of an
-/// orderly exit: 0 for prefix+x, 128 + signal for a termination signal.
+/// orderly exit: 0 for prefix+x, 128 + signal for a termination signal,
+/// never a session's own status. An exit whose cleanup cannot be confirmed
+/// never returns: it fail-stops the process with the climon2 error code
+/// (#118).
 pub fn run() -> Result<u32, Error> {
     let startup = Startup::read()?;
     let log = startup.log.path().to_owned();
@@ -96,17 +106,33 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
     Ok(status)
 }
 
-/// Owns the host until an ending, and releases it before any diagnostic.
-/// A monitor that started told the host its attention state, so the host
-/// hears the root clear once released (#114), even after a failure.
+/// One wait for host input during shutdown, and how long shutdown waits
+/// past its deadline for the supervisor's last round.
+const TICK: Duration = Duration::from_millis(20);
+
+/// Owns the host until an ending, shuts every client down, and releases the
+/// host before any diagnostic, all within `deadlines.final_host_ms` of the
+/// shutdown's end (#118). A monitor that started told the host its
+/// attention state, so the host hears the root clear once released (#114),
+/// even after a failure.
 fn owned(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::Result<u32> {
+    let lanes = startup.config.settings().limits.lanes();
+    let final_host = Duration::from_millis(lanes.final_host_ms.into());
+    let log = startup.log.path().to_owned();
     let (mut host, size) = Host::enter()?;
     let monitor = Monitor::start(size, startup, dispatch, filter);
     let reported = monitor.is_ok();
-    let served = monitor.and_then(|monitor| monitor.serve(&mut host));
+    let (served, verdict) = match monitor {
+        Ok(monitor) => monitor.serve(&mut host),
+        Err(error) => (Err(error), Verdict::Clean),
+    };
+    let watchdog = failstop::Watchdog::arm(final_host, dispatch.clone());
     let released = host.release();
     let cleared = cleared(reported);
-    served.and_then(|ending| released.and(cleared).map(|()| ending.status()))
+    let status = served.and_then(|ending| released.and(cleared).map(|()| ending.status()));
+    let status = judged(status, verdict, &log);
+    watchdog.disarm();
+    status
 }
 
 /// The root clear, once the host heard an attention report.
@@ -115,6 +141,23 @@ fn cleared(reported: bool) -> io::Result<()> {
         return host::write_host(attention::CLEAR);
     }
     Ok(())
+}
+
+/// The exit a shutdown's `verdict` leaves: an unconfirmed departure fails
+/// it, and unconfirmed cleanup fail-stops the whole process, either way
+/// with any earlier failure's diagnostic first.
+fn judged(status: io::Result<u32>, verdict: Verdict, log: &Path) -> io::Result<u32> {
+    match verdict {
+        Verdict::Clean => status,
+        Verdict::Failed(why) => Err(also(status, &why)),
+        Verdict::FailStop(why) => failstop::stop(&also(status, &why), log),
+    }
+}
+
+/// `why`, after the failure `status` holds, if any.
+fn also(status: io::Result<u32>, why: &str) -> io::Error {
+    let earlier = status.err().map(|error| format!("{error}; "));
+    io::Error::other(format!("{}{why}", earlier.unwrap_or_default()))
 }
 
 /// The monitor's own enclosing session, if it runs inside one.
@@ -135,6 +178,8 @@ struct Monitor {
     introduction: KeyIntroduction,
     registry: Registry,
     selector: Selector,
+    /// The Delete confirmation, while it is open over the selector (#117).
+    deleting: Option<Confirmation>,
     discovery: Discovery,
     supervisor: Supervisor,
     /// The selected session: none until initial selection or the user
@@ -234,6 +279,7 @@ impl Monitor {
             introduction,
             registry: Registry::new(own_session()),
             selector: Selector::new(prefix, hints, search),
+            deleting: None,
             discovery,
             supervisor,
             selected: None,
@@ -262,12 +308,65 @@ impl Monitor {
         monitor.show().map(|()| monitor)
     }
 
-    /// Acts on host events until an ending, then shuts every client down.
-    /// Consuming the monitor drops its screen before the host is released.
-    fn serve(mut self, host: &mut Host) -> io::Result<Ending> {
+    /// Acts on host events until an ending, or a failure of the host or
+    /// rendering, then shuts down: why it ended, and what the shutdown
+    /// proved. Consuming the monitor drops its screen before the host is
+    /// released.
+    fn serve(mut self, host: &mut Host) -> (io::Result<Ending>, Verdict) {
         let ending = self.events(host);
-        self.supervisor.stop();
-        ending
+        let (hosted, report) = self.shut_down(host, ending.is_ok());
+        report.log();
+        (
+            ending.and_then(|ending| hosted.map(|()| ending)),
+            report.verdict(),
+        )
+    }
+
+    /// The coordinated shutdown (#118): application input, acquisition,
+    /// discovery and retries stop at once, and the supervisor shuts every
+    /// client down concurrently, until one deadline that nothing restarts.
+    /// Meanwhile the exit screen counts the sessions it waits for, and host
+    /// input is read and discarded: repeated exits and signals do nothing.
+    /// A host that failed is left alone. Returns whether the host still
+    /// worked, and what shutdown proved, discovery's end included.
+    fn shut_down(&mut self, host: &mut Host, hosting: bool) -> (io::Result<()>, shutdown::Report) {
+        let deadline = self.supervisor.shut_down() + TICK;
+        self.discovery.stop();
+        let mut hosted = Ok(());
+        let mut waiting = Vec::new();
+        let mut report = None;
+        while !(report.is_some() && self.discovery.join())
+            && deadline.checked_duration_since(Instant::now()).is_some()
+        {
+            waiting = self.supervisor.waiting().unwrap_or(waiting);
+            hosted = hosted.and_then(|()| self.exiting(host, hosting, waiting.len()));
+            report = report.or_else(|| self.supervisor.report());
+        }
+        let mut report = report.unwrap_or_else(|| unfinished(waiting));
+        if !self.discovery.join() {
+            report.unfinished.push("discovery pass".to_owned());
+        }
+        (hosted, report)
+    }
+
+    /// One round of the exit screen: painted, then one wait for host
+    /// input, whose resizes alone count; without a working host, one tick.
+    fn exiting(&mut self, host: &mut Host, hosting: bool, waiting: usize) -> io::Result<()> {
+        if !hosting {
+            thread::sleep(TICK);
+            return Ok(());
+        }
+        self.screen.exiting(waiting)?;
+        self.resized(host)
+    }
+
+    /// One wait for host input during exit: a resize resizes the exit
+    /// screen, and anything else is ignored.
+    fn resized(&mut self, host: &mut Host) -> io::Result<()> {
+        if let Event::Resize(size) = host.next()? {
+            self.screen.resize(size);
+        }
+        Ok(())
     }
 
     fn events(&mut self, host: &mut Host) -> io::Result<Ending> {
@@ -371,6 +470,7 @@ impl Monitor {
             introduction: &self.introduction,
             rows: &rows,
             selector: &self.selector,
+            asking: asking(self.deleting.as_ref(), &self.registry, &rows),
             incomplete: self.registry.incomplete(),
             progress: self
                 .initial
@@ -675,8 +775,12 @@ impl Monitor {
             histories: within(self.memory.history_bytes_total),
             total: within(self.memory.total_bytes),
         };
-        // Beside the models: the one parser and every unapplied report.
-        let fixed = Parser::BYTES + self.supervisor.backlog();
+        // Beside the models: the one parser, every unapplied report and
+        // every admitted reservation (#120).
+        let reserved = within(self.supervisor.reserved());
+        let fixed = [Parser::BYTES, self.supervisor.backlog(), reserved]
+            .into_iter()
+            .sum();
         let caches = self.caches();
         pressure::relieve(&mut self.terminals, &caches, fixed, budgets);
     }
@@ -709,6 +813,11 @@ impl Monitor {
             self.report(&id, event, now);
             self.supervisor.processed(&id, bytes);
         }
+        let registry = &self.registry;
+        self.deleting = self
+            .deleting
+            .take()
+            .filter(|confirmation| registry.kind(confirmation.target()).is_some());
         self.selector.update(&self.registry.rows());
         self.initialise();
     }
@@ -727,22 +836,43 @@ impl Monitor {
         }
     }
 
-    /// Control and display go to the session's terminal, everything else to
-    /// its row; the command's final result and the end of the client to
-    /// both. What the row announces goes to the toasts, with whether the
-    /// monitor viewed the session before the event changed it.
+    /// Control and display go to the session's terminal, a confirmed
+    /// Delete's end dismisses its row (#117), and every other event goes to
+    /// [`Monitor::client`].
     fn report(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
         match event {
             ClientEvent::Presentation(presentation) => self.present(id, presentation),
-            event => {
-                let viewed = self.viewed() == Some(id);
-                if let Some(presentation) = ending(&event) {
-                    self.present(id, presentation);
-                }
-                if let Some(news) = self.registry.client(id, event, now) {
-                    self.announce(id, news, viewed);
-                }
-            }
+            ClientEvent::Removed => self.dismiss(id),
+            event => self.client(id, event, now),
+        }
+    }
+
+    /// Any other client event goes to the session's row, and the command's
+    /// final result and the end of the client to its terminal too. What
+    /// the row announces goes to the toasts, with whether the monitor
+    /// viewed the session before the event changed it.
+    fn client(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
+        let viewed = self.viewed() == Some(id);
+        if let Some(presentation) = ending(&event) {
+            self.present(id, presentation);
+        }
+        if let Some(news) = self.registry.client(id, event, now) {
+            self.announce(id, news, viewed);
+        }
+    }
+
+    /// A confirmed Delete is done (#117): the row is dismissed for the run
+    /// and its retained cache discarded. A selected row's selection falls
+    /// back to the row now at its place, else the one before it, else none,
+    /// and so does the selector's highlight; neither acquires anything.
+    fn dismiss(&mut self, id: &SessionId) {
+        let before = self.registry.rows();
+        self.registry.dismiss(id);
+        self.terminals.remove(id);
+        let after = self.registry.rows();
+        self.selector.dismissed(id, &before, &after);
+        if self.selected.as_ref() == Some(id) {
+            self.selected = delete::fallback(id, &ids(&before), &ids(&after));
         }
     }
 
@@ -880,9 +1010,10 @@ impl Monitor {
     /// A mouse report goes to its gesture's owner (`mouse.rs`): to the
     /// target taking input, at its cell below the top row, as its modes ask,
     /// or nowhere; chrome and overlays keep theirs, and an open modal
-    /// takes them (#113). Over an application that does not report the
-    /// mouse, a wheel notch scrolls its history a row, or on its alternate
-    /// screen is a cursor key with alternate scroll on (#112).
+    /// takes them (#113); with none open, a wheel notch scrolls a selected
+    /// read-only session's history (#116). Over an application that does
+    /// not report the mouse, a wheel notch scrolls its history a row, or on
+    /// its alternate screen is a cursor key with alternate scroll on (#112).
     fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) -> io::Result<()> {
         let taking = self.taking();
         let (idle, area) = (self.gestures.idle(), self.screen.overlay());
@@ -1001,8 +1132,17 @@ impl Monitor {
 
     /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
     /// prefix+s the selector unless the modal key introduction is open;
-    /// prefix+j jumps from anywhere.
+    /// prefix+j jumps from anywhere. The Delete confirmation takes them its
+    /// own way (#117).
     fn action(&mut self, action: Action) -> Option<Ending> {
+        if self.deleting.is_some() {
+            return self.confirming(action);
+        }
+        self.global(action)
+    }
+
+    /// A global action with no Delete confirmation open.
+    fn global(&mut self, action: Action) -> Option<Ending> {
         match action {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
@@ -1010,6 +1150,21 @@ impl Monitor {
             Action::SessionList => self.session_list(),
         }
         None
+    }
+
+    /// Inside the Delete confirmation (owner decision on #117): prefix+x
+    /// exits, prefix+j cancels it and jumps, and prefix+s and prefix+? do
+    /// nothing.
+    fn confirming(&mut self, action: Action) -> Option<Ending> {
+        match action {
+            Action::Exit => Some(Ending::Exit),
+            Action::Jump => {
+                self.deleting = None;
+                self.jump();
+                None
+            }
+            Action::KeyIntroduction | Action::SessionList => None,
+        }
     }
 
     /// Prefix+s opens the selector, unless the modal key introduction is
@@ -1091,10 +1246,52 @@ impl Monitor {
         }
     }
 
-    /// Input for the open selector; Enter acts on the row it chose, and
+    /// Input for the open selector: the Delete confirmation takes it while
+    /// open, and Delete opens it (#117).
+    fn selector_input(&mut self, input: &Routed) {
+        if self.deleting.is_some() {
+            return self.confirmation_input(input);
+        }
+        if delete::requested(input) {
+            return self.ask();
+        }
+        self.list_input(input);
+    }
+
+    /// Delete opens the confirmation on the highlighted row, unless a
+    /// Delete of it is already under way: repeating it sends nothing.
+    fn ask(&mut self) {
+        let highlighted = self.selector.highlighted(&self.registry.rows());
+        let offered = highlighted.filter(|id| self.registry.offer(id).is_some());
+        self.deleting = offered.map(Confirmation::new);
+    }
+
+    /// Input for the open confirmation. Either decision returns to the
+    /// selector; cancelling sends nothing and never acknowledges attention
+    /// (Confirmed 2026-11-08), and confirming submits what the row offers
+    /// now, its row showing the Delete under way.
+    fn confirmation_input(&mut self, input: &Routed) {
+        let decision = self.deleting.as_mut().and_then(|asked| asked.input(input));
+        if let Some(decision) = decision {
+            self.deleting = None;
+            self.decide(decision);
+        }
+    }
+
+    fn decide(&mut self, decision: Decision) {
+        let Decision::Confirm(id) = decision else {
+            return;
+        };
+        if let Some((metadata, offer)) = self.registry.confirm(&id) {
+            let kill = offer == Offer::TerminateAndRemove;
+            self.supervisor.remove(metadata, kill);
+        }
+    }
+
+    /// Input for the selector's list; Enter acts on the row it chose, and
     /// cancelling back to the selected session acknowledges its attention
     /// once viewed (Confirmed 2026-11-08; #114).
-    fn selector_input(&mut self, input: &Routed) {
+    fn list_input(&mut self, input: &Routed) {
         let area = self.screen.menu();
         match self.selector.input(input, &self.registry.rows(), area) {
             Some(id) => self.enter(id),
@@ -1102,6 +1299,28 @@ impl Monitor {
             None => {}
         }
     }
+}
+
+/// The open Delete confirmation, its row as `rows` show it now and what
+/// `registry` offers for it now.
+fn asking<'a>(
+    confirmation: Option<&'a Confirmation>,
+    registry: &Registry,
+    rows: &'a [View],
+) -> Option<Asking<'a>> {
+    let confirmation = confirmation?;
+    let row = rows.iter().find(|row| &row.id == confirmation.target())?;
+    let offer = registry.offer(&row.id)?;
+    Some(Asking {
+        confirmation,
+        row,
+        offer,
+    })
+}
+
+/// The session IDs of `rows`, in order.
+fn ids(rows: &[View]) -> Vec<&SessionId> {
+    rows.iter().map(|row| &row.id).collect()
 }
 
 /// Whether a key uncovered the canvas: a modal was open before it and none
@@ -1154,6 +1373,8 @@ fn shown<'a>(registry: &'a Registry, id: &SessionId) -> Option<Shown<'a>> {
         kind: registry.kind(id)?,
         finished: registry.finished(id),
         recovery: registry.recovery(id),
+        condition: registry.condition(id),
+        refused: registry.error(id),
     })
 }
 
@@ -1163,12 +1384,20 @@ struct Shown<'a> {
     /// Its final outcome is known.
     finished: bool,
     recovery: Option<&'a Recovery>,
+    /// Why it waits for its client: resource-blocked, or its release
+    /// loading slowly (#120).
+    condition: Option<&'a str>,
+    /// Why a confirmed Delete's Kill was refused or is unconfirmed (#117).
+    refused: Option<&'a str>,
 }
 
 /// The selected row as the top row shows it: its label, its row status
-/// (#107), its control, any error (its terminal's own, otherwise its
-/// recovery's diagnostic, owner decision on #116), and what its canvas
-/// shows.
+/// (#107), its control, any error (why its Delete's Kill fell short, #117,
+/// otherwise that its daemon is gone, otherwise its terminal's own,
+/// otherwise why it waits for its client, #120, or its recovery's
+/// diagnostic, owner decision on #116), and what its canvas shows. A gone
+/// daemon outranks the terminal's own error, which its lost connection may
+/// have left: a request the stream's end cancelled.
 fn selected<'a>(
     row: &'a registry::View,
     shown: Shown<'a>,
@@ -1182,13 +1411,19 @@ fn selected<'a>(
         },
         Canvas::View,
     );
-    let diagnostic = shown.recovery.map(screen::diagnostic);
+    let recovery = shown.recovery.map(screen::diagnostic);
+    let gone = recovery.filter(|_| shown.recovery == Some(&Recovery::Gone));
+    let diagnostic = shown.condition.or(recovery);
     Session {
         id: &row.id,
         label: &row.label,
         status: &row.status,
         control: control.label(),
-        error: terminal.and_then(Terminal::error).or(diagnostic),
+        error: shown
+            .refused
+            .or(gone)
+            .or_else(|| terminal.and_then(Terminal::error))
+            .or(diagnostic),
         canvas,
     }
 }
@@ -1233,6 +1468,16 @@ fn placeholder(kind: Kind, control: Control) -> bool {
     kind == Kind::Connected && control == Control::NotControlling
 }
 
+/// What shutdown knows when the supervisor itself never finished: nothing
+/// is confirmed of the sessions it last waited for.
+fn unfinished(waiting: Vec<SessionId>) -> shutdown::Report {
+    let evidence = shutdown::Evidence::default;
+    shutdown::Report {
+        instances: waiting.into_iter().map(|id| (id, evidence())).collect(),
+        unfinished: vec!["client supervisor".to_owned()],
+    }
+}
+
 /// What the supervisor's instances share, from the started configuration.
 fn context(startup: &Startup, filter: String) -> io::Result<Context> {
     let config = &startup.config;
@@ -1252,6 +1497,8 @@ fn context(startup: &Startup, filter: String) -> io::Result<Context> {
         shutdown: Duration::from_millis(lanes.shutdown_ms.into()),
         retry: limits.retry(),
         first: first_identifiers(),
+        admission: limits.admission(),
+        outside: Parser::BYTES as u64,
     })
 }
 
@@ -1305,7 +1552,10 @@ fn loader(executables: climon2_core::layout::ExecutableHome) -> Load {
     Box::new(move |version| {
         loader
             .load(version)
-            .map(climon2_platform::library::Library::functions)
+            .map(|library| supervisor::Loaded {
+                functions: library.functions(),
+                requirements: *library.requirements(),
+            })
             .map_err(|error| Refusal::Library(error.failure(), error.to_string()))
     })
 }
@@ -1328,11 +1578,23 @@ fn incomplete(progress: &Progress) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, cache, control,
-        inspected, placeholder, retained, revealed, terminal, without_view,
+        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, View, also, cache,
+        control, inspected, placeholder, retained, revealed, selected, terminal, without_view,
     };
     use climon2_core::SessionId;
     use std::time::Instant;
+
+    /// EXT-03 (pure supplement, #118): a shutdown's failure is said after
+    /// any earlier failure, such as a render failure, in one diagnostic.
+    #[test]
+    fn a_shutdown_failure_follows_any_earlier_failure() {
+        let earlier = Err(std::io::Error::other("injected draw failure"));
+        assert_eq!(
+            also(earlier, "monitor shutdown unconfirmed: x").to_string(),
+            "injected draw failure; monitor shutdown unconfirmed: x"
+        );
+        assert_eq!(also(Ok(0), "why").to_string(), "why");
+    }
 
     const CONTROLS: [Control; 5] = [
         Control::Acquiring,
@@ -1391,6 +1653,8 @@ mod tests {
                 kind,
                 finished: false,
                 recovery: Some(&retrying),
+                condition: None,
+                refused: None,
             };
             let view = cached.then(|| model.view());
             shape(without_view(&shown, "Status", control, view))
@@ -1474,6 +1738,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// REC-01 (Monitor: a gone daemon, pure supplement, #116): a request
+    /// the stream's end cancelled while control was held leaves the
+    /// terminal's own error, but once discovery proves the daemon gone the
+    /// top row's error slot says `Session no longer exists`, as the
+    /// overlay over its history does (owner decision on #116).
+    #[test]
+    fn a_gone_session_says_so_in_its_error_slot_over_a_cancelled_request() {
+        let mut parser = climon2_vt::Parser::new();
+        let mut terminal = Terminal::new(climon2_vt::Limits {
+            bytes: 64 << 20,
+            history_rows: 200,
+        });
+        let held = terminal::Authority {
+            generation: 1,
+            period: 1,
+            restoration: 1,
+        };
+        let geometry = climon2_vt::Geometry::for_host(10, 3).unwrap();
+        terminal.present(&mut parser, Presentation::Granted(held, geometry));
+        terminal.present(&mut parser, Presentation::Begin(held, geometry));
+        terminal.present(&mut parser, Presentation::Complete);
+        let cancelled = "the request was accepted but never executed";
+        let viewing = terminal::Request::Viewing(held, true);
+        terminal.present(
+            &mut parser,
+            Presentation::Answered(viewing, Err(cancelled.into())),
+        );
+        terminal.present(&mut parser, Presentation::Ended);
+        let row = View {
+            id: SessionId::from_bytes([1; 16]),
+            status: "Unavailable".into(),
+            label: "Lost".into(),
+            since: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let error = |recovery| {
+            let shown = Shown {
+                kind: Kind::Unconnected,
+                finished: false,
+                recovery: Some(recovery),
+                condition: None,
+                refused: None,
+            };
+            selected(&row, shown, Some(&terminal)).error
+        };
+        // The connection's end also ended the terminal's errors, so the
+        // cancelled request no longer shows either way.
+        let retrying = Recovery::Retrying("transport io_error: reset".into());
+        assert_eq!(error(&retrying), Some("transport io_error: reset"));
+        assert_eq!(error(&Recovery::Gone), Some("Session no longer exists"));
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the

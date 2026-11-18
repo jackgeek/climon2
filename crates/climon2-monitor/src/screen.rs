@@ -146,6 +146,8 @@ pub(crate) struct Scene<'a> {
     pub(crate) introduction: &'a KeyIntroduction,
     pub(crate) rows: &'a [View],
     pub(crate) selector: &'a Selector,
+    /// The open Delete confirmation, over the selector (#117).
+    pub(crate) asking: Option<crate::delete::Asking<'a>>,
     /// Why the latest discovery pass was incomplete, if it was.
     pub(crate) incomplete: Option<&'a str>,
     /// The startup progress while the initial collection lasts (#266).
@@ -267,6 +269,30 @@ impl Screen {
     /// Paints `scene` unless its frame is the one painted.
     pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
         let frame = self.frame(scene);
+        self.present(frame)
+    }
+
+    /// The exit screen while shutdown waits for `waiting` sessions (owner
+    /// decision on #118), alone in the middle of the host: nothing else is
+    /// shown or takes input any more.
+    pub(crate) fn exiting(&mut self, waiting: usize) -> io::Result<()> {
+        let frame = self.exit_frame(waiting);
+        self.present(frame)
+    }
+
+    /// The exit screen's frame: the count alone, centred on the host.
+    fn exit_frame(&self, waiting: usize) -> Frame {
+        let area = Rect::new(0, 0, self.size.cols, self.size.rows);
+        let mut buffer = Buffer::empty(area);
+        centred(&[&exiting(waiting)], &mut buffer, area);
+        Frame {
+            buffer,
+            ..Frame::default()
+        }
+    }
+
+    /// Paints `frame` unless it is the one painted.
+    fn present(&mut self, frame: Frame) -> io::Result<()> {
         if frame == self.painted {
             return Ok(());
         }
@@ -320,6 +346,9 @@ impl Screen {
             }
         };
         let search = scene.selector.render(scene.rows, self.menu(), &mut buffer);
+        if let Some(asking) = &scene.asking {
+            asking.render(below, &mut buffer);
+        }
         scene.introduction.render(below, &mut buffer);
         scene.toasts.render(scene.now, below, &mut buffer);
         let modes = self.followed(scene);
@@ -404,6 +433,22 @@ impl Screen {
     }
 }
 
+/// The host cursor: the search's while the selector is open, otherwise the
+/// selected session's while the host has room for it; none while the key
+/// introduction or the Delete confirmation covers them.
+fn shown_cursor(
+    scene: &Scene<'_>,
+    session: Option<HostCursor>,
+    search: Option<HostCursor>,
+) -> Option<HostCursor> {
+    let cursor = if scene.selector.is_open() {
+        search
+    } else {
+        session
+    };
+    cursor.filter(|_| !scene.introduction.is_open() && scene.asking.is_none())
+}
+
 impl Screen {
     /// The session's view below the top row, unless its application's
     /// synchronized update is open: then the canvas last painted for it
@@ -437,20 +482,11 @@ impl Screen {
     }
 }
 
-/// The host cursor: the search's while the selector is open, otherwise the
-/// selected session's while the host has room for it; none while the key
-/// introduction covers them.
-fn shown_cursor(
-    scene: &Scene<'_>,
-    session: Option<HostCursor>,
-    search: Option<HostCursor>,
-) -> Option<HostCursor> {
-    let cursor = if scene.selector.is_open() {
-        search
-    } else {
-        session
-    };
-    cursor.filter(|_| !scene.introduction.is_open())
+/// What the exit screen says while shutdown waits for `waiting` sessions
+/// (owner decision on #118), one session in the singular.
+fn exiting(waiting: usize) -> String {
+    let sessions = ["sessions", "session"][usize::from(waiting == 1)];
+    format!("Exiting: waiting for {waiting} {sessions}")
 }
 
 /// The body's state with nothing selected: prefix+j's `notice` while it
@@ -1057,6 +1093,33 @@ mod tests {
         assert_eq!(top, expected);
     }
 
+    /// Owner decision on #118 (pure supplement): the exit screen counts the
+    /// sessions shutdown still waits for, one in the singular.
+    #[test]
+    fn the_exit_screen_counts_the_sessions_it_waits_for() {
+        assert_eq!(exiting(0), "Exiting: waiting for 0 sessions");
+        assert_eq!(exiting(1), "Exiting: waiting for 1 session");
+        assert_eq!(exiting(2), "Exiting: waiting for 2 sessions");
+    }
+
+    /// Owner decision on #118 (pure supplement): the exit screen covers the
+    /// whole host with its count alone, centred across and down it.
+    #[test]
+    fn the_exit_screen_is_its_count_alone_in_the_middle_of_the_host() {
+        let prefix = ControlKey::from_byte(0x1d).unwrap();
+        let screen = Screen::new(TerminalSize { cols: 40, rows: 9 }, prefix, None, true);
+        let buffer = screen.exit_frame(1).buffer;
+        assert_eq!(buffer.area, Rect::new(0, 0, 40, 9));
+        let rows: Vec<String> = (0..9)
+            .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let middle = format!("{:5}{:<35}", "", "Exiting: waiting for 1 session");
+        for (y, row) in rows.iter().enumerate() {
+            let expected = if y == 4 { middle.as_str() } else { "" };
+            assert_eq!(row.trim_end(), expected.trim_end(), "row {y}");
+        }
+    }
+
     /// DSC-01 (initial-selection case, pure supplement) and the owner's
     /// wording of 2026-11-16: with nothing selected the body reads the
     /// startup progress while collecting, otherwise the empty state until a
@@ -1142,6 +1205,7 @@ mod tests {
             introduction: &key_introduction,
             rows: &[],
             selector: &list,
+            asking: None,
             incomplete: None,
             progress: None,
             late: false,

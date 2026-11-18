@@ -15,9 +15,16 @@ the switching, revocation and take-control key of
 [#110](https://github.com/jackgeek/climon2/issues/110),
 and the initial selection of
 [#266](https://github.com/jackgeek/climon2/issues/266), moved there from
-#107, and the disconnection, read-only history and passive recovery of
-[#116](https://github.com/jackgeek/climon2/issues/116), whose Monitor-layer
-cases are mapped in the monitor README.
+#107, and the later monitor tickets
+[#111](https://github.com/jackgeek/climon2/issues/111) to
+[#121](https://github.com/jackgeek/climon2/issues/121): paste, mouse and focus,
+the history viewport, selector search, viewing and the attention jump, toasts
+and the bell, the disconnection, read-only history and passive recovery of
+[#116](https://github.com/jackgeek/climon2/issues/116), Delete, the
+coordinated shutdown and exit status of
+[#118](https://github.com/jackgeek/climon2/issues/118), memory accounting,
+admission and the measurement job, whose cases are mapped in the crate
+READMEs' scenario-to-test tables.
 The daemon wire is partly implemented. Packaged
 [client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
 description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
@@ -48,6 +55,10 @@ creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
 through the packaged CLI are mapped in the daemon and packaged-test READMEs,
 and its monitor-row case in the monitor README. Resolving this
 specification does not pass a [release gate](../GLOSSARY.md#testing).
+[Release qualification](../GLOSSARY.md#testing)
+([#122](https://github.com/jackgeek/climon2/issues/122)) records every
+scenario case's evidence with the candidate artifacts, as
+[distribution](distribution.md#release-qualification) describes.
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.
 Read the [domain glossary](../GLOSSARY.md), [technical terms](protocol/TERMS.md)
@@ -324,6 +335,25 @@ success. These are declared-environment targets, not hard real-time guarantees.
 Any additional processor/resident-memory regression threshold needs measurements
 and separate agreement; this specification invents none.
 
+The [measurement job](../GLOSSARY.md#testing)
+([#121](https://github.com/jackgeek/climon2/issues/121)) implements this
+workload as `cargo xtask measure` on the exact candidate archive, through the
+test-only [`climon2-measure`](../crates/climon2-measure/README.md) harness,
+and the [Measure workflow](../.github/workflows/measure.yml) runs it on hosted
+macos-15, macos-15-intel and ubuntu-24.04 for release candidates and on manual
+dispatch, never on pull requests (owner, 2026-11-16). Each scenario's window is
+60 s at fixed output rates; the comparison is the
+[standalone baseline](../GLOSSARY.md#testing). A missed target, a stall or
+defaults that cannot admit an exact population are recorded as a failed
+Measure case needing the owner's written disposition, which
+[#122](https://github.com/jackgeek/climon2/issues/122) requires before
+qualification; they do not fail the job. The job measures `workers`,
+`instance_descriptors` and `load_descriptors` and checks them against the
+requirements embedded in the release, which stay in source, with 25% headroom.
+Ten mixed releases are recorded as not run until a ten-release mixed-version
+fixture exists. The job's reports are the Measure evidence; this document is
+not.
+
 ## Documentation and evidence records
 
 Sources: [protocol reference](protocol/README.md),
@@ -351,6 +381,14 @@ diagnostics must not log session content.
 This document is the specification, not the result manifest. No row is currently
 claimed passed. Store execution records with candidate test/qualification
 artifacts rather than editing a plan to imply tests ran.
+`cargo xtask qualify` ([#122](https://github.com/jackgeek/climon2/issues/122))
+writes one record per scenario case: each scenario's required layer on each
+qualified platform, taking its tests from the crate READMEs' scenario-to-test
+tables. The Release workflow runs it on the exact candidate archives, stores
+the records as workflow artifacts and a release asset, and publishes only
+when every case passed or has the owner's disposition recorded in
+`qualification/dispositions.json`
+([distribution](distribution.md#release-qualification)).
 
 ## Existing fixtures and missing capabilities
 

@@ -1,6 +1,6 @@
 # Monitor operational limits
 
-**Status: agreed future specification, not implemented behavior, except that
+**Status: agreed specification, implemented only as follows:
 the monitor and `exec` validate the `monitor.limits` configuration and the
 monitor reports its effective values
 ([#82](https://github.com/jackgeek/climon2/issues/82)). At startup the monitor
@@ -10,7 +10,7 @@ model and recent page
 notification assembly limits to the session daemon, which enforces them
 with the release-constant notification text and record bounds
 ([#98](https://github.com/jackgeek/climon2/issues/98)). Operating-system
-limits are left to admission
+limits are checked at admission
 ([#120](https://github.com/jackgeek/climon2/issues/120)). The client library
 rejects native instance limits it cannot honour, bounds worker cleanup by
 `cleanup_ms` and keeps its failure diagnostic within `event_bytes`
@@ -39,8 +39,28 @@ pressure order below; paints output at most `ui.fps` frames a second;
 rotates client work within the `ui` quanta; and never wraps connection
 generations or request IDs (see the
 [monitor README](../crates/climon2-monitor/README.md#memory-accounting-bounded-history-and-cadence-119)
-for what it does not yet charge or enforce); nothing else enforces the
-limits yet.** This resolves
+for what it does not yet charge or enforce). It also
+([#120](https://github.com/jackgeek/climon2/issues/120)) reserves each release
+load and each client's create against `memory.total_bytes`, the operating
+system's descriptor limit less `resources.descriptor_headroom` and the
+`resources` reservations, raised to a loaded release's qualified
+requirements; leaves what it cannot admit resource-blocked, reconsidered at
+most once per `retry.admission_ms`; rejects qualified workers above
+`resources.max_workers_per_client`; starts clients within `scheduling.loads`,
+`scheduling.starts` and `scheduling.newer_start_burst`; and reports a load
+past `deadlines.load_ms` (see the
+[monitor README](../crates/climon2-monitor/README.md#admission-and-fair-scheduling-120)
+for what it does not yet do). The monitor also bounds discovery by
+`scheduling.probes` and the `discovery` limits except `stall_ms`
+([#106](https://github.com/jackgeek/climon2/issues/106)), the selector's
+search by `ui.search_bytes`
+([#113](https://github.com/jackgeek/climon2/issues/113)), initial selection
+by `deadlines.start_ms` ([#266](https://github.com/jackgeek/climon2/issues/266)),
+passive retries by the `retry` backoff
+([#116](https://github.com/jackgeek/climon2/issues/116)), and shutdown by
+`deadlines.shutdown_ms`, `operation_ms` and `final_host_ms`
+([#118](https://github.com/jackgeek/climon2/issues/118)); nothing else
+enforces the limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.
 
@@ -207,11 +227,20 @@ All sub-budgets are included in the total, not added on top.
 
 Reserve thread/worker, descriptor and release requirements before admission,
 using the greater of configured reservation and qualified actual requirements.
+Qualified requirements come from the release's bootstrap once it is loaded
+(relaxed pre-load qualification, confirmed 2026-11-08): before the dynamic
+loader opens a release, admission reserves its configured
+`resources.release_bytes`, `resources.descriptors_per_load` and the loader's
+stack; once loaded, and before any create, that reservation is raised to the
+greater of configured and qualified. A raise aggregate capacity cannot cover
+leaves the release resource-blocked, its handle loaded, reconsidered under the
+admission rate limit.
 Reservations also consume aggregate capacity. Shared release resources count
 once; per-instance state counts separately. Successfully opened library handles,
 including later-rejected ones, and their reservations remain until process exit.
 A release without bounded qualified requirements is explicitly unsupported or
-resource-blocked; it is not assumed to use the default reservation.
+resource-blocked once loaded; it is not assumed to use the default
+reservation.
 Qualified requirements are measured and recorded per platform, because a
 release's macOS and Linux libraries can differ, for example in notification
 descriptors.
@@ -431,6 +460,10 @@ cleanup deadlines also apply to discovery workers. Load workers have none: the
 system loader serializes loading and a load cannot be cancelled, so a load that
 never returns is a native fault, like a crash, and can block later loads
 ([library embedding](protocol/library-embedding.md#loading-and-instance-lifetime)).
+When both first starts and passive retries wait, they take turns for start
+slots (owner decision on #120). A Kill-only instance for a resource-blocked
+row goes through admission at the head of the queue (owner decision on #120;
+Delete is [#117](https://github.com/jackgeek/climon2/issues/117)'s).
 Initial selection remains pinned under the status/lifecycle rules, independently
 of scheduling fairness; failure never silently selects/acquires another session.
 
@@ -438,7 +471,7 @@ of scheduling fairness; failure never silently selects/acquires another session.
 
 | Field | Default |
 |---|---:|
-| `deadlines.load_ms` | 10000 total load/validation |
+| `deadlines.load_ms` | 10000 total load/validation; diagnostic only: a load past it is reported as loading slowly, never aborted (owner decision on [#120](https://github.com/jackgeek/climon2/issues/120)) |
 | `deadlines.start_ms` | 10000 through passive initial metadata synchronization |
 | `deadlines.operation_ms` | 5000 per ordinary accepted operation |
 | `deadlines.kill_ms` | 10000 for Kill outcome |
@@ -633,4 +666,9 @@ point, not an admission cap or arbitrary-hardware promise. If defaults cannot
 admit a scenario, report that outcome and repeat with disclosed sufficient
 configuration where supported. Do not infer lower total use merely from fewer
 processes. Acceptance records limitations honestly; this specification claims
-none of this evidence has already been delivered.
+none of this evidence has already been delivered. The
+[measurement harness](../crates/climon2-measure/README.md) that takes these
+measurements on a candidate archive is implemented
+([#121](https://github.com/jackgeek/climon2/issues/121)), except the ten
+mixed-release cases, which it records `not run`; its reports belong to each
+release candidate, not to this document.

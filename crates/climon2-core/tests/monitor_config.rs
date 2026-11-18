@@ -1146,13 +1146,16 @@ fn native_fields(limits: &climon2_core::native::Limits) -> [u64; 27] {
 /// contract, "Startup, limits and resources"), its own discovery the
 /// `scheduling.probes` and `discovery` bounds, and its start lanes
 /// `scheduling.loads` and `scheduling.starts`, bounded at exit by
-/// `deadlines.shutdown_ms`, and each session's terminal model
+/// `deadlines.shutdown_ms` and then `deadlines.final_host_ms` (#118), and
+/// each session's terminal model
 /// `history.max_rows` (#108). `memory.client_bytes` is split: the library
 /// gets its request and event queues, one wire frame and its 1,048,576-byte
 /// instance allocation, 3,407,872 bytes by default, and the model the rest
 /// (LIM-01 Monitor, #119). Expected values are the documented defaults with
 /// one setting of each kind changed. Its UI reads `ui.fps` and the work
-/// quanta (#119).
+/// quanta (#119). Admission reads the `resources` reservations,
+/// `memory.total_bytes`, `scheduling.newer_start_burst`, `deadlines.load_ms`
+/// and `retry.admission_ms` (#120; LIM-04 Monitor).
 #[test]
 fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
     let text = limits(&[
@@ -1165,7 +1168,16 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         ("scheduling.probes", json!(3)),
         ("scheduling.loads", json!(4)),
         ("scheduling.starts", json!(6)),
+        ("scheduling.newer_start_burst", json!(3)),
+        ("deadlines.load_ms", json!(2500)),
         ("deadlines.shutdown_ms", json!(7000)),
+        ("resources.stack_bytes", json!(1_048_577)),
+        ("resources.descriptors_per_client", json!(11)),
+        ("resources.descriptors_per_load", json!(13)),
+        ("resources.descriptor_headroom", json!(17)),
+        ("resources.release_bytes", json!(5_000_001)),
+        ("retry.admission_ms", json!(750)),
+        ("deadlines.final_host_ms", json!(1234)),
         ("discovery.pass_ms", json!(1500)),
         ("discovery.batch_records", json!(7)),
         ("discovery.batch_bytes", json!(65_536)),
@@ -1206,7 +1218,31 @@ fn the_monitor_reads_its_library_discovery_and_scheduling_limits() {
         (3, 1500, 7, 65_536, 4096, 9)
     );
     let lanes = limits.lanes();
-    assert_eq!((lanes.loads, lanes.starts, lanes.shutdown_ms), (4, 6, 7000));
+    assert_eq!(
+        (
+            lanes.loads,
+            lanes.starts,
+            lanes.newer_start_burst,
+            lanes.load_ms,
+            lanes.shutdown_ms,
+            lanes.final_host_ms
+        ),
+        (4, 6, 3, 2500, 7000, 1234)
+    );
+    let admission = limits.admission();
+    assert_eq!(
+        admission,
+        climon2_core::config::Admission {
+            total_bytes: 500_000_000,
+            stack_bytes: 1_048_577,
+            max_workers_per_client: 0,
+            descriptors_per_client: 11,
+            descriptors_per_load: 13,
+            descriptor_headroom: 17,
+            release_bytes: 5_000_001,
+            admission_ms: 750,
+        }
+    );
     let model = limits.model();
     assert_eq!((model.bytes, model.history_rows), (30_146_560, 250));
     let retry = limits.retry();

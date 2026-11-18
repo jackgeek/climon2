@@ -22,12 +22,13 @@ pub(crate) enum Found {
     Pass(Progress),
 }
 
-/// The running discovery thread. Dropping it stops discovery once its
-/// current pass ends; the thread is never joined, because a pass cannot be
-/// interrupted, and it deletes nothing.
+/// The running discovery thread. Stopping it (or dropping it) ends
+/// discovery once its current pass ends: a pass cannot be interrupted, and
+/// it deletes nothing. Shutdown joins it once it has ended (#118).
 pub(crate) struct Discovery {
     pub(crate) found: Receiver<Found>,
-    _stop: Sender<()>,
+    stop: Option<Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Discovery {
@@ -35,19 +36,35 @@ impl Discovery {
         let (found, receiver) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
         let scan = scan(limits);
-        thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("discovery".into())
             .spawn(move || passes(&home, &scan, &found, &stopped))?;
         Ok(Self {
             found: receiver,
-            _stop: stop,
+            stop: Some(stop),
+            thread: Some(thread),
         })
+    }
+
+    /// No pass starts after the current one.
+    pub(crate) fn stop(&mut self) {
+        self.stop = None;
+    }
+
+    /// Joins the thread once it has ended; whether it has.
+    pub(crate) fn join(&mut self) -> bool {
+        if let Some(ended) = self.thread.take_if(|thread| thread.is_finished()) {
+            let _ = ended.join();
+        }
+        self.thread.is_none()
     }
 }
 
 fn passes(home: &HomeLayout, scan: &Scan, found: &Sender<Found>, stopped: &Receiver<()>) {
     let mut continuation = Continuation::default();
     loop {
+        #[cfg(feature = "test-hooks")]
+        crate::hooks::stall("discovery");
         let progress = continuation.pass(home, scan, |batch| {
             let _ = found.send(Found::Batch(batch));
         });

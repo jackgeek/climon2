@@ -38,6 +38,8 @@ final, Control granted and revoked, Restoration begin and complete, Display,
 Geometry and diagnostic records, and attempts
 [Leave](../daemon-client/request-leave.md) once on shutdown. It sends
 [Kill](../daemon-client/request-kill.md) on an auxiliary connection of its own.
+The [monitor](../../../GLOSSARY.md#sessions) loads the library and calls every function except snapshot
+([#106](https://github.com/jackgeek/climon2/issues/106) to [#120](https://github.com/jackgeek/climon2/issues/120)).
 [Implemented behavior](#implemented-behavior) records the choices this page
 leaves open. The [C ABI](../TERMS.md#c-abi)
 [header](client-v1.h) is authoritative for declarations, numeric tags and field
@@ -225,13 +227,21 @@ stalled native code.
 allocations, owner/worker stack reservations, required worker count and
 instance/load descriptors. Include auxiliary Kill resources in the bounds.
 These are bounded requirements for any supported revision-1 operation, not
-guarantees against native initializer faults. Reserve the greater of configured
-and qualified stacks/descriptors/release memory, respecting worker limits and
-aggregate accounting, before create. Pre-load qualification/reservation remains
-required by #69;
-bootstrap data is a post-load validation, not permission to load an unqualified
-release first. Requirements incompatible with admitted
-limits reject explicitly: admission owns their upper bounds. Before that, the
+guarantees against native initializer faults. Before the library is loaded, the
+caller reserves its configured release memory, load descriptors and loader
+stack. The qualified requirements are read from this bootstrap once the
+library is loaded (relaxed pre-load qualification, confirmed 2026-11-08,
+[#120](https://github.com/jackgeek/climon2/issues/120)). Before any create the
+release's reservation is raised to the greater of configured and qualified
+release memory and load descriptors, and each instance reserves the greater of
+configured and qualified stacks and instance descriptors, respecting worker
+limits and aggregate accounting. A raise that aggregate capacity cannot cover
+leaves the release resource-blocked, its handle loaded, until admission
+reconsiders it. Requirements incompatible with admitted
+limits reject explicitly: admission owns their upper bounds. A qualified
+worker count above the configured maximum is such a rejection; the maximum is
+never raised. The monitor implements this
+([#120](https://github.com/jackgeek/climon2/issues/120)). Before that, the
 loader checks only that the requirements are present: each one an instance
 needs is nonzero (local allocation, owner stack and instance descriptors, and
 a worker stack whenever workers are required), and `reserved` is zero.

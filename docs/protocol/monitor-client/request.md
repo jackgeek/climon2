@@ -11,8 +11,8 @@
 ([#95](https://github.com/jackgeek/climon2/issues/95)), and
 [Kill](request-kill.md) ([#96](https://github.com/jackgeek/climon2/issues/96)).
 See its
-[implemented behavior](core-v1.md#implemented-behavior). The caller is not
-implemented.**
+[implemented behavior](core-v1.md#implemented-behavior). The monitor submits
+these requests ([#106](https://github.com/jackgeek/climon2/issues/106) to [#117](https://github.com/jackgeek/climon2/issues/117)).**
 The [monitor](../../../GLOSSARY.md#sessions) submits a
 [request](../TERMS.md#request) through the [client library](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

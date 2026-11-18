@@ -17,7 +17,8 @@ and [Geometry](event-geometry.md) records
 ([#95](https://github.com/jackgeek/climon2/issues/95)), and
 [Notification](event-notification.md) and [Progress](event-progress.md)
 records ([#98](https://github.com/jackgeek/climon2/issues/98)); extension
-records are not implemented.**
+records are not implemented. The monitor drains and releases every delivery
+([#106](https://github.com/jackgeek/climon2/issues/106)).**
 The [client](../../../GLOSSARY.md#sessions) delivers an
 [event](../TERMS.md#event) to the [monitor](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

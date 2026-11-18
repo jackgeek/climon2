@@ -157,7 +157,7 @@ End one client's attachment without ending the session or its command; it is del
 _Avoid_: Exit the session, kill, stop
 
 **Kill**:
-A request, made with `c2 kill`, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
+A request, made with `c2 kill` or a monitor's confirmed Delete, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
 _Avoid_: Stop, force-detach
 
 **Hang-up grace**:
@@ -183,6 +183,10 @@ _Avoid_: Viewer mode, read-only view (what a monitor paints session content from
 **Selector**:
 The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session; its always-focused search narrows the list to the rows that match.
 _Avoid_: Session picker, menu, switcher, session list window
+
+**Run-local dismissal**:
+A monitor's record that a confirmed Delete removed a session's row, so that monitor never lists the session again until it exits; nothing is persisted and nothing else is deleted.
+_Avoid_: Archive, hidden session, forgetting
 
 **Key introduction**:
 The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
@@ -229,6 +233,10 @@ _Avoid_: Session status, daemon outcome
 **Not-connected row labels**:
 The status a monitor shows for a session row without a current daemon status: Starting while its client starts, Awaiting resources while it cannot be admitted, Unavailable when it cannot be reached or reports no status, and Disconnected once its connection is lost. The monitor's own enclosing session has no row at all. A row never seen connected is dropped, not shown Disconnected, once its session is proven gone; a row that was connected keeps Disconnected with its history.
 _Avoid_: Error state, dead, offline, unknown status
+
+**Resource-blocked**:
+A session row the monitor has not yet given a client because the resources that client, or its release, would reserve cannot be admitted now; the row shows Awaiting resources and is reconsidered fairly. It is local availability, not a daemon status.
+_Avoid_: Capped, omitted, queued, evicted
 
 **Final outcome**:
 A session command's authoritative result, its exact exit code or signal, which a monitor row shows as Succeeded for exit zero and Failed otherwise, and keeps after the connection ends.
@@ -410,6 +418,26 @@ _Avoid_: Sanity test, canary
 **Release gate**:
 A check that must pass before a version can be released.
 _Avoid_: Quality gate, CI check
+
+**Release qualification**:
+The release gate between building and publishing that runs the complete acceptance matrix on the exact candidate archives, natively on x86-64 GNU/Linux and both macOS architectures, and publishes only when every scenario case passed or has the owner's disposition.
+_Avoid_: Release check, certification
+
+**Evidence record**:
+What release qualification stores for one scenario case, one required layer of one scenario on one platform: its state (not implemented, not run, passed, failed or blocked), the tests and artifacts behind it, and what was observed.
+_Avoid_: Test report, result manifest
+
+**Disposition**:
+The owner's recorded decision to accept a scenario case that did not pass, which lets the release be published while staying visible in its evidence records; it names its exact scenario and layer, so a performance disposition never waives a functional case.
+_Avoid_: Waiver, exemption
+
+**Measurement job**:
+The PERF-01 run of the test-only `climon2-measure` harness on a release candidate's exact archives, on hosted macOS arm64, macOS x86_64 and Ubuntu runners; a missed target is recorded as a failed Measure case needing the owner's written disposition, never as a failed build.
+_Avoid_: Benchmark, perf test
+
+**Standalone baseline**:
+One `climon2 attach` per session, each in its own terminal, doing the work a Measure case gives the monitor; the comparison every PERF-01 case reports.
+_Avoid_: Control group, fewer-process savings
 
 **Ticket gate**:
 `cargo xtask check`: the local qualification for one change, which mutates only the functions it adds or changes and measures mutation load for one round.

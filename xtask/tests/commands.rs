@@ -15,6 +15,8 @@ fn help_reports_local_and_distribution_gate_scope() {
     assert!(help.contains("excludes shared source"));
     assert!(help.contains("install [--dir <directory>]"));
     assert!(help.contains("install builds verified production artifacts"));
+    assert!(help.contains("measure --archive <archive> --out <directory>"));
+    assert!(help.contains("a missed target is a failed Measure case in the report"));
 }
 
 #[test]

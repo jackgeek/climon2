@@ -1,0 +1,146 @@
+name: Measure
+
+# PERF-01 measurement (#121) of the exact candidate artifacts: on release
+# candidates (Release calls it for -rc tags) and on manual dispatch, never on
+# pull requests. Each job runs one geometry of the matrix on one hosted runner
+# and uploads its report. A missed target is a failed Measure case in that
+# report, needing the owner's written disposition (#122 blocks qualification
+# until then); it does not fail the job. Only a harness error does.
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Window per scenario in seconds (60 is the owner's decision)
+        type: number
+        default: 60
+  workflow_call:
+    inputs:
+      candidate_built:
+        description: The calling run already uploaded release-dist-* artifacts
+        type: boolean
+        default: false
+      seconds:
+        type: number
+        default: 60
+
+permissions:
+  contents: read
+
+jobs:
+  dist:
+    name: Candidate artifact / ${{ matrix.platform }}
+    if: ${{ !inputs.candidate_built }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-universal
+          - runner: ubuntu-24.04
+            platform: linux-x86_64-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-${{ matrix.platform }}
+      - name: Require native architecture and install target slices
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            test "$(uname -m)" = x86_64
+            sudo apt-get update -qq
+            sudo apt-get install -y clang libclang-dev
+            rustup target add x86_64-unknown-linux-gnu
+          else
+            test "$(uname -m)" = arm64
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          fi
+      - name: Build and verify the release artifact
+        run: cargo xtask dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist-${{ matrix.platform }}
+          path: target/dist/*
+          if-no-files-found: error
+  measure:
+    name: PERF-01 / ${{ matrix.runner }} / ${{ matrix.geometry }}
+    needs: dist
+    if: ${{ !cancelled() && (needs.dist.result == 'success' || needs.dist.result == 'skipped') }}
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel, ubuntu-24.04]
+        geometry: ["80x24", "200x60", "500x200"]
+        include:
+          - runner: macos-15
+            platform: macos-universal
+          - runner: macos-15-intel
+            platform: macos-universal
+          - runner: ubuntu-24.04
+            platform: linux-x86_64-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      # Restore the Rust cache before downloading the archive: a partial-match
+      # restore cleans target/, which would delete target/dist.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: measure-${{ matrix.runner }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist-${{ matrix.platform }}
+          path: target/dist
+      - name: Require the advertised architecture
+        env:
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          expected=arm64
+          if [[ "$RUNNER_LABEL" != macos-15 ]]; then expected=x86_64; fi
+          test "$(uname -m)" = "$expected"
+      - name: Install Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libclang-dev
+      - name: Verify and name the exact downloaded artifact
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          cd target/dist
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sha256sum -c SHA256SUMS
+          else
+            shasum -a 256 -c SHA256SUMS
+          fi
+          archives=(climon2-*-"$PLATFORM".tar.gz)
+          test "${#archives[@]}" = 1
+          test -f "${archives[0]}"
+          echo "CLIMON2_MEASURE_ARCHIVE=$PWD/${archives[0]}" >> "$GITHUB_ENV"
+      - name: Build the measurement harness
+        run: cargo build --release --locked -p climon2-measure
+      - name: Measure this geometry on this exact artifact
+        env:
+          GEOMETRY: ${{ matrix.geometry }}
+          RUNNER_LABEL: ${{ matrix.runner }}
+          SECONDS_PER_SCENARIO: ${{ inputs.seconds || 60 }}
+        run: |
+          cargo xtask measure --archive "$CLIMON2_MEASURE_ARCHIVE" \
+            --out "target/measure/$RUNNER_LABEL-$GEOMETRY" \
+            --geometry "$GEOMETRY" --seconds "$SECONDS_PER_SCENARIO"
+      - name: Summarize the report
+        if: ${{ !cancelled() }}
+        env:
+          GEOMETRY: ${{ matrix.geometry }}
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          report="target/measure/$RUNNER_LABEL-$GEOMETRY/report.md"
+          if [[ -f "$report" ]]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: measure-${{ matrix.runner }}-${{ matrix.geometry }}
+          path: target/measure/
+          if-no-files-found: warn
