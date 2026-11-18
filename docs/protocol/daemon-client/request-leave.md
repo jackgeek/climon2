@@ -47,15 +47,17 @@ resize, send input or acknowledge.
 Invalid state and resource/I/O/internal failures use the shared
 [error catalog](core-v1.md#errors-and-bounded-delivery).
 No optional fields/defaults/unknown members; malformed records or IDs are fatal.
-The [agreed, unimplemented lifecycle](../../monitor-lifecycle.md#coordinated-shutdown)
-uses atomic Leave during concurrent shutdown of passive, attached, partially
+The [agreed lifecycle](../../monitor-lifecycle.md#coordinated-shutdown),
+implemented by the monitor ([#118](https://github.com/jackgeek/climon2/issues/118)), uses atomic Leave during concurrent shutdown of passive, attached, partially
 started and failing owned clients. Promotion racing with shutdown cannot leave
 membership registered. Record accepted passive deregistration/deliberate detach
 separately from closure, final client outcome, worker cleanup and thread join.
 A lost response stays unconfirmed/indeterminate and is not replayed.
 Stalled cleanup uses bounded whole-process failure, not false Leave/join success.
-[Numerical limits/deadlines](../../monitor-operational-limits.md) and
-[native declarations](../monitor-client/core-v1.md) are agreed, unimplemented;
+[Numerical limits/deadlines](../../monitor-operational-limits.md) are agreed
+and implemented as far as their status says, the monitor bounding shutdown by
+them ([#118](https://github.com/jackgeek/climon2/issues/118)), and [native declarations](../monitor-client/core-v1.md) are
+agreed and implemented by the client library;
 the [acceptance matrix](../../monitor-acceptance.md) is agreed in #62,
 not executed conformance evidence. Related: [Kill](request-kill.md).
 

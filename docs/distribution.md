@@ -111,6 +111,72 @@ Before tagging, the maintainer must run `cargo xtask check --full --mutate-all` 
 for the exact release commit. CI cannot certify that local result. Tagged
 releases require all macOS-exclusive source to pass CRAP and mutation in CI,
 plus every native runtime and archive job.
+
+### Release qualification
+
+Between building and publishing, the Release workflow qualifies the exact
+candidate archives against the [acceptance matrix](monitor-acceptance.md)
+([#122](https://github.com/jackgeek/climon2/issues/122)). Its `qualify` jobs
+run natively on `ubuntu-24.04` (x86-64 GNU/Linux), `macos-15` (arm64) and
+`macos-15-intel` (x86_64), always, whatever `CLIMON2_MACOS_TESTS` says (owner
+decision on #122); pull requests never qualify. Each job runs
+`cargo xtask qualify run`, which records every scenario case, each scenario's
+required layer on that platform, in one of the states **not implemented**,
+**not run**, **passed**, **failed** or **blocked**:
+
+- Contract, Fault and Docs cases come from the tests the crate READMEs'
+  scenario-to-test tables name: the packaged tests against the exact archive
+  (`CLIMON2_E2E_ARCHIVE`), and every workspace test from the candidate's
+  source revision on hook-enabled debug builds. A pure supplement proves no
+  layer. A test that is skipped (ignored) blocks its case.
+- Library and Monitor cases count only the packaged tests against the
+  archive. A packaged test that returns at once when given an archive (it
+  needs test hooks) proves nothing there.
+- Measure cases (NOT-02, STA-02, LIM-06 and PERF-01) come from this runner's
+  [measurement job](../GLOSSARY.md#testing) reports for all three
+  geometries. A report of another archive or a reduced window blocks them; a
+  missed target or requirement fails them.
+- The Host manual case (FOC-02's host-native copy) and documentation
+  reviews come from `qualification/manual.json`. FOC-02 needs three host
+  terminals on the platform's OS; a host that fails is recorded as a
+  limitation, not a failure (owner decision on #122).
+
+Each record holds the source revision, the test selectors and the README
+claiming them, the scenario's required layers, the archive's name, SHA-256
+and provenance, the environment and configuration, the setup and expected
+result from the matrix, what was observed, the commands with their results,
+durations and logs, and any limitation. A failed case is a record, never a
+failed job; only a harness error fails one.
+
+The `verdict` job then judges every platform's records with the owner's
+dispositions in `qualification/dispositions.json`. Unqualified conformance
+needs every mandatory case passed on all three platforms; a case without a
+platform's evidence is blocked. A case that did not pass needs the owner's
+recorded disposition, which names its exact scenario, layer, states and
+optionally platforms, so a performance (Measure) disposition never waives a
+functional case. Without one the verdict fails and nothing is published (owner
+decision on #122). Dispositions stay visible in `qualification.json` and the
+job summary.
+
+The evidence records are uploaded as `qualification-<platform>` and
+`qualification-verdict` workflow artifacts and published as the release asset
+`climon2-<version>-qualification.tar.gz` (owner decision on #122). Measure
+reports exist only for release candidates (`-rc.N` tags): a final release
+tag's Measure cases are not run unless the owner disposes of them.
+
+Locally, on a native Linux host:
+
+```sh
+cargo xtask dist
+cargo xtask qualify run --platform linux-x86_64 \
+  --archive target/dist/climon2-0.1.0-linux-x86_64-gnu.tar.gz \
+  --out target/qualification/linux-x86_64
+cargo xtask qualify verdict --evidence target/qualification --out target/verdict
+```
+
+A local verdict lacks both macOS platforms, so their cases are blocked.
+
 Publishing merges the independently generated checksum manifests, requires
 identical stamped install scripts, verifies all assets, and attests and uploads
-both archives. No native platform's failure can be replaced by neutral checks.
+both archives with the qualification evidence. No native platform's failure
+can be replaced by neutral checks.

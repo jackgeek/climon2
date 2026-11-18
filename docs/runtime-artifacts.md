@@ -77,6 +77,7 @@ flowchart TB
         cli -->|"starts 0.0.97 sessions from the 0.0.97 folder"| second_daemon
         second_library -->|"daemon wire revision 1: passive monitor connections"| second_daemon
         xtask -->|"measure: runs through Cargo"| measure
+        xtask -->|"qualify: runs the packaged tests on the candidate archive and every workspace test"| cargo
         measure -->|"installs the candidate archive, then runs its climon2 for exec --headless, monitor, attach and kill"| launcher
         measure -->|"reads the embedded requirements through the shared loader"| library
         daemon -->|"runs as the measured sessions' workload"| measure
@@ -118,6 +119,17 @@ installed `climon2 attach` per session on emulated host terminals, and loads
 the candidate library through the shared loader only to read its embedded
 requirements. The [measurement workflow](../.github/workflows/measure.yml)
 runs it on release candidates and on manual dispatch.
+
+**Current (#122):** `cargo xtask qualify` is release tooling, never a
+release payload. `qualify run` runs the packaged tests against an exact
+candidate archive and every workspace test through Cargo, reads the
+measurement job's reports and the owner's records in `qualification/`, and
+writes one platform's [evidence records](../GLOSSARY.md#testing);
+`qualify verdict` judges every platform's records with the owner's
+dispositions. The [Release workflow](../.github/workflows/release.yml)
+publishes the records as workflow artifacts and as the release asset
+`climon2-<version>-qualification.tar.gz`, beside the archives, install script
+and `SHA256SUMS`; that asset is evidence, not something the installer reads.
 
 **Current (#75, #85, #93, #94):** every release builds and ships the client library in
 its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS
@@ -171,10 +183,9 @@ session's effective geometry; it submits Ready and Resize through the client.
 Session bytes never go directly to the host, and the daemon alone answers
 session queries.
 
-**Planned:** background clients relay negotiated plugin data, and the rest of
-the monitor's terminal integration is agreed, unimplemented.
+**Planned:** background clients relay negotiated plugin data.
 The [agreed terminal contract](protocol/terminal-integration.md), implemented
-for selection and painting (#108), selects exact ordered terminal
+by the monitor (#108 to #116), selects exact ordered terminal
 bytes/control/restoration through existing in-process record queues and
 monitor-owned `climon2-vt` models, with read-only Rust views for Ratatui.
 Monitor-mode daemon presentation uses
@@ -192,13 +203,15 @@ without control, not raw [OSC](protocol/TERMS.md#osc) passthrough to host termin
 and shell lifecycle choose explicit detection or heuristic fallback.
 Plugin implementation, configuration, and interface examples are deferred; the earlier title-plugin
 release prerequisite is superseded. No new plugin executable or dynamic library
-is specified. These are planned mechanics, not shipped behavior.
+is specified. The session daemon (#91, #92, #98), the client library (#95,
+#98) and the monitor (#107, #114, #115) implement these mechanics; only
+plugins remain deferred.
 
 The monitor retains a `climon2-vt` model per session for disconnected terminal/
 scrollback inspection and reconnects passively without automatic takeover.
 Known completion stops retries. These relationships do not introduce a session
 survival guarantee or a persisted archive of completed sessions.
-The [agreed lifecycle](monitor-lifecycle.md), not implemented, adds exponential
+The [agreed lifecycle](monitor-lifecycle.md), implemented by #116 to #118, adds exponential
 passive recovery, read-only disconnected history with a `Reconnecting...` overlay,
 and coordinated concurrent shutdown. Local instance cleanup and joins precede
 run-local selector dismissal; stalled cleanup ends the whole monitor process,
@@ -206,17 +219,16 @@ never an individual thread or loaded library. Connected revoked sessions show
 their placeholder, not cached history. Selector Delete uses the existing Kill
 semantics and adds confirmed termination/removal, not another runtime artifact.
 
-The agreed [operational limits](monitor-operational-limits.md), unimplemented,
-bound admission, queues, client threads/workers/descriptors and retained shared
+The agreed [operational limits](monitor-operational-limits.md), implemented as
+far as their status says (#119, #120), bound admission, queues, client threads/workers/descriptors and retained shared
 release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
 narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
 (#76), fed through one `Parser` shared per monitor (#166), provides it for
-the monitor's planned per-session models, which the monitor does not keep
-yet: at startup it reads only their mandatory allocation and the parser's
-size, to check that its limits hold one session's model beside the parser
-(#167). It chooses no new executable/library or consumption arrow, and does
+the monitor's per-session models (#108); at startup the monitor also reads
+their mandatory allocation and the parser's size, to check that its limits
+hold one session's model beside the parser (#167). It chooses no new executable/library or consumption arrow, and does
 not sandbox trusted native code.
 
 **Current (#100, #101, #102):** for ordinary attach and in kill mode the
@@ -290,7 +302,8 @@ The monitor's loading is current (#106), as is the client executable's for attac
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
 No new artifact or consumption arrow is added. Monitor-client communication is
-an agreed specification, not implemented.
+agreed and implemented by the client library (#85 to #98) and the monitor
+(#106 to #120).
 [Daemon wire revision 1](protocol/daemon-client/core-v1.md) is agreed and
 partly implemented: session daemons serve
 [passive monitor connections](../GLOSSARY.md#attachment-and-control),
@@ -300,10 +313,10 @@ command's final result, and passive monitor connections that acquire or
 inherit control with
 [canonical presentation](../GLOSSARY.md#restoration-and-presentation), and
 it is the only protocol they speak after hello. The client library consumes
-it, as the diagram shows; the monitor's consumption through that library
-remains planned.
+it, as the diagram shows, and the monitor consumes it through that library
+(#106).
 
-The planned wire core is independent of the current private Unix socket carrier.
+The wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over
 [TCP/IP](protocol/TERMS.md#tcpip) and presents them as local sessions.
 A browser consumes that monitor's forwarded terminal traffic over

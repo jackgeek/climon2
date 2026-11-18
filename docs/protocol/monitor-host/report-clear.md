@@ -1,6 +1,10 @@
 # Clear monitor program-status advertising on exit
 
-**Agreed** from [the selector decision](https://github.com/jackgeek/climon2/issues/60), **implemented** by the monitor ([#114](https://github.com/jackgeek/climon2/issues/114) on orderly exit, after releasing the host; the fail-stop path is [#118](https://github.com/jackgeek/climon2/issues/118)'s).
+**Implemented** by the monitor once it has started
+([#114](https://github.com/jackgeek/climon2/issues/114)) on every exit that
+restores the host, after releasing it, and attempted on the fail-stop
+([#118](https://github.com/jackgeek/climon2/issues/118)), from
+[the selector decision](https://github.com/jackgeek/climon2/issues/60).
 The [monitor](../../../GLOSSARY.md#sessions) sends this
 [OSC](../TERMS.md#osc) 7501 report to its
 [host](../../../GLOSSARY.md#sessions) during orderly terminal cleanup.

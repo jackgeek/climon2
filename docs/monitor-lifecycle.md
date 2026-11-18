@@ -1,6 +1,6 @@
 # Monitor lifecycle, exit and failure
 
-**Status: agreed specification, almost entirely unimplemented.** This resolves
+**Status: agreed specification, partly implemented (below).** This resolves
 [Define monitor exit and failure behavior](https://github.com/jackgeek/climon2/issues/61)
 within [the monitor planning map](https://github.com/jackgeek/climon2/issues/57).
 It amends the earlier selector/history and session-management scope decisions.
@@ -16,14 +16,31 @@ Read the [domain glossary](../GLOSSARY.md), [status mechanics](session-status.md
 **Implemented with packaged evidence:** the empty
 [monitor](../GLOSSARY.md#sessions) of [#74](https://github.com/jackgeek/climon2/issues/74),
 and headless creation and lifetime of [#78](https://github.com/jackgeek/climon2/issues/78),
-specified [below](#headless-creation-and-existing-cli-kill). The monitor
-discovers no sessions and shows its empty state until it exits. Prefix+x exits
-0; a catchable SIGINT, SIGTERM or SIGHUP exits with signal-style status; a
-render failure or a failed or hung-up host input exits with the climon2 error
-code. Every one of these exits restores the host terminal's modes and termios
-before any diagnostic. Keyboard Ctrl+C is not an exit. Discovery, clients and
-their shutdown, Leave, the root attention `clear`, new wire and native
-interfaces remain unimplemented.
+specified [below](#headless-creation-and-existing-cli-kill), and
+[selector Delete](#selector-delete-terminate-and-remove) of
+[#117](https://github.com/jackgeek/climon2/issues/117). The
+[monitor and selection lifetime](#monitor-and-selection-lifetime) is
+implemented with discovery and passive clients
+([#106](https://github.com/jackgeek/climon2/issues/106)), selection
+([#108](https://github.com/jackgeek/climon2/issues/108),
+[#110](https://github.com/jackgeek/climon2/issues/110)), bounded history
+([#119](https://github.com/jackgeek/climon2/issues/119)) and
+resource-blocked rows ([#120](https://github.com/jackgeek/climon2/issues/120)),
+and [history and passive recovery](#history-and-passive-recovery) by
+[#116](https://github.com/jackgeek/climon2/issues/116) (see the
+[monitor README](../crates/climon2-monitor/README.md)). Not implemented: the
+explicit coordinated monitor failure when required identities cannot be
+retained.
+[Coordinated shutdown](#coordinated-shutdown) and the [exit status](#exit-status)
+are **implemented with packaged evidence** by
+[#118](https://github.com/jackgeek/climon2/issues/118): one deadline that
+includes settling accepted input (owner decision on #118), separate
+evidence per instance, the `Exiting: waiting for N sessions` screen, the
+root attention `clear` after host restoration and before any diagnostic
+(once the monitor has started, #114),
+nothing printed on a clean exit, and the bounded fail-stop; the
+[monitor README](../crates/climon2-monitor/README.md#exit-and-coordinated-shutdown-118)
+documents the exit statuses. Keyboard Ctrl+C is not an exit.
 
 ## Monitor and selection lifetime
 
@@ -89,6 +106,13 @@ Recovery needed to learn an indeterminate Kill's outcome remains passive and
 must never replay Kill.
 
 ## Selector Delete: terminate and remove
+
+**Implemented ([#117](https://github.com/jackgeek/climon2/issues/117))** as
+the [monitor README](../crates/climon2-monitor/README.md#delete-in-the-selector-117)
+details. A session whose daemon discovery proved gone is offered Remove alone
+(owner decision on [#116](https://github.com/jackgeek/climon2/issues/116)); the
+monitor's own enclosing session is not listed, so it is never deleted (owner
+decision on #117).
 
 Delete in the session chooser captures the highlighted session's immutable GUID
 and opens a modal confirmation showing its title and state. This explicitly

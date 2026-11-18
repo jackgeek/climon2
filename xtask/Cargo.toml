@@ -13,6 +13,7 @@ libc = "0.2.191"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 serde_json.workspace = true
+sha2.workspace = true
 syn = { version = "2", features = ["full", "visit", "visit-mut"] }
 tempfile = "3"
 

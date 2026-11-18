@@ -2,8 +2,8 @@
 //! Open, publishes the handles, runs it, and destroys it only once the
 //! supervisor has released every handle.
 use super::{
-    Context, Internal,
-    client::{self, Client, OPEN_ID, Retry, checked, warn},
+    Context, Internal, Role,
+    client::{self, Client, KILL_ID, OPEN_ID, Retry, checked, warn},
 };
 use climon2_core::{
     SessionId,
@@ -30,9 +30,12 @@ const OPTIONAL: [&str; 5] = [
     "focus-v1",
 ];
 
-/// An instance's whole life on its owner thread. The supervisor hears
-/// `Published` once the handles exist, `Stopped` once run returned (or
-/// create failed), and `OwnerDone` last, with whether destroy succeeded
+/// An instance's whole life on its owner thread. A monitoring instance
+/// first submits monitor Open, a Kill-only one its Kill (#117). The
+/// supervisor hears `Published` once the handles exist, with that first
+/// request's refusal, if it was refused, `Stopped` once run returned (or
+/// create failed) with what its report says of its workers, and
+/// `OwnerDone` last, with whether destroy succeeded
 /// (with nothing created, there was nothing to destroy). A closed
 /// `released` channel means the supervisor gave up at its shutdown
 /// deadline: the handles may still be unreleased, so the instance is left
@@ -43,13 +46,14 @@ pub(super) fn owner(
     id: SessionId,
     internal: &Sender<Internal>,
     released: &Receiver<()>,
+    role: Role,
 ) {
     let mut created = MaybeUninit::<Created>::zeroed();
     let native = startup.native();
     // SAFETY: a complete startup whose buffers outlive the call.
     let result = client::created(unsafe { (functions.create)(&native, created.as_mut_ptr()) });
     if let Err(refused) = result {
-        let _ = internal.send(Internal::Stopped(id.clone(), Err(refused)));
+        let _ = internal.send(Internal::Stopped(id.clone(), Err(refused), Ok(())));
         let _ = internal.send(Internal::OwnerDone(id, Ok(())));
         return;
     }
@@ -61,17 +65,24 @@ pub(super) fn owner(
         control: created.control,
         generation: startup.generation,
     };
-    if let Err(error) = submit_open(&client) {
-        tracing::warn!(session = %id, %error, "monitor open not accepted");
+    let first = match role {
+        Role::Monitor => submit_open(&client),
+        Role::KillOnly => client.kill(KILL_ID),
+    };
+    if let Err(error) = &first {
+        tracing::warn!(session = %id, %error, ?role, "first request not accepted");
         // Run then ends with terminal evidence.
         client.shutdown();
     }
-    let _ = internal.send(Internal::Published(id.clone(), client));
+    let _ = internal.send(Internal::Published(id.clone(), client, first.err()));
     let mut report = MaybeUninit::<native::RunReport>::zeroed();
     // SAFETY: the instance created on this thread and an output struct.
     let ran = checked(unsafe { (functions.run)(created.instance, report.as_mut_ptr()) });
+    // SAFETY: zeroed, then written by run if it reported: plain values.
+    let report = unsafe { report.assume_init() };
+    let workers = client::workers(&ran, &report);
     let ran = ran.map_err(|why| (why, Retry::Passive));
-    let _ = internal.send(Internal::Stopped(id.clone(), ran));
+    let _ = internal.send(Internal::Stopped(id.clone(), ran, workers));
     let destroyed = released
         .recv()
         .map_err(|_| "its handles may still be in use".to_owned())

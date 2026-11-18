@@ -4,8 +4,8 @@
 requires directly loaded client libraries and client threads in the monitor.
 The [discovery decision](https://github.com/jackgeek/climon2/issues/59) planned a
 discovery crate shared by CLI and monitor. #77 moved the CLI's session discovery
-into it: `climon2-discovery`, a shipped library that the CLI uses now and the
-monitor will use (#106). The monitor is its own shipped
+into it: `climon2-discovery`, a shipped library that the CLI and, since #106,
+the monitor use. The monitor is its own shipped
 package and executable, `climon2-monitor` (spec #73, confirmed 2026-11-08): the
 CLI execs its own version's monitor for `c2 monitor` and `c2 m` (or their
 `climon2` spellings), as it execs the version-matched client, and that handoff
@@ -13,8 +13,8 @@ between executables of one release is not frozen. The client library's `cdylib`
 artifact, agreed in spec #73, is recorded below (#75).
 The monitor is the one exception to the daemon-only `climon2-vt` rule: the
 [#63 terminal contract](../protocol/terminal-integration.md) has it keep its own
-`climon2-vt` models with read-only Rust views, and it already shares the
-documented normal-shell baseline from that crate. This adds no cross-release
+`climon2-vt` models with read-only Rust views, which it does since #108, and it
+shares the documented normal-shell baseline from that crate. This adds no cross-release
 cell schema.
 
 The workspace has one package per shipped binary. The CLI, daemon and client never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003) and the validated client-library loader (#84). Session discovery, shared by the CLI and monitor, is a separate shipped library, `climon2-discovery` (#77). The crate boundary keeps neutral code out of the platform seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace.

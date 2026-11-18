@@ -12,11 +12,12 @@ mod fixtures;
 mod library;
 mod measure;
 mod mutation_plan;
+mod qualify;
 mod quality;
 mod release;
 
 const HELP: &str = "\
-Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]>
+Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...>
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
 check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
@@ -40,6 +41,11 @@ fixtures-check refuses any historical or uncommitted edit/deletion of an existin
 mutate runs coverage, crapper and mutation checks on shipped source.
 measure runs the PERF-01 matrix on an exact candidate archive (climon2-measure; see its README):
 a missed target is a failed Measure case in the report, not a failed command.
+qualify run writes one platform's evidence records (#122) for every acceptance-matrix case on this
+native host, from the packaged tests against the exact candidate archive, every workspace test,
+the platform's Measure reports and the manual records; a failed case is a record, not a failure.
+qualify verdict judges every platform's records with the owner's recorded dispositions and fails
+unless the release may be published.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
 Each load round runs 8 workspace suites at once before mutating, even with nothing to mutate;
 mutate skips it. Logs remain in target/flake-logs.
@@ -71,6 +77,8 @@ fn main() -> ExitCode {
         dist::install(workspace_root(), &args[1..])
     } else if args.first().is_some_and(|command| command == "measure") {
         measure::run(workspace_root(), &args[1..])
+    } else if args.first().is_some_and(|command| command == "qualify") {
+        qualify::run(workspace_root(), &args[1..])
     } else if args == ["fixtures-check"] {
         fixtures::check(workspace_root())
     } else if args == ["mutate"] {

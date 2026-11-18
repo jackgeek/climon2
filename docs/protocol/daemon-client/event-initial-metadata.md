@@ -1,8 +1,8 @@
 # Initial metadata — `0x41`
 
-**Status: agreed; implemented for the title, the status and a known command
-result**, owned by [#67](https://github.com/jackgeek/climon2/issues/67);
-progress arrives with its family.
+**Status: agreed; implemented for the title, the status, progress
+([#98](https://github.com/jackgeek/climon2/issues/98)) and a known command result**, owned by
+[#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) supplies an atomic report
 to the [client](../../../GLOSSARY.md#sessions) after successful Open.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),

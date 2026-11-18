@@ -50,11 +50,14 @@ serialized at effective session geometry; ordinary attach remains unchanged.
 Session daemons implement Focus
 ([#87](https://github.com/jackgeek/climon2/issues/87)) and this canonical
 presentation ([#89](https://github.com/jackgeek/climon2/issues/89)); the client
-library's side is agreed, not implemented.
+library relays both ([#94](https://github.com/jackgeek/climon2/issues/94)), and
+the monitor sends Focus ([#111](https://github.com/jackgeek/climon2/issues/111)).
 
 The later [lifecycle contract](../monitor-lifecycle.md) agrees automatic
-exponential passive recovery, prior-instance cleanup/join before replacement,
-concurrent shutdown and bounded whole-process fail-stop. Accepted Leave,
+exponential passive recovery, prior-instance cleanup/join before replacement
+(implemented by [#116](https://github.com/jackgeek/climon2/issues/116)),
+concurrent shutdown and bounded whole-process fail-stop (implemented by
+[#118](https://github.com/jackgeek/climon2/issues/118)). Accepted Leave,
 closure, final outcome and local cleanup/join remain separate evidence; no
 indeterminate work, including Kill, is replayed.
 `climon2 exec --headless <command> [args...]` is implemented: it returns after
@@ -78,7 +81,7 @@ A [session daemon](../../GLOSSARY.md#sessions) is only ever reached by the clien
 - **Hello:** type `0x01` in both directions with [JSON](../protocol/TERMS.md#json) bodies, where unknown fields are ignored. The client speaks first with `{"protocol":1}`, and the daemon replies `{"session_id":"<guid>","climon2_version":"<v>","protocol":<n>}`.
 - **Deadline:** 2 s. The daemon closes a connection that hasn't sent a valid hello within 2 s of accept. A prober treats no full reply within 2 s of starting to connect as not live.
 - **Growth:** the frame layout and existing hello fields never change, but a daemon may add optional fields to its hello reply, which every reader ignores if unknown. This is how any version's `list` can learn dynamic session state, because session metadata is write-once (ADR 0005).
-- **Client command line:** `<climon2 executable home>/<version>/climon2-client attach --metadata <absolute path>`, and nothing else. Every other input (`CLIMON2_HOME`, `CLIMON2_LOG`) reaches the client through the environment, where unknown variables are ignored. Any version's CLI can therefore start any version's client executable. The planned monitor uses the separate library embedding interface instead.
+- **Client command line:** `<climon2 executable home>/<version>/climon2-client attach --metadata <absolute path>`, and nothing else. Every other input (`CLIMON2_HOME`, `CLIMON2_LOG`) reaches the client through the environment, where unknown variables are ignored. Any version's CLI can therefore start any version's client executable. The monitor uses the separate library embedding interface instead (#106).
 
 ## Considered options
 

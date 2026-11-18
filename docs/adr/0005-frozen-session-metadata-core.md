@@ -5,10 +5,12 @@ In the current implementation, apart from the [hello handshake](../../GLOSSARY.m
 ## Frozen layout
 
 The agreed [native embedding](../protocol/library-embedding.md) and
-[daemon wire revision 1](../protocol/daemon-client/core-v1.md) extend the planned
-cross-release data boundaries. They do not change this frozen write-once core.
+[daemon wire revision 1](../protocol/daemon-client/core-v1.md) extend the
+cross-release data boundaries; the client library, the session daemon and,
+since [#106](https://github.com/jackgeek/climon2/issues/106), the monitor
+implement them. They do not change this frozen write-once core.
 Dynamic title, status, episodes and progress come from daemon communication,
-not metadata rewrites. Neither planned interface is implemented by this record.
+not metadata rewrites. Neither interface is implemented by this record.
 
 - **Location:** `<climon2 home>/sessions/<guid>.pty`. The directory is 0700 and the file 0600. Files are written to a temp name and then renamed, and the temp name never matches `<guid>.pty`. Readers only consider files whose stem parses as a [GUID](../protocol/TERMS.md#guid) and whose extension is `.pty`.
 - **Fields:**

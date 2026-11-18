@@ -620,10 +620,12 @@ Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
 cleanup/fail-stop and passive recovery. These are future tests, not
-conformance/performance claims. Headless creation and existing CLI kill of
+conformance/performance claims; the monitor implements this lifecycle
+([#116](https://github.com/jackgeek/climon2/issues/116), [#118](https://github.com/jackgeek/climon2/issues/118)). Headless creation and existing CLI kill of
 headless sessions already have executed evidence on the current protocol
 (HDL-01 in the [acceptance matrix](../../monitor-acceptance.md)).
 The [acceptance matrix](../../monitor-acceptance.md) is agreed in #62;
 native declarations are agreed in #71. Numerical budgets are
-agreed in [operational limits](../../monitor-operational-limits.md), not implemented.
+agreed in [operational limits](../../monitor-operational-limits.md), and
+implemented as far as its status says.
 Forwarding/security implementation remains deferred.

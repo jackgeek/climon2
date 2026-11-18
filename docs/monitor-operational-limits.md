@@ -1,6 +1,6 @@
 # Monitor operational limits
 
-**Status: agreed future specification, not implemented behavior, except that
+**Status: agreed specification, implemented only as follows:
 the monitor and `exec` validate the `monitor.limits` configuration and the
 monitor reports its effective values
 ([#82](https://github.com/jackgeek/climon2/issues/82)). At startup the monitor
@@ -50,7 +50,17 @@ most once per `retry.admission_ms`; rejects qualified workers above
 `scheduling.starts` and `scheduling.newer_start_burst`; and reports a load
 past `deadlines.load_ms` (see the
 [monitor README](../crates/climon2-monitor/README.md#admission-and-fair-scheduling-120)
-for what it does not yet do); nothing else enforces the limits yet.** This resolves
+for what it does not yet do). The monitor also bounds discovery by
+`scheduling.probes` and the `discovery` limits except `stall_ms`
+([#106](https://github.com/jackgeek/climon2/issues/106)), the selector's
+search by `ui.search_bytes`
+([#113](https://github.com/jackgeek/climon2/issues/113)), initial selection
+by `deadlines.start_ms` ([#266](https://github.com/jackgeek/climon2/issues/266)),
+passive retries by the `retry` backoff
+([#116](https://github.com/jackgeek/climon2/issues/116)), and shutdown by
+`deadlines.shutdown_ms`, `operation_ms` and `final_host_ms`
+([#118](https://github.com/jackgeek/climon2/issues/118)); nothing else
+enforces the limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.
 
@@ -656,4 +666,9 @@ point, not an admission cap or arbitrary-hardware promise. If defaults cannot
 admit a scenario, report that outcome and repeat with disclosed sufficient
 configuration where supported. Do not infer lower total use merely from fewer
 processes. Acceptance records limitations honestly; this specification claims
-none of this evidence has already been delivered.
+none of this evidence has already been delivered. The
+[measurement harness](../crates/climon2-measure/README.md) that takes these
+measurements on a candidate archive is implemented
+([#121](https://github.com/jackgeek/climon2/issues/121)), except the ten
+mixed-release cases, which it records `not run`; its reports belong to each
+release candidate, not to this document.

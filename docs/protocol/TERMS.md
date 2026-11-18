@@ -37,7 +37,7 @@ add behavior without redefining that common contract.
 The terminal bell control [byte](#byte), hexadecimal `07`. A future
 [attention](../../GLOSSARY.md#status-and-attention) [plugin](../../GLOSSARY.md#protocol-and-plugin-concepts)
 could observe it; that plugin strategy is not specified by this reference.
-The planned monitor emits its own [toast bell](monitor-host/bell.md),
+The monitor emits its own [toast bell](monitor-host/bell.md) ([#115](https://github.com/jackgeek/climon2/issues/115)),
 independently of session-output forwarding.
 
 ## Big endian
@@ -241,7 +241,8 @@ must not inspect. Its interface specifies validity, permitted uses, and release.
 Operating System Command, a terminal escape-sequence family.
 An OSC terminal sequence is not itself a structured plugin protocol message.
 OSC 7501 is the Program Status Protocol; OSC 133 marks shell prompts and
-commands. The planned core interpretation and notification/progress relay are
+commands. The core interpretation and notification/progress relay, which the
+session daemon and client library implement ([#92](https://github.com/jackgeek/climon2/issues/92), [#98](https://github.com/jackgeek/climon2/issues/98)), are
 specified by the [session-status revision](../session-status.md), not a plugin
 decoder contract.
 
@@ -320,9 +321,11 @@ it.
 
 ## Toast
 
-A brief on-screen notification. The planned monitor's
+A brief on-screen notification. The monitor's
 [attention mechanics](../session-status.md#titles-and-notifications) specify
-when notifications occur; exact visual presentation remains unresolved.
+when notifications occur, and the
+[selector specification](../monitor-selector.md#toasts-and-bell) how they
+look; the monitor shows them ([#115](https://github.com/jackgeek/climon2/issues/115)).
 
 ## TCP/IP
 
