@@ -5,8 +5,8 @@
 //! is never shown.
 use crate::terminal::Presentation;
 use climon2_core::{SessionId, metadata::SessionMetadata};
-use std::{cmp::Reverse, collections::BTreeMap, time::SystemTime};
-use unicode_width::UnicodeWidthChar;
+use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, time::SystemTime};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// What one discovery probe found about a session with valid metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +40,9 @@ pub(crate) enum ClientEvent {
 pub(crate) enum Report {
     /// The daemon title: `None` when unset or unsupported.
     Title(Option<String>),
+    /// The Initial metadata knew no final outcome: the row is seen running
+    /// (owner decision on #115).
+    Unfinished,
     /// The effective status changed, or the Initial metadata reported it.
     Status(Status),
     /// The command's final outcome is known.
@@ -73,6 +76,24 @@ impl State {
 pub(crate) struct Status {
     pub(crate) state: State,
     pub(crate) changed: SystemTime,
+    /// The attention episode it belongs to, if any.
+    pub(crate) episode: Option<u64>,
+}
+
+impl Status {
+    /// The episode of a status that needs attention.
+    fn attention(self) -> Option<u64> {
+        self.episode.filter(|_| self.state == State::NeedsAttention)
+    }
+}
+
+/// What a report announces to toasts (#115), and the identity toasts
+/// deduplicate it by within its session: an attention episode, or the one
+/// final outcome.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum News {
+    Attention(u64),
+    Final,
 }
 
 /// The command's authoritative result: exit 143 is not signal 15.
@@ -156,6 +177,8 @@ struct Row {
     /// status change time, otherwise when the monitor learned it. It
     /// survives disconnection.
     ended: Option<(Outcome, SystemTime)>,
+    /// Whether an Initial metadata knew no final outcome.
+    running: bool,
 }
 
 impl Row {
@@ -168,6 +191,7 @@ impl Row {
             title: None,
             status: None,
             ended: None,
+            running: false,
         }
     }
 
@@ -235,29 +259,51 @@ impl Row {
 
     /// A report changes what the row shows, a connection event its
     /// connection; control, display and answers are never row state.
-    fn apply(&mut self, event: ClientEvent, now: SystemTime) {
+    /// Returns what a report announces.
+    fn apply(&mut self, event: ClientEvent, now: SystemTime) -> Option<News> {
         match event {
-            ClientEvent::Report(report) => self.learn(report, now),
+            ClientEvent::Report(report) => return self.learn(report, now),
             event => {
                 if let Some(connection) = connection(event) {
                     self.connect(connection, now);
                 }
             }
         }
+        None
     }
 
-    /// Keeps the latest nonempty title and the latest status; keeps the
-    /// first final outcome, sorting by its terminal status time or else
-    /// `now`, when the monitor learned it.
-    fn learn(&mut self, report: Report, now: SystemTime) {
+    /// Keeps the latest nonempty title and the latest status, whose
+    /// attention episode it announces; notes that the row was seen running.
+    fn learn(&mut self, report: Report, now: SystemTime) -> Option<News> {
         match report {
             Report::Title(title) => self.retitle(title),
-            Report::Status(status) => self.status = Some(status),
-            Report::Final(known) => {
-                let at = known.changed.unwrap_or(now);
-                self.ended.get_or_insert((known.outcome, at));
+            Report::Unfinished => self.running = true,
+            Report::Status(status) => {
+                self.status = Some(status);
+                return status.attention().map(News::Attention);
             }
+            Report::Final(known) => return self.finish(known, now),
         }
+        None
+    }
+
+    /// Keeps the first final outcome, sorting by its terminal status time
+    /// or else `now`, when the monitor learned it. The first one is
+    /// announced once the row was seen running.
+    fn finish(&mut self, known: Final, now: SystemTime) -> Option<News> {
+        let first = self.ended.is_none();
+        let at = known.changed.unwrap_or(now);
+        self.ended.get_or_insert((known.outcome, at));
+        (first && self.running).then_some(News::Final)
+    }
+
+    /// The attention episode of a connected row that is not final and
+    /// still needs attention.
+    fn pending(&self) -> Option<u64> {
+        let connected = self.kind() == Kind::Connected;
+        self.status
+            .filter(|_| connected)
+            .and_then(Status::attention)
     }
 
     /// Keeps a nonempty title; an empty or unset one changes nothing.
@@ -341,11 +387,29 @@ impl Registry {
         })
     }
 
-    /// Records what `id`'s client reported.
-    pub(crate) fn client(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
-        if let Some(row) = self.rows.get_mut(id) {
-            row.apply(event, now);
-        }
+    /// Records what `id`'s client reported, returning what it announces
+    /// to toasts (#115).
+    pub(crate) fn client(
+        &mut self,
+        id: &SessionId,
+        event: ClientEvent,
+        now: SystemTime,
+    ) -> Option<News> {
+        self.rows.get_mut(id)?.apply(event, now)
+    }
+
+    /// `id`'s label, if it has a row.
+    pub(crate) fn label(&self, id: &SessionId) -> Option<String> {
+        self.rows.get(id).map(Row::label)
+    }
+
+    /// The attention episodes still pending: of connected rows that are not
+    /// final and need attention.
+    pub(crate) fn pending(&self) -> Vec<(SessionId, News)> {
+        self.rows
+            .iter()
+            .filter_map(|(id, row)| Some((id.clone(), News::Attention(row.pending()?))))
+            .collect()
     }
 
     /// What Enter does on `id`'s row, if there is one.
@@ -375,6 +439,19 @@ impl Registry {
         self.ordered()
             .into_iter()
             .find(|(group, _)| matches!(group, Group::Status(_)))
+            .map(|(_, view)| view.id)
+    }
+
+    /// The attention jump target (spec #73, "Attention jump target"): the
+    /// first row needing attention in row order, so the connected one whose
+    /// daemon change is newest, the lower full session ID on a tie. Only a
+    /// connected row that is not final shows its status, so acknowledged,
+    /// final, disconnected and not-connected rows never qualify. Whether
+    /// there is one is the host attention state.
+    pub(crate) fn attention(&self) -> Option<SessionId> {
+        self.ordered()
+            .into_iter()
+            .find(|(group, _)| *group == Group::Status(State::NeedsAttention))
             .map(|(_, view)| view.id)
     }
 
@@ -430,6 +507,21 @@ fn literal(text: &str) -> String {
             escaped
         })
         .collect()
+}
+
+/// `text` as it fits `cells` display cells: whole when it fits, otherwise
+/// statically truncated to end with `…` within them (owner decision on
+/// #112, 2026-11-16: nothing marquees).
+/// Text with no cell at all is empty.
+pub(crate) fn truncate(text: &str, cells: usize) -> Cow<'_, str> {
+    if text.width() <= cells {
+        Cow::Borrowed(text)
+    } else if cells == 0 {
+        Cow::Borrowed("")
+    } else {
+        // The ellipsis takes one cell.
+        Cow::Owned(format!("{}…", clip(text, cells - 1)))
+    }
 }
 
 /// The leading part of `text` that fits `cells` display cells, never
@@ -502,6 +594,16 @@ mod tests {
         ClientEvent::Report(Report::Status(Status {
             state,
             changed: at(changed),
+            episode: None,
+        }))
+    }
+
+    /// A status in `state` for attention episode `episode`.
+    fn episode(state: State, episode: u64) -> ClientEvent {
+        ClientEvent::Report(Report::Status(Status {
+            state,
+            changed: at(episode),
+            episode: Some(episode),
         }))
     }
 
@@ -593,6 +695,89 @@ mod tests {
         assert_eq!(shown(&registry)[0], "Needs attention|attention newer");
         registry.client(older, status(State::NeedsAttention, 250), at(951));
         assert_eq!(shown(&registry)[0], "Needs attention|attention older");
+    }
+
+    /// NOT-03 and NOT-04 (pure supplement, #114): the attention jump target
+    /// is the connected row needing attention whose daemon change is newest,
+    /// the lower full session ID on a tie; acknowledged, final, disconnected
+    /// (its stale status needing attention) and not-connected rows never
+    /// qualify, and with none left there is no target, so the host is told
+    /// nothing is pending.
+    #[test]
+    fn the_attention_target_is_the_newest_connected_row_needing_attention() {
+        let mut registry = Registry::new(None);
+        assert_eq!(registry.attention(), None);
+        let events = [
+            (1, "acknowledged", status(State::Acknowledged, 900)),
+            (2, "final", ended(Outcome::Exit(0), Some(900))),
+            (3, "lost", status(State::NeedsAttention, 900)),
+            (4, "older", status(State::NeedsAttention, 100)),
+            (6, "tied high", status(State::NeedsAttention, 200)),
+            (5, "tied low", status(State::NeedsAttention, 200)),
+            (7, "running", status(State::Running, 950)),
+        ];
+        let mut keys = BTreeMap::new();
+        for (suffix, command, event) in events {
+            let key = opened(&mut registry, (suffix, command), true, 1);
+            registry.client(&key, event, at(2));
+            keys.insert(command, key);
+        }
+        registry.client(&keys["lost"], ClientEvent::Ended, at(3));
+        let starting = metadata(&id(8), "2026-11-13T12:00:00.000Z", "starting", &[]);
+        registry.discovered(starting, Found::Live, at(4));
+        assert_eq!(registry.attention().as_ref(), Some(&keys["tied low"]));
+        let acknowledged = status(State::Acknowledged, 300);
+        registry.client(&keys["tied low"], acknowledged.clone(), at(5));
+        assert_eq!(registry.attention().as_ref(), Some(&keys["tied high"]));
+        registry.client(&keys["tied high"], acknowledged, at(6));
+        assert_eq!(registry.attention().as_ref(), Some(&keys["older"]));
+        registry.client(&keys["older"], ended(Outcome::Signal(9), None), at(7));
+        assert_eq!(registry.attention(), None);
+    }
+
+    /// NOT-01 (pure supplement; owner decision on #115): each status needing
+    /// attention announces its episode, every time, for toasts to
+    /// deduplicate; acknowledged, running and idle statuses, titles and
+    /// connection events announce nothing. A final outcome is announced
+    /// once, and only once the row was seen running: its Initial metadata
+    /// knew no final outcome. A final that the first Initial metadata
+    /// already knew, at startup or first connection, is never announced.
+    /// The pending episodes are those of connected rows that still need
+    /// attention, never an acknowledged, final or disconnected one.
+    #[test]
+    fn attention_episodes_and_finals_learned_while_running_are_announced() {
+        let mut registry = Registry::new(None);
+        let alpha = opened(&mut registry, (1, "alpha"), true, 1);
+        let unfinished = ClientEvent::Report(Report::Unfinished);
+        assert_eq!(registry.client(&alpha, titled(Some("A")), at(2)), None);
+        assert_eq!(registry.client(&alpha, unfinished.clone(), at(2)), None);
+        let attention = episode(State::NeedsAttention, 7);
+        let announced = registry.client(&alpha, attention.clone(), at(3));
+        assert_eq!(announced, Some(News::Attention(7)));
+        assert_eq!(registry.label(&alpha).as_deref(), Some("A"));
+        assert_eq!(registry.pending(), [(alpha.clone(), News::Attention(7))]);
+        let again = registry.client(&alpha, attention, at(4));
+        assert_eq!(again, Some(News::Attention(7)));
+        for state in [State::Acknowledged, State::Running, State::Idle] {
+            assert_eq!(registry.client(&alpha, episode(state, 7), at(5)), None);
+        }
+        assert_eq!(registry.pending(), []);
+        let beta = opened(&mut registry, (2, "beta"), false, 1);
+        registry.client(&beta, unfinished, at(2));
+        registry.client(&beta, episode(State::NeedsAttention, 1), at(2));
+        let finished = ended(Outcome::Exit(0), None);
+        let first = registry.client(&beta, finished.clone(), at(6));
+        assert_eq!(first, Some(News::Final));
+        assert_eq!(registry.client(&beta, finished.clone(), at(7)), None);
+        assert_eq!(registry.client(&beta, ClientEvent::Ended, at(8)), None);
+        assert_eq!(registry.pending(), []);
+        let known = opened(&mut registry, (3, "known"), true, 1);
+        assert_eq!(registry.client(&known, finished, at(9)), None);
+        let lost = opened(&mut registry, (4, "lost"), true, 1);
+        registry.client(&lost, episode(State::NeedsAttention, 2), at(9));
+        registry.client(&lost, ClientEvent::Ended, at(10));
+        assert_eq!(registry.pending(), []);
+        assert_eq!(registry.label(&id(9).parse().unwrap()), None);
     }
 
     /// COM-06 (Monitor labels, pure supplement) and final rows (derived):
@@ -911,14 +1096,23 @@ mod tests {
         assert!(!registry.rows()[0].label.contains(key.as_str()));
     }
 
-    /// TRM-06 / SEL-01 (cell-safe clipping): clipping never splits a wide
-    /// character and keeps combining marks with their base.
+    /// TRM-06 / SEL-01 (cell-safe truncation; owner decision on #112,
+    /// 2026-11-16: nothing marquees): text that fits its cells is kept
+    /// whole, at the limit too; one cell past it, it ends with `…` within
+    /// them. Truncation never splits a wide character, so a wide character
+    /// that would cross the limit leaves a blank cell's room, and combining
+    /// marks stay with their base. No cell holds nothing at all.
     #[test]
-    fn clipping_is_display_cell_safe() {
-        assert_eq!(clip("日本語", 5), "日本");
-        assert_eq!(clip("日本語", 4), "日本");
-        assert_eq!(clip("e\u{301}x", 1), "e\u{301}");
-        assert_eq!(clip("abc", 0), "");
-        assert_eq!(clip("abc", 3), "abc");
+    fn overflowing_text_is_truncated_display_cell_safe_with_an_ellipsis() {
+        assert_eq!(truncate("abc", 3), "abc");
+        assert_eq!(truncate("abcd", 3), "ab…");
+        assert_eq!(truncate("日本語", 6), "日本語");
+        assert_eq!(truncate("日本語", 5), "日本…");
+        assert_eq!(truncate("日本語", 4), "日…");
+        assert_eq!(truncate("e\u{301}xy", 2), "e\u{301}…");
+        assert_eq!(truncate("e\u{301}x", 2), "e\u{301}x");
+        assert_eq!(truncate("ab", 1), "…");
+        assert_eq!(truncate("ab", 0), "");
+        assert_eq!(truncate("", 0), "");
     }
 }

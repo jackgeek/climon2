@@ -3,7 +3,7 @@
 use super::owner::GENERATION;
 use crate::{
     registry::{ClientEvent, Final, Outcome, Report, State, Status},
-    terminal::{Authority, Presentation, Request},
+    terminal::{Authority, Paste, Presentation, Request},
 };
 use climon2_core::{
     SessionId,
@@ -17,6 +17,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 /// Monitor Open's request ID.
 pub(super) const OPEN_ID: u64 = 1;
 const STATUS: &str = "status-v1";
+const FOCUS: &str = "focus-v1";
 
 /// An instance's caller handles, published by its owner thread, with the
 /// release's calls.
@@ -54,7 +55,7 @@ type Reader = fn(&SessionId, &native::Record) -> Vec<ClientEvent>;
 // SAFETY (every reader): the tag names the active member.
 const READERS: [(u32, Reader); 12] = [
     (native::RESPONSE, |_, record| {
-        vec![response(unsafe { &record.data.response })]
+        response(unsafe { &record.data.response })
     }),
     (native::INITIAL_METADATA, |_, record| {
         initial(unsafe { &record.data.metadata })
@@ -187,13 +188,11 @@ fn native_request(request_id: u64, request: &Request) -> native::Request {
                 generation: GENERATION,
             },
         ),
-        Request::Ready(held) => (
-            native::READY,
-            native::RequestArgs {
-                authority: native_authority(held),
-            },
-        ),
-        Request::Input(held, ref bytes) => (
+        Request::Ready(held)
+        | Request::Acknowledge(held)
+        | Request::Focus(held, _)
+        | Request::Viewing(held, _) => authorized(request, held),
+        Request::Input(held, ref bytes) | Request::Paste(held, Paste { ref bytes, .. }) => (
             native::INPUT,
             native::RequestArgs {
                 input: native::Input {
@@ -226,6 +225,28 @@ fn native_request(request_id: u64, request: &Request) -> native::Request {
     }
 }
 
+/// Ready, Acknowledge, Focus and Set viewing carry their authority, and
+/// Focus and Set viewing their value as a flag.
+fn authorized(request: &Request, held: Authority) -> (u32, native::RequestArgs) {
+    let authority = native_authority(held);
+    match *request {
+        Request::Focus(_, focused) => flag(native::FOCUS, authority, focused),
+        Request::Viewing(_, viewing) => flag(native::VIEWING, authority, viewing),
+        Request::Acknowledge(_) => (native::ACKNOWLEDGE, native::RequestArgs { authority }),
+        _ => (native::READY, native::RequestArgs { authority }),
+    }
+}
+
+/// A request that sets `value` under `authority`.
+fn flag(tag: u32, authority: native::Authority, value: bool) -> (u32, native::RequestArgs) {
+    let flag = native::Flag {
+        authority,
+        value: u8::from(value),
+        reserved: [0; 7],
+    };
+    (tag, native::RequestArgs { flag })
+}
+
 fn native_authority(held: Authority) -> native::Authority {
     native::Authority {
         generation: held.generation,
@@ -256,19 +277,20 @@ fn presented(presentation: Option<Presentation>) -> Vec<ClientEvent> {
 }
 
 /// The Initial metadata's title, then its final outcome when the command
-/// already ended, otherwise its status when `status-v1` reported one. The
-/// library has checked that a final status comes exactly with a result.
+/// already ended, otherwise that it had not (#115) and its status when
+/// `status-v1` reported one. The library has checked that a final status
+/// comes exactly with a result.
 fn initial(metadata: &native::Metadata) -> Vec<ClientEvent> {
     let result = metadata.command_result;
     let standing = if result.present == 0 {
-        available(metadata.status)
-            .and_then(status)
-            .map(|status| ClientEvent::Report(Report::Status(status)))
+        let status = available(metadata.status).and_then(status);
+        let status = status.map(|status| ClientEvent::Report(Report::Status(status)));
+        [Some(ClientEvent::Report(Report::Unfinished)), status]
     } else {
-        finished(result.value, metadata.status)
+        [finished(result.value, metadata.status), None]
     };
     std::iter::once(title(metadata.title))
-        .chain(standing)
+        .chain(standing.into_iter().flatten())
         .collect()
 }
 
@@ -290,6 +312,7 @@ fn status(status: native::Status) -> Option<Status> {
     Some(Status {
         state: *state,
         changed,
+        episode: (status.episode_present != 0).then_some(status.episode_id),
     })
 }
 
@@ -320,19 +343,22 @@ fn changed(at: native::Utc) -> Option<SystemTime> {
 /// Monitor Open's response: opened, with whether `status-v1` was selected,
 /// or refused with why. Any other request's answer is matched to its
 /// request by the supervisor.
-fn response(response: &native::Response) -> ClientEvent {
+fn response(response: &native::Response) -> Vec<ClientEvent> {
     if response.request_id == OPEN_ID {
         return opened(response);
     }
     let answer = (response.outcome == native::OK)
         .then_some(())
         .ok_or_else(|| text(response.error.message));
-    ClientEvent::Answer(response.request_id, answer)
+    vec![ClientEvent::Answer(response.request_id, answer)]
 }
 
-fn opened(response: &native::Response) -> ClientEvent {
+/// Open's success says whether `status-v1` was selected, after telling the
+/// session's terminal that `focus-v1` and `status-v1` were, so it knows
+/// before the monitor can show the session opened without them.
+fn opened(response: &native::Response) -> Vec<ClientEvent> {
     if (response.outcome, response.result_tag) != (native::OK, native::OPENED) {
-        return ClientEvent::Unavailable(text(response.error.message));
+        return vec![ClientEvent::Unavailable(text(response.error.message))];
     }
     // SAFETY: the result tag names the active member, and its tokens live
     // until the delivery's release.
@@ -342,9 +368,15 @@ fn opened(response: &native::Response) -> ClientEvent {
             response.result.opened.selected.count,
         )
     };
-    ClientEvent::Opened {
-        status: selected.iter().any(|token| text(*token) == STATUS),
-    }
+    let selects = |family: &str| selected.iter().any(|token| text(*token) == family);
+    let focusable = selects(FOCUS).then_some(Presentation::Focusable);
+    let status = selects(STATUS);
+    let viewable = status.then_some(Presentation::Viewable);
+    let presented = focusable.into_iter().chain(viewable);
+    presented
+        .map(ClientEvent::Presentation)
+        .chain([ClientEvent::Opened { status }])
+        .collect()
 }
 
 fn title(title: native::Title) -> ClientEvent {
@@ -513,27 +545,31 @@ mod tests {
     }
 
     /// STA-07 and COM-06 (Monitor, pure supplement): the Initial metadata
-    /// reports its title, then the stored status and its exact change time
-    /// (never the time it arrived), or, once the command ended, its final
-    /// outcome with the terminal status's time when `status-v1` reported
-    /// one; without status or result, nothing is fabricated.
+    /// reports its title, then, before the command ended, that it had not
+    /// (#115) and the stored status and its exact change time (never the
+    /// time it arrived), or, once it ended, its final outcome with the
+    /// terminal status's time when `status-v1` reported one; without status
+    /// or result, no status is fabricated.
     #[test]
     fn the_initial_metadata_reports_its_status_or_final_outcome() {
         let untitled = ClientEvent::Report(Report::Title(None));
+        let unfinished = ClientEvent::Report(Report::Unfinished);
         let idle = native_status(native::IDLE, LATER);
         assert_eq!(
             read_one(&metadata(Some(idle), None)),
             [
                 untitled.clone(),
+                unfinished.clone(),
                 ClientEvent::Report(Report::Status(Status {
                     state: State::Idle,
                     changed: at(1_800_000_001_234),
+                    episode: None,
                 }))
             ]
         );
         assert_eq!(
             read_one(&metadata(None, None)),
-            std::slice::from_ref(&untitled)
+            [untitled.clone(), unfinished]
         );
         let completed = native_status(native::COMPLETED, T0);
         assert_eq!(
@@ -549,29 +585,40 @@ mod tests {
         );
     }
 
-    /// STA-07 (Monitor, pure supplement): each nonfinal state maps to its
-    /// own status with the daemon's exact time; a final state, an unknown
-    /// one or an unreadable time reports nothing rather than a guess.
+    /// STA-07 and NOT-01 (Monitor, pure supplement): each nonfinal state
+    /// maps to its own status with the daemon's exact time and its
+    /// attention episode, if present; a final state, an unknown one or an
+    /// unreadable time reports nothing rather than a guess.
     #[test]
     fn status_records_keep_their_state_and_exact_change_time() {
         let changed = |state, time| {
             let status = native_status(state, time);
             read_one(&record(native::STATUS, native::RecordData { status }))
         };
-        for (state, expected) in [
-            (native::NEEDS_ATTENTION, State::NeedsAttention),
-            (native::ACKNOWLEDGED, State::Acknowledged),
-            (native::RUNNING, State::Running),
-            (native::IDLE, State::Idle),
+        for (state, expected, episode) in [
+            (native::NEEDS_ATTENTION, State::NeedsAttention, Some(1)),
+            (native::ACKNOWLEDGED, State::Acknowledged, Some(1)),
+            (native::RUNNING, State::Running, None),
+            (native::IDLE, State::Idle, None),
         ] {
             assert_eq!(
                 changed(state, T0),
                 [ClientEvent::Report(Report::Status(Status {
                     state: expected,
                     changed: at(1_800_000_000_000),
+                    episode,
                 }))]
             );
         }
+        let status = native::Status {
+            episode_id: 9,
+            ..native_status(native::NEEDS_ATTENTION, T0)
+        };
+        let read = read_one(&record(native::STATUS, native::RecordData { status }));
+        let ClientEvent::Report(Report::Status(attention)) = &read[0] else {
+            panic!("{read:?}");
+        };
+        assert_eq!(attention.episode, Some(9));
         for state in [0, native::COMPLETED, native::STATUS_FAILED, 7] {
             assert_eq!(changed(state, T0), []);
         }
@@ -603,5 +650,138 @@ mod tests {
             [final_event(Outcome::Signal(15), None)]
         );
         assert_eq!(ended(result(3, 1), None), []);
+    }
+
+    fn bytes(text: &'static [u8]) -> Bytes {
+        Bytes {
+            data: text.as_ptr(),
+            length: text.len() as u64,
+        }
+    }
+
+    /// Monitor Open's successful response, selecting `families`.
+    fn open_response(families: &[Bytes]) -> Vec<ClientEvent> {
+        let selected = native::Tokens {
+            data: if families.is_empty() {
+                ptr::null()
+            } else {
+                families.as_ptr()
+            },
+            count: families.len() as u64,
+        };
+        // SAFETY: an all-zero error and result are valid plain values.
+        let mut response: native::Response = unsafe { std::mem::zeroed() };
+        response.request_id = OPEN_ID;
+        response.outcome = native::OK;
+        response.result_tag = native::OPENED;
+        response.result.opened = native::Opened {
+            connection_id: native::Guid { bytes: [0; 16] },
+            selected,
+        };
+        read_one(&record(native::RESPONSE, native::RecordData { response }))
+    }
+
+    /// FOC-01, FOC-02 and STA-08 (Monitor, pure supplement): Open's success
+    /// says first that `focus-v1` was selected, when it was, then that
+    /// `status-v1` was, so viewing can be reported (#114), then whether
+    /// `status-v1` was; any other family changes nothing.
+    #[test]
+    fn opening_says_whether_focus_and_status_were_selected() {
+        let focusable = ClientEvent::Presentation(Presentation::Focusable);
+        let viewable = ClientEvent::Presentation(Presentation::Viewable);
+        let opened = |status| ClientEvent::Opened { status };
+        let focus = bytes(b"focus-v1");
+        let status = bytes(b"status-v1");
+        let title = bytes(b"title-v1");
+        assert_eq!(
+            open_response(&[status, title, focus]),
+            [focusable.clone(), viewable.clone(), opened(true)]
+        );
+        assert_eq!(open_response(&[focus]), [focusable, opened(false)]);
+        assert_eq!(open_response(&[title, status]), [viewable, opened(true)]);
+        assert_eq!(open_response(&[]), [opened(false)]);
+    }
+
+    /// FOC-01 and STA-08 (pure supplement, the header's `CM1_VIEWING` and
+    /// `CM1_ACKNOWLEDGE`; #114): Set viewing goes as a flag under its
+    /// authority, 1 for viewing and 0 for not, with zero reserved bytes;
+    /// Acknowledge as its authority alone, as Ready does.
+    #[test]
+    fn viewing_and_acknowledge_become_their_native_requests() {
+        let held = Authority {
+            generation: 4,
+            period: 5,
+            restoration: 6,
+        };
+        let triple = |authority: native::Authority| {
+            (
+                authority.generation,
+                authority.period,
+                authority.restoration_id,
+            )
+        };
+        for (viewing, value) in [(true, 1), (false, 0)] {
+            let request = native_request(9, &Request::Viewing(held, viewing));
+            assert_eq!((request.tag, request.request_id), (native::VIEWING, 9));
+            // SAFETY: the tag names the active member.
+            let flag = unsafe { request.args.flag };
+            assert_eq!(triple(flag.authority), (4, 5, 6));
+            assert_eq!((flag.value, flag.reserved), (value, [0; 7]));
+        }
+        for (request, tag) in [
+            (Request::Acknowledge(held), native::ACKNOWLEDGE),
+            (Request::Ready(held), native::READY),
+        ] {
+            let request = native_request(11, &request);
+            assert_eq!((request.tag, request.request_id), (tag, 11));
+            // SAFETY: the tag names the active member.
+            assert_eq!(triple(unsafe { request.args.authority }), (4, 5, 6));
+        }
+    }
+
+    /// FOC-01 and INP-03 (pure supplement, the header's `CM1_FOCUS` and
+    /// `CM1_INPUT`): Focus goes as a flag under its authority, 1 for in and 0
+    /// for out, with zero reserved bytes; a paste part goes as input of its
+    /// bytes.
+    #[test]
+    fn focus_and_paste_parts_become_their_native_requests() {
+        let held = Authority {
+            generation: 4,
+            period: 5,
+            restoration: 6,
+        };
+        for (focused, value) in [(true, 1), (false, 0)] {
+            let request = native_request(9, &Request::Focus(held, focused));
+            assert_eq!((request.tag, request.request_id), (native::FOCUS, 9));
+            // SAFETY: the tag names the active member.
+            let flag = unsafe { request.args.flag };
+            let authority = flag.authority;
+            assert_eq!(
+                (
+                    authority.generation,
+                    authority.period,
+                    authority.restoration_id
+                ),
+                (4, 5, 6)
+            );
+            assert_eq!((flag.value, flag.reserved), (value, [0; 7]));
+        }
+        let paste = Paste {
+            bracketed: true,
+            starts: true,
+            bytes: b"pasted".to_vec(),
+            ends: true,
+        };
+        let paste = Request::Paste(held, paste);
+        let request = native_request(10, &paste);
+        assert_eq!(request.tag, native::INPUT);
+        // SAFETY: the tag names the active member, whose bytes `paste` holds.
+        let input = unsafe { request.args.input };
+        assert_eq!(input.authority.restoration_id, 6);
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { slice(input.bytes.data, input.bytes.length) },
+            b"pasted"
+        );
     }
 }

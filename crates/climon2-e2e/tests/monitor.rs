@@ -8,7 +8,8 @@
 mod support;
 
 use climon2_test_term::{
-    AnsiColor, Color, InputTerminal, Modes, Mouse, MouseButton, Terminal, Width, bin_path,
+    AnsiColor, Color, CursorShape, HostSignal, InputTerminal, Modes, Mouse, MouseButton, Terminal,
+    Underline, Width, bin_path,
 };
 use nix::{
     sys::signal::{Signal, kill},
@@ -68,19 +69,58 @@ fn outer_sized(package: &Package, command: &str, cols: u16) -> Terminal {
 fn assert_released(package: &Package, terminal: &mut Terminal, status: i32) {
     support::assert_released(package, terminal, status);
     assert_title_untouched(terminal);
+    assert_host_reports(terminal, true);
     assert!(terminal.screen().contains("BEFORE-MONITOR"));
 }
 
-/// The outer shell titled the host once; nothing else ever sent an OSC.
+/// The outer shell titled the host once; nothing but the monitor's own
+/// attention reports ([`assert_host_reports`]) ever sent another OSC.
 fn assert_title_untouched(terminal: &Terminal) {
     assert_eq!(terminal.title().as_deref(), Some(TITLE));
     let received = terminal.received();
-    assert_eq!(
-        received
-            .windows(2)
-            .filter(|window| window == b"\x1b]")
-            .count(),
-        1
+    let others = received
+        .windows(OSC_7501.len())
+        .enumerate()
+        .filter(|(_, window)| window.starts_with(b"\x1b]") && *window != OSC_7501)
+        .count();
+    assert_eq!(others, 1);
+    assert_host_reports(terminal, false);
+}
+
+/// The start of an OSC 7501 report.
+const OSC_7501: &[u8] = b"\x1b]7501;";
+/// The monitor's root OSC 7501 reports (docs/protocol/monitor-host).
+const BLOCKED: &[u8] = b"\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x1b\\";
+const WORKING: &[u8] = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
+const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
+
+/// NOT-04 (Monitor, every scenario that checks its host): besides the
+/// bells its own toasts ring (#115, which
+/// `toasts_ring_the_bell_once_each_and_only_when_it_is_on` counts, and
+/// `the_host_hears_the_attention_state_once_per_change_and_the_clear_on_exit`
+/// proves no session's bell is forwarded), the host heard only the
+/// monitor's own root OSC 7501 reports, never a session's report: its
+/// initial state and then changes only, with no heartbeat, and once
+/// `released`, the root clear last. A monitor that never started told the
+/// host nothing.
+fn assert_host_reports(terminal: &Terminal, released: bool) {
+    let mut signals = terminal.host_signals();
+    signals.retain(|signal| *signal != HostSignal::Bell);
+    let clear = HostSignal::Osc7501(CLEAR.to_vec());
+    let reports = signals.strip_suffix(std::slice::from_ref(&clear));
+    assert!(
+        !released || reports.is_some() || signals.is_empty(),
+        "{signals:?}"
+    );
+    let reports = reports.unwrap_or(&signals);
+    let states = [WORKING, BLOCKED].map(|report| HostSignal::Osc7501(report.to_vec()));
+    assert!(
+        reports.iter().all(|report| states.contains(report)),
+        "{signals:?}"
+    );
+    assert!(
+        reports.windows(2).all(|pair| pair[0] != pair[1]),
+        "{signals:?}"
     );
 }
 
@@ -210,10 +250,23 @@ fn preferences_file(package: &Package) -> PathBuf {
 
 /// Saves Don't show again in the test's climon2 home, as an earlier run
 /// would, so the monitor opens on its empty state without the key
-/// introduction.
+/// introduction, and configures the [`PATIENT`] deadlines.
 fn without_introduction(package: &Package) {
     fs::write(preferences_file(package), SUPPRESSED).unwrap();
+    limits_config(package, json!({}));
 }
+
+/// Deadlines a loaded host meets: a gate runs eight suites at once, and
+/// every test of a suite starts its sessions together, so a client's start
+/// or one operation can take longer than the defaults allow (10 s and 5 s).
+/// A test about a deadline sets that deadline itself ([`limits_config`]).
+const PATIENT: [(&str, u32); 5] = [
+    ("load_ms", 60_000),
+    ("start_ms", 60_000),
+    ("operation_ms", 60_000),
+    ("restoration_stall_ms", 60_000),
+    ("delivery_stall_ms", 60_000),
+];
 
 /// The climon2 home holds the choice `suppressed` exactly as a release saves
 /// it, readable and writable only by its owner, and nothing else a save could
@@ -449,7 +502,7 @@ const EFFECTIVE: &str = r#"{
       "discovery": {"pass_ms": 30000, "stall_ms": 5000, "batch_records": 128, "batch_bytes": 1048576, "metadata_file_bytes": 262144, "metadata_depth": 32},
       "deadlines": {"load_ms": 10000, "start_ms": 10000, "operation_ms": 5000, "kill_ms": 10000, "restoration_stall_ms": 5000, "restoration_total_ms": 60000, "delivery_stall_ms": 5000, "leave_ms": 5000, "cleanup_ms": 10000, "shutdown_ms": 10000, "final_host_ms": 1000, "assembly_ms": 5000},
       "retry": {"initial_ms": 1000, "cap_ms": 40000, "jitter_percent": 20, "admission_ms": 1000},
-      "ui": {"fps": 30, "client_quantum_ms": 2, "background_quantum_ms": 8, "toast_records": 128, "toast_bytes": 524288, "search_bytes": 4096}
+      "ui": {"fps": 30, "client_quantum_ms": 2, "background_quantum_ms": 8, "search_bytes": 4096}
     }
   }
 }"#;
@@ -567,7 +620,8 @@ fn expected_screen(rows: u16, cols: u16, prefix: &str) -> String {
 }
 
 /// The key introduction's dialog as the selector document specifies it: the
-/// configured `prefix` followed by x, s and ?, the selector's keys (#113), the
+/// configured `prefix` followed by x, s, j (owner decision on #114) and ?,
+/// the selector's keys (#113), the
 /// Don't show again checkbox,
 /// any `problem` with the saved choice, and the Continue action that Enter
 /// takes, in a box titled Keys with one column of space inside its border.
@@ -575,6 +629,7 @@ fn key_introduction(prefix: &str, checked: bool, problem: Option<&str>) -> Vec<S
     let mut lines = vec![
         format!("{prefix} then x  Exit the monitor"),
         format!("{prefix} then s  Open the session list"),
+        format!("{prefix} then j  Jump to the session that needs attention"),
         format!("{prefix} then ?  Show this dialog"),
         String::new(),
         "In the session list:".to_owned(),
@@ -645,7 +700,16 @@ fn opened_on(terminal: &mut Terminal, expected: &str) {
 /// Whether `output` ends where a monitor frame ends: its closing SGR 0, or
 /// the cursor shown after it. Neither occurs inside a frame, whose cells
 /// set SGR as `0;...` and whose cursor is hidden while they are written.
+/// The monitor's attention reports (#114) and a toast's bell (#115) follow
+/// the frame they were learned with, so they may end the output after it.
 fn frame_ended(output: &[u8]) -> bool {
+    let mut output = output;
+    while let Some(rest) = [WORKING, BLOCKED, b"\x07"]
+        .iter()
+        .find_map(|report| output.strip_suffix(*report))
+    {
+        output = rest;
+    }
     output.ends_with(b"\x1b[0m") || output.ends_with(b"\x1b[?25h")
 }
 
@@ -656,9 +720,10 @@ fn frame_ended(output: &[u8]) -> bool {
 fn whole_frame_shows(terminal: &Terminal, what: &str, condition: impl Fn(&str) -> bool) {
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        let before = terminal.received();
+        let before = terminal.received_total();
+        let ended = frame_ended(&terminal.received_tail(256));
         let screen = terminal.screen();
-        let whole = frame_ended(&before) && terminal.received() == before;
+        let whole = ended && terminal.received_total() == before;
         if whole && condition(&screen) {
             return;
         }
@@ -1737,14 +1802,21 @@ enum Answer {
     Hello(&'static str),
     /// Read the hello and never answer, until the prober hangs up.
     Silent,
+    /// As [`Answer::Silent`]; while the first connection is still open,
+    /// once this flag is set (by a test that set it after sending a
+    /// request), record [`Heard::Requested`]. Later connections are
+    /// [`Answer::Silent`].
+    Watched(std::sync::Arc<std::sync::atomic::AtomicBool>),
     /// The hello as [`Answer::Hello`] gives it; then hold the connection,
     /// answering nothing, until the peer hangs up or the fake is dropped:
     /// a client's Open never completes while it holds.
     Held(&'static str),
-    /// The hello as its own session, advertising `title-v1` and `status-v1`
-    /// too; then, after a client's Open, these acts in turn, then a
-    /// successful answer to its Leave.
+    /// The hello as its own session, advertising `title-v1`, `status-v1`
+    /// and `focus-v1` too, as the real daemon does; then, after a client's
+    /// Open, these acts in turn, then a successful answer to its Leave.
     Serve(std::sync::Arc<Vec<Act>>),
+    /// As [`Answer::Serve`], without advertising `focus-v1`.
+    Unfocused(std::sync::Arc<Vec<Act>>),
 }
 
 /// What a serving fake daemon does after a client's Open, as the daemon
@@ -1771,6 +1843,9 @@ enum Heard {
     HangingUp,
     /// The peer hung up a silent connection.
     Closed,
+    /// A watched first connection was still open after the test's request
+    /// was sent.
+    Requested,
 }
 
 /// Every fake daemon's record of one test: when, which session, what.
@@ -1834,6 +1909,7 @@ impl FakeDaemon {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = stop.clone();
         let ear = ear.clone();
+        let mut answer = answer;
         let thread = thread::spawn(move || {
             while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
                 let Ok((mut connection, _)) = listener.accept() else {
@@ -1843,7 +1919,10 @@ impl FakeDaemon {
                 hear(&ear, id, Heard::Connected);
                 connection.set_nonblocking(false).unwrap();
                 let ear = ear.clone();
-                let answer = answer.clone();
+                let answer = match answer {
+                    Answer::Watched(_) => std::mem::replace(&mut answer, Answer::Silent),
+                    _ => answer.clone(),
+                };
                 let stopped = stopped.clone();
                 thread::spawn(move || answer_once(&mut connection, id, &answer, &ear, &stopped));
             }
@@ -1870,6 +1949,17 @@ fn answer_once(
     let _ = read_frame(connection);
     match answer {
         Answer::Serve(acts) => {
+            let families = [
+                Family::MonitorV1,
+                Family::TitleV1,
+                Family::StatusV1,
+                Family::FocusV1,
+            ];
+            if hello(connection, id, families) {
+                serve(connection, acts);
+            }
+        }
+        Answer::Unfocused(acts) => {
             let families = [Family::MonitorV1, Family::TitleV1, Family::StatusV1];
             if hello(connection, id, families) {
                 serve(connection, acts);
@@ -1883,6 +1973,30 @@ fn answer_once(
             }
         }
         Answer::Silent => {
+            let _ = connection.read_to_end(&mut Vec::new());
+            hear(ear, id, Heard::Closed);
+        }
+        Answer::Watched(sent) => {
+            // A read that times out shows the prober has neither hung up nor
+            // sent more (a probe never does); one that returns shows it has.
+            let _ = connection.set_read_timeout(Some(Duration::from_millis(10)));
+            let open = |mut connection: &std::os::unix::net::UnixStream| {
+                connection.read(&mut [0; 1]).is_err_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    )
+                })
+            };
+            while open(connection) {
+                if sent.load(std::sync::atomic::Ordering::SeqCst) {
+                    if open(connection) {
+                        hear(ear, id, Heard::Requested);
+                    }
+                    break;
+                }
+            }
+            let _ = connection.set_read_timeout(Some(TIMEOUT));
             let _ = connection.read_to_end(&mut Vec::new());
             hear(ear, id, Heard::Closed);
         }
@@ -1992,8 +2106,19 @@ impl Drop for FakeDaemon {
     }
 }
 
-/// Writes `config.jsonc` with these `monitor.limits` values.
-fn limits_config(package: &Package, limits: serde_json::Value) {
+/// Writes `config.jsonc` with these `monitor.limits` values, and the
+/// [`PATIENT`] deadlines that `limits` does not set.
+fn limits_config(package: &Package, mut limits: serde_json::Value) {
+    let deadlines = limits
+        .as_object_mut()
+        .unwrap()
+        .entry("deadlines")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .unwrap();
+    for (name, milliseconds) in PATIENT {
+        deadlines.entry(name).or_insert(json!(milliseconds));
+    }
     fs::write(
         config_file(package),
         serde_json::json!({"monitor": {"limits": limits}}).to_string(),
@@ -2196,59 +2321,80 @@ fn clients_start_one_at_a_time_newest_first_with_ascending_id_ties() {
 
 /// DSC-03 (Monitor, cadence cases): discovery starts at once, and each later
 /// pass starts a second after the previous one finished, never overlapping
-/// it, even when the selector is opened during a pass. A silent daemon holds
-/// each pass's probe for the frozen two-second hello deadline, so its
-/// probes are at least three seconds apart; a zero cadence, or one measured
-/// from the pass's start, would put them two seconds apart. The bound
-/// allows half a second of observer lag.
+/// it, even when the selector is opened during a pass. With
+/// `scheduling.probes` at 1, each pass probes three silent daemons one at a
+/// time, each for the frozen two-second hello deadline, so the first pass
+/// lasts about six seconds: the selector is requested in it under any load
+/// that lets the test act within that time. That the request came during the
+/// first pass is proven, not assumed: a daemon's first probe, still open
+/// after the request was sent, records it. Each daemon's nth probe belongs to
+/// the nth pass. A pass starts when its first probe connects and ends when
+/// its last probe hangs up; a zero cadence, one measured from the pass's
+/// start, or an overlap would start the next pass at or before that end. The
+/// bound allows half the cadence for observer lag.
 #[test]
 fn discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap() {
     let package = Package::new();
     without_introduction(&package);
+    limits_config(&package, serde_json::json!({"scheduling": {"probes": 1}}));
     let ear = Ear::default();
-    let silent = FakeDaemon::start(
-        &package,
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ids = [
         "0d5c0000-0000-4000-8000-0000000000c1",
-        "2026-01-01T00:00:00.000Z",
-        Answer::Silent,
-        &ear,
-    );
+        "0d5c0000-0000-4000-8000-0000000000c2",
+        "0d5c0000-0000-4000-8000-0000000000c3",
+    ];
+    let silent: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let answer = Answer::Watched(sent.clone());
+            FakeDaemon::start(&package, id, "2026-01-01T00:00:00.000Z", answer, &ear)
+        })
+        .collect();
     let started = Instant::now();
     let mut terminal = outer(&package, "c2 monitor");
-    let probes = |count: usize| {
+    let connections = |count: usize| {
         let deadline = Instant::now() + TIMEOUT;
         while heard(&ear, Heard::Connected).len() < count {
             assert!(Instant::now() < deadline, "{:?}", ear.lock().unwrap());
             thread::sleep(Duration::from_millis(10));
         }
     };
-    probes(1);
-    // Open the selector while the first pass probes: its probe is held for
-    // two seconds. A loaded host may observe the probe late enough that
-    // the pass has ended; the cadence below must hold either way.
+    // The first pass has started: request the selector during it.
+    connections(1);
     terminal.send("\x1ds").unwrap();
+    sent.store(true, std::sync::atomic::Ordering::SeqCst);
     shows_row(&mut terminal, "║Unavailable fake");
-    probes(3);
+    // The third pass has started.
+    connections(2 * ids.len() + 1);
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     drop(silent);
     let ear = ear.lock().unwrap().clone();
     assert!(ear[0].0 - started < TIMEOUT);
-    // The third probe may still be open when the monitor exits.
-    let kinds: Vec<_> = ear.iter().map(|(_, _, heard)| *heard).take(5).collect();
-    assert_eq!(
-        kinds,
-        [Heard::Connected, Heard::Closed].repeat(3)[..5],
-        "passes overlapped: {ear:?}"
+    assert!(
+        ear.iter().any(|(_, _, heard)| *heard == Heard::Requested),
+        "the selector was not requested during the first pass: {ear:?}"
     );
-    let connected: Vec<_> = ear
-        .iter()
-        .filter(|(_, _, heard)| *heard == Heard::Connected)
-        .map(|(at, _, _)| *at)
-        .collect();
-    for pair in connected.windows(2) {
-        let apart = pair[1] - pair[0];
-        assert!(apart >= Duration::from_millis(2500), "{apart:?}: {ear:?}");
+    // When each daemon heard its nth record of a kind, if it did.
+    let nth = |kind: Heard, n: usize| {
+        ids.map(|id| {
+            ear.iter()
+                .filter(|(_, heard_by, heard)| *heard_by == id && *heard == kind)
+                .map(|(at, _, _)| *at)
+                .nth(n)
+        })
+    };
+    for pass in 0..2 {
+        // Every probe of this pass hung up; the next pass's first connected.
+        let ended = nth(Heard::Closed, pass).map(|at| at.unwrap_or_else(|| panic!("{ear:?}")));
+        let ended = ended.into_iter().max().unwrap();
+        let began = nth(Heard::Connected, pass + 1).into_iter().flatten().min();
+        let after = began.and_then(|began| began.checked_duration_since(ended));
+        assert!(
+            after.is_some_and(|after| after >= Duration::from_millis(500)),
+            "pass {pass} to the next: {after:?}: {ear:?}"
+        );
     }
     package.assert_clean();
 }
@@ -2401,8 +2547,12 @@ fn with_selector(screen: &str, rows: &[(&str, &str)]) -> String {
     selector_over(screen, "", rows, Some(FOOTER))
 }
 
+/// The rows below the selector that toasts keep (owner decision on #115).
+const LANE: usize = 4;
+
 /// The selector over `screen` as SEL-01 specifies it (#106, #113): a
-/// captionless double border one cell in from the rows below the top row;
+/// captionless double border one cell in from the rows below the top row
+/// and above the toasts' lane (#115);
 /// `search` on its first line; one separator joined with ╟ and ╢; each
 /// `(status, label)` row with the status column as wide as its widest
 /// status; and any `footer` at the bottom inside the border. ASCII text
@@ -2426,7 +2576,7 @@ fn selector_over(
         format!(" ║{search:<inner$}║ "),
         format!(" ╟{}╢ ", "─".repeat(inner)),
     ];
-    let list = height - 7 - usize::from(footer.is_some());
+    let list = height - 7 - LANE - usize::from(footer.is_some());
     for index in 0..list {
         let text = rows
             .get(index)
@@ -2436,7 +2586,7 @@ fn selector_over(
     }
     boxed.extend(footer.map(|footer| format!(" ║{footer:<inner$}║ ")));
     boxed.push(format!(" ╚{}╝ ", "═".repeat(inner)));
-    lines.splice(2..height - 1, boxed);
+    lines.splice(2..height - 1 - LANE, boxed);
     lines.join("\n")
 }
 
@@ -2574,7 +2724,7 @@ fn selector_on(
 /// session's canvas shows.
 fn boxed(screen: &str) -> Vec<String> {
     let rows: Vec<_> = screen.split('\n').collect();
-    rows[2..rows.len() - 1]
+    rows[2..rows.len() - 1 - LANE]
         .iter()
         .map(|row| {
             let cells = row.chars().count();
@@ -2691,12 +2841,13 @@ fn the_selector_search_filters_by_status_and_label_in_row_order() {
 
 /// The narrow host of
 /// [`selector_navigation_mouse_and_wheel_on_narrow_and_large_hosts`], rows
-/// by columns.
-const NARROW: (u16, u16) = (14, 40);
+/// by columns: four rows taller than its list needs, for the toasts' lane
+/// (#115).
+const NARROW: (u16, u16) = (18, 40);
 
 /// SEL-01 (Monitor: narrow and large hosts, scrolling, cell-safe clipping),
 /// SEL-02 (Monitor: navigation, Tab, clicks and the wheel), INP-05 (Monitor,
-/// selector case) and TRM-03 (Monitor, overlay case): on a 40x14 host the
+/// selector case) and TRM-03 (Monitor, overlay case): on a 40x18 host the
 /// list shows six of eight rows and the footer ends in "…"; a long label
 /// and a wide one end in "…" without splitting a character (owner decision
 /// on #112). Tab and Shift+Tab change nothing; Down, PageDown, PageUp and Up
@@ -3976,15 +4127,18 @@ fn a_full_input_queue_is_shown_and_only_accepted_input_arrives() {
 /// holds shutdown only until it is answered or `deadlines.operation_ms`
 /// passes. With the session's daemon stopped, a key read with prefix+x is
 /// never answered, and the monitor still exits with status 0 within the
-/// one-second operation deadline plus the two-second shutdown deadline
-/// (and a few seconds' margin for the host's release).
+/// ten-second operation deadline plus the two-second shutdown deadline
+/// (and a few seconds' margin for the host's release), well before the
+/// test's own bound. The deadline also bounds every operation before the
+/// daemon stops, Acquire, Ready and Focus among them, so it is long enough
+/// for a loaded host to answer those.
 #[test]
 fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     let package = Package::new();
     without_introduction(&package);
     limits_config(
         &package,
-        serde_json::json!({"deadlines": {"operation_ms": 1000, "shutdown_ms": 2000}}),
+        serde_json::json!({"deadlines": {"operation_ms": 10_000, "shutdown_ms": 2000}}),
     );
     headless(&package, &recorder("Keys"), "finish");
     let daemon = package.metadata().daemon_pid as i32;
@@ -3997,7 +4151,7 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
     terminal.wait_for_bytes(DONE, TIMEOUT).unwrap();
     let took = started.elapsed();
     kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
-    assert!(took < Duration::from_secs(6), "{took:?}");
+    assert!(took < Duration::from_secs(17), "{took:?}");
     assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
     package.assert_clean();
@@ -4018,8 +4172,9 @@ const NOT_CONTROLLING: &str = "Not controlling";
 /// [`sized`]'s probe) and writes it on its second row as `SIZE <rows>
 /// <cols>`, leaving the cursor where it was; it retitles itself whenever
 /// `$HOME/<title>.title` holds a new title, reports the root OSC 7501 state
-/// `$HOME/<title>.state` holds whenever it changes, and says ` SAID` once
-/// `$HOME/<title>.say` exists.
+/// `$HOME/<title>.state` holds whenever it changes, says ` SAID` once
+/// `$HOME/<title>.say` exists, and writes, then removes, whatever
+/// `$HOME/<title>.mode` holds ([`set_modes`]).
 fn watched(title: &str) -> String {
     working(&format!(
         "printf '\\033]2;{title}\\007'; stty raw -echo; cat </dev/tty >\"$HOME/{title}.got\" & printf RAW; \
@@ -4033,6 +4188,7 @@ fn watched(title: &str) -> String {
          r=$(cat \"$HOME/{title}.state\" 2>/dev/null); \
          if [ -n \"$r\" ] && [ \"$r\" != \"$w\" ]; then printf '\\033]7501;state=%s\\033\\\\' \"$r\"; w=$r; fi; \
          if [ -e \"$HOME/{title}.say\" ] && [ -z \"$o\" ]; then printf ' SAID'; o=1; fi; \
+         if [ -e \"$HOME/{title}.mode\" ]; then cat \"$HOME/{title}.mode\"; rm \"$HOME/{title}.mode\"; fi; \
          [ -n \"$q\" ] && mv \"$HOME/{title}.probe\" \"$HOME/{title}.probed\"; \
          sleep 0.05; done; kill $!"
     ))
@@ -4341,8 +4497,9 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
 /// after an empty start, keeps control in the background once Beta is
 /// selected, and its row turns Needs attention when it reports `idle`;
 /// Beta's row, its canvas covered by the open selector, turns Needs
-/// attention when Beta reports `idle`, as does its top row once the
-/// selector closes. After another client's attach takes Alpha over and
+/// attention when Beta reports `idle`; cancelling the selector back to Beta
+/// acknowledges it once ready (SEL-03, STA-08; #114), so its top row turns
+/// Acknowledged. After another client's attach takes Alpha over and
 /// acknowledges its attention, its revoked row turns Acknowledged, then
 /// Needs attention again when Alpha reports `done`.
 #[test]
@@ -4366,7 +4523,7 @@ fn status_keeps_updating_for_background_covered_and_revoked_rows() {
     listed_with(&terminal, "Needs attention", "Beta");
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
-    ready_at(&mut terminal, "Beta", "Needs attention", "29 120");
+    ready_at(&mut terminal, "Beta", "Acknowledged", "29 120");
 
     // Ready on its own host once Alpha, resized for it, says so live; its
     // attach acknowledged Alpha's pending attention (#102).
@@ -4394,7 +4551,12 @@ fn status_keeps_updating_for_background_covered_and_revoked_rows() {
 /// 2026-11-16). Once Slow's
 /// Initial metadata reports its status, it is the first eligible row and
 /// becomes the one-time initial selection, acquired. Had the user selected
-/// a row meanwhile, even read-only, Slow would not be selected.
+/// a row meanwhile, even read-only, Slow would not be selected: here the
+/// user selects Slow itself while it still starts, and it stays not
+/// controlled once eligible. Slow's Open stays unanswered until the test
+/// releases it, so Slow is the late session whatever the host's speed;
+/// Held's client fails at its own start deadline soon after collection
+/// ends, and its row then shows that failure instead.
 #[test]
 fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible() {
     // Wide enough for the late note beside the held row's label.
@@ -4403,18 +4565,24 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
     for explicit in [false, true] {
         let package = Package::new();
         without_introduction(&package);
+        // Slow's client starts only once Held's fails at its own start
+        // deadline, about when collection ends, and then has one more
+        // deadline to receive Slow's Initial metadata: the test's steps
+        // between seeing the late note and releasing Slow must fit in it,
+        // even on a loaded host.
         limits_config(
             &package,
             serde_json::json!({
                 "scheduling": {"starts": 1},
-                "deadlines": {"start_ms": 4000, "operation_ms": 120_000},
+                "deadlines": {"start_ms": 10_000, "operation_ms": 120_000},
             }),
         );
         let go = package.isolation.home().join("slow.go");
         let ear = Ear::default();
+        let slow_id = fake_id(0xd2);
         let slow = serving(vec![
-            opened_with(true),
             Act::Await(go.clone()),
+            opened_with(true),
             initial_metadata("Slow", Some(wire_status("idle", &utc(1))), None),
         ]);
         let daemons = [
@@ -4425,13 +4593,7 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
                 Answer::Held(held),
                 &ear,
             ),
-            FakeDaemon::start(
-                &package,
-                fake_id(0xd2),
-                "2026-01-01T00:00:01.000Z",
-                slow,
-                &ear,
-            ),
+            FakeDaemon::start(&package, slow_id, "2026-01-01T00:00:01.000Z", slow, &ear),
         ];
         let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
         let hint = "Press Ctrl+] then x to exit.";
@@ -4446,9 +4608,11 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
         );
         if explicit {
             terminal.send("\x1ds").unwrap();
-            enter_on(&mut terminal, held);
+            // Once Held's client has failed the rows keep their order.
+            listed_with(&terminal, "Unavailable", &format!("fake {held}"));
+            enter_on(&mut terminal, slow_id);
             // With a row selected, the top row's error slot says it.
-            let noted = format!("fake {held} | {late} ");
+            let noted = format!("fake {slow_id} | {late} ");
             whole_frame_shows(&terminal, &noted, |screen| screen.starts_with(&noted));
         }
         fs::write(&go, b"").unwrap();
@@ -4457,10 +4621,13 @@ fn a_late_session_ends_collection_at_its_deadline_and_is_selected_once_eligible(
             listed_with(&terminal, STATUS, "Slow");
             terminal.send(ESCAPE).unwrap();
             selector_closed(&terminal);
-            let plain = format!("fake {held} ");
-            whole_frame_shows(&terminal, "the held row, no longer late", |screen| {
-                screen.starts_with(&plain) && !screen.contains(late)
-            });
+            // Eligible now, but selected by the user: never acquired.
+            let top = session_top_row(
+                usize::from(WIDE),
+                "Slow",
+                &[STATUS, "Not controlling", SESSIONS_HINT],
+            );
+            top_row_is(&mut terminal, &top);
         } else {
             let top = session_top_row(
                 usize::from(WIDE),
@@ -4666,6 +4833,8 @@ const TIMED_OUT: &str = "Taken | the session daemon did not answer in time";
 fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     let package = Package::new();
     without_introduction(&package);
+    // Taken's Acquire times out at the default operation deadline.
+    limits_config(&package, json!({"deadlines": {"operation_ms": 5000}}));
     // After an empty start Alpha, the first to appear, is the initial
     // selection; Taken, attached elsewhere, comes after it.
     let mut terminal = outer(&package, "c2 monitor");
@@ -5077,11 +5246,18 @@ fn exited(code: u32) -> Value {
     json!({"kind": "exit", "code": code})
 }
 
-/// The Open's success, selecting `title-v1` and, with `status`,
-/// `status-v1`.
+/// The Open's success, selecting `title-v1` and `focus-v1` and, with
+/// `status`, `status-v1`.
 fn opened_with(status: bool) -> Act {
+    opened_selecting(status, true)
+}
+
+/// The Open's success, selecting `title-v1`, with `status` `status-v1` and
+/// with `focus` `focus-v1`.
+fn opened_selecting(status: bool, focus: bool) -> Act {
     let mut selected = vec!["daemon-wire-v1", "monitor-v1", "title-v1"];
     selected.extend(status.then_some("status-v1"));
+    selected.extend(focus.then_some("focus-v1"));
     Act::Send(
         RESPONSE,
         json!({
@@ -5426,5 +5602,1813 @@ fn not_connected_rows_and_untimed_finals_sort_by_when_the_monitor_recorded_them(
     terminal.send("\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
     drop(daemons);
+    package.assert_clean();
+}
+
+/// Has the selected [`watched`] session `title` write `modes`, then
+/// `marker`, and waits until a whole frame shows `marker` on its first row:
+/// the monitor's model of the session then has those modes.
+fn set_modes(package: &Package, terminal: &Terminal, title: &str, modes: &[u8], marker: &str) {
+    let home = package.isolation.home();
+    let staged = home.join(format!("{title}.mode.new"));
+    fs::write(&staged, [modes, marker.as_bytes()].concat()).unwrap();
+    fs::rename(&staged, home.join(format!("{title}.mode"))).unwrap();
+    whole_frame_shows(terminal, marker, |screen| {
+        screen
+            .lines()
+            .nth(1)
+            .is_some_and(|row| row.contains(marker))
+    });
+}
+
+/// INP-03 (Monitor) and COM-04 (Monitor, paste cases): a paste reaches the
+/// selected session exactly, binary bytes, prefix commands, a nested start
+/// and a broken end marker included, never acting as shortcuts: as the
+/// payload alone while the application has bracketed paste off, between
+/// its markers while it has it on, and alone again once it turns it off.
+/// A pending prefix followed by a paste reaches the session as one literal
+/// prefix before it, and the paste's end leaves no prefix pending, so the
+/// x typed after it is ordinary. A paste whose markers the host splits
+/// across reads arrives exactly the same. A prefix left pending by the read
+/// that opened the selector still completes prefix+x (INP-04: that opening
+/// came before the prefix).
+#[test]
+fn pastes_reach_the_selected_session_exactly_with_markers_only_when_it_asks() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Paste"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Paste", RUNNING, "29 120");
+    let monitor = monitor_process(&package).0;
+    terminal
+        .send(b"\x1b[200~\x00\xffp\x1dx\x1d\x1ds\x1b[200~\x1b[201\x1b[A\r\x1b[201~")
+        .unwrap();
+    let mut expected = b"\x00\xffp\x1dx\x1d\x1ds\x1b[200~\x1b[201\x1b[A\r".to_vec();
+    received_by(&package, "Paste", &expected);
+    read_alone(&mut terminal, monitor, b"\x1d");
+    terminal.send(b"\x1b[200~q\x1b[201~x").unwrap();
+    expected.extend(b"\x1dqx");
+    received_by(&package, "Paste", &expected);
+
+    set_modes(&package, &terminal, "Paste", b"\x1b[?2004h", "B1");
+    for fragment in [&b"\x1b[2"[..], b"00~ab\x1b", b"[201", b"x\x1b[20", b"1~"] {
+        read_alone(&mut terminal, monitor, fragment);
+    }
+    expected.extend(b"\x1b[200~ab\x1b[201x\x1b[201~");
+    received_by(&package, "Paste", &expected);
+    read_alone(&mut terminal, monitor, b"\x1d");
+    terminal.send(b"\x1b[200~\x1dx\x1b[201~y").unwrap();
+    expected.extend(b"\x1d\x1b[200~\x1dx\x1b[201~y");
+    received_by(&package, "Paste", &expected);
+
+    set_modes(&package, &terminal, "Paste", b"\x1b[?2004l", "B0");
+    terminal.send(b"\x1b[200~off\x1b[201~").unwrap();
+    expected.extend(b"off");
+    received_by(&package, "Paste", &expected);
+    // A modal the read itself opens is no target change for the prefix
+    // that read leaves pending after it: prefix+x still exits.
+    read_alone(&mut terminal, monitor, b"\x1ds\x1d");
+    terminal.send("x").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-03 (Monitor, Fault; owner decision on #111) and COM-04 (Monitor,
+/// paste chunks): with eight-byte chunks and three outstanding operations,
+/// while the session's daemon is stopped a bracketed paste does not fit.
+/// The top row says it was truncated; the rest of the paste, in a later
+/// read, is discarded; and once the daemon resumes the application has
+/// received the start marker, whole chunks of the paste and then the end
+/// marker, so the x typed next is outside the paste.
+#[test]
+fn a_paste_refused_partway_is_truncated_and_its_application_gets_the_end_marker() {
+    const WIDE: u16 = 250;
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"transfer": {"chunk_bytes": 8}, "queues": {"operations": 3}}),
+    );
+    headless(&package, &watched("Cut"), "finish");
+    let daemon = package.metadata().daemon_pid as i32;
+    let mut terminal = outer_sized(&package, "c2 monitor", WIDE);
+    ready_on(&mut terminal, WIDE, ("Cut", RUNNING), "29 250");
+    set_modes(&package, &terminal, "Cut", b"\x1b[?2004h", "B1");
+    // Typed input is answered, and turns the session Running, before the
+    // daemon stops: nothing earlier holds an operation.
+    terminal.send("k").unwrap();
+    received_by(&package, "Cut", b"k");
+    ready_on(&mut terminal, WIDE, ("Cut", RUNNING), "29 250");
+    let monitor = monitor_process(&package).0;
+    stop(daemon);
+    read_alone(&mut terminal, monitor, b"\x1b[200~abcdefghijklmnop");
+    read_alone(&mut terminal, monitor, b"qrstuvwx\x1b[201~");
+    shows_row(&mut terminal, "Cut | Paste truncated");
+    kill(Pid::from_raw(daemon), Signal::SIGCONT).unwrap();
+    let path = package.isolation.home().join("Cut.got");
+    let deadline = Instant::now() + TIMEOUT;
+    let got = loop {
+        let got = fs::read(&path).unwrap_or_default();
+        if got.ends_with(b"\x1b[201~") {
+            break got;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{:?}",
+            got.escape_ascii().to_string()
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let pasted = got
+        .strip_prefix(b"k\x1b[200~")
+        .and_then(|got| got.strip_suffix(b"\x1b[201~"))
+        .unwrap_or_else(|| panic!("{:?}", got.escape_ascii().to_string()));
+    let whole = b"abcdefghijklmnopqrstuvwx";
+    assert!(
+        pasted.len() % 8 == 0 && pasted.len() < whole.len() && whole.starts_with(pasted),
+        "{:?}",
+        pasted.escape_ascii().to_string()
+    );
+    terminal.send("z").unwrap();
+    received_by(&package, "Cut", &[&got[..], b"z"].concat());
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-04 (Monitor, Fault): a target change in the middle of a paste or a
+/// pending prefix. Another client's takeover revokes the monitor in the
+/// middle of a bracketed paste: the daemon ends the paste for the
+/// application, and the rest of it is discarded, even after the session
+/// hands control back and is ready again; only what is typed after the
+/// paste's end arrives. A prefix pending when the monitor is revoked is
+/// discarded, so the take-control key after it takes control rather than
+/// following the prefix. A host resize brings a new restoration in the
+/// middle of a paste, which keeps admission: the rest of that paste is
+/// discarded too, and once the new restoration is ready the application
+/// receives the end marker under it, before anything typed later (owner
+/// decision on #111). A host too small for the session in the middle of a
+/// paste also keeps admission: the application receives the end marker at
+/// once, under the same restoration, and the rest of the paste is
+/// discarded even once the host has room again.
+#[test]
+fn a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix() {
+    let package = Package::new();
+    without_introduction(&package);
+    let id = headless(&package, &watched("Moved"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Moved", RUNNING, "29 120");
+    set_modes(&package, &terminal, "Moved", b"\x1b[?2004h", "B1");
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\x1b[200~abc");
+    received_by(&package, "Moved", b"\x1b[200~abc");
+    let other = attach(&package, &id);
+    received_by(&package, "Moved", b"\x1b[200~abc\x1b[201~");
+    shows(&mut terminal, &placeholder_screen("Moved", RUNNING));
+    read_alone(&mut terminal, monitor, b"def");
+    detach(other);
+    ready_at(&mut terminal, "Moved", RUNNING, "29 120");
+    read_alone(&mut terminal, monitor, b"ghi\x1b[201~z");
+    let mut expected = b"\x1b[200~abc\x1b[201~z".to_vec();
+    received_by(&package, "Moved", &expected);
+
+    read_alone(&mut terminal, monitor, b"\x1d");
+    let mut other = attach(&package, &id);
+    shows(&mut terminal, &placeholder_screen("Moved", RUNNING));
+    terminal.send("\x14").unwrap();
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+    ready_at(&mut terminal, "Moved", RUNNING, "29 120");
+    terminal.send("y").unwrap();
+    expected.extend(b"y");
+    received_by(&package, "Moved", &expected);
+
+    read_alone(&mut terminal, monitor, b"\x1b[200~r1");
+    expected.extend(b"\x1b[200~r1");
+    received_by(&package, "Moved", &expected);
+    terminal.resize(ROWS, 100).unwrap();
+    ready_on(&mut terminal, 100, ("Moved", RUNNING), "29 100");
+    read_alone(&mut terminal, monitor, b"r2\x1b[201~x");
+    expected.extend(b"\x1b[201~x");
+    received_by(&package, "Moved", &expected);
+
+    read_alone(&mut terminal, monitor, b"\x1b[200~s1");
+    expected.extend(b"\x1b[200~s1");
+    received_by(&package, "Moved", &expected);
+    terminal.resize(3, 100).unwrap();
+    shows_too_small(&mut terminal, 3, 100);
+    expected.extend(b"\x1b[201~");
+    received_by(&package, "Moved", &expected);
+    terminal.resize(ROWS, 100).unwrap();
+    ready_on(&mut terminal, 100, ("Moved", RUNNING), "29 100");
+    read_alone(&mut terminal, monitor, b"s2\x1b[201~y");
+    expected.extend(b"y");
+    received_by(&package, "Moved", &expected);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    attached_ready(&mut other);
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-04 (Monitor, Fault: disconnect): the selected session's daemon dies
+/// while a prefix is pending. The lost connection is a target change, so
+/// the prefix is discarded: the x read after it is no exit, the monitor
+/// still opens the selector, and the x never reaches the other session,
+/// which receives only what is typed once it is selected and ready.
+#[test]
+fn a_disconnect_discards_a_pending_prefix() {
+    let package = Package::new();
+    without_introduction(&package);
+    // After an empty start Gone, the first to appear, is the initial
+    // selection (#266); Other comes after it.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let gone = headless(&package, &watched("Gone"), "finish");
+    ready_at(&mut terminal, "Gone", RUNNING, "29 120");
+    headless(&package, &watched("Other"), "finish");
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\x1d");
+    kill(Pid::from_raw(daemon_of(&package, &gone)), Signal::SIGKILL).unwrap();
+    whole_frame_shows(&terminal, "the lost connection", |screen| {
+        let top = screen.lines().next().unwrap_or_default();
+        top.starts_with("Gone") && top.contains("Disconnected")
+    });
+    read_alone(&mut terminal, monitor, b"x");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{RUNNING:<12} Other"));
+    enter_on(&mut terminal, "Other");
+    ready_at(&mut terminal, "Other", RUNNING, "29 120");
+    terminal.send("y").unwrap();
+    received_by(&package, "Other", b"y");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    // A real listing reclaims the killed daemon's stale metadata.
+    assert_eq!(package.list().len(), 1);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Waits until the host's mouse tracking is the monitor's own button-event
+/// tracking (1002), or with `level` 1000 click-only or 1003 any-event
+/// tracking, as the bytes the monitor wrote set it.
+fn host_tracks(terminal: &Terminal, level: u16) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let modes = terminal.modes();
+        let tracking = (modes.mouse, modes.mouse_drag, modes.mouse_motion);
+        let expected = (true, level == 1002, level == 1003);
+        if tracking == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host mouse tracking {tracking:?}, not {level}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// INP-05 (Monitor; owner decision on #111): the host mirrors the mouse
+/// tracking level of the application taking input, so an application
+/// asking for any-event tracking (1003) gets motion with no button held,
+/// and one asking for clicks only (1000) gets no drags from the host. The
+/// host returns to the monitor's own button-event tracking (1002) while
+/// the application reports nothing, while the selector covers it, and
+/// while another client's takeover has it, and mirrors it again once it
+/// takes input again; leaving restores the baseline.
+#[test]
+fn the_host_mirrors_the_application_mouse_tracking_level() {
+    let package = Package::new();
+    without_introduction(&package);
+    let id = headless(&package, &watched("Track"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Track", RUNNING, "29 120");
+    host_tracks(&terminal, 1002);
+    set_modes(
+        &package,
+        &terminal,
+        "Track",
+        b"\x1b[?1003h\x1b[?1006h",
+        "T3",
+    );
+    host_tracks(&terminal, 1003);
+    terminal.send("\x1b[<35;6;4M").unwrap();
+    received_by(&package, "Track", b"\x1b[<35;6;3M");
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Running Track");
+    host_tracks(&terminal, 1002);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    host_tracks(&terminal, 1003);
+    set_modes(
+        &package,
+        &terminal,
+        "Track",
+        b"\x1b[?1003l\x1b[?1000h",
+        "T1",
+    );
+    host_tracks(&terminal, 1000);
+    set_modes(&package, &terminal, "Track", b"\x1b[?1000l", "T0");
+    host_tracks(&terminal, 1002);
+    set_modes(&package, &terminal, "Track", b"\x1b[?1003h", "T4");
+    host_tracks(&terminal, 1003);
+    let other = attach(&package, &id);
+    shows(&mut terminal, &placeholder_screen("Track", RUNNING));
+    host_tracks(&terminal, 1002);
+    detach(other);
+    ready_at(&mut terminal, "Track", RUNNING, "29 120");
+    host_tracks(&terminal, 1003);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// INP-05 (Monitor: application, chrome and selector cases) and INP-04
+/// (Monitor: a modal in the middle of a gesture): with button-event
+/// tracking in SGR form, a click below the top row reaches the application
+/// one row up, a drag that strays onto the top row is reported at the
+/// application's first row, and the wheel reaches it at the bottom row. A
+/// gesture that begins on the top row stays the monitor's over the
+/// application. When the selector opens in the middle of a drag, the rest
+/// of the drag is discarded through its release, even once the selector
+/// has closed, and clicks in the selector reach no application. In the
+/// single-byte encoding a click and its release arrive as button 0 and 3,
+/// and with reporting off nothing arrives.
+#[test]
+fn mouse_events_reach_the_application_translated_and_keep_their_gesture() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Mouse"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Mouse", RUNNING, "29 120");
+    set_modes(
+        &package,
+        &terminal,
+        "Mouse",
+        b"\x1b[?1002h\x1b[?1006h",
+        "M1",
+    );
+    terminal.send("\x1b[<0;5;3M\x1b[<0;5;3m").unwrap();
+    let mut expected = b"\x1b[<0;5;2M\x1b[<0;5;2m".to_vec();
+    received_by(&package, "Mouse", &expected);
+    terminal
+        .send("\x1b[<0;7;4M\x1b[<32;8;1M\x1b[<0;8;1m\x1b[<65;2;30M")
+        .unwrap();
+    expected.extend(b"\x1b[<0;7;3M\x1b[<32;8;1M\x1b[<0;8;1m\x1b[<65;2;29M");
+    received_by(&package, "Mouse", &expected);
+    terminal
+        .send("\x1b[<0;3;1M\x1b[<32;3;5M\x1b[<0;3;5ma")
+        .unwrap();
+    expected.extend(b"a");
+    received_by(&package, "Mouse", &expected);
+
+    terminal.send("\x1b[<0;4;4M").unwrap();
+    expected.extend(b"\x1b[<0;4;3M");
+    received_by(&package, "Mouse", &expected);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Running Mouse");
+    terminal.send("\x1b[<32;5;5M").unwrap();
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal
+        .send("\x1b[<32;6;6M\x1b[<0;6;6m\x1b[<0;9;9M\x1b[<0;9;9m")
+        .unwrap();
+    expected.extend(b"\x1b[<0;9;8M\x1b[<0;9;8m");
+    received_by(&package, "Mouse", &expected);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, "║Running Mouse");
+    terminal.send("\x1b[<0;10;3M\x1b[<0;10;3m").unwrap();
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("c").unwrap();
+    expected.extend(b"c");
+    received_by(&package, "Mouse", &expected);
+
+    set_modes(&package, &terminal, "Mouse", b"\x1b[?1006l", "M2");
+    terminal.send("\x1b[<0;5;3M\x1b[<0;5;3m").unwrap();
+    expected.extend(b"\x1b[M\x20\x25\x22\x1b[M\x23\x25\x22");
+    received_by(&package, "Mouse", &expected);
+    set_modes(&package, &terminal, "Mouse", b"\x1b[?1002l", "M0");
+    terminal.send("\x1b[<0;5;3M\x1b[<0;5;3mb").unwrap();
+    expected.extend(b"b");
+    received_by(&package, "Mouse", &expected);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// FOC-01 (Monitor: application focus cases): application focus follows
+/// selection, menus and host focus, each change once. Alpha, selected, ready
+/// and assumed host-focused, enables focus reporting and receives focus in
+/// once. Opening the selector sends focus out, closing it focus in; the
+/// host's focus out sends focus out, and a second focus out or a menu
+/// opened while the host is unfocused sends nothing more, until the host's
+/// focus in. Switching to Beta sends Alpha focus out when the selector
+/// opens and Beta its focus once ready; switching back focuses Alpha and
+/// unfocuses Beta, once each.
+#[test]
+fn application_focus_follows_selection_menus_and_host_focus_once_each() {
+    let package = Package::new();
+    without_introduction(&package);
+    // After an empty start Alpha, the first to appear, is the initial
+    // selection (#266); Beta comes after it.
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    headless(&package, &watched("Beta"), "finish");
+    set_modes(&package, &terminal, "Alpha", b"\x1b[?1004h", "F1");
+    let mut alpha = b"\x1b[I".to_vec();
+    received_by(&package, "Alpha", &alpha);
+    terminal.send("\x1ds").unwrap();
+    alpha.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &alpha);
+    terminal.send(ESCAPE).unwrap();
+    alpha.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &alpha);
+    terminal.send("\x1b[O").unwrap();
+    alpha.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &alpha);
+    terminal.send("\x1b[O\x1ds").unwrap();
+    shows_row(&mut terminal, "║Running Alpha");
+    // Escape closes the selector; the host then reports focus in.
+    terminal.send(ESCAPE).unwrap();
+    alpha.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &alpha);
+
+    terminal.send("\x1ds").unwrap();
+    alpha.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &alpha);
+    listed_with(&terminal, RUNNING, "Beta");
+    enter_on(&mut terminal, "Beta");
+    ready_at(&mut terminal, "Beta", RUNNING, "29 120");
+    set_modes(&package, &terminal, "Beta", b"\x1b[?1004h", "F2");
+    let mut beta = b"\x1b[I".to_vec();
+    received_by(&package, "Beta", &beta);
+    terminal.send("\x1ds").unwrap();
+    beta.extend(b"\x1b[O");
+    received_by(&package, "Beta", &beta);
+    enter_on(&mut terminal, "Alpha");
+    alpha.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &alpha);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    received_by(&package, "Alpha", &alpha);
+    received_by(&package, "Beta", &beta);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// FOC-02 (Monitor; owner decisions on #111): missing focus support is a
+/// documented limitation only, never shown. A host that never reports
+/// focus (this test host) leaves sessions usable with focus assumed: Real,
+/// served by a daemon with `focus-v1`, takes typed input. A session whose
+/// daemon lacks `focus-v1` shows nothing about it in its top row.
+#[test]
+fn without_focus_support_sessions_stay_usable_and_nothing_is_shown() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(
+        &package,
+        serde_json::json!({"deadlines": {"operation_ms": 600_000}}),
+    );
+    headless(&package, &watched("Real"), "finish");
+    let ear = Ear::default();
+    let unfocused = Answer::Unfocused(std::sync::Arc::new(vec![
+        opened_selecting(true, false),
+        initial_metadata("plain", Some(wire_status("idle", &utc(1))), None),
+    ]));
+    let fake = FakeDaemon::start(
+        &package,
+        fake_id(0xd1),
+        "2026-01-01T00:00:01.000Z",
+        unfocused,
+        &ear,
+    );
+    let mut terminal = outer(&package, "c2 monitor");
+    // Initial selection picks one of the two; both are listed by then.
+    whole_frame_shows(&terminal, "a selection", |screen| {
+        !screen.starts_with(TOP_ROW)
+    });
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Real");
+    ready_at(&mut terminal, "Real", RUNNING, "29 120");
+    terminal.send("u").unwrap();
+    received_by(&package, "Real", b"u");
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "plain");
+    let fields = ["Idle", "Acquiring", SESSIONS_HINT];
+    let top = session_top_row(usize::from(COLS), "plain", &fields);
+    top_row_is(&mut terminal, &top);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    drop(fake);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Has the [`watched`] session `title` write `bytes`, as [`set_modes`]
+/// does, without waiting for them to show; first it waits until the
+/// session has written, and removed, what it was given before, so the
+/// removal never takes these.
+fn emit(package: &Package, title: &str, bytes: &[u8]) {
+    let home = package.isolation.home();
+    let pending = home.join(format!("{title}.mode"));
+    let deadline = Instant::now() + TIMEOUT;
+    while pending.exists() {
+        assert!(Instant::now() < deadline, "{title} never wrote its bytes");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let staged = home.join(format!("{title}.mode.new"));
+    fs::write(&staged, bytes).unwrap();
+    fs::rename(&staged, home.join(format!("{title}.mode"))).unwrap();
+}
+
+/// `line<n>` for each `n` in `numbers`, two digits at least, each on a new
+/// line with the rest of that line erased.
+fn numbered(numbers: std::ops::RangeInclusive<u32>) -> Vec<u8> {
+    numbers
+        .flat_map(|number| format!("\r\nline{number:02}\x1b[K").into_bytes())
+        .collect()
+}
+
+/// Waits until a whole frame's top row is `top` and each host row in
+/// `rows` starts with its text.
+fn frame_rows(terminal: &Terminal, top: &str, rows: &[(usize, &str)]) {
+    whole_frame_shows(terminal, &format!("{top:?} over {rows:?}"), |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.first() == Some(&top)
+            && rows
+                .iter()
+                .all(|(row, text)| lines.get(*row).is_some_and(|line| line.starts_with(text)))
+    });
+}
+
+/// A wheel notch up (back) or down over the session's canvas.
+const WHEEL_UP: &str = "\x1b[<64;10;10M";
+const WHEEL_DOWN: &str = "\x1b[<65;10;10M";
+/// The glossary's truncation notice.
+const NOTICE: &str = "[climon2: older session scrollback was discarded]";
+
+/// TRM-05 (Monitor; owner decisions on #112) and FOC-01 (Monitor, history
+/// case): the wheel scrolls the selected session's normal history one row
+/// a notch while the application does not report the mouse, `History`
+/// shows in the control slot and the cursor, scrolled out of view, hides.
+/// Output keeps the view anchored on the rows it shows. Typing returns it
+/// live and reaches the application, which saw focus in once and no focus
+/// change from scrolling, and so does a paste. Scrolled to the oldest row (`RAW`, history not
+/// truncated, so no notice), 210 more rows with 200 history rows kept
+/// evict it: the view moves to the truncation notice above the oldest row
+/// kept, and one notch down leaves the notice. On the alternate screen the
+/// wheel shows no history: it sends nothing, then cursor keys once the
+/// application turns alternate scroll on, in its cursor mode. Nothing
+/// reaches the host's native scrollback.
+#[test]
+fn the_wheel_scrolls_anchored_history_and_typing_returns_live() {
+    let package = Package::new();
+    without_introduction(&package);
+    limits_config(&package, json!({"history": {"max_rows": 200}}));
+    headless(&package, &watched("Hist"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Hist", RUNNING, "29 120");
+    let native = terminal.history();
+    let live = session_top_row(
+        usize::from(COLS),
+        "Hist",
+        &[RUNNING, CONTROLLING, SESSIONS_HINT],
+    );
+    let history = session_top_row(
+        usize::from(COLS),
+        "Hist",
+        &[RUNNING, "History", SESSIONS_HINT],
+    );
+
+    emit(
+        &package,
+        "Hist",
+        &[&b"\x1b[?1004h"[..], &numbered(1..=60)].concat(),
+    );
+    received_by(&package, "Hist", b"\x1b[I");
+    frame_rows(&terminal, &live, &[(1, "line32"), (29, "line60")]);
+    terminal.send(WHEEL_UP.repeat(3)).unwrap();
+    frame_rows(
+        &terminal,
+        &history,
+        &[(1, "line29"), (3, "line31"), (4, "line32"), (29, "line57")],
+    );
+    assert!(!terminal.cursor().visible, "scrolled out of view");
+
+    emit(
+        &package,
+        "Hist",
+        &[&numbered(61..=65)[..], b"\x1b[1;1HMARKER\x1b[29;7H"].concat(),
+    );
+    frame_rows(
+        &terminal,
+        &history,
+        &[(1, "line29"), (8, "line36"), (9, "MARKER"), (29, "line57")],
+    );
+    terminal.send("k").unwrap();
+    received_by(&package, "Hist", b"\x1b[Ik");
+    frame_rows(&terminal, &live, &[(1, "MARKER"), (29, "line65")]);
+    cursor_at(&terminal, 29, 6);
+
+    terminal.send(WHEEL_UP.repeat(60)).unwrap();
+    frame_rows(&terminal, &history, &[(1, "RAW"), (2, "line01")]);
+    emit(&package, "Hist", &numbered(66..=275));
+    frame_rows(
+        &terminal,
+        &history,
+        &[(1, NOTICE), (2, "line47"), (29, "line74")],
+    );
+    terminal.send(WHEEL_DOWN).unwrap();
+    frame_rows(&terminal, &history, &[(1, "line47"), (29, "line75")]);
+
+    // A paste returns the view live too; the application, without
+    // bracketed paste, receives its payload alone.
+    terminal.send("\x1b[200~j\x1b[201~").unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikj");
+    frame_rows(&terminal, &live, &[(1, "line247"), (29, "line275")]);
+    emit(&package, "Hist", b"\x1b[?1049h\x1b[HALT");
+    frame_rows(&terminal, &live, &[(1, "ALT"), (2, "")]);
+    terminal.send(format!("{WHEEL_UP}{WHEEL_DOWN}a")).unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikja");
+    frame_rows(&terminal, &live, &[(1, "ALT")]);
+    emit(&package, "Hist", b"\x1b[?1007h\x1b[2;1HSCROLL");
+    frame_rows(&terminal, &live, &[(2, "SCROLL")]);
+    terminal.send(format!("{WHEEL_UP}{WHEEL_DOWN}b")).unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikja\x1b[A\x1b[Bb");
+    emit(&package, "Hist", b"\x1b[?1h\x1b[3;1HCURSOR");
+    frame_rows(&terminal, &live, &[(3, "CURSOR")]);
+    terminal.send(format!("{WHEEL_UP}c")).unwrap();
+    received_by(&package, "Hist", b"\x1b[Ikja\x1b[A\x1b[Bb\x1bOAc");
+    emit(&package, "Hist", b"\x1b[?1049l");
+    frame_rows(&terminal, &live, &[(29, "line275")]);
+
+    assert_eq!(terminal.history(), native, "no native scrollback");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The top row of the selected, controlled session whose label the host
+/// shows as `label` over `cells` cells (its row text has a wide
+/// character's covered cell as a blank, and no combining mark), in the 55
+/// cells a 120-cell top row leaves it, with `status`.
+fn labelled(label: &str, cells: usize, status: &str) -> String {
+    let slots = session_top_row(65, "", &[status, CONTROLLING, SESSIONS_HINT]);
+    format!("{label}{}{slots}", " ".repeat(55 - cells))
+}
+
+/// TRM-06 (Monitor; owner decision on #112: nothing marquees): the label
+/// is the latest nonempty title, literal. One that fits its 55 cells
+/// exactly is whole; one a cell longer is truncated statically to end
+/// with `…`. A wide character that would cross the limit leaves a blank
+/// cell instead, and combining marks stay with their base. An empty title
+/// keeps the latest nonempty one, and a status change moves neither the
+/// truncated label nor the slots.
+#[test]
+fn overflowing_titles_are_truncated_statically_with_an_ellipsis() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Title"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Title", RUNNING, "29 120");
+
+    let fits = "a".repeat(55);
+    retitle(&package, "Title", &fits);
+    top_row_is(&mut terminal, &labelled(&fits, 55, RUNNING));
+    retitle(&package, "Title", &"b".repeat(56));
+    let cut = format!("{}…", "b".repeat(54));
+    top_row_is(&mut terminal, &labelled(&cut, 55, RUNNING));
+    retitle(&package, "Title", &format!("c{}", "日".repeat(28)));
+    let wide = format!("c{}…", "日 ".repeat(26));
+    top_row_is(&mut terminal, &labelled(&wide, 54, RUNNING));
+    retitle(&package, "Title", &"e\u{301}".repeat(56));
+    let combining = format!("{}…", "e".repeat(54));
+    top_row_is(&mut terminal, &labelled(&combining, 55, RUNNING));
+    let marks = terminal.cells(0);
+    assert_eq!(marks[0].text, "e\u{301}");
+    assert_eq!(marks[53].text, "e\u{301}");
+    assert_eq!(marks[54].text, "…");
+    retitle(&package, "Title", "");
+    report_state(&package, "Title", "idle");
+    top_row_is(&mut terminal, &labelled(&combining, 55, "Needs attention"));
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// TRM-01 (Monitor; #108's note on #112): what an application draws
+/// reaches the host faithfully. Each underline style keeps its style;
+/// the cursor keeps its DECSCUSR shape and blink, and hides when the
+/// application hides it; the 1049 alternate screen replaces the normal
+/// one and leaving it restores the normal screen and cursor; a
+/// synchronized update that spans two writes shows whole once it ends.
+#[test]
+fn underline_styles_cursor_styles_screens_and_synchronized_updates_reach_the_host() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &watched("Fid"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    ready_at(&mut terminal, "Fid", RUNNING, "29 120");
+    let live = session_top_row(
+        usize::from(COLS),
+        "Fid",
+        &[RUNNING, CONTROLLING, SESSIONS_HINT],
+    );
+
+    emit(
+        &package,
+        "Fid",
+        b"\x1b[3;1H\x1b[4mS\x1b[4:2mD\x1b[4:3mC\x1b[4:4mO\x1b[4:5mA\x1b[0mN\x1b[5 q",
+    );
+    frame_rows(&terminal, &live, &[(3, "SDCOAN")]);
+    let styles: Vec<_> = terminal.cells(3)[..6]
+        .iter()
+        .map(|cell| cell.rendition.underline)
+        .collect();
+    assert_eq!(
+        styles,
+        [
+            Some(Underline::Single),
+            Some(Underline::Double),
+            Some(Underline::Curly),
+            Some(Underline::Dotted),
+            Some(Underline::Dashed),
+            None,
+        ]
+    );
+    cursor_at(&terminal, 3, 6);
+    let cursor = terminal.cursor();
+    assert_eq!((cursor.shape, cursor.blinking), (CursorShape::Bar, true));
+    emit(&package, "Fid", b"\x1b[4 q\x1b[3;8HU");
+    frame_rows(&terminal, &live, &[(3, "SDCOAN U")]);
+    cursor_at(&terminal, 3, 8);
+    let cursor = terminal.cursor();
+    assert_eq!(
+        (cursor.shape, cursor.blinking),
+        (CursorShape::Underline, false)
+    );
+    emit(&package, "Fid", b"\x1b[?25l\x1b[3;10HH");
+    frame_rows(&terminal, &live, &[(3, "SDCOAN U H")]);
+    assert!(!terminal.cursor().visible);
+
+    emit(&package, "Fid", b"\x1b[?25h\x1b[?1049h\x1b[2;2HALT");
+    frame_rows(&terminal, &live, &[(1, ""), (2, " ALT"), (3, "")]);
+    cursor_at(&terminal, 2, 4);
+    emit(&package, "Fid", b"\x1b[?1049l");
+    frame_rows(&terminal, &live, &[(3, "SDCOAN U H")]);
+    cursor_at(&terminal, 3, 10);
+
+    emit(&package, "Fid", b"\x1b[?2026h\x1b[5;1HHALF");
+    emit(&package, "Fid", b"DONE\x1b[?2026l");
+    frame_rows(&terminal, &live, &[(5, "HALFDONE")]);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Bash that titles its session `title`, then, until `$HOME/finish`
+/// exists, prints `tick <n>` lines every 20 ms and appends each new `stty
+/// size` of its terminal to `$HOME/<title>.sizes`.
+fn ticking(title: &str) -> String {
+    working(&format!(
+        "printf '\\033]2;{title}\\007'; p=; i=0; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         s=$(stty size); if [ \"$s\" != \"$p\" ]; then echo \"$s\" >> \"$HOME/{title}.sizes\"; p=$s; fi; \
+         i=$((i+1)); printf 'tick %d\\r\\n' \"$i\"; sleep 0.02; done"
+    ))
+}
+
+/// Resizes the host to `rows` by `cols`, then waits until a whole frame
+/// meets `done`, checking that every whole frame the monitor paints for
+/// the new size is coherent: `Terminal too small` alone, or the `Tick`
+/// session's top row over a canvas showing its output, never a blank or
+/// partial one. Until the monitor has painted one frame laid out for the
+/// new size (its top row too small, or the session's top row at the new
+/// width), the host shows its own reflow of earlier frames and whatever a
+/// frame painted for the old size makes of it, which is not judged.
+fn resized_coherently(
+    terminal: &mut Terminal,
+    (rows, cols): (u16, u16),
+    what: &str,
+    done: impl Fn(&str) -> bool,
+) {
+    let laid_out: Vec<_> = ["Acquiring", "Restoring", CONTROLLING]
+        .into_iter()
+        .map(|control| {
+            session_top_row(
+                usize::from(cols),
+                "Tick",
+                &[RUNNING, control, SESSIONS_HINT],
+            )
+        })
+        .collect();
+    let started = std::cell::Cell::new(false);
+    terminal.resize(rows, cols).unwrap();
+    whole_frame_shows(terminal, what, |screen| {
+        let mut lines = screen.lines();
+        let top = lines.next().unwrap_or_default();
+        let canvas: Vec<_> = lines.collect();
+        let small = top.starts_with("Terminal too small");
+        started.set(started.get() || small || laid_out.iter().any(|row| row == top));
+        if !started.get() {
+            return false;
+        }
+        let blank = canvas.iter().all(|row| row.trim().is_empty());
+        let painted = top.starts_with("Tick") && canvas.iter().any(|row| row.starts_with("tick "));
+        assert!(
+            (small && blank) || painted,
+            "an incoherent frame:\n{screen}"
+        );
+        done(screen)
+    });
+}
+
+/// TRM-04 (Monitor): while the session prints continuously, host resizes
+/// to a narrower host, to one too small and back each show only coherent
+/// frames: the last frame clipped or padded until the restoration at the
+/// new size is applied, `Terminal too small` alone while too small, and
+/// the session at its new size after; never a blank or partial canvas. The
+/// session is resized to each size the monitor sent, and never to one
+/// while too small.
+#[test]
+fn resizes_under_continuous_output_show_only_coherent_frames() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &ticking("Tick"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    let wide = controlled("Tick", RUNNING);
+    whole_frame_shows(&terminal, "the first ticks", |screen| {
+        screen.lines().next() == Some(wide.as_str()) && screen.contains("\ntick ")
+    });
+    let narrow = session_top_row(100, "Tick", &[RUNNING, CONTROLLING, SESSIONS_HINT]);
+    resized_coherently(&mut terminal, (ROWS, 100), "the narrower host", |screen| {
+        screen.lines().next() == Some(narrow.as_str())
+    });
+    sized_to(&package, "Tick", &["24 80", "29 120", "29 100"]);
+    resized_coherently(&mut terminal, (3, 100), "a host too small", |screen| {
+        screen.starts_with("Terminal too small")
+    });
+    resized_coherently(
+        &mut terminal,
+        (ROWS, COLS),
+        "the recovered host",
+        |screen| screen.lines().next() == Some(wide.as_str()),
+    );
+    sized_to(&package, "Tick", &["24 80", "29 120", "29 100", "29 120"]);
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(terminal.title().as_deref(), Some(TITLE));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+const ATTENTION: &str = "Needs attention";
+const ACKNOWLEDGED: &str = "Acknowledged";
+/// What prefix+j says when no session qualifies (owner decision on #114).
+const NO_ATTENTION: &str = "No sessions need attention";
+
+/// Waits until a whole frame shows `text` anywhere.
+fn frame_contains(terminal: &Terminal, text: &str) {
+    whole_frame_shows(terminal, text, |screen| screen.contains(text));
+}
+
+/// Waits until a whole frame no longer shows `text` anywhere.
+fn frame_lacks(terminal: &Terminal, text: &str) {
+    whole_frame_shows(terminal, text, |screen| !screen.contains(text));
+}
+
+/// Opens the selector, waits until it lists `label` with `status`, and
+/// cancels it again with Escape.
+fn glance(terminal: &mut Terminal, status: &str, label: &str) {
+    terminal.send("\x1ds").unwrap();
+    listed_with(terminal, status, label);
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(terminal);
+}
+
+/// NOT-03 (Monitor and Fault), INP-01 (Monitor, prefix+j from the empty,
+/// selector, help, placeholder and live screens) and STA-08 (Monitor, jump
+/// case), against real daemons: prefix+j picks the connected session that
+/// needs attention with the newest change at the keypress, closes any
+/// overlay, takes control only when the monitor does not hold it, and
+/// acknowledges it once ready. From the empty screen nothing qualifies, so
+/// the body says `No sessions need attention` until it disappears (3 s,
+/// owner decision on #114). Alpha is the initial selection; Beta, then
+/// Gamma report `idle`, and from the open selector prefix+j jumps to Gamma,
+/// the newer, acquiring it, then from Gamma's live screen to Beta, as Gamma
+/// is acknowledged; from the key introduction to Alpha once it reports
+/// `done`, controlled in the background, so never acquired again. Another
+/// client's attach takes Alpha over, and from Alpha's placeholder prefix+j
+/// jumps to Gamma once Gamma reports `done`; then, once Alpha reports
+/// `blocked` while the other client shows it, prefix+j takes Alpha back.
+/// Beta's daemon killed after Beta reported `done` leaves it Disconnected,
+/// which never qualifies, so prefix+j keeps Alpha selected and says so in
+/// the top row's error slot. Each jump's acknowledgement shows only once
+/// its session is ready, never refused.
+#[test]
+fn prefix_j_jumps_to_the_newest_connected_attention_and_acknowledges_it_once_ready() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    terminal.send("\x1dj").unwrap();
+    shows(
+        &mut terminal,
+        &empty_monitor(ROWS, COLS, &[NO_ATTENTION, "Press Ctrl+] then x to exit."]),
+    );
+    frame_contains(&terminal, EMPTY);
+
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    let beta = headless(&package, &watched("Beta"), "finish");
+    headless(&package, &watched("Gamma"), "finish");
+    terminal.send("\x1ds").unwrap();
+    report_state(&package, "Beta", "idle");
+    listed_with(&terminal, ATTENTION, "Beta");
+    report_state(&package, "Gamma", "idle");
+    listed_with(&terminal, ATTENTION, "Gamma");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Gamma", ACKNOWLEDGED, "29 120");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Beta", ACKNOWLEDGED, "29 120");
+
+    report_state(&package, "Alpha", "done");
+    glance(&mut terminal, ATTENTION, "Alpha");
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
+
+    let mut other = attach(&package, &alpha);
+    shows(&mut terminal, &placeholder_screen("Alpha", ACKNOWLEDGED));
+    report_state(&package, "Gamma", "done");
+    glance(&mut terminal, ATTENTION, "Gamma");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Gamma", ACKNOWLEDGED, "29 120");
+    report_state(&package, "Alpha", "blocked");
+    glance(&mut terminal, ATTENTION, "Alpha");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+
+    report_state(&package, "Beta", "done");
+    glance(&mut terminal, ATTENTION, "Beta");
+    kill(Pid::from_raw(daemon_of(&package, &beta)), Signal::SIGKILL).unwrap();
+    glance(&mut terminal, "Disconnected", "Beta");
+    terminal.send("\x1dj").unwrap();
+    let noticed = session_top_row(
+        usize::from(COLS),
+        &format!("Alpha | {NO_ATTENTION}"),
+        &[ACKNOWLEDGED, CONTROLLING, SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &noticed);
+    top_row_is(&mut terminal, &controlled("Alpha", ACKNOWLEDGED));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    detach(other);
+    let detached =
+        serde_json::json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Alpha", &detached);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// STA-08 (Monitor: acknowledgement timing), SEL-03 (Monitor,
+/// acknowledgement case) and FOC-01 (Monitor, viewing cases), against a
+/// real daemon. A daemon processes its client's requests in order and
+/// reports in order, so once the monitor shows what the session wrote after
+/// a later request (its new `SIZE` after a host resize, or its new title
+/// after it received a focus report), an acknowledgement sent before that
+/// request would already show: the scenario proves each "not acknowledged"
+/// that way. Alpha, the initial selection, needs attention once it reports
+/// `idle`, and stays so while viewed (visibility alone never
+/// acknowledges), after the key introduction opens and closes, and after
+/// the host's focus goes out and comes back in. Cancelling the selector
+/// back to Alpha while the host reports focus lost does not acknowledge it
+/// either: viewing waits for host focus, and once focus returns, the
+/// cancel's deferred acknowledgement goes (owner decision on #114). Once
+/// Alpha reports `done`, such a deferred acknowledgement is cancelled when
+/// the key introduction opens before focus returns, so closing it
+/// acknowledges nothing (NOT-03 and STA-08: a context change cancels a
+/// deferred acknowledgement). Once Alpha reports `blocked`, its view
+/// scrolled back into history is not viewed: cancelling the selector there
+/// acknowledges nothing until a wheel notch returns the view live. Once
+/// Alpha reports `idle`, prefix+j on a host too small to show it (INP-01's
+/// too-small case) acknowledges it once the host has room again, at a new
+/// size; once it reports `done`, prefix+j from its history (INP-01's
+/// history case) returns its view live and acknowledges it.
+#[test]
+fn acknowledgement_waits_until_viewed_and_closing_help_or_focus_in_never_acknowledges() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    set_modes(&package, &terminal, "Alpha", b"\x1b[?1004h", "F1");
+    let mut got = b"\x1b[I".to_vec();
+    received_by(&package, "Alpha", &got);
+    report_state(&package, "Alpha", "idle");
+    top_row_is(&mut terminal, &controlled("Alpha", ATTENTION));
+
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    got.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &got);
+    terminal.send("\r").unwrap();
+    frame_lacks(&terminal, "Exit the monitor");
+    got.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &got);
+    terminal.focus(false).unwrap();
+    got.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &got);
+    terminal.focus(true).unwrap();
+    got.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &got);
+    terminal.resize(ROWS - 1, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha", ATTENTION, "28 120");
+
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Alpha");
+    got.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &got);
+    // The host loses focus before the Escape that cancels, which the
+    // focus report after it lets the monitor read as a key.
+    terminal.focus(false).unwrap();
+    terminal.send("\x1b\x1b[O").unwrap();
+    selector_closed(&terminal);
+    terminal.resize(ROWS, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha", ATTENTION, "29 120");
+    terminal.focus(true).unwrap();
+    got.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &got);
+    ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
+
+    report_state(&package, "Alpha", "done");
+    top_row_is(&mut terminal, &controlled("Alpha", ATTENTION));
+    terminal.focus(false).unwrap();
+    got.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &got);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Alpha");
+    terminal.send("\x1b\x1b[O").unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    terminal.focus(true).unwrap();
+    terminal.send("\r").unwrap();
+    got.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &got);
+    terminal.resize(ROWS - 1, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha", ATTENTION, "28 120");
+    terminal.resize(ROWS, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha", ATTENTION, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Alpha");
+    // Focus is coalesced (owner decision on #114): only once Alpha has
+    // received focus out was the Focus before it answered, so the Escape's
+    // focus in is a change still to send.
+    got.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &got);
+    terminal.send(ESCAPE).unwrap();
+    got.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &got);
+    ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
+
+    report_state(&package, "Alpha", "blocked");
+    top_row_is(&mut terminal, &controlled("Alpha", ATTENTION));
+    emit(&package, "Alpha", &numbered(1..=40));
+    let live = controlled("Alpha", ATTENTION);
+    frame_rows(&terminal, &live, &[(29, "line40")]);
+    terminal.send(WHEEL_UP).unwrap();
+    let scrolled = |label: &str| {
+        session_top_row(
+            usize::from(COLS),
+            label,
+            &[ATTENTION, "History", SESSIONS_HINT],
+        )
+    };
+    frame_rows(&terminal, &scrolled("Alpha"), &[(29, "line39")]);
+    terminal.send("\x1ds").unwrap();
+    shows_row(&mut terminal, &format!("║{ATTENTION} Alpha"));
+    got.extend(b"\x1b[O");
+    received_by(&package, "Alpha", &got);
+    terminal.send(ESCAPE).unwrap();
+    got.extend(b"\x1b[I");
+    received_by(&package, "Alpha", &got);
+    retitle(&package, "Alpha", "Alpha scrolled");
+    frame_rows(&terminal, &scrolled("Alpha scrolled"), &[(29, "line39")]);
+    terminal.send(WHEEL_DOWN).unwrap();
+    let acknowledged = controlled("Alpha scrolled", ACKNOWLEDGED);
+    frame_rows(&terminal, &acknowledged, &[(29, "line40")]);
+
+    report_state(&package, "Alpha", "idle");
+    top_row_is(&mut terminal, &controlled("Alpha scrolled", ATTENTION));
+    terminal.resize(3, COLS).unwrap();
+    top_row_is(&mut terminal, &format!("{:<120}", "Terminal too small"));
+    terminal.send("\x1dj").unwrap();
+    terminal.resize(ROWS - 2, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha scrolled", ACKNOWLEDGED, "27 120");
+
+    report_state(&package, "Alpha", "done");
+    top_row_is(&mut terminal, &controlled("Alpha scrolled", ATTENTION));
+    terminal.send(WHEEL_UP).unwrap();
+    let history = session_top_row(
+        usize::from(COLS),
+        "Alpha scrolled",
+        &[ATTENTION, "History", SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &history);
+    terminal.send("\x1dj").unwrap();
+    top_row_is(&mut terminal, &controlled("Alpha scrolled", ACKNOWLEDGED));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    received_by(&package, "Alpha", &got);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Waits until the host has heard exactly `reports`, in order, besides
+/// the bells the monitor's own toasts ring (#115).
+fn host_heard(terminal: &mut Terminal, reports: &[&[u8]]) {
+    let expected: Vec<_> = reports
+        .iter()
+        .map(|report| HostSignal::Osc7501(report.to_vec()))
+        .collect();
+    let reports = |signals: &[HostSignal]| {
+        let reports = signals.iter().filter(|signal| **signal != HostSignal::Bell);
+        reports.eq(&expected)
+    };
+    terminal
+        .wait_for_host_signals(TIMEOUT, |signals| reports(signals))
+        .unwrap_or_else(|_| panic!("expected {expected:?}, heard {:?}", terminal.host_signals()));
+}
+
+/// NOT-04 (Contract and Monitor), against real daemons: the host hears the
+/// monitor's own root OSC 7501 reports with their exact bytes, `working`
+/// at the start with nothing pending, `blocked` with `kind=question` when
+/// Alpha first needs attention, nothing more while Beta needs it too or
+/// once Beta is acknowledged, `working` once Alpha is acknowledged as well,
+/// `blocked` again when Alpha needs attention again, and `working` once
+/// Alpha's daemon is killed, its disconnected row no longer counting; then,
+/// on exit, the root clear. Each report follows the frame that showed its
+/// change, so a later frame proves no report was due. No session report or
+/// bell is forwarded, and nothing repeats while the monitor idles: with
+/// `monitor.bell` false, Beta's toast rings no bell either (#115).
+#[test]
+fn the_host_hears_the_attention_state_once_per_change_and_the_clear_on_exit() {
+    let package = Package::new();
+    without_introduction(&package);
+    fs::write(config_file(&package), r#"{"monitor": {"bell": false}}"#).unwrap();
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    host_heard(&mut terminal, &[WORKING]);
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    headless(&package, &watched("Beta"), "finish");
+    report_state(&package, "Alpha", "idle");
+    top_row_is(&mut terminal, &controlled("Alpha", ATTENTION));
+    host_heard(&mut terminal, &[WORKING, BLOCKED]);
+    // Cancelling the selector would acknowledge Alpha, so prefix+j closes it.
+    report_state(&package, "Beta", "idle");
+    emit(&package, "Beta", b"\x07");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Beta");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Beta", ACKNOWLEDGED, "29 120");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "Alpha");
+    assert_eq!(
+        terminal.host_signals(),
+        [WORKING, BLOCKED].map(|report| HostSignal::Osc7501(report.to_vec()))
+    );
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Alpha", ACKNOWLEDGED, "29 120");
+    host_heard(&mut terminal, &[WORKING, BLOCKED, WORKING]);
+    report_state(&package, "Alpha", "done");
+    host_heard(&mut terminal, &[WORKING, BLOCKED, WORKING, BLOCKED]);
+    kill(Pid::from_raw(daemon_of(&package, &alpha)), Signal::SIGKILL).unwrap();
+    host_heard(
+        &mut terminal,
+        &[WORKING, BLOCKED, WORKING, BLOCKED, WORKING],
+    );
+    glance(&mut terminal, "Disconnected", "Alpha");
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(
+        terminal.host_signals(),
+        [WORKING, BLOCKED, WORKING, BLOCKED, WORKING, CLEAR]
+            .map(|report| HostSignal::Osc7501(report.to_vec()))
+    );
+    listed_as(
+        &package,
+        "Beta",
+        &json!({"lifecycle": "detached", "attachments": 0, "controlled": false}),
+    );
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The prefix+j hint a needs-attention toast carries with the default
+/// prefix (#115).
+const JUMP_HINT: &str = "Ctrl+] then j: jump to attention";
+/// The toast that follows a full toast queue (owner decision on #115).
+const MORE: &str = "More events occurred. Check sessions list";
+
+/// A toast (#115) as the host shows it, `width` cells wide: a border
+/// around `label` and any `hint`, each after one blank cell and padded to
+/// the border. One cell per character.
+fn toast(width: usize, label: &str, hint: Option<&str>) -> Vec<String> {
+    let inner = width - 4;
+    let border = "─".repeat(width - 2);
+    let text = std::iter::once(label)
+        .chain(hint)
+        .map(|text| format!("│ {text:<inner$} │"));
+    std::iter::once(format!("┌{border}┐"))
+        .chain(text)
+        .chain([format!("└{border}┘")])
+        .collect()
+}
+
+/// Waits until a whole frame shows `toast` whole in the host's bottom-right
+/// corner, its border yellow, while `also` holds of the screen.
+fn toast_shown_with(terminal: &Terminal, toast: &[String], also: impl Fn(&str) -> bool) {
+    whole_frame_shows(terminal, &toast.join("\n"), |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        let bottom = &lines[lines.len() - toast.len()..];
+        let drawn = bottom
+            .iter()
+            .zip(toast)
+            .all(|(line, row)| line.ends_with(row.as_str()));
+        let corner = terminal.cells(lines.len() - 1).last().cloned();
+        let yellow = corner.is_some_and(|cell| cell.foreground == Color::Ansi(AnsiColor::Yellow));
+        drawn && yellow && also(screen)
+    });
+}
+
+/// Waits until a whole frame shows `toast` whole in the host's bottom-right
+/// corner, its border yellow.
+fn toast_shown(terminal: &Terminal, toast: &[String]) {
+    toast_shown_with(terminal, toast, |_| true);
+}
+
+/// Waits until a whole frame shows no toast: not even the last cells of
+/// its border, which erases clockwise, ending with its left side.
+fn no_toast(terminal: &Terminal) {
+    whole_frame_shows(terminal, "no toast", |screen| {
+        !screen.contains(['┌', '┐', '└', '┘', '─', '│'])
+    });
+}
+
+/// The bells the host heard.
+fn bells(terminal: &Terminal) -> usize {
+    let signals = terminal.host_signals();
+    signals
+        .iter()
+        .filter(|signal| **signal == HostSignal::Bell)
+        .count()
+}
+
+/// Waits until the host has heard `count` bells.
+fn rang(terminal: &mut Terminal, count: usize) {
+    let counted = |signals: &[HostSignal]| {
+        let bells = signals.iter().filter(|signal| **signal == HostSignal::Bell);
+        bells.count() == count
+    };
+    terminal
+        .wait_for_host_signals(TIMEOUT, counted)
+        .unwrap_or_else(|_| panic!("{count} bells never rang: {:?}", terminal.host_signals()));
+}
+
+/// A left click on the host's bottom-right cell, where a toast shows, on a
+/// host `rows` by `cols`.
+fn click_toast(terminal: &mut Terminal, (rows, cols): (u16, u16)) {
+    click(terminal, usize::from(rows) - 1, usize::from(cols) - 1);
+}
+
+/// Has the [`watched`] session `title` write `bytes`, then waits until it
+/// has.
+fn emitted(package: &Package, title: &str, bytes: &[u8]) {
+    emit(package, title, bytes);
+    let pending = package.isolation.home().join(format!("{title}.mode"));
+    let deadline = Instant::now() + TIMEOUT;
+    while pending.exists() {
+        assert!(Instant::now() < deadline, "{title} never wrote its bytes");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A wire Title changed frame.
+const TITLE_CHANGED: u8 = 0x42;
+
+/// A wire Status changed of `state` for attention episode `episode`,
+/// changed `second` seconds into the minute.
+fn episode_status(state: &str, episode: u64, second: u32) -> Act {
+    let status =
+        json!({"state": state, "changed_at": utc(second), "episode_id": episode.to_string()});
+    Act::Send(STATUS_CHANGED, json!({ "status": status }))
+}
+
+/// NOT-01 (Monitor) and NOT-02 (Monitor: the queue), with fake daemons, and
+/// INP-05 (Monitor: toast clicks): a final outcome the first Initial
+/// metadata already knew never toasts (owner decision on #115), while
+/// attention pending at startup toasts once, with the prefix+j hint. A
+/// burst of six attention episodes from one session, each under a new
+/// title, shows E1, E2 and E3, then, without a hint, `More events
+/// occurred. Check sessions list` in place of E4 to E6: the queue holds
+/// three toasts (owner decision on #115). A final outcome learned after its
+/// session was seen running toasts once, without a hint, and disappears by
+/// itself. Clicking a toast dismisses it at once, never selecting,
+/// acquiring or acknowledging: the selection, its control and its pending
+/// attention stay. Opening the selector and the key introduction toasts
+/// nothing again: the pending episodes were toasted. One bell rings as each
+/// toast's full title is first shown, six in all. Pending's toast begins
+/// while the host is still reading the monitor's startup output: its hold
+/// and bell wait for its title to be written (owner decision on #115,
+/// 2026-11-17), so it is seen however slowly the host reads.
+#[test]
+fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
+    let package = Package::new();
+    without_introduction(&package);
+    // The acquisition initial selection starts is never granted, nor timed
+    // out while the test runs.
+    limits_config(&package, json!({"deadlines": {"operation_ms": 120_000}}));
+    let home = package.isolation.home().to_owned();
+    let (go, end) = (home.join("burst.go"), home.join("end.go"));
+    let ear = Ear::default();
+    let created = "2026-01-01T00:00:00.000Z";
+    let start = |suffix: u8, answer: Answer| {
+        FakeDaemon::start(&package, fake_id(suffix), created, answer, &ear)
+    };
+    let known = with_status(
+        "known",
+        wire_status("completed", &utc(1)),
+        Some(exited(0)),
+        vec![],
+    );
+    let pending = with_status(
+        "pending",
+        wire_status("needs_attention", &utc(2)),
+        None,
+        vec![],
+    );
+    let mut burst = vec![Act::Await(go.clone())];
+    for episode in 1..=6u32 {
+        if episode > 1 {
+            burst.push(episode_status(
+                "acknowledged",
+                (episode - 1).into(),
+                2 * episode,
+            ));
+        }
+        burst.push(Act::Send(
+            TITLE_CHANGED,
+            json!({"title": format!("E{episode}")}),
+        ));
+        burst.push(episode_status(
+            "needs_attention",
+            episode.into(),
+            2 * episode + 1,
+        ));
+    }
+    burst.push(Act::Await(end.clone()));
+    let failed = json!({"state": "failed", "changed_at": utc(30), "episode_id": null});
+    burst.push(Act::Send(
+        COMMAND_FINAL,
+        json!({"command_result": exited(1), "status": failed}),
+    ));
+    let later = with_status("later", wire_status("running", &utc(3)), None, burst);
+    let daemons = [start(0xe1, known), start(0xe2, pending), start(0xe3, later)];
+    let mut terminal = outer(&package, "c2 monitor");
+    let top = session_top_row(
+        usize::from(COLS),
+        "pending",
+        &[ATTENTION, "Acquiring", SESSIONS_HINT],
+    );
+    toast_shown_with(
+        &terminal,
+        &toast(36, "pending", Some(JUMP_HINT)),
+        |screen| screen.lines().next() == Some(top.as_str()),
+    );
+    rang(&mut terminal, 1);
+    click_toast(&mut terminal, (ROWS, COLS));
+    no_toast(&terminal);
+    top_row_is(&mut terminal, &top);
+
+    fs::write(&go, b"").unwrap();
+    for label in ["E1", "E2", "E3"] {
+        toast_shown(&terminal, &toast(36, label, Some(JUMP_HINT)));
+        click_toast(&mut terminal, (ROWS, COLS));
+    }
+    toast_shown(&terminal, &toast(45, MORE, None));
+    click_toast(&mut terminal, (ROWS, COLS));
+    no_toast(&terminal);
+    rang(&mut terminal, 5);
+
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "E6");
+    // A toast the menu brought would begin with the frame that opened it
+    // and ring once its title showed: no toast shows, five bells stay
+    // five, and the sixth is E6's.
+    terminal.send("p").unwrap();
+    shows_row(&mut terminal, "║p ");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    terminal.send("\r").unwrap();
+    frame_lacks(&terminal, "Exit the monitor");
+    assert_eq!(bells(&terminal), 5);
+    no_toast(&terminal);
+    top_row_is(&mut terminal, &top);
+
+    fs::write(&end, b"").unwrap();
+    toast_shown(&terminal, &toast(6, "E6", None));
+    rang(&mut terminal, 6);
+    no_toast(&terminal);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Failed (exit 1)", "E6");
+    listed_with(&terminal, "Succeeded", "known");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(bells(&terminal), 6);
+    drop(daemons);
+    package.assert_clean();
+}
+
+/// STA-06 (Monitor), CTL-03 (Monitor: notification cases), NOT-02
+/// (Monitor: shape, ellipsis, resize and bell) and TRM-03 (Monitor: toast
+/// resize case), through real daemons: Beta's OSC 9;4 progress and an
+/// incomplete OSC 99 chunk request nothing and toast nothing; its OSC 9
+/// text notification needs attention and toasts once, bottom-right in
+/// yellow, `Beta` above the prefix+j hint, ringing one bell. Resized to
+/// 80x25 under it, the toast is 32 cells, 40% of the host, the hint ending
+/// in `…`, with no second bell. While that episode is pending, an OSC 777
+/// notify and a complete OSC 99 notification toast nothing more. Once
+/// prefix+j has acknowledged Beta, dismissing its toast, Done, selected and
+/// viewed, exits 3: a final outcome learned while viewed never toasts, not
+/// even once a menu opens (NOT-01). With Alpha selected again, Beta's OSC 777 notify is a new episode and toasts once
+/// more; prefix+x exits at once while it draws.
+#[test]
+fn notifications_toast_once_per_episode_and_progress_never_does() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    headless(&package, &watched("Beta"), "finish");
+    glance(&mut terminal, RUNNING, "Beta");
+
+    emitted(
+        &package,
+        "Beta",
+        b"\x1b]9;4;1;50\x1b\\\x1b]99;i=1:d=0;part\x1b\\",
+    );
+    retitle(&package, "Beta", "Beta 2");
+    glance(&mut terminal, RUNNING, "Beta 2");
+    assert_eq!(bells(&terminal), 0);
+    no_toast(&terminal);
+
+    emit(&package, "Beta", b"\x1b]9;Build finished\x07");
+    toast_shown(&terminal, &toast(36, "Beta 2", Some(JUMP_HINT)));
+    rang(&mut terminal, 1);
+    terminal.resize(25, 80).unwrap();
+    let narrow = toast(32, "Beta 2", Some("Ctrl+] then j: jump to atte…"));
+    toast_shown(&terminal, &narrow);
+    terminal.resize(ROWS, COLS).unwrap();
+    emitted(
+        &package,
+        "Beta",
+        b"\x1b]777;notify;Again;Still\x1b\\\x1b]99;;Hello\x1b\\",
+    );
+    retitle(&package, "Beta", "Beta 3");
+    glance(&mut terminal, ATTENTION, "Beta 3");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Beta 3", ACKNOWLEDGED, "29 120");
+    no_toast(&terminal);
+    assert_eq!(bells(&terminal), 1);
+
+    headless(&package, &stepped("Done", &["exit 3"]), "finish");
+    glance(&mut terminal, STATUS, "Done");
+    terminal.send("\x1dsDone\r").unwrap();
+    top_row_is(&mut terminal, &controlled("Done", STATUS));
+    step(&package, "Done", 1);
+    let ended = session_top_row(
+        usize::from(COLS),
+        "Done",
+        &["Failed (exit 3)", "Ended", SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &ended);
+    glance(&mut terminal, "Failed (exit 3)", "Done");
+    assert_eq!(bells(&terminal), 1);
+    no_toast(&terminal);
+
+    terminal.send("\x1dsAlpha\r").unwrap();
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    emit(&package, "Beta", b"\x1b]777;notify;Done;All good\x1b\\");
+    toast_shown(&terminal, &toast(36, "Beta 3", Some(JUMP_HINT)));
+    rang(&mut terminal, 2);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(bells(&terminal), 2);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// FOC-01 (Monitor: toast cases), NOT-01 (Monitor: a menu makes suppressed
+/// attention eligible) and INP-05 (Monitor: toast cases), through real
+/// daemons: Alpha, selected and viewed, needs attention without a toast.
+/// Opening the selector makes that never-toasted episode eligible: its
+/// toast draws over the menu. Cancelling the selector defers Alpha's
+/// acknowledgement, but the toast covering Alpha's canvas, then Beta's and
+/// Gamma's queued behind it, stop it counting as viewed: once the monitor
+/// shows the SIZE Alpha wrote after a later host resize, Alpha still needs
+/// attention, and it is acknowledged only once no toast covers it. With
+/// Delta's toast covering Alpha, typed keys still reach Alpha, and a drag
+/// Alpha's press began before the toast appeared keeps going to Alpha over
+/// the toast, through its release. A new click on the toast only dismisses
+/// it: Alpha receives nothing for it, Delta is neither selected, acquired
+/// nor acknowledged.
+#[test]
+fn a_covering_toast_stops_viewing_while_keys_and_drags_still_reach_the_session() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    for name in ["Beta", "Gamma", "Delta"] {
+        headless(&package, &watched(name), "finish");
+    }
+    // No selector before Alpha's attention: cancelling one would defer an
+    // acknowledgement that could meet it.
+    report_state(&package, "Alpha", "idle");
+    top_row_is(&mut terminal, &controlled("Alpha", ATTENTION));
+    retitle(&package, "Alpha", "Alpha 2");
+    top_row_is(&mut terminal, &controlled("Alpha 2", ATTENTION));
+    assert_eq!(bells(&terminal), 0);
+    no_toast(&terminal);
+
+    terminal.send("\x1ds").unwrap();
+    toast_shown_with(
+        &terminal,
+        &toast(36, "Alpha 2", Some(JUMP_HINT)),
+        |screen| screen.contains("║Needs attention Alpha 2"),
+    );
+    terminal.send(ESCAPE).unwrap();
+    for name in ["Beta", "Gamma"] {
+        emit(&package, name, b"\x1b]9;queued\x07");
+    }
+    selector_closed(&terminal);
+    terminal.resize(ROWS - 1, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha 2", ATTENTION, "28 120");
+    rang(&mut terminal, 3);
+    whole_frame_shows(&terminal, "Alpha acknowledged once uncovered", |screen| {
+        let top = controlled("Alpha 2", ACKNOWLEDGED);
+        screen.lines().next() == Some(top.as_str()) && !screen.contains(['┌', '└', '│'])
+    });
+    terminal.resize(ROWS, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha 2", ACKNOWLEDGED, "29 120");
+
+    set_modes(
+        &package,
+        &terminal,
+        "Alpha",
+        b"\x1b[?1002h\x1b[?1006h",
+        "M1",
+    );
+    terminal.send("\x1b[<0;10;10M").unwrap();
+    let mut expected = b"\x1b[<0;10;9M".to_vec();
+    received_by(&package, "Alpha", &expected);
+    emit(&package, "Delta", b"\x1b]9;covering\x07");
+    toast_shown(&terminal, &toast(36, "Delta", Some(JUMP_HINT)));
+    terminal.send("k\x1b[<32;100;28M\x1b[<0;100;28m").unwrap();
+    expected.extend(b"k\x1b[<32;100;27M\x1b[<0;100;27m");
+    received_by(&package, "Alpha", &expected);
+    terminal.send("\x1b[<0;100;28M\x1b[<0;100;28m").unwrap();
+    no_toast(&terminal);
+    terminal.send("m").unwrap();
+    expected.extend(b"m");
+    received_by(&package, "Alpha", &expected);
+    rang(&mut terminal, 4);
+    top_row_is(&mut terminal, &controlled("Alpha 2", RUNNING));
+    glance(&mut terminal, ATTENTION, "Delta");
+    let detached = json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Delta", &detached);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// CFG-01 (Monitor: hints and bell): with `monitor.show_key_hints` and
+/// `monitor.bell` false, no implicit hint shows anywhere and no bell rings,
+/// while every binding works and toasts and host attention reports go on:
+/// the empty state shows no hint and the key introduction does not open by
+/// itself; the selected session's top row and the selector show no hint or
+/// footer; the placeholder another client's takeover leaves shows no
+/// takeover hint, yet the take-control key acquires; Beta's notification
+/// toasts as three rows, `Beta` alone, with no bell, while the host hears
+/// that attention is pending; prefix+j jumps to Beta and prefix+x exits.
+#[test]
+fn without_key_hints_or_bell_no_hint_shows_and_no_bell_rings() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"monitor": {"show_key_hints": false, "bell": false}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "c2 monitor");
+    shows(&mut terminal, &empty_monitor(ROWS, COLS, &[EMPTY]));
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    let plain = |label: &str, status: &str, control: &str| {
+        session_top_row(usize::from(COLS), label, &[status, control])
+    };
+    whole_frame_shows(&terminal, "Alpha ready, without a hint", |screen| {
+        let mut rows = screen.lines();
+        rows.next() == Some(plain("Alpha", RUNNING, CONTROLLING).as_str())
+            && rows
+                .nth(1)
+                .is_some_and(|row| row.starts_with("SIZE 29 120"))
+    });
+    headless(&package, &watched("Beta"), "finish");
+    terminal.send("\x1ds").unwrap();
+    let rows = [(RUNNING, "Beta"), (RUNNING, "Alpha")];
+    boxed_as(
+        &terminal,
+        ROWS,
+        &selector_box((ROWS, COLS), "", &rows, None),
+        &[6],
+    );
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+
+    let other = attach(&package, &alpha);
+    let placeholder = centred_below(
+        &plain("Alpha", RUNNING, NOT_CONTROLLING),
+        ROWS,
+        COLS,
+        &[VIEWED_ELSEWHERE],
+    );
+    shows(&mut terminal, &placeholder);
+    terminal.send("\x14").unwrap();
+    whole_frame_shows(&terminal, "Alpha taken back", |screen| {
+        screen.lines().next() == Some(plain("Alpha", RUNNING, CONTROLLING).as_str())
+    });
+
+    emit(&package, "Beta", b"\x1b]9;Build finished\x07");
+    toast_shown(&terminal, &toast(8, "Beta", None));
+    host_heard(&mut terminal, &[WORKING, BLOCKED]);
+    terminal.send("\x1dj").unwrap();
+    whole_frame_shows(&terminal, "Beta acknowledged", |screen| {
+        screen.lines().next() == Some(plain("Beta", ACKNOWLEDGED, CONTROLLING).as_str())
+    });
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(bells(&terminal), 0);
+    detach(other);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// Has the selected [`watched`] session `title` write `report`, then
+/// `marker`, and waits until the monitor shows it with `status` in its top
+/// row: the daemon read the report before the marker, so the status shown
+/// with the marker follows it.
+fn reported(
+    terminal: &mut Terminal,
+    package: &Package,
+    title: &str,
+    report: &[u8],
+    marker: &str,
+    status: &str,
+) {
+    set_modes(package, terminal, title, report, marker);
+    top_row_is(terminal, &controlled(title, status));
+}
+
+/// STA-01, STA-03, STA-04 and STA-05 (Monitor: representative sequences
+/// through a real daemon) and INP-01 (Monitor: uppercase J and a pasted
+/// prefix+j are literal): Seq, the initial selection, reports root
+/// `working` (Running), then `idle` (Needs attention), then `working`,
+/// which changes nothing shown while attention is pending. Prefix then J,
+/// and a pasted prefix+j, reach Seq as its input, never jumping to Other,
+/// which needs attention too, and that accepted input clears Seq's
+/// attention: Running. `blocked` needs attention again, and Enter on Seq
+/// acknowledges it; `done` after the acknowledgement needs attention again,
+/// a new episode; `error` and `clear` leave it pending, as do the OSC 133
+/// prompt, command and finish boundaries; after `working`, typed input
+/// clears it again.
+#[test]
+fn representative_status_sequences_show_the_right_row_states() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Seq"), "finish");
+    ready_at(&mut terminal, "Seq", RUNNING, "29 120");
+    headless(&package, &watched("Other"), "finish");
+    // The host hears that Other needs attention, without the selector,
+    // whose cancelling would acknowledge Seq.
+    report_state(&package, "Other", "idle");
+    host_heard(&mut terminal, &[WORKING, BLOCKED]);
+    let osc = |state: &str| format!("\x1b]7501;state={state}\x1b\\").into_bytes();
+    reported(
+        &mut terminal,
+        &package,
+        "Seq",
+        &osc("idle"),
+        "M1",
+        ATTENTION,
+    );
+    reported(
+        &mut terminal,
+        &package,
+        "Seq",
+        &osc("working"),
+        "M2",
+        ATTENTION,
+    );
+    terminal.send("\x1dJ").unwrap();
+    terminal.paste("\x1dj").unwrap();
+    received_by(&package, "Seq", b"\x1dJ\x1dj");
+    top_row_is(&mut terminal, &controlled("Seq", RUNNING));
+
+    reported(
+        &mut terminal,
+        &package,
+        "Seq",
+        &osc("blocked"),
+        "M3",
+        ATTENTION,
+    );
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Seq");
+    top_row_is(&mut terminal, &controlled("Seq", ACKNOWLEDGED));
+    reported(
+        &mut terminal,
+        &package,
+        "Seq",
+        &osc("done"),
+        "M4",
+        ATTENTION,
+    );
+    reported(
+        &mut terminal,
+        &package,
+        "Seq",
+        &osc("error"),
+        "M5",
+        ATTENTION,
+    );
+    reported(
+        &mut terminal,
+        &package,
+        "Seq",
+        &osc("clear"),
+        "M6",
+        ATTENTION,
+    );
+    let boundaries = b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07";
+    reported(&mut terminal, &package, "Seq", boundaries, "M7", ATTENTION);
+    reported(
+        &mut terminal,
+        &package,
+        "Seq",
+        &osc("working"),
+        "M8",
+        ATTENTION,
+    );
+    terminal.send("z").unwrap();
+    received_by(&package, "Seq", b"\x1dJ\x1djz");
+    top_row_is(&mut terminal, &controlled("Seq", RUNNING));
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
     package.assert_clean();
 }

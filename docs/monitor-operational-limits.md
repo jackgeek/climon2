@@ -488,8 +488,6 @@ Daemon-initiated passive succession is still valid, not a replayed takeover.
 | `ui.fps` | 30 |
 | `ui.client_quantum_ms` | 2 |
 | `ui.background_quantum_ms` | 8 per UI turn |
-| `ui.toast_records` | 128 queued episodes |
-| `ui.toast_bytes` | 524288 |
 | `ui.search_bytes` | 4096 UTF-8 bytes |
 
 Rotate bounded client/background work fairly. Bound each indivisible
@@ -502,12 +500,21 @@ These are measurement targets under declared configuration/hardware, not
 hard real-time operating-system guarantees. Nondefault scheduling configurations
 must disclose their effect on these targets.
 
-Toast state has no unbounded secondary queue. Distinct accepted episodes remain
-ordered; congestion past the delivery deadline explicitly fails the affected
-notification stream/connection and reports undelivered notifications.
+Toast state has no unbounded secondary queue: the queue holds three waiting
+toasts, in order (owner decision on #115, 2026-11-16). When another toast
+would join a full queue, one extra toast saying `More events occurred. Check
+sessions list` follows the three in its place, and every later one coalesces
+into it until it shows; nothing fails a notification stream or connection.
+There is no toast setting.
 The selector's accepted visual timings are 400 ms border drawing, 2000 ms title
-hold, 300 ms text fade and 400 ms erasure. Use elapsed time and skip obsolete
-animation paints; never accumulate frames or block input/exit. Over-limit search/
+hold, 300 ms text fade and 400 ms erasure. The hold starts when the frame
+showing the full title (with any ellipsis) has finished writing to the host,
+and the toast's one bell rings then (owner decision on #115, 2026-11-17): a
+host that accepts output late still sees every title for its whole hold.
+Drawing, fading and erasure use elapsed time and skip obsolete animation
+paints; never accumulate frames or block input/exit. The host write itself
+still blocks the monitor while the host refuses output; making it
+non-blocking is follow-up work for render pacing (#119). Over-limit search/
 paste text is rejected visibly, without leaking to an application.
 
 Snapshot accounting permits one retained viewport character baseline and one

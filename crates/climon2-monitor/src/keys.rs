@@ -29,13 +29,19 @@ pub(crate) const EXIT: Binding = Binding {
 };
 
 /// Every prefix action, in the order the key introduction lists them
-/// (selector document, "Key introduction and help").
-pub(crate) const BINDINGS: [Binding; 3] = [
+/// (selector document, "Key introduction and help"; owner decision on #114:
+/// help lists prefix+j too).
+pub(crate) const BINDINGS: [Binding; 4] = [
     EXIT,
     Binding {
         key: b's',
         action: Action::SessionList,
         label: "Open the session list",
+    },
+    Binding {
+        key: b'j',
+        action: Action::Jump,
+        label: "Jump to the session that needs attention",
     },
     Binding {
         key: b'?',
@@ -44,19 +50,11 @@ pub(crate) const BINDINGS: [Binding; 3] = [
     },
 ];
 
-/// Prefix+j, which the key introduction does not list.
-const JUMP: Binding = Binding {
-    key: b'j',
-    action: Action::Jump,
-    label: "Jump to the session that needs attention",
-};
-
 /// The action `byte` completes after a prefix, if any: only lowercase s,
 /// x, j and ?.
 pub(crate) fn action(byte: u8) -> Option<Action> {
     BINDINGS
         .iter()
-        .chain([&JUMP])
         .find(|binding| binding.key == byte)
         .map(|binding| binding.action)
 }

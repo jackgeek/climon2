@@ -7,6 +7,7 @@
 //! pass's clients are ready, it selects and acquires the first eligible row
 //! (#266).
 
+mod attention;
 mod discovery;
 #[cfg(feature = "test-hooks")]
 mod hooks;
@@ -25,17 +26,24 @@ mod selector;
 mod startup;
 mod supervisor;
 mod terminal;
+mod toast;
 
+use attention::{Deferred, HostReport, Next, Notice};
 use climon2_core::{SessionId, protocol::TerminalSize};
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
-use climon2_vt::{Limits, Parser};
+use climon2_vt::{
+    Limits, Parser,
+    view::{self as vt, Modes},
+};
 use discovery::{Discovery, Found};
 use host::{Ending, Event, Host};
 use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
+use mouse::{Area, Gestures, Mouse, Wheel};
+use ratatui::layout::Rect;
 use registry::{ClientEvent, Kind, Registry, Report};
-use router::{Key, Routed, Router};
+use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
 use selector::Selector;
 use startup::Startup;
@@ -45,7 +53,8 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use supervisor::{Context, Load, Refusal, Supervisor};
-use terminal::{Control, Presentation, Request, Terminal};
+use terminal::{Authority, Control, Paste, Presentation, Request, Terminal};
+use toast::Toasts;
 
 /// A one-line diagnostic that the thin main prints, after the host is
 /// restored, with the climon2 error code.
@@ -68,6 +77,8 @@ pub fn run() -> Result<u32, Error> {
 
 /// Records how the monitor ended: the host terminal may be gone, so a failure
 /// is logged as well as returned for main to print.
+/// The host bell a toast rings as it begins (docs/protocol/monitor-host/bell.md).
+const BEL: &[u8] = b"\x07";
 /// The library log filter when `CLIMON2_LOG` sets none.
 const DEFAULT_FILTER: &str = "info";
 
@@ -84,12 +95,24 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
 }
 
 /// Owns the host until an ending, and releases it before any diagnostic.
+/// A monitor that started told the host its attention state, so the host
+/// hears the root clear once released (#114), even after a failure.
 fn owned(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::Result<u32> {
     let (mut host, size) = Host::enter()?;
-    let served = Monitor::start(size, startup, dispatch, filter)
-        .and_then(|monitor| monitor.serve(&mut host));
+    let monitor = Monitor::start(size, startup, dispatch, filter);
+    let reported = monitor.is_ok();
+    let served = monitor.and_then(|monitor| monitor.serve(&mut host));
     let released = host.release();
-    served.and_then(|ending| released.map(|()| ending.status()))
+    let cleared = cleared(reported);
+    served.and_then(|ending| released.and(cleared).map(|()| ending.status()))
+}
+
+/// The root clear, once the host heard an attention report.
+fn cleared(reported: bool) -> io::Result<()> {
+    if reported {
+        return host::write_host(attention::CLEAR);
+    }
+    Ok(())
 }
 
 /// The monitor's own enclosing session, if it runs inside one.
@@ -126,6 +149,53 @@ struct Monitor {
     /// The one vte parser every terminal's model is fed through (#166),
     /// counted once beside their footprints at startup.
     parser: Parser,
+    /// The paste under way and the target it goes to, while that target
+    /// takes input; none while none is, or once its target changed.
+    pasting: Option<Pasting>,
+    /// The mouse gesture under way and its owner.
+    gestures: Gestures<Target>,
+    /// Whether the host has focus: assumed until it reports otherwise, since
+    /// a host that never reports focus cannot be detected (owner decision on
+    /// #111).
+    host_focused: bool,
+    /// What received application input after the last read; a change
+    /// before the next read is a target change.
+    context: InputContext,
+    /// The acknowledgement an explicit action deferred until its target is
+    /// viewed (#114).
+    acknowledging: Option<Deferred>,
+    /// Prefix+j's notice that no session needs attention.
+    notice: Notice,
+    /// The attention state the host last heard.
+    host_report: HostReport,
+    toasts: Toasts,
+    /// Whether a toast rings the host bell as it begins (`monitor.bell`).
+    bell: bool,
+}
+
+/// A session under the authority it takes input with.
+type Target = (SessionId, Authority);
+
+/// The selected session, whether a modal covers it, and the authority its
+/// control period and restoration hold, if any: any change is a target
+/// change (spec #73, "Target changes").
+type InputContext = (Option<SessionId>, bool, Option<Authority>);
+
+/// A paste going to its target.
+struct Pasting {
+    target: Target,
+    /// The application had bracketed paste on when the paste began.
+    bracketed: bool,
+}
+
+/// The target taking application input now, its modes, whether its
+/// alternate screen is active and the area of its canvas that the host
+/// shows.
+struct Taking {
+    target: Target,
+    modes: Modes,
+    alternate: bool,
+    area: Area,
 }
 
 impl Monitor {
@@ -139,6 +209,7 @@ impl Monitor {
         let prefix = config.escape_prefix();
         let take_control = config.take_control_key();
         let hints = config.settings().show_key_hints;
+        let jump = hints.then(|| format!("{prefix} then j: jump to attention"));
         let supervisor = Supervisor::start(context(&startup, filter)?, dispatch.clone())?;
         let introduction = KeyIntroduction::new(prefix, startup.preference, hints);
         let limits = &config.settings().limits;
@@ -163,6 +234,15 @@ impl Monitor {
             },
             take_control: take_control.map(climon2_core::keys::ControlKey::byte),
             parser: Parser::new(),
+            pasting: None,
+            gestures: Gestures::default(),
+            host_focused: true,
+            context: InputContext::default(),
+            acknowledging: None,
+            notice: Notice::default(),
+            host_report: HostReport::default(),
+            toasts: Toasts::new(jump),
+            bell: config.settings().bell,
         };
         monitor.show().map(|()| monitor)
     }
@@ -190,9 +270,33 @@ impl Monitor {
         let ending = self.handle(event)?;
         if ending.is_none() {
             self.collect();
+            self.retarget();
             self.show()?;
         }
         Ok(ending)
+    }
+
+    /// A target change since the last read discards a pending prefix (spec
+    /// #73, "Target changes"); one the read itself made came before any
+    /// prefix it left pending. An open paste or gesture learns of a change
+    /// when its next part arrives.
+    fn retarget(&mut self) {
+        let current = self.taking().map(|taking| taking.target);
+        self.cut(current.as_ref());
+        let context = self.context();
+        if context != self.context {
+            self.router.retarget();
+        }
+        self.context = context;
+    }
+
+    fn context(&self) -> InputContext {
+        let id = self.selected.clone();
+        let authority = id
+            .as_ref()
+            .and_then(|id| self.terminals.get(id))
+            .and_then(Terminal::authority);
+        (id, self.covered(), authority)
     }
 
     fn handle(&mut self, event: Event<'_>) -> io::Result<Option<Ending>> {
@@ -213,7 +317,12 @@ impl Monitor {
     /// restoration, so its control and input readiness describe the frame
     /// being painted.
     fn show(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        self.menus();
+        self.toasts.frame(now, self.screen.overlay());
+        let titling = self.toasts.titling(now, self.screen.overlay());
         self.mark_shown();
+        self.synchronise();
         let rows = self.registry.rows();
         let row = self
             .selected
@@ -234,9 +343,168 @@ impl Monitor {
                 .progress(&self.registry)
                 .map(|progress| progress.to_string()),
             late: self.initial.late(&self.registry),
+            notice: self.notice.text(now),
+            toasts: &self.toasts,
+            now,
             session,
         };
-        self.screen.show(&scene)
+        self.screen.show(&scene)?;
+        self.title(titling)?;
+        self.attend()
+    }
+
+    /// While a menu is open, every pending attention episode that was
+    /// never toasted is eligible (spec #73, "Toast eligibility"): one first
+    /// seen while viewed toasts as a menu opens, and the toasts' ledger
+    /// keeps any from toasting twice.
+    fn menus(&mut self) {
+        if self.covered() {
+            for (id, news) in self.registry.pending() {
+                self.announce(&id, news, false);
+            }
+        }
+    }
+
+    /// Hands `id`'s `news` to the toasts, with its label and whether this
+    /// monitor viewed it when it arrived.
+    fn announce(&mut self, id: &SessionId, news: registry::News, viewed: bool) {
+        let label = self.registry.label(id).unwrap_or_default();
+        self.toasts.announce(id, news, label, viewed);
+    }
+
+    /// Once the frame first showing a toast's full title (`titling`) has
+    /// been written to the host, the toast's hold starts and, while
+    /// `monitor.bell` is on, one BEL rings (owner decision on #115,
+    /// 2026-11-17; docs/protocol/monitor-host/bell.md).
+    fn title(&mut self, titling: bool) -> io::Result<()> {
+        if !titling {
+            return Ok(());
+        }
+        self.toasts.titled(Instant::now());
+        self.ring()
+    }
+
+    /// One BEL, while `monitor.bell` is on.
+    fn ring(&self) -> io::Result<()> {
+        if self.bell {
+            return host::write_host(BEL);
+        }
+        Ok(())
+    }
+
+    /// Once a frame is painted (spec #73, "Viewing, focus, acknowledgement
+    /// and host signals"; #114): each daemon hears whether the monitor
+    /// views its session, a deferred acknowledgement is submitted once its
+    /// target is viewed, after that viewing was submitted (Set viewing is
+    /// coalesced, so it can lag the frame: owner decision on #114), and the
+    /// host hears whether any connected session needs attention.
+    fn attend(&mut self) -> io::Result<()> {
+        self.reacknowledge();
+        let viewed = self.viewed().cloned();
+        for (id, terminal) in &mut self.terminals {
+            if let Some(request) = terminal.viewing(viewed.as_ref() == Some(id)) {
+                self.supervisor.request(id.clone(), request);
+            }
+        }
+        let reported = viewed.and_then(|id| self.terminals.get(&id));
+        self.acknowledge(reported.is_some_and(Terminal::viewing_reported));
+        let pending = self.registry.attention().is_some();
+        self.host_report
+            .report(pending)
+            .map_or(Ok(()), host::write_host)
+    }
+
+    /// An acknowledgement that a newer restoration of its control period
+    /// superseded, as a resize can bring, is deferred again while its
+    /// session stays selected. Reselecting a session is an explicit action
+    /// that defers one anyway.
+    fn reacknowledge(&mut self) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let owed = self.terminals.get_mut(&id);
+        if owed.is_some_and(Terminal::take_unacknowledged) {
+            self.acknowledging = Some(Deferred::new(id));
+        }
+    }
+
+    /// The selected session while the monitor views it: its target takes
+    /// input (controlling, ready, painted uncovered with room, not ended),
+    /// its view is live, the host has focus (assumed until it reports
+    /// otherwise) and no toast covers its canvas.
+    fn viewed(&self) -> Option<&SessionId> {
+        let (id, terminal, _) = self.target()?;
+        let live = terminal.view().is_some_and(|view| view.scrolled() == 0);
+        let covered = self.toasts.covers(self.canvas(id), self.screen.overlay());
+        (live && self.host_focused && !covered).then_some(id)
+    }
+
+    /// The host cells `id`'s canvas takes below the top row.
+    fn canvas(&self, id: &SessionId) -> Rect {
+        let terminal = self.terminals.get(id);
+        let geometry = terminal.and_then(Terminal::geometry);
+        let geometry = geometry.map(|geometry| (geometry.cols(), geometry.rows()));
+        toast::canvas(self.screen.overlay(), geometry)
+    }
+
+    /// Prefix+j and Enter dismiss a toast covering their target's canvas
+    /// (owner decision on #114).
+    fn dismiss_toast(&mut self, id: &SessionId) {
+        let canvas = self.canvas(id);
+        let area = self.screen.overlay();
+        self.toasts.dismiss_over(canvas, area, Instant::now());
+    }
+
+    /// Advances a deferred acknowledgement against the selected target as
+    /// this frame left it: submitted once `viewing`, kept while not, dropped
+    /// once the target context changed.
+    fn acknowledge(&mut self, viewing: bool) {
+        let Some(deferred) = self.acknowledging.take() else {
+            return;
+        };
+        match deferred.next(&self.attended(viewing)) {
+            Next::Wait(deferred) => self.acknowledging = Some(deferred),
+            Next::Submit(id, authority) => {
+                self.supervisor.request(id, Request::Acknowledge(authority));
+            }
+            Next::Cancel => {}
+        }
+    }
+
+    /// The selected target as the frame just painted left it.
+    fn attended(&self, viewing: bool) -> attention::Target<'_> {
+        let id = self.selected.as_ref();
+        let terminal = id.and_then(|id| self.terminals.get(id));
+        attention::Target {
+            id,
+            covered: self.covered(),
+            control: control(terminal),
+            authority: terminal.and_then(Terminal::authority),
+            viewing,
+        }
+    }
+
+    /// An explicit action on the selected session acknowledges its pending
+    /// attention once it is viewed (#114).
+    fn defer_acknowledgement(&mut self) {
+        self.acknowledging = self.selected.clone().map(Deferred::new);
+    }
+
+    /// What each terminal owes its application before the frame: the end
+    /// marker of a paste cut short ([`Terminal::paste_end`]), then
+    /// application focus (spec #73, "Application focus"). The selected
+    /// session is focused while no modal covers it and the host has focus;
+    /// every other is not. Each ready controller with `focus-v1` is told of
+    /// each change once, a newly ready one of the current desire.
+    fn synchronise(&mut self) {
+        let focused = self.host_focused && !self.covered();
+        for (id, terminal) in &mut self.terminals {
+            let desired = focused && self.selected.as_ref() == Some(id);
+            let owed = terminal.paste_end();
+            for request in owed.into_iter().chain(terminal.focus(desired)) {
+                self.supervisor.request(id.clone(), request);
+            }
+        }
     }
 
     /// Only the [`Monitor::shown`] terminal is shown.
@@ -285,11 +553,15 @@ impl Monitor {
     /// without acquiring. Disconnected and final rows are ignored until
     /// #116, which owns their retained history. This monitor's own session
     /// has no row (owner decision on #110).
+    /// Enter on a connected row also dismisses a toast covering it and
+    /// acknowledges its attention once viewed (#114).
     fn enter(&mut self, id: SessionId) {
         match self.registry.kind(&id) {
             Some(Kind::Connected) => {
+                self.dismiss_toast(&id);
                 self.choose(id.clone());
                 self.acquire(&id);
+                self.defer_acknowledgement();
             }
             Some(Kind::Unconnected) => self.choose(id),
             Some(Kind::Retained) | None => {}
@@ -374,15 +646,19 @@ impl Monitor {
 
     /// Control and display go to the session's terminal, everything else to
     /// its row; the command's final result and the end of the client to
-    /// both.
+    /// both. What the row announces goes to the toasts, with whether the
+    /// monitor viewed the session before the event changed it.
     fn report(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
         match event {
             ClientEvent::Presentation(presentation) => self.present(id, presentation),
             event => {
+                let viewed = self.viewed() == Some(id);
                 if let Some(presentation) = ending(&event) {
                     self.present(id, presentation);
                 }
-                self.registry.client(id, event, now);
+                if let Some(news) = self.registry.client(id, event, now) {
+                    self.announce(id, news, viewed);
+                }
             }
         }
     }
@@ -421,6 +697,7 @@ impl Monitor {
             let released = self.router.release();
             self.route(released.into_iter().collect())?;
         }
+        self.context = self.context();
         Ok(ending)
     }
 
@@ -442,7 +719,113 @@ impl Monitor {
         Ok(ending)
     }
 
+    /// Pastes, mouse reports and host focus reports bypass keys.
     fn routed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
+        match routed {
+            Routed::Paste(pasted) => self.paste(pasted, typed).map(|()| None),
+            Routed::Mouse(mouse) => self.mouse(mouse, typed).map(|()| None),
+            Routed::Focus(focused) => {
+                self.host_focused = focused;
+                Ok(None)
+            }
+            keyed => self.keyed(keyed, typed),
+        }
+    }
+
+    /// A paste is data for the target that took input when it began, sent
+    /// with that target's markers while it still takes input; once it does
+    /// not, the paste is [cut](Monitor::cut) (spec #73, "Paste rules",
+    /// "Target changes"). A modal owns a paste: the selector's search takes
+    /// it (#113), the key introduction discards it; a paste a modal covers
+    /// part-way is cut, and the search ignores the rest of it, which it
+    /// never saw begin. A prefix the paste discarded reaches its target as
+    /// one literal prefix first.
+    fn paste(&mut self, pasted: Pasted, typed: &mut Vec<u8>) -> io::Result<()> {
+        if self.covered() {
+            self.cut(None);
+            return self.modal(&Routed::Paste(pasted));
+        }
+        let taking = self.taking();
+        let starts = pasted.begin != Begin::Continued;
+        if starts {
+            self.pasting = taking.as_ref().map(|taking| Pasting {
+                target: taking.target.clone(),
+                bracketed: taking.modes.bracketed_paste,
+            });
+            typed.extend(pasted.begin.prefix());
+        }
+        let current = taking.map(|taking| taking.target);
+        self.cut(current.as_ref());
+        self.submit(typed);
+        let ends = pasted.ends;
+        if let Some(Pasting { target, bracketed }) = &self.pasting {
+            terminal(&mut self.terminals, self.model, &target.0).return_live();
+            let part = Paste {
+                bracketed: *bracketed,
+                starts,
+                bytes: pasted.bytes,
+                ends,
+            };
+            self.supervisor
+                .request(target.0.clone(), Request::Paste(target.1, part));
+        }
+        self.pasting = self.pasting.take().filter(|_| !ends);
+        Ok(())
+    }
+
+    /// A paste whose target no longer takes input as `current` (spec #73,
+    /// "Target changes") is cut: the rest of it is discarded through its
+    /// end, never sent elsewhere, even if the target takes input again. An
+    /// application that had bracketed paste on is owed the end marker
+    /// (owner decision on #111), which its terminal pays.
+    fn cut(&mut self, current: Option<&Target>) {
+        let cut = self
+            .pasting
+            .take_if(|pasting| Some(&pasting.target) != current);
+        if let Some(Pasting {
+            target: (id, authority),
+            bracketed: true,
+        }) = cut
+        {
+            self.terminal(&id).cut_paste(authority);
+        }
+    }
+
+    /// A mouse report goes to its gesture's owner (`mouse.rs`): to the
+    /// target taking input, at its cell below the top row, as its modes ask,
+    /// or nowhere; chrome and overlays keep theirs, and an open modal
+    /// takes them (#113). Over an application that does not report the
+    /// mouse, a wheel notch scrolls its history a row, or on its alternate
+    /// screen is a cursor key with alternate scroll on (#112).
+    fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) -> io::Result<()> {
+        let taking = self.taking();
+        let (idle, area) = (self.gestures.idle(), self.screen.overlay());
+        let toasted = self.toasts.take(mouse, idle, area, Instant::now());
+        let target = taking.as_ref().map(|taking| (&taking.target, taking.area));
+        let cell = self.gestures.route(mouse, target.filter(|_| !toasted));
+        let Some((cell, taking)) = cell.zip(taking) else {
+            return self.local(mouse, toasted);
+        };
+        match mouse::wheel(mouse, &taking.modes, taking.alternate) {
+            Some(Wheel::History(rows)) => self.terminal(&taking.target.0).scroll(rows),
+            Some(Wheel::Key(key)) => Key::Cursor(key).encode(&taking.modes, typed),
+            Some(Wheel::Nothing) => {}
+            None => mouse::encode(mouse, cell, &taking.modes, typed),
+        }
+        Ok(())
+    }
+
+    /// A mouse report the monitor keeps: one the shown toast took is its
+    /// own, never selecting, acquiring or acknowledging; any other goes to
+    /// the open modal.
+    fn local(&mut self, mouse: Mouse, toasted: bool) -> io::Result<()> {
+        if toasted {
+            return Ok(());
+        }
+        self.modal(&Routed::Mouse(mouse))
+    }
+
+    fn keyed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
         if let Some(modes) = self
             .accepting()
             .filter(|_| !matches!(routed, Routed::Action(_)))
@@ -461,19 +844,38 @@ impl Monitor {
     /// The selected session's terminal modes while it accepts application
     /// input: no modal is open, the host has room for it, and its control
     /// period's restoration is applied, ready and painted.
-    fn accepting(&self) -> Option<climon2_vt::view::Modes> {
-        let (_, terminal) = self.target()?;
-        terminal.view().map(|view| view.modes())
+    fn accepting(&self) -> Option<Modes> {
+        self.taking().map(|taking| taking.modes)
     }
 
-    /// The selected session and its terminal, while nothing covers it, the
-    /// host has room for it and it may take input. `Terminal::input` alone
+    /// The target taking application input, its modes and its canvas's
+    /// area: its geometry, which the host shows below the top row as far as
+    /// it has room, so the host reports no cell beyond it.
+    fn taking(&self) -> Option<Taking> {
+        let (id, terminal, authority) = self.target()?;
+        let geometry = terminal.geometry();
+        terminal
+            .view()
+            .zip(geometry)
+            .map(|(view, geometry)| Taking {
+                target: (id.clone(), authority),
+                modes: view.modes(),
+                alternate: matches!(view.screen(), vt::Screen::Alternate { .. }),
+                area: Area {
+                    cols: geometry.cols(),
+                    rows: geometry.rows(),
+                },
+            })
+    }
+
+    /// The [`Monitor::shown`] session, its terminal and the authority it
+    /// takes input with, while it may take input. `Terminal::input` alone
     /// learns of a modal or a small host only at the next frame; within one
     /// read, a key after prefix+s must already reach the selector.
-    fn target(&self) -> Option<(&SessionId, &Terminal)> {
+    fn target(&self) -> Option<(&SessionId, &Terminal, Authority)> {
         let id = self.shown()?;
         let terminal = self.terminals.get(id)?;
-        terminal.input().map(|_| (id, terminal))
+        terminal.input().map(|authority| (id, terminal, authority))
     }
 
     /// Submits the application bytes gathered so far to the target they
@@ -485,27 +887,59 @@ impl Monitor {
         let bytes = mem::take(typed);
         let target = self
             .target()
-            .and_then(|(id, terminal)| Some((id.clone(), terminal.input()?)));
+            .map(|(id, _, authority)| (id.clone(), authority));
         if let Some((id, authority)) = target {
+            self.terminal(&id).return_live();
             self.request(&id, Some(Request::Input(authority, bytes)));
         }
     }
 
     /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
     /// prefix+s the selector unless the modal key introduction is open;
-    /// prefix+j's jump arrives with #114.
+    /// prefix+j jumps from anywhere.
     fn action(&mut self, action: Action) -> Option<Ending> {
         match action {
             Action::Exit => return Some(Ending::Exit),
             Action::KeyIntroduction => self.introduction.open(),
-            Action::SessionList if !self.introduction.is_open() => {
-                let area = self.screen.overlay();
-                self.selector
-                    .open(&self.registry.rows(), self.selected.as_ref(), area);
-            }
-            _ => {}
+            Action::Jump => self.jump(),
+            Action::SessionList => self.session_list(),
         }
         None
+    }
+
+    /// Prefix+s opens the selector, unless the modal key introduction is
+    /// open.
+    fn session_list(&mut self) {
+        if self.introduction.is_open() {
+            return;
+        }
+        let area = self.screen.menu();
+        self.selector
+            .open(&self.registry.rows(), self.selected.as_ref(), area);
+    }
+
+    /// Prefix+j (spec #73, "Attention jump target"; #114): the connected
+    /// session that needs attention with the newest daemon change at the
+    /// keypress. The jump closes every overlay and dismisses a toast
+    /// covering it, selects it, takes control only while the monitor
+    /// neither holds nor is acquiring it, shows its live view and
+    /// acknowledges its attention once viewed. With none, the selection
+    /// stays and `No sessions need attention` shows for a while.
+    fn jump(&mut self) {
+        let Some(id) = self.registry.attention() else {
+            self.notice.show(Instant::now());
+            return;
+        };
+        self.notice.clear();
+        self.introduction.close();
+        self.dismiss_toast(&id);
+        self.choose(id.clone());
+        if self.control(&id) == Control::NotControlling {
+            self.acquire(&id);
+        }
+        self.resize();
+        self.terminal(&id).return_live();
+        self.defer_acknowledgement();
     }
 
     /// Input no application takes goes to [`Monitor::modal_input`]. When it
@@ -552,11 +986,15 @@ impl Monitor {
         }
     }
 
-    /// Input for the open selector; Enter acts on the row it chose.
+    /// Input for the open selector; Enter acts on the row it chose, and
+    /// cancelling back to the selected session acknowledges its attention
+    /// once viewed (Confirmed 2026-11-08; #114).
     fn selector_input(&mut self, input: &Routed) {
-        let area = self.screen.overlay();
-        if let Some(id) = self.selector.input(input, &self.registry.rows(), area) {
-            self.enter(id);
+        let area = self.screen.menu();
+        match self.selector.input(input, &self.registry.rows(), area) {
+            Some(id) => self.enter(id),
+            None if !self.selector.is_open() => self.defer_acknowledgement(),
+            None => {}
         }
     }
 }
@@ -601,6 +1039,7 @@ fn selected<'a>(
         .and_then(Terminal::view)
         .map_or_else(|| without_view(kind, &row.status, control), Canvas::View);
     Session {
+        id: &row.id,
         label: &row.label,
         status: &row.status,
         control: control.label(),

@@ -15,8 +15,8 @@
 use crate::{
     mouse::{Gesture, Mouse},
     paint::HostCursor,
-    registry::{View, clip},
-    router::{Key, Paste, Routed},
+    registry::{View, truncate},
+    router::{Begin, Key, Pasted, Routed},
     search::{Edit, Search},
 };
 use climon2_core::{SessionId, keys::ControlKey};
@@ -144,7 +144,7 @@ impl Selector {
             Routed::Key(key) => self.key(key, rows, area),
             Routed::Paste(paste) => self.paste(paste, rows, area),
             Routed::Mouse(mouse) => self.mouse(mouse, rows, area),
-            Routed::Action(_) | Routed::Unknown(..) | Routed::Rest(_) => None,
+            Routed::Action(_) | Routed::Unknown(..) | Routed::Rest(_) | Routed::Focus(_) => None,
         }
     }
 
@@ -160,17 +160,17 @@ impl Selector {
     }
 
     /// A bracketed paste fills the search as one line once it ends.
-    fn paste(&mut self, paste: &Paste, rows: &[View], area: Rect) -> Option<SessionId> {
-        match paste {
-            Paste::Start => self.search.paste_start(),
-            Paste::Data(bytes) => self.search.paste_data(bytes),
-            Paste::End => {
-                self.refused = false;
-                let edit = self.search.paste_end();
-                return self.edited(edit, rows, area);
-            }
+    fn paste(&mut self, pasted: &Pasted, rows: &[View], area: Rect) -> Option<SessionId> {
+        if pasted.begin != Begin::Continued {
+            self.search.paste_start();
         }
-        None
+        self.search.paste_data(&pasted.bytes);
+        if !pasted.ends {
+            return None;
+        }
+        self.refused = false;
+        let edit = self.search.paste_end();
+        self.edited(edit, rows, area)
     }
 
     /// A click on a row highlights it and one outside the box cancels; the
@@ -308,7 +308,8 @@ impl Selector {
     }
 
     fn click(&mut self, mouse: &Mouse, rows: &[View], area: Rect) {
-        let at = Position::new(mouse.column, mouse.row);
+        let (column, row) = mouse.host_cell();
+        let at = Position::new(column, row);
         let inside = self.layout(area).filter(|layout| layout.outer.contains(at));
         let Some(list) = inside.map(|layout| layout.list) else {
             self.open = false;
@@ -318,7 +319,7 @@ impl Selector {
         let first = self.first(matching.len(), usize::from(list.height));
         let row = list
             .contains(at)
-            .then(|| matching.get(first + usize::from(mouse.row - list.y)))
+            .then(|| matching.get(first + usize::from(row - list.y)))
             .flatten();
         if let Some(row) = row {
             self.highlight = Some(row.id.clone());
@@ -525,12 +526,7 @@ fn separator(area: Rect, buffer: &mut Buffer) {
 /// (owner decision on #112), never splitting a wide character.
 fn text_at(buffer: &mut Buffer, area: Rect, text: &str, style: Style) {
     let cells = usize::from(area.width);
-    let fitted = if clip(text, cells).len() == text.len() {
-        text.to_owned()
-    } else {
-        format!("{}…", clip(text, cells.saturating_sub(1)))
-    };
-    buffer.set_stringn(area.x, area.y, fitted, cells, style);
+    buffer.set_stringn(area.x, area.y, truncate(text, cells), cells, style);
 }
 
 /// The selector's command for `key`, if it has one: a bare Escape, a cursor
@@ -1000,12 +996,38 @@ mod tests {
         );
     }
 
+    /// A press at the 0-based host cell `column`, `row`; the host reports
+    /// it from 1.
     fn mouse(code: u16, column: u16, row: u16) -> Mouse {
         Mouse {
             code,
-            column,
-            row,
-            release: false,
+            column: column + 1,
+            row: row + 1,
+            released: false,
+        }
+    }
+
+    fn start() -> Pasted {
+        Pasted {
+            begin: Begin::Started,
+            bytes: Vec::new(),
+            ends: false,
+        }
+    }
+
+    fn data(bytes: &[u8]) -> Pasted {
+        Pasted {
+            begin: Begin::Continued,
+            bytes: bytes.to_vec(),
+            ends: false,
+        }
+    }
+
+    fn end() -> Pasted {
+        Pasted {
+            begin: Begin::Continued,
+            bytes: Vec::new(),
+            ends: true,
         }
     }
 
@@ -1037,7 +1059,7 @@ mod tests {
             assert_eq!(list(&selector, &rows).1, [5], "{code} {column} {row}");
         }
         let mut released = mouse(0, 3, 4);
-        released.release = true;
+        released.released = true;
         selector.mouse(&released, &rows, SMALL);
         assert_eq!(list(&selector, &rows).1, [5]);
         let wheel =
@@ -1108,20 +1130,12 @@ mod tests {
                 .collect();
             (inside, highlighted, cursor)
         };
-        let paste = |selector: &mut Selector, parts: &[Paste]| {
+        let paste = |selector: &mut Selector, parts: &[Pasted]| {
             for part in parts {
                 selector.paste(part, &rows, area);
             }
         };
-        paste(
-            &mut selector,
-            &[
-                Paste::Start,
-                Paste::Data(b"a\r".to_vec()),
-                Paste::Data(b"\nb".to_vec()),
-                Paste::End,
-            ],
-        );
+        paste(&mut selector, &[start(), data(b"a\r"), data(b"\nb"), end()]);
         assert_eq!(
             shown(&selector),
             (
@@ -1139,14 +1153,11 @@ mod tests {
         assert_eq!(shown(&selector), (refused, vec![], cursor(7, 2)));
         selector.key(&LEFT, &rows, area);
         assert_eq!(shown(&selector).0[4], "");
-        paste(
-            &mut selector,
-            &[Paste::Start, Paste::Data(b"xy".to_vec()), Paste::End],
-        );
+        paste(&mut selector, &[start(), data(b"xy"), end()]);
         assert_eq!(shown(&selector).0[4], "Search is limited to 5 bytes");
-        paste(&mut selector, &[Paste::Start, Paste::End]);
+        paste(&mut selector, &[start(), end()]);
         assert_eq!(shown(&selector).0[4], "");
-        selector.paste(&Paste::Data(b"x".to_vec()), &rows, area);
+        selector.paste(&data(b"x"), &rows, area);
         assert_eq!(shown(&selector).0[1], "a bcd");
     }
 
@@ -1171,9 +1182,9 @@ mod tests {
         assert_eq!(drawn(&selector, &rows, SMALL).0[2], " ║        ║ ");
         let taken = [
             Routed::Key(DOWN),
-            Routed::Paste(Paste::Start),
-            Routed::Paste(Paste::Data(b"c".to_vec())),
-            Routed::Paste(Paste::End),
+            Routed::Paste(start()),
+            Routed::Paste(data(b"c")),
+            Routed::Paste(end()),
             Routed::Mouse(mouse(0, 0, 0)),
         ];
         for input in &taken {

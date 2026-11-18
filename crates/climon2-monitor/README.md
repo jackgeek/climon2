@@ -15,7 +15,7 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), and the selector's search, navigation and footer (#113). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), and toasts and the bell (#115). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -108,18 +108,18 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   is sent, still encoded for the application's modes. Known limits of that
   release: a reply, report or paste marker split right after its Escape
   leaves that Escape with the application, and a keypad key split so cannot
-  become a numeric-mode key. Bracketed paste
-  (data until its end marker, which discards a pending prefix and leaves
-  none), SGR mouse reports, focus reports and host replies bypass shortcuts
-  and reach no application. The monitor's rule for host replies (confirmed
+  become a numeric-mode key. Bracketed pastes (data until their end
+  marker, which discards a pending prefix and leaves none), SGR mouse
+  reports, focus reports and host replies bypass shortcuts; pastes, mouse
+  and focus are routed as [below](#paste-mouse-and-focus-111), and host
+  replies reach no application. The monitor's rule for host replies (confirmed
   by the owner on #109): OSC, DCS, APC and PM strings; CSI sequences with a
   `?`, `>` or `=` marker, an intermediate byte, or a `c`, `n`, `t` or `y`
   final; and any control sequence longer than 64 bytes. CSI `R` stays a key
   (modified F3 sends it, and the monitor never asks the host for its cursor
-  position); pastes, mouse and focus reach
-  applications with #111. Prefix+s, x, j and ? (lowercase) are the global
+  position). Prefix+s, x, j and ? (lowercase) are the global
   actions from every screen, the selector and the too-small host; prefix+j
-  is recognised and never forwarded, and its jump arrives with #114. A
+  is recognised and never forwarded, and jumps as [below](#viewing-acknowledgement-and-attention-114). A
   doubled prefix is one literal prefix, a prefix and any other key (`d`,
   `h`, `r`, `J`, the take-control key, a whole cursor key) are both sent
   literally, and a lone prefix waits indefinitely. With `Ctrl+[` as the
@@ -250,7 +250,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `client ended` and client diagnostics, content-free.
 - **The selector** (`selector.rs`, `search.rs`; #106, #113): prefix+s,
   unless the modal key introduction is open, overlays the rows below the top
-  row, one cell in from each edge, with a captionless double border. Its
+  row above the toasts' four-row lane at the bottom of the host (owner
+  decision on #115), one cell in from each edge, with a captionless double
+  border. Its
   first line is the search, always focused, with the host cursor at its
   insertion point (scrolled so the cursor stays in view); a single separator
   `╟──╢` joins the side borders below it. Then the rows the search matches,
@@ -375,14 +377,46 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   two columns (blank if the right edge would cut it; the engine's width, never
   a re-measured symbol, decides what a cell covers, and the next cell is
   placed with CUP wherever the host may measure it otherwise), colours and
-  rendition (every underline style as a single underline until #112; SGR 58
+  rendition (each underline style with its own SGR 4 subparameter, `4:2`
+  double, `4:3` curly, `4:4` dotted, `4:5` dashed and plain `4` single,
+  carried beside the Ratatui frame, whose cells hold only whether they are
+  underlined; SGR 58
   only on an underlined cell with a colour of its own, in the T.416 colon
   form, since SGR 0 resets it and a host that does not know it skips the
   colon form whole). Its cursor is shown with its
   DECSCUSR shape and blink where the application left it, unless hidden, off
-  the host or covered by the selector or key introduction; never in the top
-  row. While its restoration is staged the last applied frame stays; before
-  any, the canvas is blank.
+  the host, scrolled out of view or covered by the selector or key
+  introduction; never in the top row. While its restoration is staged the
+  last applied frame stays; before any, the canvas is blank. While the
+  application's synchronized update (`CSI ? 2026 h`) is open, the canvas
+  painted before it stays, cursor included, for the same session at the
+  same host size, while the top row and overlays are drawn as ever; the
+  update shows whole once it ends, which the session daemon makes happen
+  within vte's 150 ms timeout.
+- **History** (#112). A vertical wheel notch over the selected
+  application taking input, when it does not report the mouse, scrolls
+  its normal screen's view one row into the model's history (up goes
+  back; one row a notch, owner decision 2026-11-16), as far as the oldest
+  row kept, or one row further once older rows were discarded: there the
+  glossary's truncation notice, `[climon2: older session scrollback was
+  discarded]`, sits above the oldest kept row (owner decision
+  2026-11-16). The canvas then shows that many history rows above the
+  screen's top rows, and the cursor moves down with them, hidden once
+  scrolled out of view. Output keeps the view anchored on the rows it
+  shows, counted per engine step
+  ([climon2-vt](../climon2-vt/README.md#read-only-views)); when they are
+  evicted it moves to the notice above the oldest row kept, never to
+  live. While scrolled back the top row's control slot says `History`
+  (owner decision 2026-11-16). Any application input (typed keys, mouse
+  reports, a paste) returns the view live and reaches the application;
+  scrolling alone changes neither application focus nor input. On the
+  alternate screen, which never shows normal history, the wheel is a
+  cursor key (up or down, in the application's cursor mode) only while
+  the application has alternate scroll (1007) on, and does nothing
+  otherwise; the normal view keeps its place until the application
+  returns. An applied restoration replaces the model whole, so its view
+  is live. The monitor draws only on its own alternate screen, so nothing
+  reaches the host's native scrollback.
 - **Top row** (owner decision, 2026-11-14). With a session selected,
   fixed-width slots at the right edge, each after ` | `, never move whatever
   their values: its status as the selector shows it (Unavailable until
@@ -394,7 +428,10 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   request, or the model's limit, until the next applied restoration) follows
   it after ` | ` in what the label leaves, so the error is clipped first and
   never squeezes out the label. A host narrower than the slots shows them
-  from its left edge, clipped. #112 adds the label marquee. A request
+  from its left edge, clipped. A label that overflows its cells is
+  truncated statically to end with `…` within them, never splitting a
+  wide character, and so is a selector row: nothing marquees (owner
+  decision on #112, 2026-11-16). A request
   refused under a restoration since superseded is not an error; a Resize
   refused so is sent again under the current one.
 - **Geometry.** The selected controller is asked for the host width by its
@@ -473,6 +510,195 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   completion, loss and failed acquisition, and input never goes to another
   session.
 
+## Paste, mouse and focus (#111)
+
+- **Paste** (`router.rs`, `supervisor/stream.rs`). The router passes a
+  bracketed paste on as data, read by read, holding back only bytes that
+  may begin its end marker until the next byte decides, so a paste is
+  exact however the host splits it. It goes to the target that took
+  application input when it began (the selected, controlling, ready,
+  painted session with no modal and room on the host), with the
+  application's own markers (`ESC [ 200 ~`, `ESC [ 201 ~`) only if the
+  application had bracketed paste on then, and otherwise as the payload
+  alone. A prefix pending when a paste begins reaches that target as one
+  literal prefix first; with no target taking input the prefix and the
+  paste are discarded. An open modal owns a paste and discards the prefix:
+  the selector's search takes the paste as one line (#113), the key
+  introduction discards it. A paste a modal covers part-way is cut (below),
+  and the search ignores the rest of it, which it never saw begin. The supervisor submits a paste's parts as input in
+  chunks of at most `transfer.chunk_bytes`, its markers in chunks of their
+  own; once the library refuses one (owner decision
+  on #111), the top row's error slot says `Paste truncated`, the rest of
+  that paste is discarded, and an application that received any of its
+  start marker is owed the rest of it and the end marker: submitted after
+  every answer, when the library may have room again, and before any later
+  input to that session, until the library accepts it.
+- **Target changes.** A change of the selection, of whether a modal covers
+  the canvas, or of the selected session's control period or restoration
+  (a grant, a new restoration, revocation, the end of its client), seen
+  between two reads, discards a pending prefix. A paste or a mouse gesture
+  belongs to the target, and the authority, that took input when it began;
+  once that target stops taking input for any reason (those changes, a
+  too-small host), the rest of it is discarded through its end marker or
+  release, even if the target takes input again, and never goes to another
+  session, period or restoration. A bracketed paste cut short so leaves
+  its application inside the paste, so (owner decision on #111) while the
+  control period that received it lasts, its terminal owes the end marker
+  and submits it, before anything else, under the session's current
+  authority as soon as that restoration is ready: at once for a
+  too-small host, after a new restoration once its Ready is accepted.
+  When control changes hands nothing is owed: the daemon itself ends a
+  bracketed paste it saw begin. A paste cut short after the input queue
+  truncated it owes no second end marker: what the truncation still owes
+  goes under the current authority instead.
+- **Mouse** (`mouse.rs`). SGR reports are hit-tested: a press inside the
+  selected session's canvas below the top row, within its geometry and the
+  host, begins a gesture the application owns; one anywhere else (the top
+  row, a margin, any report while a modal is open or nothing takes input)
+  begins a gesture the monitor keeps; while the selector is open, its
+  reports go to the selector (#113), and otherwise nowhere. Every later report of a gesture, until its release, goes to
+  its owner, at the nearest application cell when it strays, or is
+  discarded, with the rest of the gesture, once its owner stops taking
+  input. Motion and the wheel outside a gesture go where they land. An
+  application receives an event translated one row up, only as its
+  reporting mode asks (1000 presses, releases and the wheel; 1002 also
+  motion with a button held; 1003 any motion) and in its encoding (SGR;
+  UTF-8, coordinates up to 2015; or single bytes, values up to 223, where a
+  release is button 3), and nothing it cannot encode. The host mirrors the
+  tracking level of the application whose canvas is shown uncovered (owner
+  decision on #111): click-only (1000), button-event (1002) or any-event
+  (1003), switched in `screen.rs` beside the keypad mode by resetting the
+  old mode and setting the new one. While that application reports nothing,
+  a modal covers it, another session or no session is shown, or the host is
+  too small, the host is in the monitor's own button-event tracking (1002),
+  as it entered; leaving resets every mode. The wheel over an application
+  that does not report the mouse scrolls its history or sends cursor keys
+  (History above, #112).
+- **Host focus.** The host's focus reports bypass keys and set whether the
+  host has focus, assumed until it reports otherwise. A host that never
+  reports focus cannot be detected: its focus is always assumed, and nothing
+  on screen says so (owner decision on #111). Viewing, which host focus
+  ends without dropping control, arrives with #114.
+- **Application focus.** A session is keyboard-focused while it is selected,
+  no modal covers it and the host has focus; every other session is not.
+  Before each frame, each ready controller (Ready accepted) whose client
+  opened with `focus-v1` is sent Focus for a desire it was not yet sent
+  under its current restoration: so opening the selector or the key
+  introduction, switching away and the host's focus out send focus out to
+  the session that had focus, closing them or the host's focus in send
+  focus in, and a newly ready restoration (a grant, a hand-back, a new
+  restoration) sends the current desire once, never an earlier one. The
+  daemon forwards a changed focus only while the application has focus
+  reporting on, and the current one once when it turns it on. A session
+  whose client or daemon lacks `focus-v1` is sent no Focus and stays usable.
+  Like a host that never reports focus, this limitation is documented here
+  only; nothing on screen says so (owner decision on #111).
+
+## Viewing, acknowledgement and attention (#114)
+
+- **Viewing.** The monitor views the selected session only while it
+  controls it with its restoration applied and Ready accepted, the frame
+  just painted shows it uncovered by any modal on a host with room, its
+  view is live (not scrolled back into history), the host has focus
+  (assumed until the host reports otherwise) and no toast covers any cell of
+  its canvas (#115). After each painted frame, each
+  session whose client opened with `status-v1` is sent Set viewing under
+  its current authority when that changes; a control period starts not
+  viewing, as the daemon's does. Viewing never acknowledges by itself.
+- **Coalesced reports.** Focus and Set viewing are coalesced per session
+  (owner decision on #114): while one of a kind is unanswered no other of
+  that kind is sent, and once it is answered, accepted or refused, the
+  latest desire goes if it differs from the one last sent. Toggling the
+  selector on a slow daemon so puts at most one Focus and one Set viewing
+  per session in the library's operation queue (`queues.operations`), not
+  one per change, which had filled it and got typed keys refused with
+  `queue_full`. The
+  end of the client forgets an unanswered one; a revocation does not, as
+  its answer still comes. Acknowledge is not coalesced: one per explicit
+  action, and a deferred one waits until Set viewing true was sent in the
+  current control period, so the daemon never refuses it as not viewing
+  while a coalesced viewing report is still held back.
+- **Acknowledgement.** Enter on a connected row, prefix+j, and closing or
+  cancelling the selector back to the selected session (Escape or a click
+  outside) each defer one Acknowledge for that session. It is submitted,
+  after the viewing report, once the session is viewed: an action made
+  while the host is unfocused, the view scrolled back, the host too small
+  or the session not yet ready acknowledges once that clears (owner
+  decision on #114). It is cancelled when the target context changes
+  first: another selection, a modal opening, control lost or another
+  control period. An Acknowledge a newer restoration of its period
+  superseded (a resize) is deferred again. Closing help, host focus-in and
+  visibility never acknowledge.
+- **prefix+j.** From any screen, the connected row needing attention with
+  the newest daemon change at the keypress (the lower full session ID on a
+  tie); acknowledged, final, disconnected and not-connected rows never
+  qualify. It closes the selector and the key introduction, selects the
+  session, acquires it only when the monitor neither controls nor is
+  acquiring it, returns its view live and defers its acknowledgement. With
+  none, the selection stays and `No sessions need attention` shows in the
+  top row's error slot, or the body when nothing is selected, for 3 seconds
+  (owner decision on #114). Uppercase J and a pasted prefix+j are input.
+- **Host attention.** After each painted frame the host hears, through a
+  root OSC 7501 report ending in `ESC \`, whether any connected row needs
+  attention: `state=blocked:kind=question:app=climon2-monitor` while one
+  does, otherwise `state=working:app=climon2-monitor`, the first state and
+  then changes only, with no heartbeat or query, and never a session's own
+  report. Once a started monitor has released the host on exit, it writes
+  the root `state=clear`, before main prints any diagnostic.
+
+## Toasts and bell (#115)
+
+`toast.rs` is pure; `lib.rs` feeds it what the registry announces.
+
+- **Eligibility.** Each status needing attention announces its episode ID;
+  a final outcome is announced once, and only when the session's Initial
+  metadata knew no final outcome, so a final already known at startup or
+  first connection never toasts (owner decision on #115). Each episode and
+  the final outcome toast at most once per session for the whole run,
+  whatever repeats or menus bring. An announcement toasts at once unless
+  this monitor viewed the session when it arrived: an episode first seen
+  while viewed toasts once a menu (the selector or the key introduction)
+  opens, while it still needs attention, and every frame with a menu open
+  makes such episodes eligible; a final outcome learned while viewed never
+  toasts. Another client's or monitor's viewing suppresses nothing.
+- **Queue.** The queue holds three toasts, the one shown among them, in
+  order; a fourth is replaced by one `More events occurred. Check sessions
+  list` toast after them, which every later one joins until it shows
+  (owner decision on #115). Nothing fails a connection.
+- **Appearance.** One toast shows at a time, flush with the host's
+  bottom-right corner inside the four bottom rows the selector leaves free:
+  a yellow single-line border around the session's label, as the row showed
+  it when the toast was queued, after one blank cell, and, on a
+  needs-attention toast while `monitor.show_key_hints` is on, a row
+  `<prefix> then j: jump to attention`; each line ends in `…` when it does
+  not fit. It is as wide as its widest line plus four cells, at most 40% of
+  the host's width; a toast that has no room for one cell of text and its
+  rows waits until it has. Over everything else, menus included, the border
+  draws clockwise from the top-left corner in 400 ms over a blank inside,
+  the text then shows, held for 2,000 ms from when the frame first showing
+  it has finished writing to the host (owner decision on #115, 2026-11-17),
+  dims for 300 ms, and the border erases clockwise in 400 ms with the
+  inside showing through. A host that takes output late so still sees the
+  whole hold. Each frame is drawn for the time it is painted, so no
+  obsolete frame waits; a resize redraws the toast at once for the new
+  host. A wide character the toast's left
+  edge would cut is blanked.
+- **Dismissal.** A left click on a toast, or prefix+j or Enter on a session
+  whose canvas it covers (owner decision on #114), dismisses it: before its
+  title has been shown, what was drawn erases at once, as fast as it drew;
+  later, its text dims at once and the border then erases. Dismissal never
+  selects, acquires or acknowledges.
+- **Input.** A toast is nonmodal. While it covers any cell of the selected
+  session's canvas, the session is not viewed, so a deferred acknowledgement
+  waits until it has gone, yet keys still reach the session. A mouse report
+  outside any gesture that lands on a toast is the toast's; a gesture begun
+  before a toast appeared keeps its target over it through its release.
+- **Bell.** With `monitor.bell` on (the default), one BEL follows the frame
+  that first shows each toast's full title, once written, the overflow toast
+  included; never per frame, redraw, resize or coalesced announcement, and
+  never for a toast dismissed before its title showed. With it off only the
+  BEL is skipped.
+
 ## Exit
 
 Prefix+x exits 0; catchable SIGINT, SIGTERM and SIGHUP take the same path with
@@ -516,11 +742,18 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Selected without a connected client | `No terminal content is available.`, then the row status | `screen.rs` |
 | Row and top-row statuses (#107) | `Needs attention`, `Acknowledged`, `Running`, `Idle`, `Succeeded`, `Failed (exit <code>)`, `Failed (signal <number>)`, `Starting`, `Unavailable`, `Disconnected` | `registry.rs` |
 | Top-row control (#108) | `Acquiring`, `Restoring`, `Controlling`, `Not controlling`, `Ended` | `terminal.rs` |
+| Top-row control slot while the canvas is scrolled back into history (#112, owner decision 2026-11-16) | `History` | `screen.rs` |
+| Canvas, above the oldest history row kept once older rows were discarded (#112; the glossary's truncation notice, owner decision 2026-11-16) | `[climon2: older session scrollback was discarded]` | `screen.rs` |
+| Top-row label or selector row that overflows its cells (#112, owner decision 2026-11-16) | `<text, truncated>…` | `registry.rs` |
+| Top row's error slot: a paste the input queue refused partway (#111, owner decision 2026-11-16) | `Paste truncated` | `terminal.rs` |
 | Selector footer, key hints on (#113, owner decision: only select, cancel and help) | `Enter: select  Esc: cancel  <prefix> then ?: help`; with Ctrl+[ as the prefix `Enter: select  <prefix> then ?: help`; with Ctrl+M as the prefix `<prefix> then <prefix>: select  Esc: cancel  <prefix> then ?: help` | `selector.rs` |
-| Key introduction (#105) | `<prefix> then x  Exit the monitor`, `<prefix> then s  Open the session list`, `<prefix> then ?  Show this dialog`, `[ ] Don't show again (Space)` (`[x]` once saved), `Continue (Enter)`, titled `Keys` | `keys.rs`, `introduction.rs` |
+| Key introduction (#105; prefix+j by owner decision on #114) | `<prefix> then x  Exit the monitor`, `<prefix> then s  Open the session list`, `<prefix> then j  Jump to the session that needs attention`, `<prefix> then ?  Show this dialog`, `[ ] Don't show again (Space)` (`[x]` once saved), `Continue (Enter)`, titled `Keys` | `keys.rs`, `introduction.rs` |
 | Key introduction, the selector's keys (#113, owner decision: help lists what the footer leaves out) | `In the session list:`, `Type or paste  Search by status and title`, `Left, Right, Home, End, Backspace  Edit the search`, `Up, Down, PageUp, PageDown  Move the highlight`, `Enter  Select the highlighted session` (`<prefix> then <prefix>  …` with Ctrl+M as the prefix), `Esc  Cancel` (left out with Ctrl+[ as the prefix), `Click a row  Highlight it`, `Click outside  Cancel`, `Wheel  Scroll the list` | `selector.rs` |
 | Selector footer's row, search refused for its length (#113) | `Search is limited to <N> bytes` | `selector.rs` |
 | Selector rows and footer too long for the box (#113, owner decision on #112) | the text that fits, then `…` | `selector.rs` |
+| Top row's error slot, or the body with nothing selected, for 3 seconds after prefix+j finds no session (#114, owner decision 2026-11-16) | `No sessions need attention` | `attention.rs` |
+| Toast, a needs-attention toast's hint row while key hints are on (#115) | `<prefix> then j: jump to attention` | `lib.rs` |
+| Toast standing for those a full queue left out (#115, owner wording 2026-11-16) | `More events occurred. Check sessions list` | `toast.rs` |
 
 ## Specification mapping
 
@@ -566,7 +799,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | Operational limits `ui.search_bytes` (Monitor): typed and pasted text at the limit taken, one byte past (single- and multi-byte) refused visibly, nothing reaching the session | `search_text_past_its_byte_limit_is_refused_visibly` (e2e) |
 | SEL-02 (Contract, pure supplement): `SkimMatcherV2` ordered-subsequence matching over status, space and label, ignoring case beyond ASCII; editing, control characters and invalid UTF-8; paste as one line; `ui.search_bytes` at 4096 and 4097 bytes, single- and multi-byte, typed and pasted; the search line keeps its cursor in view | `search_matches_ordered_subsequences_of_status_and_label`, `search_ignores_unicode_case_and_matches_wide_text`, `typing_backspace_and_cursor_keys_edit_at_the_cursor`, `control_characters_and_invalid_bytes_insert_nothing`, `typing_past_the_search_limit_is_refused`, `a_paste_is_inserted_as_one_line`, `a_paste_past_the_search_limit_is_refused_whole`, `the_search_line_keeps_the_cursor_in_view` (`src/search.rs`) |
 | SEL-01, SEL-02, DSC-05 (pure supplement): layout, footer variants and reclaimed row, navigation and scrolling, highlight rules for edits and live updates, opening, mouse, paste and refusals, search cursor, the smallest boxes, input other than keys, pastes and mouse reports | `the_selector_draws_search_separator_and_two_columns`, `the_footer_names_the_actual_bindings_and_its_row_is_reclaimed_without_hints`, `navigation_moves_without_wrapping_and_keeps_the_highlight_in_view`, `search_edits_keep_a_matching_highlight_or_take_the_first_match`, `a_highlighted_row_that_leaves_or_stops_matching_is_unhighlighted_for_good`, `opening_highlights_the_selected_session_or_the_first_row`, `clicks_highlight_rows_or_cancel_outside_and_the_wheel_scrolls`, `pastes_fill_the_search_and_refusals_show_in_the_footer`, `the_selector_takes_keys_pastes_and_mouse_reports_only`, `search_edits_and_reopening_scroll_back_to_the_start`, `the_search_cursor_follows_the_text`, `the_selector_draws_only_what_fits`, `help_lists_every_selector_key_with_the_actual_prefix` (`src/selector.rs`) |
-| INP-05 (pure supplement): SGR mouse reports parsed; clicks and wheel notches whatever the modifiers | `sgr_reports_parse_to_their_code_cell_and_release`, `left_presses_click_and_wheel_notches_scroll_with_any_modifiers` (`src/mouse.rs`) |
+| INP-05 (pure supplement): SGR mouse reports parsed; clicks and wheel notches whatever the modifiers | `sgr_reports_parse_and_malformed_ones_do_not`, `left_presses_click_and_wheel_notches_scroll_with_any_modifiers` (`src/mouse.rs`) |
 | DSC-03 (pure registry supplement): one client request per live session; rows tied on their entry time in ascending full session ID | `live_sessions_need_one_client_each` (`src/registry.rs`) |
 | DSC-01 (Monitor, status order), COM-06 (Monitor labels), STA-07 (Monitor, hidden change), DSC-05 (Monitor, reorder case): real sessions at known daemon clock times show Needs attention, Running, Idle, Failed (signal 15), Failed (exit 143) and Succeeded in group and daemon-time order, finals kept after their sessions end; working under pending attention moves nothing, even with its daemon clock moved past a newer attention row's time; a reorder keeps the highlighted row | `real_sessions_show_their_effective_status_and_final_outcomes_in_order` (e2e) |
 | DSC-01 (Monitor, status order: every status group, a tied change time broken by ascending full session ID, never creation order, delayed Initial metadata Starting until it arrives; initial-selection case, #266: the startup progress `Connecting to 9 sessions (8 ready)` until the delayed Initial metadata, then the first eligible row, neither the newest created nor the first started, selected and acquired under the open selector), DSC-05 (Monitor, reorder case: a row moving in above the highlight, and the highlighted row's own status change) | `rows_order_by_status_group_daemon_change_time_and_full_session_id` (e2e, Fault peers) |
@@ -582,7 +815,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
 | Stale rows (owner decision on #106): a session proven gone drops its row unless it was ever connected | `a_session_proven_gone_drops_its_row_unless_it_was_ever_connected` (`src/registry.rs`) |
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
-| TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; cell-safe clipping | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `clipping_is_display_cell_safe` (`src/registry.rs`) |
+| TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; static, cell-safe truncation with `…` at the limit and one past it, in the top row (beside its error) and the selector (owner decision on #112) | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `overflowing_text_is_truncated_display_cell_safe_with_an_ellipsis` (`src/registry.rs`), `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`), `the_selector_draws_a_captionless_double_border_with_two_columns` (`src/selector.rs`) |
 | SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes`, `opening_an_open_selector_keeps_its_highlight`, `the_highlight_spans_its_row_and_stays_in_view`, `the_selector_draws_only_where_its_border_fits` (`src/selector.rs`) |
 | CTL-05 (Monitor), TRM-01 (Monitor, basic cases), initial selection (#266): the one Idle session selected and acquired once collection ends; plain, ANSI-coloured, bold-on-blue, wide and combining text and the cursor painted as written, live; a later arrival never moves the selection; the open selector covers the canvas and the control still reads Controlling | `the_initial_selection_is_acquired_and_painted_live` (e2e) |
 | TRM-02 (Monitor): only the daemon answers session queries; no session byte or title reaches the host; the host is never queried | `only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host` (e2e) |
@@ -609,6 +842,10 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | CTL-05 (pure supplement): Resize once per grant and desire, never without control; superseded refusals are not errors and a refused Resize is resent; Acquiring and errors | `resize_follows_every_grant_and_each_new_desire_only_while_controlling`, `work_refused_under_a_superseded_restoration_is_not_an_error_and_resize_is_resent`, `acquiring_ends_at_the_grant_or_the_answer_and_errors_are_shown`, `each_control_has_its_label` (`src/terminal.rs`) |
 | LIM-03 (pure supplement): a restoration over the model's limit is an error without Ready | `a_restoration_over_the_model_limit_is_an_error_without_ready` (`src/terminal.rs`) |
 | TRM-01 (pure supplement): exact SGR for the 16 ANSI, palette, direct and default colours, underline colour (colon form, underlined cells only) and renditions; wide and combining text; each cell covers its given width; the cursor | `colours_and_renditions_are_painted_with_their_own_sgr`, `wide_and_combining_text_and_the_cursor_are_painted_in_place`, `each_cell_covers_the_width_it_was_given`, `each_row_starts_with_its_own_cursor_position` (`src/paint.rs`) |
+| TRM-01 (pure supplement; #108's note on #112): each underline style with its own SGR 4 subparameter, single as plain 4, none on a cell not underlined; each style reaches its cell from the model | `each_underline_style_is_painted_with_its_own_sgr` (`src/paint.rs`), `each_underline_style_reaches_its_cell` (`src/screen.rs`) |
+| TRM-01 (pure supplement, synchronized updates): while the session's update is open the canvas painted before it stays, cursor and underline styles included, never for another session or host size; the whole update shows once it ends | `an_open_synchronized_update_keeps_the_last_coherent_canvas` (`src/screen.rs`) |
+| TRM-05, TRM-01 (pure supplement, #112): a scrolled canvas shows history rows above the screen's top rows; the cursor moves down and hides once scrolled out of view (the canvas's last row and one past it); the alternate screen shows its own rows; an evicted view shows the truncation notice, clipped to the session, above the oldest kept row; `History` in the control slot while scrolled back | `a_scrolled_canvas_shows_history_and_hides_the_cursor_out_of_view`, `an_evicted_view_shows_the_notice_above_the_oldest_kept_row`, `while_scrolled_back_the_control_slot_says_history` (`src/screen.rs`) |
+| TRM-05 (pure supplement, #112): a vertical notch scrolls history a row without mouse reporting, whatever its modifiers; on the alternate screen a cursor key with alternate scroll, nothing without; horizontal notches, presses, releases, motion and any report under mouse reporting are the application's; input returns the view live | `the_wheel_scrolls_history_or_sends_cursor_keys_only_without_mouse_reporting` (`src/mouse.rs`), `the_view_scrolls_into_history_and_input_returns_it_live` (`src/terminal.rs`) |
 | TRM-03, TRM-04 (pure supplement): the desired area; 4 rows and 5 columns enough, one fewer of either too small | `the_application_area_is_the_host_less_its_top_row_unless_too_small` (`src/screen.rs`) |
 | Top row (owner decision 2026-11-14, pure supplement): fixed slots for status, control and hint whatever the control word; the error clipped first, never squeezing out the label | `status_and_control_keep_their_slots_whatever_the_control`, `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`) |
 | TRM-01 (pure supplement): the cursor only inside the host; a wide character the edge would cut left blank; each rendition reaches its cell; DECSCUSR for every shape | `the_cursor_shows_only_inside_the_host`, `a_wide_character_the_host_edge_would_cut_is_left_blank`, `each_rendition_reaches_its_cell`, `each_colour_reaches_its_cell_as_the_same_kind`, `each_cursor_shape_has_its_decscusr` (`src/screen.rs`) |
@@ -630,22 +867,55 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | INP-02, HLP-02 (Monitor, Escape; owner decisions on #105, #106 and #109): a cursor key split right after its Escape or after its introducer never closes the selector or key introduction; a lone Escape closes it when the next key arrives, which reaches the session; Escape then a key in one read closes the selector or key introduction and the key reaches the session, painted first | `split_escape_sequences_never_close_dialogs_and_escape_then_a_key_is_both` (e2e), `only_closing_the_last_modal_reveals_the_canvas` (`src/lib.rs`) |
 | Spec #73 exit (owner decision on #109): keys read with prefix+x reach the session before shutdown; a stuck session holds exit at most the operation deadline (plus the shutdown deadline) | `typed_bytes_reach_the_selected_session_exactly_however_reads_split`, `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` (e2e); `stopping_waits_for_accepted_input_at_most_the_operation_deadline` (`src/supervisor.rs`) |
 | COM-03 (Monitor, queue full), COM-04 (Monitor, chunks): a refused chunk is shown with the bytes not sent, earlier input accepted; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` (e2e) |
+| INP-03 (Monitor), COM-04 (Monitor, paste cases): pastes exact, binary, prefix commands, nested and broken markers included, with application markers only while it has bracketed paste on, off and on again; a pending prefix as one literal before the paste, none pending after it; markers split across reads | `pastes_reach_the_selected_session_exactly_with_markers_only_when_it_asks` (e2e) |
+| INP-03 (Monitor, Fault; owner decision on #111), COM-04 (Monitor, paste chunks): a paste refused partway shows `Paste truncated`, its later read is discarded, and the application gets the start marker, whole chunks and the end marker before the next key | `a_paste_refused_partway_is_truncated_and_its_application_gets_the_end_marker` (e2e) |
+| INP-04 (Monitor, Fault): revocation in the middle of a paste (the rest discarded even once ready again after a hand-back), revocation with a prefix pending (the take-control key then takes control), a new restoration from a host resize in the middle of a paste (the end marker once that restoration is ready, before later keys; owner decision on #111), and a too-small host in the middle of a paste (the end marker at once; the rest discarded once there is room again) | `a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix` (e2e) |
+| INP-04 (Monitor, Fault: disconnect): the selected session's daemon killed with a prefix pending discards the prefix, so the next key is no exit and reaches no other session | `a_disconnect_discards_a_pending_prefix` (e2e) |
+| INP-05 (Monitor: application, chrome and selector cases), INP-04 (Monitor: a modal in the middle of a gesture): clicks, a drag onto the top row and the wheel translated; a gesture begun on the top row stays local; the selector opening mid-drag discards the rest; selector clicks reach no application; single-byte encoding; reporting off | `mouse_events_reach_the_application_translated_and_keep_their_gesture` (e2e) |
+| INP-05 (Monitor; owner decision on #111): the host mirrors the application's mouse tracking level (1003, 1000), back to the monitor's own (1002) while the application reports nothing, the selector covers it or another client's takeover has it, and again once it takes input | `the_host_mirrors_the_application_mouse_tracking_level` (e2e), `the_host_mouse_tracking_is_written_when_it_changes` (`src/screen.rs`) |
+| FOC-01 (Monitor: application focus): focus follows menus, host focus and switching, once per change, the current focus once when reporting is enabled | `application_focus_follows_selection_menus_and_host_focus_once_each` (e2e) |
+| FOC-02 (Monitor; owner decisions on #111): a host that never reports focus leaves sessions usable, and a session without `focus-v1` shows nothing about it in its top row | `without_focus_support_sessions_stay_usable_and_nothing_is_shown` (e2e) |
+| TRM-05 (Monitor; owner decisions on #112), FOC-01 (Monitor, history case): the wheel scrolls history a row a notch while the application does not report the mouse, `History` in the control slot, the cursor hidden out of view; output keeps the view anchored; typing returns it live and reaches the application with no focus change from scrolling; at the oldest row of an untruncated history no notice; 210 rows with 200 kept evict the anchor to the notice above the oldest kept row, one notch down leaving it; on the alternate screen the wheel sends nothing, then cursor keys (normal, then application cursor mode) with alternate scroll on; no native host scrollback | `the_wheel_scrolls_anchored_history_and_typing_returns_live` (e2e) |
+| TRM-06 (Monitor; owner decision on #112): a label filling its 55 cells exactly is whole and one a cell longer truncated with `…`; a wide character crossing the limit leaves a blank; combining marks stay with their base; an empty title keeps the latest nonempty one; a status change moves neither label nor slots | `overflowing_titles_are_truncated_statically_with_an_ellipsis` (e2e) |
+| TRM-01 (Monitor; #108's note on #112): each underline style, cursor shape and blink, a hidden cursor, the 1049 alternate screen entered and left with the normal screen and cursor restored, and a synchronized update spanning two writes shown whole | `underline_styles_cursor_styles_screens_and_synchronized_updates_reach_the_host` (e2e) |
+| TRM-04 (Monitor): under continuous output, resizes to a narrower host, one too small and back show only coherent frames (the last frame clipped or padded, `Terminal too small` alone, the session at its new size), and the session gets each size sent and none while too small | `resizes_under_continuous_output_show_only_coherent_frames` (e2e) |
 | INP-01 (pure input-router supplement): the global actions with default and custom prefixes; a doubled prefix; unknown suffixes; a lone prefix waits | `the_prefix_and_lowercase_s_x_j_or_question_mark_are_the_global_actions`, `a_doubled_prefix_is_one_literal_prefix`, `an_unknown_suffix_is_the_prefix_and_that_key`, `a_lone_prefix_waits_indefinitely` (`src/router.rs`) |
 | INP-02 (pure input-router supplement): every split routes identically, and sends an application the same bytes even with a released Escape; a split cursor key is never an Escape; Escape and a key; a lone Escape waits for the next byte, and one bound for an application is released at once, once, never as or after a prefix; Ctrl+[ as the prefix; broken and overlong (64 and 65 bytes) sequences; cursor and keypad encodings | `every_split_of_the_reads_routes_identically`, `a_split_cursor_key_is_never_an_escape`, `escape_and_a_key_in_one_read_are_escape_then_that_key`, `a_lone_escape_waits_for_the_next_byte`, `a_lone_escape_for_an_application_is_released_at_once`, `an_application_receives_the_same_bytes_for_every_split`, `with_escape_as_the_prefix_bare_escape_waits_and_alt_keys_are_actions`, `a_broken_sequence_is_its_bytes`, `an_overlong_sequence_is_discarded`, `cursor_keys_follow_the_application_cursor_mode`, `keypad_keys_follow_the_application_keypad_mode` (`src/router.rs`); `the_host_keypad_mode_is_written_when_it_changes` (`src/screen.rs`) |
-| TRM-02, INP-03, INP-05 (pure input-router supplement): replies, mouse and focus reports and pastes are never keys and never complete a pending prefix; a paste discards one; mouse reports are routed as themselves and a paste as its data without markers, each read's but the last five bytes, which may begin the end marker (#113) | `replies_reports_and_pastes_are_never_keys`, `a_paste_discards_a_pending_prefix_and_leaves_none`, `pasted_bytes_are_routed_each_read_but_a_possible_end_marker` (`src/router.rs`) |
+| TRM-02, INP-03, INP-05, FOC-01 (pure input-router supplement): replies, mouse and focus reports and pastes are never keys and never complete a pending prefix; a paste discards one, as a prefix it begins after | `replies_reports_and_pastes_are_never_keys`, `mouse_and_focus_reports_never_complete_or_clear_a_pending_prefix`, `a_paste_discards_a_pending_prefix_and_leaves_none` (`src/router.rs`) |
+| INP-03 (pure input-router supplement): pasted bytes exact, binary and broken end markers included, however reads split; each read's part, holding back only what may begin the end marker | `pasted_bytes_are_exact_however_reads_split`, `each_read_brings_its_part_of_a_paste` (`src/router.rs`) |
+| INP-04 (pure supplement): a target change discards a pending prefix; a gesture whose owner stops taking input is discarded through its release; a bracketed paste cut short owes its end marker once under the current authority of the same control period, never after it (owner decision on #111) | `a_target_change_discards_a_pending_prefix` (`src/router.rs`), `a_gesture_whose_owner_stops_taking_input_is_discarded_through_its_release` (`src/mouse.rs`), `a_cut_paste_owes_its_end_marker_under_the_current_authority` (`src/terminal.rs`), `a_closing_part_ends_a_cut_paste_under_the_current_authority` (`src/supervisor/stream.rs`) |
+| INP-05 (pure supplement): SGR reports parsed, malformed ones not; clicks translated below the top row at the edges and one past; gesture ownership; the events each reporting mode asks for; SGR, UTF-8 and single-byte encodings at their limits and one past | `sgr_reports_parse_and_malformed_ones_do_not`, `a_click_inside_the_application_is_translated_below_the_top_row`, `each_gesture_keeps_the_target_its_press_found`, `an_application_receives_only_the_events_its_mode_asks_for`, `each_encoding_is_written_as_the_application_set_it` (`src/mouse.rs`) |
+| INP-03, COM-03, COM-04 (pure supplement; owner decision on #111): input in chunks with every unsent byte carried; a paste exact between markers only when bracketed; a truncated paste reported once, its rest discarded, its application owed exactly the rest of the start marker and the end marker, paid when the library has room and before later input | `input_goes_in_chunks_and_a_refusal_carries_every_unsent_byte`, `a_paste_is_exact_between_the_markers_only_when_bracketed`, `a_truncated_bracketed_paste_owes_its_end_marker_and_discards_the_rest`, `a_truncated_paste_owes_only_what_its_application_lacks`, `a_paste_truncated_after_one_byte_of_its_start_marker_owes_the_rest`, `a_new_paste_waits_behind_what_an_earlier_one_owes` (`src/supervisor/stream.rs`); `a_refused_paste_shows_that_it_was_truncated` (`src/terminal.rs`) |
+| FOC-01, FOC-02 (pure supplement): Focus once per desire under ready authority, a newly ready restoration's current desire once, none without `focus-v1`, control or a running command; `focus-v1` lasts until the client ends; Open says whether `focus-v1` was selected; Focus and paste parts as their native requests | `focus_follows_each_new_desire_under_ready_authority_once`, `focus_support_lasts_until_the_client_ends` (`src/terminal.rs`), `opening_says_whether_focus_and_status_were_selected`, `focus_and_paste_parts_become_their_native_requests` (`src/supervisor/client.rs`) |
 | COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
 | COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor.rs`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
+| NOT-03 (Monitor and Fault), INP-01 (Monitor: prefix+j from the empty, selector, help, placeholder and live screens), STA-08 (Monitor, jump case): the newest connected attention chosen at the keypress, overlays closed, control taken only when not held, acknowledged once ready; acknowledged and disconnected rows never chosen; with none, `No sessions need attention` in the body for 3 seconds, or the top row's error slot with the selection kept | `prefix_j_jumps_to_the_newest_connected_attention_and_acknowledges_it_once_ready` (e2e) |
+| STA-08 (Monitor: acknowledgement timing), SEL-03 (Monitor, acknowledgement case), FOC-01 (Monitor, viewing cases), NOT-03 (deferred acknowledgement cancelled), INP-01 (prefix+j from history and too-small screens): visibility, closing help and host focus-in never acknowledge; cancelling the selector while the host is unfocused or the view scrolled back acknowledges only once focus returns or the view is live; a modal opening cancels a deferred acknowledgement; prefix+j on a too-small host acknowledges once there is room, from history once live | `acknowledgement_waits_until_viewed_and_closing_help_or_focus_in_never_acknowledges` (e2e) |
+| SEL-03 and STA-08 (Monitor, cancel case): cancelling the selector back to a covered session that needs attention acknowledges it once ready | `status_keeps_updating_for_background_covered_and_revoked_rows` (e2e) |
+| NOT-04 (Contract and Monitor): exact root OSC 7501 bytes, the initial state and each aggregate change only, disconnected rows not counted, no session report or bell forwarded, the root clear on exit; every released scenario checks the host heard only those | `the_host_hears_the_attention_state_once_per_change_and_the_clear_on_exit` (e2e); `assert_host_reports` in every `assert_released` |
+| STA-01, STA-03, STA-04, STA-05 (Monitor: representative sequences through a real daemon), INP-01 (Monitor: uppercase J and a pasted prefix+j are input): root `working`, `idle`, `blocked`, `done`, `error` and `clear`, OSC 133 boundaries and accepted input show the right row states | `representative_status_sequences_show_the_right_row_states` (e2e) |
+| NOT-03, NOT-04 (pure supplement): the jump target by newest change then full session ID, excluding acknowledged, final, disconnected and not-connected rows | `the_attention_target_is_the_newest_connected_row_needing_attention` (`src/registry.rs`) |
+| NOT-03, NOT-04, STA-08 (pure supplement): host reports' exact bytes, initial state and changes only; the notice up to 3 seconds and not at them; a deferred acknowledgement submitted once viewed, kept across restorations of its period, cancelled on a context change | `the_host_hears_the_initial_attention_state_and_changes_only`, `the_notice_shows_for_three_seconds`, `a_deferred_acknowledgement_submits_once_its_target_is_viewed`, `a_deferred_acknowledgement_is_cancelled_when_its_target_context_changes` (`src/attention.rs`) |
+| FOC-01, STA-08 (pure supplement): Set viewing on each change within a control period under the current authority, only with `status-v1`; a superseded Acknowledge owed again; Set viewing and Acknowledge as their native requests; Open says `status-v1` was selected | `viewing_is_reported_on_each_change_within_a_control_period`, `an_acknowledge_a_newer_restoration_superseded_is_owed_again` (`src/terminal.rs`), `viewing_and_acknowledge_become_their_native_requests`, `opening_says_whether_focus_and_status_were_selected` (`src/supervisor/client.rs`) |
+| FOC-01, STA-08 (pure supplement; owner decision on #114, 2026-11-17): Focus and Set viewing coalesce per session: none of a kind while one is unanswered, then the latest desire once if it differs from the last sent, each kind waiting only for its own answer; a revocation keeps waiting for the answer, the end of the client does not; an Acknowledge follows only Set viewing true sent in the held control period | `focus_and_viewing_wait_for_their_answers_and_then_send_the_latest_desire`, `only_the_end_of_the_client_forgets_unanswered_focus_and_viewing`, `an_acknowledge_follows_only_viewing_true_submitted_in_the_period` (`src/terminal.rs`) |
+| NOT-03 (pure supplement): the notice in the top row's error slot before the session's own error, or in the body before the startup progress | `a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own`, `the_body_says_the_startup_progress_or_the_state_and_any_incompleteness` (`src/screen.rs`) |
+| NOT-01 (Monitor), NOT-02 (Monitor: the queue), INP-05 (Monitor: toast clicks), with fake daemons: a final known at the first connection never toasts; attention pending at startup toasts once with the hint, its title held and its bell rung only once written however late the host reads the startup output; six episodes in a burst show three toasts and then `More events occurred. Check sessions list`; a final learned while running toasts once without a hint; clicks only dismiss; menus toast nothing again; one bell per toast | `toasts_announce_each_episode_and_final_once_and_queue_three_then_more` (e2e) |
+| STA-06 (Monitor), CTL-03 (Monitor: notifications), NOT-01 (Monitor: a final learned while viewed), NOT-02 (Monitor: shape, ellipsis, bell), TRM-03 (Monitor: toast resize): progress and incomplete OSC 99 toast nothing; OSC 9 toasts once, yellow, bottom-right, with the hint; resized to 80x25 it is 32 cells with `…`, no second bell; OSC 777 and OSC 99 within the pending episode toast nothing; a final learned while viewed never toasts, even once a menu opens; a new episode toasts again; prefix+x exits while one draws | `notifications_toast_once_per_episode_and_progress_never_does` (e2e) |
+| FOC-01 (Monitor: toast cases), NOT-01 (Monitor: menu opening), INP-05 (Monitor: toast cases): attention seen while viewed toasts once the selector opens; a covering toast defers the cancel's acknowledgement until no toast covers the session; keys reach the session under a toast; a drag begun before a toast keeps its target over it; a click on the toast only dismisses it | `a_covering_toast_stops_viewing_while_keys_and_drags_still_reach_the_session` (e2e) |
+| CFG-01 (Monitor: hints and bell): with both off, no hint in the empty state, top row, selector, placeholder or toast and no key introduction or bell, while every binding works and toasts and host reports go on | `without_key_hints_or_bell_no_hint_shows_and_no_bell_rings` (e2e) |
+| NOT-01, NOT-02, FOC-01, INP-05 (pure supplement, #115): once-per-run deduplication and viewed suppression; the three-toast queue and its overflow toast; the timings at each boundary; the hold and bell starting when the full title has been written; no title, so no bell, for a toast dismissed before it; early dismissal; placement and width at 40%; drawing, colour, dimming and erasing; clockwise border order; covering, hits, clicks and dismissal over a covered canvas; wide characters at the left edge; gestures under way | `each_episode_and_final_outcome_toasts_once_unless_viewed`, `the_queue_holds_three_toasts_and_one_more_stands_for_the_rest`, `a_toast_draws_holds_fades_and_erases_on_time`, `the_hold_starts_when_the_title_has_been_written`, `a_toast_dismissed_before_its_title_never_titles`, `an_early_dismissal_erases_only_what_was_drawn`, `a_dismissed_toast_ends_early_and_the_next_begins`, `a_toast_sits_bottom_right_at_most_forty_percent_wide`, `a_toast_waits_until_it_fits`, `a_toast_draws_its_border_label_and_hint_in_yellow`, `the_border_runs_clockwise_from_the_top_left_corner`, `the_shown_toast_covers_and_takes_only_its_own_cells`, `the_toast_takes_reports_outside_gestures_and_a_click_dismisses_it`, `a_toast_is_dismissed_over_a_canvas_it_covers`, `a_wide_character_cut_by_the_toast_is_blanked` (`src/toast.rs`); `attention_episodes_and_finals_learned_while_running_are_announced` (`src/registry.rs`); `each_gesture_keeps_the_target_its_press_found` (`src/mouse.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
-Not yet claimed: EXT-03's root OSC 7501 `clear` (#118), paste, mouse and focus
-routing to applications and target-change invalidation (#111, INP-03 to
-INP-05; the router hands pastes and mouse reports only to the selector so
-far, #113), global actions from the history screen (#116), Delete in the
+Not yet claimed: EXT-03's root OSC 7501 `clear` on the fail-stop path (#118), NOT-01's reconnect case (the
+monitor does not reconnect yet; its toast ledger already lasts the run, #116), a toast beside a canvas narrower or shorter than the
+host, which leaves the session viewed (pure supplement only, `a_toast_is_dismissed_over_a_canvas_it_covers`), prefix+j inside the Delete dialog (#117), FOC-02's host-native
+copy (a host manual check), INP-04's disconnect case in the middle of a
+paste or gesture (the selection stays on the lost session, so nothing
+else could receive the rest; #116 owns its recovery), global actions from the history screen (#116), Delete in the
 selector (#117) and its line in the key introduction, Enter on disconnected and final rows and retained
 caches with their overlays (#116), Enter on Awaiting resources rows (#120),
-the label marquee and synchronized
-updates (#112), underline styles other than single, Awaiting resources
+Awaiting resources
 ending initial collection (#120), resource admission and fairness, including newest-first starts
 across discovery batches, and `discovery.stall_ms` (#120), passive retry
 (#116), the fail-stop after an unconfirmed shutdown (#118), and the universal archive's runtime on both architectures, which

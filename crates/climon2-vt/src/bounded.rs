@@ -31,6 +31,12 @@ pub(crate) struct Bounded {
     /// The engine's scroll region, which decides where line feeds can
     /// first push rows into history.
     region: Region,
+    /// How far the normal screen's view is scrolled back into history,
+    /// one past the oldest row shown for the truncation notice above it.
+    scrolled: usize,
+    /// The application's synchronized update is open: what the screen
+    /// shows may be half drawn.
+    synchronizing: bool,
 }
 
 /// The normal screen's history: the rows the model shows, and the engine's
@@ -245,6 +251,8 @@ impl Bounded {
             extras: Extras::default(),
             preceding: None,
             region: Region::full(usize::from(geometry.rows())),
+            scrolled: 0,
+            synchronizing: false,
         }
     }
 
@@ -328,9 +336,71 @@ impl Bounded {
             self.core.set_history(self.history.rows());
         }
         let overrun = self.grow(bytes.len() + policy.repeats, room);
-        self.apply(parser, kind, bytes, policy.repeats);
+        let pushed = self.counted(parser, kind, bytes, policy.repeats);
         self.settle(policy, overrun);
+        self.anchor(pushed);
+        self.synchronize(policy);
         Ok(())
+    }
+
+    /// A synchronized update (`CSI ? 2026 h`) opens until its end
+    /// (`CSI ? 2026 l`) or a full reset; another begin changes nothing.
+    fn synchronize(&mut self, policy: &Policy) {
+        let open = policy.sync.unwrap_or(self.synchronizing);
+        self.synchronizing = open && policy.clear != Clear::Reset;
+    }
+
+    /// [`Bounded::apply`], returning the rows it pushed into the normal
+    /// screen's history while its view is scrolled back, which alone needs
+    /// them; otherwise none are counted. The alternate screen has no
+    /// history, so a count there is none.
+    fn counted(&mut self, parser: &mut Parser, kind: Kind, bytes: &[u8], repeats: usize) -> usize {
+        let counting = self.scrolled > 0 && self.region.at_top();
+        if !counting {
+            self.apply(parser, kind, bytes, repeats);
+            return 0;
+        }
+        self.core.count_pushes();
+        self.apply(parser, kind, bytes, repeats);
+        self.core.pushed()
+    }
+
+    /// Keep a scrolled view on the rows it shows after `pushed` more rows
+    /// entered the normal screen's history: once they are discarded, at the
+    /// notice above the oldest row retained (none once history is cleared).
+    /// Read only while the normal screen is active, which alone pushes,
+    /// shortens or clears its history while it is shown.
+    fn anchor(&mut self, pushed: usize) {
+        if let Some(held) = self.core.normal_history() {
+            let shown = held.min(self.history.shown);
+            let anchored = self.scrolled + pushed;
+            self.scrolled = if anchored > shown {
+                self.notice(shown)
+            } else {
+                anchored
+            };
+        }
+    }
+
+    /// How far back the truncation notice above the oldest of `shown`
+    /// history rows is: one past it when the history is truncated, the
+    /// oldest row otherwise.
+    fn notice(&self, shown: usize) -> usize {
+        shown + usize::from(self.history.truncated)
+    }
+
+    /// Scroll the normal screen's view `rows` back (forward when
+    /// negative), between the live screen and the notice above the oldest
+    /// row.
+    pub(crate) fn scroll(&mut self, rows: isize) {
+        if let Some(held) = self.core.normal_history() {
+            let limit = self.notice(held.min(self.history.shown));
+            self.scrolled = self.scrolled.saturating_add_signed(rows).min(limit);
+        }
+    }
+
+    pub(crate) fn return_live(&mut self) {
+        self.scrolled = 0;
     }
 
     /// Whether the first history chunk waits for the normal screen to
@@ -458,6 +528,7 @@ impl Bounded {
         *self.extras.of(Screen::Normal) = normal;
         self.history = history;
         self.history.truncated |= dropped;
+        self.anchor(0);
         true
     }
 
@@ -516,7 +587,13 @@ impl Bounded {
 
     /// What this instance shows, for painting.
     pub(crate) fn view(&self) -> View<'_> {
-        View::new(&self.core, self.history.shown, self.history.truncated)
+        View::new(
+            &self.core,
+            self.history.shown,
+            self.history.truncated,
+            self.scrolled,
+            self.synchronizing,
+        )
     }
 }
 

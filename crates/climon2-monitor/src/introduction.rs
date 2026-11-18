@@ -37,6 +37,11 @@ impl KeyIntroduction {
         self.open = true;
     }
 
+    /// Prefix+j closes it (#114), as it closes every overlay.
+    pub(crate) fn close(&mut self) {
+        self.open = false;
+    }
+
     /// Whether it is open, owning typed keys.
     pub(crate) fn is_open(&self) -> bool {
         self.open

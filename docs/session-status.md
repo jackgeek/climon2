@@ -426,6 +426,9 @@ while switching/menu opening sends focus-out when valid. Optional core
 reporting is disabled, and truthfully distinguishes state acceptance from bytes
 accepted for forwarding. Newly enabled reporting emits current known state once;
 new readiness synchronizes latest local state without replaying old requests.
+The monitor coalesces Focus and Set viewing per session: while one of a kind is
+unanswered it sends no other, then sends the latest desired state once if it
+differs from the last sent; Acknowledge still goes once per explicit action.
 Missing library/daemon focus support keeps the session usable with an explicit
 limitation. These are [terminal focus semantics](protocol/terminal-integration.md#host-focus-and-application-focus),
 not another attention detector.
@@ -516,8 +519,9 @@ describing the dynamic most-recent jump rather than guaranteeing their own sessi
 toast/chrome/selector/empty hints, not bindings or application text. Validate the
 startup snapshot before terminal changes; wrong type/duplicate known fields fail,
 missing fields default, no live reload, and no new monitor bindings. The monitor
-validates it and honors it for its empty-state hint, the only hint implemented
-([#82](https://github.com/jackgeek/climon2/issues/82)).
+validates it and honors it for every hint it shows, toasts' included
+([#82](https://github.com/jackgeek/climon2/issues/82) to
+[#115](https://github.com/jackgeek/climon2/issues/115)).
 See the [canonical amendments](protocol/terminal-integration.md#attention-jump-and-configurable-hints)
 and [configuration example](../README.md#configuration).
 
@@ -609,9 +613,9 @@ title in the menu; otherwise use command plus arguments. Unsupported title
 delivery on older daemons does not block takeover. Render titles literally and
 mark cached data stale when delivery becomes uncertain.
 The monitor's permanent top row shows the title/fallback as a label only,
-marqueeing only overflowing label text with
-[display-cell](protocol/TERMS.md#display-cell)-safe clipping and
-restart on label changes; status/control/error remain stationary. Full details
+truncating overflowing label text statically, ending with `…` at a
+[display-cell](protocol/TERMS.md#display-cell)-safe width (nothing
+marquees); status/control/error remain stationary. Full details
 stay in the selector. Never change the host title.
 
 Users do not set terminal titles through climon2. Future user-assigned,

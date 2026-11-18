@@ -207,7 +207,7 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     errors). `Limits` exists only once every setting is within its range and
     the cross-field rules hold (sub-budgets, reservations and the other
     monitor byte budgets within their totals, client queues within the queue
-    and client budgets, toasts within the queue budget, progress reserves,
+    and client budgets, progress reserves,
     chunk and record capacity, quanta, retry delays; the daemon's
     notification assembly limits are in no monitor total). `assembly()`
     gives those limits as `config::Assembly`, which exists only within the

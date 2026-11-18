@@ -44,7 +44,13 @@ Up/Down/PageUp/PageDown without wrapping, the highlight rules for edits and
 live updates, row clicks, the wheel, cancelling by a click outside the box
 (owner decision on #113), and the key-hint footer, which names only select,
 cancel and help (owner decision on #113). Nothing else this document
-specifies is implemented: no Delete, toasts or bell. Initial selection
+specifies is implemented: no Delete. Toasts, their four-row lane below the
+selector and the bell
+([#115](https://github.com/jackgeek/climon2/issues/115)) are implemented as
+[below](#toasts-and-bell). Prefix+j, viewing,
+acknowledgement and the host attention reports
+([#114](https://github.com/jackgeek/climon2/issues/114)) are implemented as
+below. Initial selection
 ([#266](https://github.com/jackgeek/climon2/issues/266)) selects and
 acquires a row at startup without closing an open selector or moving its
 highlight.
@@ -67,6 +73,7 @@ prefix:
 |---|---|
 | prefix+x | Exit the monitor |
 | prefix+s | Open the session list |
+| prefix+j | Jump to the session that needs attention |
 | prefix+? | Show this dialog |
 
 Below them it lists the selector's own keys under **In the session list**:
@@ -230,10 +237,14 @@ Use the existing once-per-unviewed-episode/final-outcome notification rules.
 The selected terminal continues updating under the modal selector, while
 [viewing](../GLOSSARY.md#status-and-attention) and application keyboard focus
 remain gated. Nonmodal toasts retain the existing viewing/gesture semantics.
-Highlighting, opening/cancelling, dismissing a toast and host focus do not
-acknowledge attention.
+Highlighting, opening, dismissing a toast and host focus do not acknowledge
+attention. Closing or cancelling the selector back to the session does, once
+it is ready and unobstructed (Confirmed 2026-11-08; spec #73).
 
-A toast appears bottom-right outside selector hit targets, in a stable lane.
+A toast appears bottom-right outside selector hit targets, in a stable lane:
+the selector always leaves the host's bottom four rows to toasts, shrinking by
+them (owner decision on #115). Only needs-attention toasts carry the hint
+row.
 Its yellow border draws clockwise from the top-left across top/right/bottom/left;
 the title appears after the border completes. Main content is just the session
 label. Width is at most 40% of host width, with one-line display-cell-safe
@@ -246,19 +257,28 @@ then the border erases in the same clockwise order. Clicking starts dismissal
 without selection, acquisition or acknowledgement. During early dismissal,
 erase only the border already drawn. Distinct eligible episodes queue and
 repeated requests within a pending episode do not duplicate notifications.
+The queue holds three toasts, the one shown among them; when more arrive, one
+extra toast says `More events occurred. Check sessions list` in their place,
+without a hint, and nothing fails a connection (owner decision on #115).
+No toast announces a final outcome the monitor already knew at startup or at
+its first connection to the session: only one learned after the row was seen
+running (owner decision on #115).
 Animation never blocks session switching, selector input, resize or exit.
 
 Accepted prototype timings are 400 ms drawing, 2 seconds title hold,
-300 ms text fade, then 400 ms erasure. These are visual trials;
+300 ms text fade, then 400 ms erasure. The hold starts when the frame showing
+the full title has finished writing to the host (owner decision on #115,
+2026-11-17). These are visual trials;
 final operational/rendering/queue budgets are specified in
 [operational limits](monitor-operational-limits.md#ui-sampling-and-responsiveness).
 Too-small screens remain explicit, retain clients/control/models and global
 commands, and never send invalid application geometry or buffer input.
 
-Planned `monitor.bell` is boolean, default true. It controls one
-[host bell](protocol/monitor-host/bell.md) when each toast first begins drawing,
-including initial and queued presentations, not every frame, hint change,
-dismissal or coalesced request. Missing file/object/field uses the default.
+`monitor.bell` is boolean, default true. It controls one
+[host bell](protocol/monitor-host/bell.md) when each toast's full title is
+first shown, once that frame has been written to the host, including initial
+and queued presentations, not every frame, resize, hint change, dismissal or
+coalesced request, and not for a toast dismissed before its title showed. Missing file/object/field uses the default.
 Read one [climon2-home](../GLOSSARY.md#installation)
 [JSONC](protocol/TERMS.md#jsonc) snapshot before terminal setup; wrong types/null,
 duplicate known fields or unreadable/malformed input fail explicitly.
@@ -277,7 +297,9 @@ Use root `blocked`/`kind=question` while pending, `working` while monitoring
 without pending attention, and root `clear` on orderly exit.
 Report initial state and changes only; no heartbeat or capability query.
 These reports neither acknowledge sessions nor amend the enclosing daemon
-[FSM](protocol/TERMS.md#fsm).
+[FSM](protocol/TERMS.md#fsm). The monitor sends them
+([#114](https://github.com/jackgeek/climon2/issues/114)); the root `clear`
+follows the host's release on exit.
 
 ## Automated acceptance obligations
 
@@ -297,7 +319,7 @@ duplicate suppression, rejection/lost response without Kill replay, definitive
 termination and local cleanup/join before dismissal, no same-run rediscovery,
 non-acquiring fallback, and prohibited connected revoked-cache inspection.
 Include startup help with hints enabled/disabled and suppression saved/unsaved,
-the three actual-prefix bindings, reversible suppression across restarts and
+the four actual-prefix bindings, reversible suppression across restarts and
 releases, explicit save errors, and prefix+? despite either suppression.
 Cover repeated help, Enter/Escape/prefix handling, underlying selector
 search/highlight preservation, background progress, and modal input isolation
