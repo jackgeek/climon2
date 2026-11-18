@@ -365,13 +365,9 @@ fn linux_identity_handles_arbitrary_name_bytes_and_uses_epoch_microseconds() {
     let identity = identity.unwrap().unwrap();
     let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let started = Duration::from_micros(identity);
-    // /proc's boot epoch is rounded to a whole second, and the kernel moves
-    // it whenever the wall clock is stepped or slewed after boot, so on a
-    // host up for a while the derived start can differ from the wall clock
-    // by seconds. Identity needs it stable, not exact: allow both drifts.
-    let drift = Duration::from_secs(30);
-    assert!(started >= before - drift, "{started:?} vs {before:?}");
-    assert!(started <= after + drift, "{started:?} vs {after:?}");
+    // /proc's boot epoch is rounded to a whole second.
+    assert!(started >= before - Duration::from_secs(1));
+    assert!(started <= after);
 }
 
 #[test]

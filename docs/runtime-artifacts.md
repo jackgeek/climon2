@@ -54,6 +54,7 @@ flowchart TB
         second_library[["Second-release fixture library<br/>test-only cdylib of release 0.0.97"]]
         second_daemon["climon2-second-release-daemon<br/>second-release fixture's session daemon, release 0.0.97"]
         owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
+        measure["climon2-measure<br/>PERF-01 measurement harness and its sessions' workload"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
@@ -75,6 +76,10 @@ flowchart TB
         library_host -->|"loads beside the release under test through the shared loader"| second_library
         cli -->|"starts 0.0.97 sessions from the 0.0.97 folder"| second_daemon
         second_library -->|"daemon wire revision 1: passive monitor connections"| second_daemon
+        xtask -->|"measure: runs through Cargo"| measure
+        measure -->|"installs the candidate archive, then runs its climon2 for exec --headless, monitor, attach and kill"| launcher
+        measure -->|"reads the embedded requirements through the shared loader"| library
+        daemon -->|"runs as the measured sessions' workload"| measure
         tests -->|"execs registered terminal roots through"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
@@ -103,6 +108,16 @@ short-lived parents. Process identity, sampled ancestry (macOS kernel
 process/image ids), session membership and environment markers remain
 additional ownership evidence. Commands that explicitly close inherited
 descriptors keep only that additional evidence.
+
+**Current (#121):** `climon2-measure` is test tooling, never a release
+payload. `cargo xtask measure` runs it on an exact candidate archive: it
+installs the archive with that archive's own installer, starts the measured
+sessions through the installed `climon2` with itself (its `workload` command)
+as their session command, measures the installed monitor against one
+installed `climon2 attach` per session on emulated host terminals, and loads
+the candidate library through the shared loader only to read its embedded
+requirements. The [measurement workflow](../.github/workflows/measure.yml)
+runs it on release candidates and on manual dispatch.
 
 **Current (#75, #85, #93, #94):** every release builds and ships the client library in
 its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS

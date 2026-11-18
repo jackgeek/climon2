@@ -324,6 +324,25 @@ success. These are declared-environment targets, not hard real-time guarantees.
 Any additional processor/resident-memory regression threshold needs measurements
 and separate agreement; this specification invents none.
 
+The [measurement job](../GLOSSARY.md#testing)
+([#121](https://github.com/jackgeek/climon2/issues/121)) implements this
+workload as `cargo xtask measure` on the exact candidate archive, through the
+test-only [`climon2-measure`](../crates/climon2-measure/README.md) harness,
+and the [Measure workflow](../.github/workflows/measure.yml) runs it on hosted
+macos-15, macos-15-intel and ubuntu-24.04 for release candidates and on manual
+dispatch, never on pull requests (owner, 2026-11-16). Each scenario's window is
+60 s at fixed output rates; the comparison is the
+[standalone baseline](../GLOSSARY.md#testing). A missed target, a stall or
+defaults that cannot admit an exact population are recorded as a failed
+Measure case needing the owner's written disposition, which
+[#122](https://github.com/jackgeek/climon2/issues/122) requires before
+qualification; they do not fail the job. The job measures `workers`,
+`instance_descriptors` and `load_descriptors` and checks them against the
+requirements embedded in the release, which stay in source, with 25% headroom.
+Ten mixed releases are recorded as not run until a ten-release mixed-version
+fixture exists. The job's reports are the Measure evidence; this document is
+not.
+
 ## Documentation and evidence records
 
 Sources: [protocol reference](protocol/README.md),

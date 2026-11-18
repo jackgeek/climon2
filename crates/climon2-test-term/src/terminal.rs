@@ -75,6 +75,10 @@ pub struct Options {
     pub replies: bool,
     /// Native scrollback rows kept by the host.
     pub history: usize,
+    /// How many of the latest output bytes the terminal keeps for
+    /// [`Terminal::received`] and the byte waits; at most this many are
+    /// moved when older bytes are dropped.
+    pub recent: usize,
 }
 
 impl Default for Options {
@@ -82,6 +86,7 @@ impl Default for Options {
         Self {
             replies: true,
             history: 10_000,
+            recent: RECENT_BYTES,
         }
     }
 }
@@ -312,6 +317,7 @@ impl Terminal {
         if let Some(marker) = marker {
             crate::ownership::adopt(&marker, pid.as_raw());
         }
+        let recent = options.recent;
         let reader_screen = screen.clone();
         let reader_writer = writer.clone();
         let reader = thread::spawn(move || {
@@ -329,7 +335,7 @@ impl Terminal {
                         state.recent.extend_from_slice(&buffer[..count]);
                         state.total += count as u64;
                         state.last_output = Instant::now();
-                        let excess = state.recent.len().saturating_sub(RECENT_BYTES);
+                        let excess = state.recent.len().saturating_sub(recent);
                         state.recent.drain(..excess);
                         while let Ok(event) = events.try_recv() {
                             if let Err(error) = state.handle(event, &reader_writer) {
@@ -457,7 +463,8 @@ impl Terminal {
             .to_vec()
     }
 
-    /// The most recent output bytes (at most `RECENT_BYTES`, 16 MiB).
+    /// The most recent output bytes (at most [`Options::recent`], 16 MiB by
+    /// default).
     pub fn received(&self) -> Vec<u8> {
         self.screen.0.lock().expect("screen lock").recent.clone()
     }
@@ -516,6 +523,22 @@ impl Terminal {
         condition: impl Fn(&str) -> bool,
     ) -> io::Result<()> {
         self.wait(timeout, |screen| condition(&screen.text()))
+    }
+
+    /// Waits until `bytes` arrive among those received after the first
+    /// `mark` ([`Terminal::received_total`] earlier), searching only those
+    /// that are still kept.
+    pub fn wait_for_bytes_since(
+        &self,
+        mark: u64,
+        bytes: &[u8],
+        timeout: Duration,
+    ) -> io::Result<()> {
+        self.wait(timeout, |screen| {
+            let since = usize::try_from(screen.total.saturating_sub(mark)).unwrap_or(usize::MAX);
+            let kept = &screen.recent[screen.recent.len().saturating_sub(since)..];
+            bytes.is_empty() || kept.windows(bytes.len()).any(|window| window == bytes)
+        })
     }
 
     pub fn wait_for_bytes(&mut self, bytes: &[u8], timeout: Duration) -> io::Result<()> {
