@@ -41,6 +41,7 @@ use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
 use mouse::{Area, Gestures, Mouse, Wheel};
+use ratatui::layout::Rect;
 use registry::{ClientEvent, Kind, Registry, Report};
 use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Canvas, Scene, Screen, Session};
@@ -76,6 +77,8 @@ pub fn run() -> Result<u32, Error> {
 
 /// Records how the monitor ended: the host terminal may be gone, so a failure
 /// is logged as well as returned for main to print.
+/// The host bell a toast rings as it begins (docs/protocol/monitor-host/bell.md).
+const BEL: &[u8] = b"\x07";
 /// The library log filter when `CLIMON2_LOG` sets none.
 const DEFAULT_FILTER: &str = "info";
 
@@ -166,6 +169,8 @@ struct Monitor {
     /// The attention state the host last heard.
     host_report: HostReport,
     toasts: Toasts,
+    /// Whether a toast rings the host bell as it begins (`monitor.bell`).
+    bell: bool,
 }
 
 /// A session under the authority it takes input with.
@@ -204,6 +209,7 @@ impl Monitor {
         let prefix = config.escape_prefix();
         let take_control = config.take_control_key();
         let hints = config.settings().show_key_hints;
+        let jump = hints.then(|| format!("{prefix} then j: jump to attention"));
         let supervisor = Supervisor::start(context(&startup, filter)?, dispatch.clone())?;
         let introduction = KeyIntroduction::new(prefix, startup.preference, hints);
         let limits = &config.settings().limits;
@@ -235,7 +241,8 @@ impl Monitor {
             acknowledging: None,
             notice: Notice::default(),
             host_report: HostReport::default(),
-            toasts: Toasts,
+            toasts: Toasts::new(jump),
+            bell: config.settings().bell,
         };
         monitor.show().map(|()| monitor)
     }
@@ -310,6 +317,10 @@ impl Monitor {
     /// restoration, so its control and input readiness describe the frame
     /// being painted.
     fn show(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        self.menus();
+        self.toasts.frame(now, self.screen.overlay());
+        let titling = self.toasts.titling(now, self.screen.overlay());
         self.mark_shown();
         self.synchronise();
         let rows = self.registry.rows();
@@ -332,11 +343,53 @@ impl Monitor {
                 .progress(&self.registry)
                 .map(|progress| progress.to_string()),
             late: self.initial.late(&self.registry),
-            notice: self.notice.text(Instant::now()),
+            notice: self.notice.text(now),
+            toasts: &self.toasts,
+            now,
             session,
         };
         self.screen.show(&scene)?;
+        self.title(titling)?;
         self.attend()
+    }
+
+    /// While a menu is open, every pending attention episode that was
+    /// never toasted is eligible (spec #73, "Toast eligibility"): one first
+    /// seen while viewed toasts as a menu opens, and the toasts' ledger
+    /// keeps any from toasting twice.
+    fn menus(&mut self) {
+        if self.covered() {
+            for (id, news) in self.registry.pending() {
+                self.announce(&id, news, false);
+            }
+        }
+    }
+
+    /// Hands `id`'s `news` to the toasts, with its label and whether this
+    /// monitor viewed it when it arrived.
+    fn announce(&mut self, id: &SessionId, news: registry::News, viewed: bool) {
+        let label = self.registry.label(id).unwrap_or_default();
+        self.toasts.announce(id, news, label, viewed);
+    }
+
+    /// Once the frame first showing a toast's full title (`titling`) has
+    /// been written to the host, the toast's hold starts and, while
+    /// `monitor.bell` is on, one BEL rings (owner decision on #115,
+    /// 2026-11-17; docs/protocol/monitor-host/bell.md).
+    fn title(&mut self, titling: bool) -> io::Result<()> {
+        if !titling {
+            return Ok(());
+        }
+        self.toasts.titled(Instant::now());
+        self.ring()
+    }
+
+    /// One BEL, while `monitor.bell` is on.
+    fn ring(&self) -> io::Result<()> {
+        if self.bell {
+            return host::write_host(BEL);
+        }
+        Ok(())
     }
 
     /// Once a frame is painted (spec #73, "Viewing, focus, acknowledgement
@@ -378,11 +431,28 @@ impl Monitor {
     /// The selected session while the monitor views it: its target takes
     /// input (controlling, ready, painted uncovered with room, not ended),
     /// its view is live, the host has focus (assumed until it reports
-    /// otherwise) and no toast covers it.
+    /// otherwise) and no toast covers its canvas.
     fn viewed(&self) -> Option<&SessionId> {
         let (id, terminal, _) = self.target()?;
         let live = terminal.view().is_some_and(|view| view.scrolled() == 0);
-        (live && self.host_focused && !self.toasts.cover(id)).then_some(id)
+        let covered = self.toasts.covers(self.canvas(id), self.screen.overlay());
+        (live && self.host_focused && !covered).then_some(id)
+    }
+
+    /// The host cells `id`'s canvas takes below the top row.
+    fn canvas(&self, id: &SessionId) -> Rect {
+        let terminal = self.terminals.get(id);
+        let geometry = terminal.and_then(Terminal::geometry);
+        let geometry = geometry.map(|geometry| (geometry.cols(), geometry.rows()));
+        toast::canvas(self.screen.overlay(), geometry)
+    }
+
+    /// Prefix+j and Enter dismiss a toast covering their target's canvas
+    /// (owner decision on #114).
+    fn dismiss_toast(&mut self, id: &SessionId) {
+        let canvas = self.canvas(id);
+        let area = self.screen.overlay();
+        self.toasts.dismiss_over(canvas, area, Instant::now());
     }
 
     /// Advances a deferred acknowledgement against the selected target as
@@ -488,7 +558,7 @@ impl Monitor {
     fn enter(&mut self, id: SessionId) {
         match self.registry.kind(&id) {
             Some(Kind::Connected) => {
-                self.toasts.dismiss(&id);
+                self.dismiss_toast(&id);
                 self.choose(id.clone());
                 self.acquire(&id);
                 self.defer_acknowledgement();
@@ -576,15 +646,19 @@ impl Monitor {
 
     /// Control and display go to the session's terminal, everything else to
     /// its row; the command's final result and the end of the client to
-    /// both.
+    /// both. What the row announces goes to the toasts, with whether the
+    /// monitor viewed the session before the event changed it.
     fn report(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
         match event {
             ClientEvent::Presentation(presentation) => self.present(id, presentation),
             event => {
+                let viewed = self.viewed() == Some(id);
                 if let Some(presentation) = ending(&event) {
                     self.present(id, presentation);
                 }
-                self.registry.client(id, event, now);
+                if let Some(news) = self.registry.client(id, event, now) {
+                    self.announce(id, news, viewed);
+                }
             }
         }
     }
@@ -725,10 +799,12 @@ impl Monitor {
     /// screen is a cursor key with alternate scroll on (#112).
     fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) -> io::Result<()> {
         let taking = self.taking();
+        let (idle, area) = (self.gestures.idle(), self.screen.overlay());
+        let toasted = self.toasts.take(mouse, idle, area, Instant::now());
         let target = taking.as_ref().map(|taking| (&taking.target, taking.area));
-        let cell = self.gestures.route(mouse, target);
+        let cell = self.gestures.route(mouse, target.filter(|_| !toasted));
         let Some((cell, taking)) = cell.zip(taking) else {
-            return self.modal(&Routed::Mouse(mouse));
+            return self.local(mouse, toasted);
         };
         match mouse::wheel(mouse, &taking.modes, taking.alternate) {
             Some(Wheel::History(rows)) => self.terminal(&taking.target.0).scroll(rows),
@@ -737,6 +813,16 @@ impl Monitor {
             None => mouse::encode(mouse, cell, &taking.modes, typed),
         }
         Ok(())
+    }
+
+    /// A mouse report the monitor keeps: one the shown toast took is its
+    /// own, never selecting, acquiring or acknowledging; any other goes to
+    /// the open modal.
+    fn local(&mut self, mouse: Mouse, toasted: bool) -> io::Result<()> {
+        if toasted {
+            return Ok(());
+        }
+        self.modal(&Routed::Mouse(mouse))
     }
 
     fn keyed(&mut self, routed: Routed, typed: &mut Vec<u8>) -> io::Result<Option<Ending>> {
@@ -827,7 +913,7 @@ impl Monitor {
         if self.introduction.is_open() {
             return;
         }
-        let area = self.screen.overlay();
+        let area = self.screen.menu();
         self.selector
             .open(&self.registry.rows(), self.selected.as_ref(), area);
     }
@@ -846,7 +932,7 @@ impl Monitor {
         };
         self.notice.clear();
         self.introduction.close();
-        self.toasts.dismiss(&id);
+        self.dismiss_toast(&id);
         self.choose(id.clone());
         if self.control(&id) == Control::NotControlling {
             self.acquire(&id);
@@ -904,7 +990,7 @@ impl Monitor {
     /// cancelling back to the selected session acknowledges its attention
     /// once viewed (Confirmed 2026-11-08; #114).
     fn selector_input(&mut self, input: &Routed) {
-        let area = self.screen.overlay();
+        let area = self.screen.menu();
         match self.selector.input(input, &self.registry.rows(), area) {
             Some(id) => self.enter(id),
             None if !self.selector.is_open() => self.defer_acknowledgement(),

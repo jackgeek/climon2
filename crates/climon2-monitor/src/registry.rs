@@ -40,6 +40,9 @@ pub(crate) enum ClientEvent {
 pub(crate) enum Report {
     /// The daemon title: `None` when unset or unsupported.
     Title(Option<String>),
+    /// The Initial metadata knew no final outcome: the row is seen running
+    /// (owner decision on #115).
+    Unfinished,
     /// The effective status changed, or the Initial metadata reported it.
     Status(Status),
     /// The command's final outcome is known.
@@ -73,6 +76,24 @@ impl State {
 pub(crate) struct Status {
     pub(crate) state: State,
     pub(crate) changed: SystemTime,
+    /// The attention episode it belongs to, if any.
+    pub(crate) episode: Option<u64>,
+}
+
+impl Status {
+    /// The episode of a status that needs attention.
+    fn attention(self) -> Option<u64> {
+        self.episode.filter(|_| self.state == State::NeedsAttention)
+    }
+}
+
+/// What a report announces to toasts (#115), and the identity toasts
+/// deduplicate it by within its session: an attention episode, or the one
+/// final outcome.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum News {
+    Attention(u64),
+    Final,
 }
 
 /// The command's authoritative result: exit 143 is not signal 15.
@@ -156,6 +177,8 @@ struct Row {
     /// status change time, otherwise when the monitor learned it. It
     /// survives disconnection.
     ended: Option<(Outcome, SystemTime)>,
+    /// Whether an Initial metadata knew no final outcome.
+    running: bool,
 }
 
 impl Row {
@@ -168,6 +191,7 @@ impl Row {
             title: None,
             status: None,
             ended: None,
+            running: false,
         }
     }
 
@@ -235,29 +259,51 @@ impl Row {
 
     /// A report changes what the row shows, a connection event its
     /// connection; control, display and answers are never row state.
-    fn apply(&mut self, event: ClientEvent, now: SystemTime) {
+    /// Returns what a report announces.
+    fn apply(&mut self, event: ClientEvent, now: SystemTime) -> Option<News> {
         match event {
-            ClientEvent::Report(report) => self.learn(report, now),
+            ClientEvent::Report(report) => return self.learn(report, now),
             event => {
                 if let Some(connection) = connection(event) {
                     self.connect(connection, now);
                 }
             }
         }
+        None
     }
 
-    /// Keeps the latest nonempty title and the latest status; keeps the
-    /// first final outcome, sorting by its terminal status time or else
-    /// `now`, when the monitor learned it.
-    fn learn(&mut self, report: Report, now: SystemTime) {
+    /// Keeps the latest nonempty title and the latest status, whose
+    /// attention episode it announces; notes that the row was seen running.
+    fn learn(&mut self, report: Report, now: SystemTime) -> Option<News> {
         match report {
             Report::Title(title) => self.retitle(title),
-            Report::Status(status) => self.status = Some(status),
-            Report::Final(known) => {
-                let at = known.changed.unwrap_or(now);
-                self.ended.get_or_insert((known.outcome, at));
+            Report::Unfinished => self.running = true,
+            Report::Status(status) => {
+                self.status = Some(status);
+                return status.attention().map(News::Attention);
             }
+            Report::Final(known) => return self.finish(known, now),
         }
+        None
+    }
+
+    /// Keeps the first final outcome, sorting by its terminal status time
+    /// or else `now`, when the monitor learned it. The first one is
+    /// announced once the row was seen running.
+    fn finish(&mut self, known: Final, now: SystemTime) -> Option<News> {
+        let first = self.ended.is_none();
+        let at = known.changed.unwrap_or(now);
+        self.ended.get_or_insert((known.outcome, at));
+        (first && self.running).then_some(News::Final)
+    }
+
+    /// The attention episode of a connected row that is not final and
+    /// still needs attention.
+    fn pending(&self) -> Option<u64> {
+        let connected = self.kind() == Kind::Connected;
+        self.status
+            .filter(|_| connected)
+            .and_then(Status::attention)
     }
 
     /// Keeps a nonempty title; an empty or unset one changes nothing.
@@ -341,11 +387,29 @@ impl Registry {
         })
     }
 
-    /// Records what `id`'s client reported.
-    pub(crate) fn client(&mut self, id: &SessionId, event: ClientEvent, now: SystemTime) {
-        if let Some(row) = self.rows.get_mut(id) {
-            row.apply(event, now);
-        }
+    /// Records what `id`'s client reported, returning what it announces
+    /// to toasts (#115).
+    pub(crate) fn client(
+        &mut self,
+        id: &SessionId,
+        event: ClientEvent,
+        now: SystemTime,
+    ) -> Option<News> {
+        self.rows.get_mut(id)?.apply(event, now)
+    }
+
+    /// `id`'s label, if it has a row.
+    pub(crate) fn label(&self, id: &SessionId) -> Option<String> {
+        self.rows.get(id).map(Row::label)
+    }
+
+    /// The attention episodes still pending: of connected rows that are not
+    /// final and need attention.
+    pub(crate) fn pending(&self) -> Vec<(SessionId, News)> {
+        self.rows
+            .iter()
+            .filter_map(|(id, row)| Some((id.clone(), News::Attention(row.pending()?))))
+            .collect()
     }
 
     /// What Enter does on `id`'s row, if there is one.
@@ -530,6 +594,16 @@ mod tests {
         ClientEvent::Report(Report::Status(Status {
             state,
             changed: at(changed),
+            episode: None,
+        }))
+    }
+
+    /// A status in `state` for attention episode `episode`.
+    fn episode(state: State, episode: u64) -> ClientEvent {
+        ClientEvent::Report(Report::Status(Status {
+            state,
+            changed: at(episode),
+            episode: Some(episode),
         }))
     }
 
@@ -659,6 +733,51 @@ mod tests {
         assert_eq!(registry.attention().as_ref(), Some(&keys["older"]));
         registry.client(&keys["older"], ended(Outcome::Signal(9), None), at(7));
         assert_eq!(registry.attention(), None);
+    }
+
+    /// NOT-01 (pure supplement; owner decision on #115): each status needing
+    /// attention announces its episode, every time, for toasts to
+    /// deduplicate; acknowledged, running and idle statuses, titles and
+    /// connection events announce nothing. A final outcome is announced
+    /// once, and only once the row was seen running: its Initial metadata
+    /// knew no final outcome. A final that the first Initial metadata
+    /// already knew, at startup or first connection, is never announced.
+    /// The pending episodes are those of connected rows that still need
+    /// attention, never an acknowledged, final or disconnected one.
+    #[test]
+    fn attention_episodes_and_finals_learned_while_running_are_announced() {
+        let mut registry = Registry::new(None);
+        let alpha = opened(&mut registry, (1, "alpha"), true, 1);
+        let unfinished = ClientEvent::Report(Report::Unfinished);
+        assert_eq!(registry.client(&alpha, titled(Some("A")), at(2)), None);
+        assert_eq!(registry.client(&alpha, unfinished.clone(), at(2)), None);
+        let attention = episode(State::NeedsAttention, 7);
+        let announced = registry.client(&alpha, attention.clone(), at(3));
+        assert_eq!(announced, Some(News::Attention(7)));
+        assert_eq!(registry.label(&alpha).as_deref(), Some("A"));
+        assert_eq!(registry.pending(), [(alpha.clone(), News::Attention(7))]);
+        let again = registry.client(&alpha, attention, at(4));
+        assert_eq!(again, Some(News::Attention(7)));
+        for state in [State::Acknowledged, State::Running, State::Idle] {
+            assert_eq!(registry.client(&alpha, episode(state, 7), at(5)), None);
+        }
+        assert_eq!(registry.pending(), []);
+        let beta = opened(&mut registry, (2, "beta"), false, 1);
+        registry.client(&beta, unfinished, at(2));
+        registry.client(&beta, episode(State::NeedsAttention, 1), at(2));
+        let finished = ended(Outcome::Exit(0), None);
+        let first = registry.client(&beta, finished.clone(), at(6));
+        assert_eq!(first, Some(News::Final));
+        assert_eq!(registry.client(&beta, finished.clone(), at(7)), None);
+        assert_eq!(registry.client(&beta, ClientEvent::Ended, at(8)), None);
+        assert_eq!(registry.pending(), []);
+        let known = opened(&mut registry, (3, "known"), true, 1);
+        assert_eq!(registry.client(&known, finished, at(9)), None);
+        let lost = opened(&mut registry, (4, "lost"), true, 1);
+        registry.client(&lost, episode(State::NeedsAttention, 2), at(9));
+        registry.client(&lost, ClientEvent::Ended, at(10));
+        assert_eq!(registry.pending(), []);
+        assert_eq!(registry.label(&id(9).parse().unwrap()), None);
     }
 
     /// COM-06 (Monitor labels, pure supplement) and final rows (derived):

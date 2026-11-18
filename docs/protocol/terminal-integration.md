@@ -116,8 +116,11 @@ tracking (owner decision on #111). With
 modal UI and host focus reports, once per change and once more for each
 newly ready restoration; without it no Focus is sent. Both that and a host
 that never reports focus (assumed focused) are documented limitations only,
-never shown on screen (owner decisions on #111). Selector clicks, wheel history and toasts
-remain unimplemented.
+never shown on screen (owner decisions on #111). Toasts
+([#115](https://github.com/jackgeek/climon2/issues/115)) are nonmodal: one
+covering the selected session's canvas clears viewing while ready keys still
+reach it, a gesture begun before a toast appeared keeps its target over it,
+and a new click on a toast only dismisses it.
 
 Everything else in this document remains agreed and unimplemented, including
 Escape closing the dialog when Escape is not the prefix.
@@ -493,8 +496,10 @@ The hint describes a dynamic jump to the most recent attention, not necessarily
 the toast's own session. `monitor.show_key_hints` is a boolean setting,
 default `true`, controlling **all implicit monitor hints** in toast, chrome,
 selector, and empty UI. It changes neither bindings nor application text.
-So far only the empty monitor's hint exists to honor it
-([#82](https://github.com/jackgeek/climon2/issues/82)).
+The monitor honors it in its empty state, top row, placeholder, selector
+footer, startup key introduction and toasts
+([#82](https://github.com/jackgeek/climon2/issues/82) to
+[#115](https://github.com/jackgeek/climon2/issues/115)).
 The [selector](../monitor-selector.md#selector) shows its enabled hints in a
 footer below the session list, inside the menu. Disabling hints removes the
 footer and its reserved space without changing selector actions.
@@ -507,8 +512,8 @@ must be an object and `show_key_hints` a boolean; missing means default,
 wrong type or duplicate known field is an explicit error, unknown/unrelated
 settings remain ignored, and there is no live reload.
 No new monitor-specific binding settings are introduced.
-`monitor.bell` is independently boolean and defaults to true; it is validated,
-but toasts and the bell are not implemented.
+`monitor.bell` is independently boolean and defaults to true; the monitor
+rings the bell with its toasts ([#115](https://github.com/jackgeek/climon2/issues/115)).
 It emits one [host bell](monitor-host/bell.md) when each eligible toast first
 begins drawing, not per animation frame. Validate it in the same startup
 snapshot; wrong types/null or duplicate known fields fail before terminal setup.

@@ -184,6 +184,7 @@ mod tests {
         let status = Status {
             state,
             changed: now + Duration::from_secs(changed),
+            episode: None,
         };
         registry.client(id, ClientEvent::Report(Report::Status(status)), now);
     }

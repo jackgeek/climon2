@@ -15,7 +15,7 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), and viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
+(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), and toasts and the bell (#115). Every string the monitor shows is in [On-screen strings](#on-screen-strings).
 
 ## Startup, before the host terminal changes
 
@@ -250,7 +250,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `client ended` and client diagnostics, content-free.
 - **The selector** (`selector.rs`, `search.rs`; #106, #113): prefix+s,
   unless the modal key introduction is open, overlays the rows below the top
-  row, one cell in from each edge, with a captionless double border. Its
+  row above the toasts' four-row lane at the bottom of the host (owner
+  decision on #115), one cell in from each edge, with a captionless double
+  border. Its
   first line is the search, always focused, with the host cursor at its
   insertion point (scrolled so the cursor stays in view); a single separator
   `╟──╢` joins the side borders below it. Then the rows the search matches,
@@ -598,8 +600,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   controls it with its restoration applied and Ready accepted, the frame
   just painted shows it uncovered by any modal on a host with room, its
   view is live (not scrolled back into history), the host has focus
-  (assumed until the host reports otherwise) and no toast covers it (#115
-  draws toasts; `toast.rs` is the seam). After each painted frame, each
+  (assumed until the host reports otherwise) and no toast covers any cell of
+  its canvas (#115). After each painted frame, each
   session whose client opened with `status-v1` is sent Set viewing under
   its current authority when that changes; a control period starts not
   viewing, as the daemon's does. Viewing never acknowledges by itself.
@@ -643,6 +645,59 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   then changes only, with no heartbeat or query, and never a session's own
   report. Once a started monitor has released the host on exit, it writes
   the root `state=clear`, before main prints any diagnostic.
+
+## Toasts and bell (#115)
+
+`toast.rs` is pure; `lib.rs` feeds it what the registry announces.
+
+- **Eligibility.** Each status needing attention announces its episode ID;
+  a final outcome is announced once, and only when the session's Initial
+  metadata knew no final outcome, so a final already known at startup or
+  first connection never toasts (owner decision on #115). Each episode and
+  the final outcome toast at most once per session for the whole run,
+  whatever repeats or menus bring. An announcement toasts at once unless
+  this monitor viewed the session when it arrived: an episode first seen
+  while viewed toasts once a menu (the selector or the key introduction)
+  opens, while it still needs attention, and every frame with a menu open
+  makes such episodes eligible; a final outcome learned while viewed never
+  toasts. Another client's or monitor's viewing suppresses nothing.
+- **Queue.** The queue holds three toasts, the one shown among them, in
+  order; a fourth is replaced by one `More events occurred. Check sessions
+  list` toast after them, which every later one joins until it shows
+  (owner decision on #115). Nothing fails a connection.
+- **Appearance.** One toast shows at a time, flush with the host's
+  bottom-right corner inside the four bottom rows the selector leaves free:
+  a yellow single-line border around the session's label, as the row showed
+  it when the toast was queued, after one blank cell, and, on a
+  needs-attention toast while `monitor.show_key_hints` is on, a row
+  `<prefix> then j: jump to attention`; each line ends in `…` when it does
+  not fit. It is as wide as its widest line plus four cells, at most 40% of
+  the host's width; a toast that has no room for one cell of text and its
+  rows waits until it has. Over everything else, menus included, the border
+  draws clockwise from the top-left corner in 400 ms over a blank inside,
+  the text then shows, held for 2,000 ms from when the frame first showing
+  it has finished writing to the host (owner decision on #115, 2026-11-17),
+  dims for 300 ms, and the border erases clockwise in 400 ms with the
+  inside showing through. A host that takes output late so still sees the
+  whole hold. Each frame is drawn for the time it is painted, so no
+  obsolete frame waits; a resize redraws the toast at once for the new
+  host. A wide character the toast's left
+  edge would cut is blanked.
+- **Dismissal.** A left click on a toast, or prefix+j or Enter on a session
+  whose canvas it covers (owner decision on #114), dismisses it: before its
+  title has been shown, what was drawn erases at once, as fast as it drew;
+  later, its text dims at once and the border then erases. Dismissal never
+  selects, acquires or acknowledges.
+- **Input.** A toast is nonmodal. While it covers any cell of the selected
+  session's canvas, the session is not viewed, so a deferred acknowledgement
+  waits until it has gone, yet keys still reach the session. A mouse report
+  outside any gesture that lands on a toast is the toast's; a gesture begun
+  before a toast appeared keeps its target over it through its release.
+- **Bell.** With `monitor.bell` on (the default), one BEL follows the frame
+  that first shows each toast's full title, once written, the overflow toast
+  included; never per frame, redraw, resize or coalesced announcement, and
+  never for a toast dismissed before its title showed. With it off only the
+  BEL is skipped.
 
 ## Exit
 
@@ -697,6 +752,8 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Selector footer's row, search refused for its length (#113) | `Search is limited to <N> bytes` | `selector.rs` |
 | Selector rows and footer too long for the box (#113, owner decision on #112) | the text that fits, then `…` | `selector.rs` |
 | Top row's error slot, or the body with nothing selected, for 3 seconds after prefix+j finds no session (#114, owner decision 2026-11-16) | `No sessions need attention` | `attention.rs` |
+| Toast, a needs-attention toast's hint row while key hints are on (#115) | `<prefix> then j: jump to attention` | `lib.rs` |
+| Toast standing for those a full queue left out (#115, owner wording 2026-11-16) | `More events occurred. Check sessions list` | `toast.rs` |
 
 ## Specification mapping
 
@@ -842,12 +899,17 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | FOC-01, STA-08 (pure supplement): Set viewing on each change within a control period under the current authority, only with `status-v1`; a superseded Acknowledge owed again; Set viewing and Acknowledge as their native requests; Open says `status-v1` was selected | `viewing_is_reported_on_each_change_within_a_control_period`, `an_acknowledge_a_newer_restoration_superseded_is_owed_again` (`src/terminal.rs`), `viewing_and_acknowledge_become_their_native_requests`, `opening_says_whether_focus_and_status_were_selected` (`src/supervisor/client.rs`) |
 | FOC-01, STA-08 (pure supplement; owner decision on #114, 2026-11-17): Focus and Set viewing coalesce per session: none of a kind while one is unanswered, then the latest desire once if it differs from the last sent, each kind waiting only for its own answer; a revocation keeps waiting for the answer, the end of the client does not; an Acknowledge follows only Set viewing true sent in the held control period | `focus_and_viewing_wait_for_their_answers_and_then_send_the_latest_desire`, `only_the_end_of_the_client_forgets_unanswered_focus_and_viewing`, `an_acknowledge_follows_only_viewing_true_submitted_in_the_period` (`src/terminal.rs`) |
 | NOT-03 (pure supplement): the notice in the top row's error slot before the session's own error, or in the body before the startup progress | `a_late_collection_shows_in_the_error_slot_unless_the_session_has_its_own`, `the_body_says_the_startup_progress_or_the_state_and_any_incompleteness` (`src/screen.rs`) |
+| NOT-01 (Monitor), NOT-02 (Monitor: the queue), INP-05 (Monitor: toast clicks), with fake daemons: a final known at the first connection never toasts; attention pending at startup toasts once with the hint, its title held and its bell rung only once written however late the host reads the startup output; six episodes in a burst show three toasts and then `More events occurred. Check sessions list`; a final learned while running toasts once without a hint; clicks only dismiss; menus toast nothing again; one bell per toast | `toasts_announce_each_episode_and_final_once_and_queue_three_then_more` (e2e) |
+| STA-06 (Monitor), CTL-03 (Monitor: notifications), NOT-01 (Monitor: a final learned while viewed), NOT-02 (Monitor: shape, ellipsis, bell), TRM-03 (Monitor: toast resize): progress and incomplete OSC 99 toast nothing; OSC 9 toasts once, yellow, bottom-right, with the hint; resized to 80x25 it is 32 cells with `…`, no second bell; OSC 777 and OSC 99 within the pending episode toast nothing; a final learned while viewed never toasts, even once a menu opens; a new episode toasts again; prefix+x exits while one draws | `notifications_toast_once_per_episode_and_progress_never_does` (e2e) |
+| FOC-01 (Monitor: toast cases), NOT-01 (Monitor: menu opening), INP-05 (Monitor: toast cases): attention seen while viewed toasts once the selector opens; a covering toast defers the cancel's acknowledgement until no toast covers the session; keys reach the session under a toast; a drag begun before a toast keeps its target over it; a click on the toast only dismisses it | `a_covering_toast_stops_viewing_while_keys_and_drags_still_reach_the_session` (e2e) |
+| CFG-01 (Monitor: hints and bell): with both off, no hint in the empty state, top row, selector, placeholder or toast and no key introduction or bell, while every binding works and toasts and host reports go on | `without_key_hints_or_bell_no_hint_shows_and_no_bell_rings` (e2e) |
+| NOT-01, NOT-02, FOC-01, INP-05 (pure supplement, #115): once-per-run deduplication and viewed suppression; the three-toast queue and its overflow toast; the timings at each boundary; the hold and bell starting when the full title has been written; no title, so no bell, for a toast dismissed before it; early dismissal; placement and width at 40%; drawing, colour, dimming and erasing; clockwise border order; covering, hits, clicks and dismissal over a covered canvas; wide characters at the left edge; gestures under way | `each_episode_and_final_outcome_toasts_once_unless_viewed`, `the_queue_holds_three_toasts_and_one_more_stands_for_the_rest`, `a_toast_draws_holds_fades_and_erases_on_time`, `the_hold_starts_when_the_title_has_been_written`, `a_toast_dismissed_before_its_title_never_titles`, `an_early_dismissal_erases_only_what_was_drawn`, `a_dismissed_toast_ends_early_and_the_next_begins`, `a_toast_sits_bottom_right_at_most_forty_percent_wide`, `a_toast_waits_until_it_fits`, `a_toast_draws_its_border_label_and_hint_in_yellow`, `the_border_runs_clockwise_from_the_top_left_corner`, `the_shown_toast_covers_and_takes_only_its_own_cells`, `the_toast_takes_reports_outside_gestures_and_a_click_dismisses_it`, `a_toast_is_dismissed_over_a_canvas_it_covers`, `a_wide_character_cut_by_the_toast_is_blanked` (`src/toast.rs`); `attention_episodes_and_finals_learned_while_running_are_announced` (`src/registry.rs`); `each_gesture_keeps_the_target_its_press_found` (`src/mouse.rs`) |
 | #74 risk proof: plain and hooked sibling binaries without nested builds | `cargo_builds_the_plain_or_hooked_monitor_binary_for_its_tests` (`tests/build.rs`, plain and hooked runs); fixtures `workspace_binaries_contain_test_hooks`; xtask `release_check_builds_unhooked_binaries_in_a_private_target` |
 | #74 release checks: version, architecture and test-hook marker | xtask `version_check_rejects_a_missing_or_wrong_version_monitor`; Linux `linux_packaging_rejects_a_non_x86_64_or_hooked_monitor`; macOS `binary_check_rejects_a_single_architecture_monitor`, `binary_check_rejects_a_hooked_monitor` |
 
-Not yet claimed: EXT-03's root OSC 7501 `clear` on the fail-stop path (#118), toasts and their gestures (INP-05's
-toast cases, #115), toasts' effect on viewing and their dismissal by prefix+j and Enter (#115; `toast.rs` is the seam), FOC-01's
-toast cases (#115), prefix+j inside the Delete dialog (#117), FOC-02's host-native
+Not yet claimed: EXT-03's root OSC 7501 `clear` on the fail-stop path (#118), NOT-01's reconnect case (the
+monitor does not reconnect yet; its toast ledger already lasts the run, #116), a toast beside a canvas narrower or shorter than the
+host, which leaves the session viewed (pure supplement only, `a_toast_is_dismissed_over_a_canvas_it_covers`), prefix+j inside the Delete dialog (#117), FOC-02's host-native
 copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
 else could receive the rest; #116 owns its recovery), global actions from the history screen (#116), Delete in the

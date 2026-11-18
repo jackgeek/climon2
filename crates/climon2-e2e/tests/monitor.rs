@@ -94,13 +94,18 @@ const BLOCKED: &[u8] = b"\x1b]7501;state=blocked:kind=question:app=climon2-monit
 const WORKING: &[u8] = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
 const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
 
-/// NOT-04 (Monitor, every scenario that checks its host): the host heard
-/// only the monitor's own root OSC 7501 reports, never a session's report or
-/// bell: its initial state and then changes only, with no heartbeat, and
-/// once `released`, the root clear last. A monitor that never started told
-/// the host nothing.
+/// NOT-04 (Monitor, every scenario that checks its host): besides the
+/// bells its own toasts ring (#115, which
+/// `toasts_ring_the_bell_once_each_and_only_when_it_is_on` counts, and
+/// `the_host_hears_the_attention_state_once_per_change_and_the_clear_on_exit`
+/// proves no session's bell is forwarded), the host heard only the
+/// monitor's own root OSC 7501 reports, never a session's report: its
+/// initial state and then changes only, with no heartbeat, and once
+/// `released`, the root clear last. A monitor that never started told the
+/// host nothing.
 fn assert_host_reports(terminal: &Terminal, released: bool) {
-    let signals = terminal.host_signals();
+    let mut signals = terminal.host_signals();
+    signals.retain(|signal| *signal != HostSignal::Bell);
     let clear = HostSignal::Osc7501(CLEAR.to_vec());
     let reports = signals.strip_suffix(std::slice::from_ref(&clear));
     assert!(
@@ -497,7 +502,7 @@ const EFFECTIVE: &str = r#"{
       "discovery": {"pass_ms": 30000, "stall_ms": 5000, "batch_records": 128, "batch_bytes": 1048576, "metadata_file_bytes": 262144, "metadata_depth": 32},
       "deadlines": {"load_ms": 10000, "start_ms": 10000, "operation_ms": 5000, "kill_ms": 10000, "restoration_stall_ms": 5000, "restoration_total_ms": 60000, "delivery_stall_ms": 5000, "leave_ms": 5000, "cleanup_ms": 10000, "shutdown_ms": 10000, "final_host_ms": 1000, "assembly_ms": 5000},
       "retry": {"initial_ms": 1000, "cap_ms": 40000, "jitter_percent": 20, "admission_ms": 1000},
-      "ui": {"fps": 30, "client_quantum_ms": 2, "background_quantum_ms": 8, "toast_records": 128, "toast_bytes": 524288, "search_bytes": 4096}
+      "ui": {"fps": 30, "client_quantum_ms": 2, "background_quantum_ms": 8, "search_bytes": 4096}
     }
   }
 }"#;
@@ -695,11 +700,11 @@ fn opened_on(terminal: &mut Terminal, expected: &str) {
 /// Whether `output` ends where a monitor frame ends: its closing SGR 0, or
 /// the cursor shown after it. Neither occurs inside a frame, whose cells
 /// set SGR as `0;...` and whose cursor is hidden while they are written.
-/// The monitor's attention reports (#114) follow the frame they were
-/// learned with, so they may end the output after it.
+/// The monitor's attention reports (#114) and a toast's bell (#115) follow
+/// the frame they were learned with, so they may end the output after it.
 fn frame_ended(output: &[u8]) -> bool {
     let mut output = output;
-    while let Some(rest) = [WORKING, BLOCKED]
+    while let Some(rest) = [WORKING, BLOCKED, b"\x07"]
         .iter()
         .find_map(|report| output.strip_suffix(*report))
     {
@@ -715,9 +720,10 @@ fn frame_ended(output: &[u8]) -> bool {
 fn whole_frame_shows(terminal: &Terminal, what: &str, condition: impl Fn(&str) -> bool) {
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        let before = terminal.received();
+        let before = terminal.received_total();
+        let ended = frame_ended(&terminal.received_tail(256));
         let screen = terminal.screen();
-        let whole = frame_ended(&before) && terminal.received() == before;
+        let whole = ended && terminal.received_total() == before;
         if whole && condition(&screen) {
             return;
         }
@@ -2541,8 +2547,12 @@ fn with_selector(screen: &str, rows: &[(&str, &str)]) -> String {
     selector_over(screen, "", rows, Some(FOOTER))
 }
 
+/// The rows below the selector that toasts keep (owner decision on #115).
+const LANE: usize = 4;
+
 /// The selector over `screen` as SEL-01 specifies it (#106, #113): a
-/// captionless double border one cell in from the rows below the top row;
+/// captionless double border one cell in from the rows below the top row
+/// and above the toasts' lane (#115);
 /// `search` on its first line; one separator joined with ╟ and ╢; each
 /// `(status, label)` row with the status column as wide as its widest
 /// status; and any `footer` at the bottom inside the border. ASCII text
@@ -2566,7 +2576,7 @@ fn selector_over(
         format!(" ║{search:<inner$}║ "),
         format!(" ╟{}╢ ", "─".repeat(inner)),
     ];
-    let list = height - 7 - usize::from(footer.is_some());
+    let list = height - 7 - LANE - usize::from(footer.is_some());
     for index in 0..list {
         let text = rows
             .get(index)
@@ -2576,7 +2586,7 @@ fn selector_over(
     }
     boxed.extend(footer.map(|footer| format!(" ║{footer:<inner$}║ ")));
     boxed.push(format!(" ╚{}╝ ", "═".repeat(inner)));
-    lines.splice(2..height - 1, boxed);
+    lines.splice(2..height - 1 - LANE, boxed);
     lines.join("\n")
 }
 
@@ -2714,7 +2724,7 @@ fn selector_on(
 /// session's canvas shows.
 fn boxed(screen: &str) -> Vec<String> {
     let rows: Vec<_> = screen.split('\n').collect();
-    rows[2..rows.len() - 1]
+    rows[2..rows.len() - 1 - LANE]
         .iter()
         .map(|row| {
             let cells = row.chars().count();
@@ -2831,12 +2841,13 @@ fn the_selector_search_filters_by_status_and_label_in_row_order() {
 
 /// The narrow host of
 /// [`selector_navigation_mouse_and_wheel_on_narrow_and_large_hosts`], rows
-/// by columns.
-const NARROW: (u16, u16) = (14, 40);
+/// by columns: four rows taller than its list needs, for the toasts' lane
+/// (#115).
+const NARROW: (u16, u16) = (18, 40);
 
 /// SEL-01 (Monitor: narrow and large hosts, scrolling, cell-safe clipping),
 /// SEL-02 (Monitor: navigation, Tab, clicks and the wheel), INP-05 (Monitor,
-/// selector case) and TRM-03 (Monitor, overlay case): on a 40x14 host the
+/// selector case) and TRM-03 (Monitor, overlay case): on a 40x18 host the
 /// list shows six of eight rows and the footer ends in "…"; a long label
 /// and a wide one end in "…" without splitting a character (owner decision
 /// on #112). Tab and Shift+Tab change nothing; Down, PageDown, PageUp and Up
@@ -6739,14 +6750,19 @@ fn acknowledgement_waits_until_viewed_and_closing_help_or_focus_in_never_acknowl
     package.assert_clean();
 }
 
-/// Waits until the host has heard exactly `reports`, in order.
+/// Waits until the host has heard exactly `reports`, in order, besides
+/// the bells the monitor's own toasts ring (#115).
 fn host_heard(terminal: &mut Terminal, reports: &[&[u8]]) {
     let expected: Vec<_> = reports
         .iter()
         .map(|report| HostSignal::Osc7501(report.to_vec()))
         .collect();
+    let reports = |signals: &[HostSignal]| {
+        let reports = signals.iter().filter(|signal| **signal != HostSignal::Bell);
+        reports.eq(&expected)
+    };
     terminal
-        .wait_for_host_signals(TIMEOUT, |signals| signals == expected)
+        .wait_for_host_signals(TIMEOUT, |signals| reports(signals))
         .unwrap_or_else(|_| panic!("expected {expected:?}, heard {:?}", terminal.host_signals()));
 }
 
@@ -6759,11 +6775,13 @@ fn host_heard(terminal: &mut Terminal, reports: &[&[u8]]) {
 /// Alpha's daemon is killed, its disconnected row no longer counting; then,
 /// on exit, the root clear. Each report follows the frame that showed its
 /// change, so a later frame proves no report was due. No session report or
-/// bell is forwarded, and nothing repeats while the monitor idles.
+/// bell is forwarded, and nothing repeats while the monitor idles: with
+/// `monitor.bell` false, Beta's toast rings no bell either (#115).
 #[test]
 fn the_host_hears_the_attention_state_once_per_change_and_the_clear_on_exit() {
     let package = Package::new();
     without_introduction(&package);
+    fs::write(config_file(&package), r#"{"monitor": {"bell": false}}"#).unwrap();
     let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     host_heard(&mut terminal, &[WORKING]);
@@ -6809,6 +6827,471 @@ fn the_host_hears_the_attention_state_once_per_change_and_the_clear_on_exit() {
         "Beta",
         &json!({"lifecycle": "detached", "attachments": 0, "controlled": false}),
     );
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// The prefix+j hint a needs-attention toast carries with the default
+/// prefix (#115).
+const JUMP_HINT: &str = "Ctrl+] then j: jump to attention";
+/// The toast that follows a full toast queue (owner decision on #115).
+const MORE: &str = "More events occurred. Check sessions list";
+
+/// A toast (#115) as the host shows it, `width` cells wide: a border
+/// around `label` and any `hint`, each after one blank cell and padded to
+/// the border. One cell per character.
+fn toast(width: usize, label: &str, hint: Option<&str>) -> Vec<String> {
+    let inner = width - 4;
+    let border = "─".repeat(width - 2);
+    let text = std::iter::once(label)
+        .chain(hint)
+        .map(|text| format!("│ {text:<inner$} │"));
+    std::iter::once(format!("┌{border}┐"))
+        .chain(text)
+        .chain([format!("└{border}┘")])
+        .collect()
+}
+
+/// Waits until a whole frame shows `toast` whole in the host's bottom-right
+/// corner, its border yellow, while `also` holds of the screen.
+fn toast_shown_with(terminal: &Terminal, toast: &[String], also: impl Fn(&str) -> bool) {
+    whole_frame_shows(terminal, &toast.join("\n"), |screen| {
+        let lines: Vec<_> = screen.lines().collect();
+        let bottom = &lines[lines.len() - toast.len()..];
+        let drawn = bottom
+            .iter()
+            .zip(toast)
+            .all(|(line, row)| line.ends_with(row.as_str()));
+        let corner = terminal.cells(lines.len() - 1).last().cloned();
+        let yellow = corner.is_some_and(|cell| cell.foreground == Color::Ansi(AnsiColor::Yellow));
+        drawn && yellow && also(screen)
+    });
+}
+
+/// Waits until a whole frame shows `toast` whole in the host's bottom-right
+/// corner, its border yellow.
+fn toast_shown(terminal: &Terminal, toast: &[String]) {
+    toast_shown_with(terminal, toast, |_| true);
+}
+
+/// Waits until a whole frame shows no toast: not even the last cells of
+/// its border, which erases clockwise, ending with its left side.
+fn no_toast(terminal: &Terminal) {
+    whole_frame_shows(terminal, "no toast", |screen| {
+        !screen.contains(['┌', '┐', '└', '┘', '─', '│'])
+    });
+}
+
+/// The bells the host heard.
+fn bells(terminal: &Terminal) -> usize {
+    let signals = terminal.host_signals();
+    signals
+        .iter()
+        .filter(|signal| **signal == HostSignal::Bell)
+        .count()
+}
+
+/// Waits until the host has heard `count` bells.
+fn rang(terminal: &mut Terminal, count: usize) {
+    let counted = |signals: &[HostSignal]| {
+        let bells = signals.iter().filter(|signal| **signal == HostSignal::Bell);
+        bells.count() == count
+    };
+    terminal
+        .wait_for_host_signals(TIMEOUT, counted)
+        .unwrap_or_else(|_| panic!("{count} bells never rang: {:?}", terminal.host_signals()));
+}
+
+/// A left click on the host's bottom-right cell, where a toast shows, on a
+/// host `rows` by `cols`.
+fn click_toast(terminal: &mut Terminal, (rows, cols): (u16, u16)) {
+    click(terminal, usize::from(rows) - 1, usize::from(cols) - 1);
+}
+
+/// Has the [`watched`] session `title` write `bytes`, then waits until it
+/// has.
+fn emitted(package: &Package, title: &str, bytes: &[u8]) {
+    emit(package, title, bytes);
+    let pending = package.isolation.home().join(format!("{title}.mode"));
+    let deadline = Instant::now() + TIMEOUT;
+    while pending.exists() {
+        assert!(Instant::now() < deadline, "{title} never wrote its bytes");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A wire Title changed frame.
+const TITLE_CHANGED: u8 = 0x42;
+
+/// A wire Status changed of `state` for attention episode `episode`,
+/// changed `second` seconds into the minute.
+fn episode_status(state: &str, episode: u64, second: u32) -> Act {
+    let status =
+        json!({"state": state, "changed_at": utc(second), "episode_id": episode.to_string()});
+    Act::Send(STATUS_CHANGED, json!({ "status": status }))
+}
+
+/// NOT-01 (Monitor) and NOT-02 (Monitor: the queue), with fake daemons, and
+/// INP-05 (Monitor: toast clicks): a final outcome the first Initial
+/// metadata already knew never toasts (owner decision on #115), while
+/// attention pending at startup toasts once, with the prefix+j hint. A
+/// burst of six attention episodes from one session, each under a new
+/// title, shows E1, E2 and E3, then, without a hint, `More events
+/// occurred. Check sessions list` in place of E4 to E6: the queue holds
+/// three toasts (owner decision on #115). A final outcome learned after its
+/// session was seen running toasts once, without a hint, and disappears by
+/// itself. Clicking a toast dismisses it at once, never selecting,
+/// acquiring or acknowledging: the selection, its control and its pending
+/// attention stay. Opening the selector and the key introduction toasts
+/// nothing again: the pending episodes were toasted. One bell rings as each
+/// toast's full title is first shown, six in all. Pending's toast begins
+/// while the host is still reading the monitor's startup output: its hold
+/// and bell wait for its title to be written (owner decision on #115,
+/// 2026-11-17), so it is seen however slowly the host reads.
+#[test]
+fn toasts_announce_each_episode_and_final_once_and_queue_three_then_more() {
+    let package = Package::new();
+    without_introduction(&package);
+    // The acquisition initial selection starts is never granted, nor timed
+    // out while the test runs.
+    limits_config(&package, json!({"deadlines": {"operation_ms": 120_000}}));
+    let home = package.isolation.home().to_owned();
+    let (go, end) = (home.join("burst.go"), home.join("end.go"));
+    let ear = Ear::default();
+    let created = "2026-01-01T00:00:00.000Z";
+    let start = |suffix: u8, answer: Answer| {
+        FakeDaemon::start(&package, fake_id(suffix), created, answer, &ear)
+    };
+    let known = with_status(
+        "known",
+        wire_status("completed", &utc(1)),
+        Some(exited(0)),
+        vec![],
+    );
+    let pending = with_status(
+        "pending",
+        wire_status("needs_attention", &utc(2)),
+        None,
+        vec![],
+    );
+    let mut burst = vec![Act::Await(go.clone())];
+    for episode in 1..=6u32 {
+        if episode > 1 {
+            burst.push(episode_status(
+                "acknowledged",
+                (episode - 1).into(),
+                2 * episode,
+            ));
+        }
+        burst.push(Act::Send(
+            TITLE_CHANGED,
+            json!({"title": format!("E{episode}")}),
+        ));
+        burst.push(episode_status(
+            "needs_attention",
+            episode.into(),
+            2 * episode + 1,
+        ));
+    }
+    burst.push(Act::Await(end.clone()));
+    let failed = json!({"state": "failed", "changed_at": utc(30), "episode_id": null});
+    burst.push(Act::Send(
+        COMMAND_FINAL,
+        json!({"command_result": exited(1), "status": failed}),
+    ));
+    let later = with_status("later", wire_status("running", &utc(3)), None, burst);
+    let daemons = [start(0xe1, known), start(0xe2, pending), start(0xe3, later)];
+    let mut terminal = outer(&package, "c2 monitor");
+    let top = session_top_row(
+        usize::from(COLS),
+        "pending",
+        &[ATTENTION, "Acquiring", SESSIONS_HINT],
+    );
+    toast_shown_with(
+        &terminal,
+        &toast(36, "pending", Some(JUMP_HINT)),
+        |screen| screen.lines().next() == Some(top.as_str()),
+    );
+    rang(&mut terminal, 1);
+    click_toast(&mut terminal, (ROWS, COLS));
+    no_toast(&terminal);
+    top_row_is(&mut terminal, &top);
+
+    fs::write(&go, b"").unwrap();
+    for label in ["E1", "E2", "E3"] {
+        toast_shown(&terminal, &toast(36, label, Some(JUMP_HINT)));
+        click_toast(&mut terminal, (ROWS, COLS));
+    }
+    toast_shown(&terminal, &toast(45, MORE, None));
+    click_toast(&mut terminal, (ROWS, COLS));
+    no_toast(&terminal);
+    rang(&mut terminal, 5);
+
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, ATTENTION, "E6");
+    // A toast the menu brought would begin with the frame that opened it
+    // and ring once its title showed: no toast shows, five bells stay
+    // five, and the sixth is E6's.
+    terminal.send("p").unwrap();
+    shows_row(&mut terminal, "║p ");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1d?").unwrap();
+    shows_row(&mut terminal, "Exit the monitor");
+    terminal.send("\r").unwrap();
+    frame_lacks(&terminal, "Exit the monitor");
+    assert_eq!(bells(&terminal), 5);
+    no_toast(&terminal);
+    top_row_is(&mut terminal, &top);
+
+    fs::write(&end, b"").unwrap();
+    toast_shown(&terminal, &toast(6, "E6", None));
+    rang(&mut terminal, 6);
+    no_toast(&terminal);
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, "Failed (exit 1)", "E6");
+    listed_with(&terminal, "Succeeded", "known");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(bells(&terminal), 6);
+    drop(daemons);
+    package.assert_clean();
+}
+
+/// STA-06 (Monitor), CTL-03 (Monitor: notification cases), NOT-02
+/// (Monitor: shape, ellipsis, resize and bell) and TRM-03 (Monitor: toast
+/// resize case), through real daemons: Beta's OSC 9;4 progress and an
+/// incomplete OSC 99 chunk request nothing and toast nothing; its OSC 9
+/// text notification needs attention and toasts once, bottom-right in
+/// yellow, `Beta` above the prefix+j hint, ringing one bell. Resized to
+/// 80x25 under it, the toast is 32 cells, 40% of the host, the hint ending
+/// in `…`, with no second bell. While that episode is pending, an OSC 777
+/// notify and a complete OSC 99 notification toast nothing more. Once
+/// prefix+j has acknowledged Beta, dismissing its toast, Done, selected and
+/// viewed, exits 3: a final outcome learned while viewed never toasts, not
+/// even once a menu opens (NOT-01). With Alpha selected again, Beta's OSC 777 notify is a new episode and toasts once
+/// more; prefix+x exits at once while it draws.
+#[test]
+fn notifications_toast_once_per_episode_and_progress_never_does() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    headless(&package, &watched("Beta"), "finish");
+    glance(&mut terminal, RUNNING, "Beta");
+
+    emitted(
+        &package,
+        "Beta",
+        b"\x1b]9;4;1;50\x1b\\\x1b]99;i=1:d=0;part\x1b\\",
+    );
+    retitle(&package, "Beta", "Beta 2");
+    glance(&mut terminal, RUNNING, "Beta 2");
+    assert_eq!(bells(&terminal), 0);
+    no_toast(&terminal);
+
+    emit(&package, "Beta", b"\x1b]9;Build finished\x07");
+    toast_shown(&terminal, &toast(36, "Beta 2", Some(JUMP_HINT)));
+    rang(&mut terminal, 1);
+    terminal.resize(25, 80).unwrap();
+    let narrow = toast(32, "Beta 2", Some("Ctrl+] then j: jump to atte…"));
+    toast_shown(&terminal, &narrow);
+    terminal.resize(ROWS, COLS).unwrap();
+    emitted(
+        &package,
+        "Beta",
+        b"\x1b]777;notify;Again;Still\x1b\\\x1b]99;;Hello\x1b\\",
+    );
+    retitle(&package, "Beta", "Beta 3");
+    glance(&mut terminal, ATTENTION, "Beta 3");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Beta 3", ACKNOWLEDGED, "29 120");
+    no_toast(&terminal);
+    assert_eq!(bells(&terminal), 1);
+
+    headless(&package, &stepped("Done", &["exit 3"]), "finish");
+    glance(&mut terminal, STATUS, "Done");
+    terminal.send("\x1dsDone\r").unwrap();
+    top_row_is(&mut terminal, &controlled("Done", STATUS));
+    step(&package, "Done", 1);
+    let ended = session_top_row(
+        usize::from(COLS),
+        "Done",
+        &["Failed (exit 3)", "Ended", SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &ended);
+    glance(&mut terminal, "Failed (exit 3)", "Done");
+    assert_eq!(bells(&terminal), 1);
+    no_toast(&terminal);
+
+    terminal.send("\x1dsAlpha\r").unwrap();
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    emit(&package, "Beta", b"\x1b]777;notify;Done;All good\x1b\\");
+    toast_shown(&terminal, &toast(36, "Beta 3", Some(JUMP_HINT)));
+    rang(&mut terminal, 2);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(bells(&terminal), 2);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// FOC-01 (Monitor: toast cases), NOT-01 (Monitor: a menu makes suppressed
+/// attention eligible) and INP-05 (Monitor: toast cases), through real
+/// daemons: Alpha, selected and viewed, needs attention without a toast.
+/// Opening the selector makes that never-toasted episode eligible: its
+/// toast draws over the menu. Cancelling the selector defers Alpha's
+/// acknowledgement, but the toast covering Alpha's canvas, then Beta's and
+/// Gamma's queued behind it, stop it counting as viewed: once the monitor
+/// shows the SIZE Alpha wrote after a later host resize, Alpha still needs
+/// attention, and it is acknowledged only once no toast covers it. With
+/// Delta's toast covering Alpha, typed keys still reach Alpha, and a drag
+/// Alpha's press began before the toast appeared keeps going to Alpha over
+/// the toast, through its release. A new click on the toast only dismisses
+/// it: Alpha receives nothing for it, Delta is neither selected, acquired
+/// nor acknowledged.
+#[test]
+fn a_covering_toast_stops_viewing_while_keys_and_drags_still_reach_the_session() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    for name in ["Beta", "Gamma", "Delta"] {
+        headless(&package, &watched(name), "finish");
+    }
+    // No selector before Alpha's attention: cancelling one would defer an
+    // acknowledgement that could meet it.
+    report_state(&package, "Alpha", "idle");
+    top_row_is(&mut terminal, &controlled("Alpha", ATTENTION));
+    retitle(&package, "Alpha", "Alpha 2");
+    top_row_is(&mut terminal, &controlled("Alpha 2", ATTENTION));
+    assert_eq!(bells(&terminal), 0);
+    no_toast(&terminal);
+
+    terminal.send("\x1ds").unwrap();
+    toast_shown_with(
+        &terminal,
+        &toast(36, "Alpha 2", Some(JUMP_HINT)),
+        |screen| screen.contains("║Needs attention Alpha 2"),
+    );
+    terminal.send(ESCAPE).unwrap();
+    for name in ["Beta", "Gamma"] {
+        emit(&package, name, b"\x1b]9;queued\x07");
+    }
+    selector_closed(&terminal);
+    terminal.resize(ROWS - 1, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha 2", ATTENTION, "28 120");
+    rang(&mut terminal, 3);
+    whole_frame_shows(&terminal, "Alpha acknowledged once uncovered", |screen| {
+        let top = controlled("Alpha 2", ACKNOWLEDGED);
+        screen.lines().next() == Some(top.as_str()) && !screen.contains(['┌', '└', '│'])
+    });
+    terminal.resize(ROWS, COLS).unwrap();
+    ready_at(&mut terminal, "Alpha 2", ACKNOWLEDGED, "29 120");
+
+    set_modes(
+        &package,
+        &terminal,
+        "Alpha",
+        b"\x1b[?1002h\x1b[?1006h",
+        "M1",
+    );
+    terminal.send("\x1b[<0;10;10M").unwrap();
+    let mut expected = b"\x1b[<0;10;9M".to_vec();
+    received_by(&package, "Alpha", &expected);
+    emit(&package, "Delta", b"\x1b]9;covering\x07");
+    toast_shown(&terminal, &toast(36, "Delta", Some(JUMP_HINT)));
+    terminal.send("k\x1b[<32;100;28M\x1b[<0;100;28m").unwrap();
+    expected.extend(b"k\x1b[<32;100;27M\x1b[<0;100;27m");
+    received_by(&package, "Alpha", &expected);
+    terminal.send("\x1b[<0;100;28M\x1b[<0;100;28m").unwrap();
+    no_toast(&terminal);
+    terminal.send("m").unwrap();
+    expected.extend(b"m");
+    received_by(&package, "Alpha", &expected);
+    rang(&mut terminal, 4);
+    top_row_is(&mut terminal, &controlled("Alpha 2", RUNNING));
+    glance(&mut terminal, ATTENTION, "Delta");
+    let detached = json!({"lifecycle": "detached", "attachments": 0, "controlled": false});
+    listed_as(&package, "Delta", &detached);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// CFG-01 (Monitor: hints and bell): with `monitor.show_key_hints` and
+/// `monitor.bell` false, no implicit hint shows anywhere and no bell rings,
+/// while every binding works and toasts and host attention reports go on:
+/// the empty state shows no hint and the key introduction does not open by
+/// itself; the selected session's top row and the selector show no hint or
+/// footer; the placeholder another client's takeover leaves shows no
+/// takeover hint, yet the take-control key acquires; Beta's notification
+/// toasts as three rows, `Beta` alone, with no bell, while the host hears
+/// that attention is pending; prefix+j jumps to Beta and prefix+x exits.
+#[test]
+fn without_key_hints_or_bell_no_hint_shows_and_no_bell_rings() {
+    let package = Package::new();
+    fs::write(
+        config_file(&package),
+        r#"{"monitor": {"show_key_hints": false, "bell": false}}"#,
+    )
+    .unwrap();
+    let mut terminal = outer(&package, "c2 monitor");
+    shows(&mut terminal, &empty_monitor(ROWS, COLS, &[EMPTY]));
+    let alpha = headless(&package, &watched("Alpha"), "finish");
+    let plain = |label: &str, status: &str, control: &str| {
+        session_top_row(usize::from(COLS), label, &[status, control])
+    };
+    whole_frame_shows(&terminal, "Alpha ready, without a hint", |screen| {
+        let mut rows = screen.lines();
+        rows.next() == Some(plain("Alpha", RUNNING, CONTROLLING).as_str())
+            && rows
+                .nth(1)
+                .is_some_and(|row| row.starts_with("SIZE 29 120"))
+    });
+    headless(&package, &watched("Beta"), "finish");
+    terminal.send("\x1ds").unwrap();
+    let rows = [(RUNNING, "Beta"), (RUNNING, "Alpha")];
+    boxed_as(
+        &terminal,
+        ROWS,
+        &selector_box((ROWS, COLS), "", &rows, None),
+        &[6],
+    );
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+
+    let other = attach(&package, &alpha);
+    let placeholder = centred_below(
+        &plain("Alpha", RUNNING, NOT_CONTROLLING),
+        ROWS,
+        COLS,
+        &[VIEWED_ELSEWHERE],
+    );
+    shows(&mut terminal, &placeholder);
+    terminal.send("\x14").unwrap();
+    whole_frame_shows(&terminal, "Alpha taken back", |screen| {
+        screen.lines().next() == Some(plain("Alpha", RUNNING, CONTROLLING).as_str())
+    });
+
+    emit(&package, "Beta", b"\x1b]9;Build finished\x07");
+    toast_shown(&terminal, &toast(8, "Beta", None));
+    host_heard(&mut terminal, &[WORKING, BLOCKED]);
+    terminal.send("\x1dj").unwrap();
+    whole_frame_shows(&terminal, "Beta acknowledged", |screen| {
+        screen.lines().next() == Some(plain("Beta", ACKNOWLEDGED, CONTROLLING).as_str())
+    });
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(bells(&terminal), 0);
+    detach(other);
     finish_sessions(&package, "finish");
     package.assert_clean();
 }

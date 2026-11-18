@@ -519,8 +519,9 @@ describing the dynamic most-recent jump rather than guaranteeing their own sessi
 toast/chrome/selector/empty hints, not bindings or application text. Validate the
 startup snapshot before terminal changes; wrong type/duplicate known fields fail,
 missing fields default, no live reload, and no new monitor bindings. The monitor
-validates it and honors it for its empty-state hint, the only hint implemented
-([#82](https://github.com/jackgeek/climon2/issues/82)).
+validates it and honors it for every hint it shows, toasts' included
+([#82](https://github.com/jackgeek/climon2/issues/82) to
+[#115](https://github.com/jackgeek/climon2/issues/115)).
 See the [canonical amendments](protocol/terminal-integration.md#attention-jump-and-configurable-hints)
 and [configuration example](../README.md#configuration).
 

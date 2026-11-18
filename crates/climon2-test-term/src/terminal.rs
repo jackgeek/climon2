@@ -32,9 +32,17 @@ use std::{
 
 /// How many of the latest output bytes a terminal keeps for
 /// [`Terminal::received`]: enough for a test's whole run of monitor
-/// repaints, so a check of everything the host received (such as "the
-/// outer shell's title was the only OSC") still sees its start.
-const RECENT_BYTES: usize = 256 * 1024;
+/// repaints, toast animations (#115) included, so a check of everything
+/// the host received (such as "the outer shell's title was the only OSC")
+/// still sees its start.
+const RECENT_BYTES: usize = 16 * 1024 * 1024;
+/// How many of the latest output bytes a failure shows.
+const FAILURE_BYTES: usize = 64 * 1024;
+
+/// The last `bytes` of `recent`, or all of it.
+fn tail(recent: &[u8], bytes: usize) -> &[u8] {
+    &recent[recent.len().saturating_sub(bytes)..]
+}
 
 struct Size {
     rows: usize,
@@ -148,6 +156,8 @@ struct Screen {
     requests: Vec<String>,
     signals: Signals,
     recent: Vec<u8>,
+    /// How many output bytes arrived in all, kept or not.
+    total: u64,
     eof: bool,
     error: Option<io::Error>,
     last_output: Instant,
@@ -211,7 +221,7 @@ impl Screen {
                 "{error}\nSCREEN:\n{}\nHOST SIGNALS:\n{:?}\nRECENT BYTES:\n{:?}",
                 self.text(),
                 self.signals.recorded(),
-                String::from_utf8_lossy(&self.recent)
+                String::from_utf8_lossy(tail(&self.recent, FAILURE_BYTES))
             ),
         )
     }
@@ -280,6 +290,7 @@ impl Terminal {
                 requests: Vec::new(),
                 signals: Signals::default(),
                 recent: Vec::new(),
+                total: 0,
                 eof: false,
                 error: None,
                 last_output: Instant::now(),
@@ -316,6 +327,7 @@ impl Terminal {
                         parser.advance(&mut state.term, &buffer[..count]);
                         state.signals.push(&buffer[..count]);
                         state.recent.extend_from_slice(&buffer[..count]);
+                        state.total += count as u64;
                         state.last_output = Instant::now();
                         let excess = state.recent.len().saturating_sub(RECENT_BYTES);
                         state.recent.drain(..excess);
@@ -445,9 +457,22 @@ impl Terminal {
             .to_vec()
     }
 
-    /// The most recent output bytes (at most `RECENT_BYTES`, 256 KiB).
+    /// The most recent output bytes (at most `RECENT_BYTES`, 16 MiB).
     pub fn received(&self) -> Vec<u8> {
         self.screen.0.lock().expect("screen lock").recent.clone()
+    }
+
+    /// How many output bytes arrived in all: unchanged between two calls,
+    /// nothing arrived between them. Cheaper than comparing
+    /// [`Terminal::received`] twice.
+    pub fn received_total(&self) -> u64 {
+        self.screen.0.lock().expect("screen lock").total
+    }
+
+    /// At most the last `bytes` output bytes.
+    pub fn received_tail(&self, bytes: usize) -> Vec<u8> {
+        let state = self.screen.0.lock().expect("screen lock");
+        tail(&state.recent, bytes).to_vec()
     }
 
     pub fn wait_for_text(&mut self, text: &str, timeout: Duration) -> io::Result<()> {

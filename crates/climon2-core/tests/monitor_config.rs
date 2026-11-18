@@ -67,7 +67,7 @@ const ROWS: Kind = Kind {
 };
 
 /// Every `monitor.limits` setting, in its group, with its range.
-const FIELDS: [(&str, Kind); 62] = [
+const FIELDS: [(&str, Kind); 60] = [
     ("memory.total_bytes", BYTES64),
     ("memory.client_bytes", BYTES64),
     ("memory.history_bytes_per_session", BYTES64),
@@ -127,8 +127,6 @@ const FIELDS: [(&str, Kind); 62] = [
     ("ui.fps", FPS),
     ("ui.client_quantum_ms", QUANTUM),
     ("ui.background_quantum_ms", QUANTUM),
-    ("ui.toast_records", COUNT32),
-    ("ui.toast_bytes", BYTES64),
     ("ui.search_bytes", BYTES64),
 ];
 
@@ -227,8 +225,6 @@ fn defaults() -> Value {
                     "fps": 30,
                     "client_quantum_ms": 2,
                     "background_quantum_ms": 8,
-                    "toast_records": 128,
-                    "toast_bytes": 524_288,
                     "search_bytes": 4096
                 }
             }
@@ -631,18 +627,20 @@ fn cfg01_other_monitor_byte_budgets_fit_the_total() {
     }
 }
 
-/// CFG-01 (Contract): toasts are a UI queue, and the aggregate queue budget
-/// includes the UI queues, so `ui.toast_bytes` fits
-/// `memory.queue_bytes_total`, not merely `memory.total_bytes`.
+/// CFG-01 (Contract; owner decision on #115, 2026-11-16): the toast queue
+/// holds a fixed three toasts, so `ui.toast_records` and `ui.toast_bytes` are
+/// no longer settings: like any unknown field they are ignored, whatever
+/// their type or value, even past every budget, and the effective
+/// configuration does not report them.
 #[test]
-fn cfg01_toasts_fit_the_aggregate_queue_budget() {
-    let queued = 67_108_864;
-    accepted(&[at("ui.toast_bytes", queued)]);
-    assert!(
-        refused(&[at("ui.toast_bytes", queued + 1)]).contains(
-            "monitor.limits.ui.toast_bytes (67108865) may not exceed monitor.limits.memory.queue_bytes_total (67108864)"
-        )
-    );
+fn cfg01_the_removed_toast_limits_are_ignored() {
+    let text = r#"{"monitor": {"limits": {"ui": {
+        "toast_records": null, "toast_records": 0,
+        "toast_bytes": "many", "toast_bytes": 18446744073709551615
+    }}}}"#;
+    assert_eq!(effective(text), defaults());
+    let reported = monitor(text).unwrap().to_string();
+    assert!(!reported.contains("toast"), "{reported}");
 }
 
 /// CFG-01 (Contract): the daemon owns notification assembly, so
