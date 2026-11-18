@@ -418,3 +418,7 @@ _Avoid_: Fast gate, quick check
 **Full gate**:
 `cargo xtask check --full`: the local qualification run once before a feature branch merges to `main`, which mutates whole changed files and measures mutation load for five rounds.
 _Avoid_: Slow gate, complete check
+
+**Stage timeout**:
+How long one earlier test stage of a mutant (library tests, or its crate's integration tests) may run before it counts as killing the mutant: 10 times that stage's unloaded run, at least 2 seconds. The full-workspace stage has none; the mutator's timeout for the whole run bounds it.
+_Avoid_: Mutant timeout, lib timeout

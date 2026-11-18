@@ -3,7 +3,7 @@
 use std::{
     ffi::OsString,
     fs,
-    os::unix::process::CommandExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -54,6 +54,11 @@ impl Fixture {
             .unwrap()
             .join("tools/check-mutation-load.py");
         let forbidden = self.root().join("forbidden-target");
+        // As `test-mutation.py` measures them: none unless a test wrote its own.
+        let stages = self.root().join("stage-timeouts.json");
+        if !stages.exists() {
+            fs::write(&stages, "{}").unwrap();
+        }
         command
             .arg(script)
             .arg(self.root())
@@ -61,6 +66,8 @@ impl Fixture {
             .args(["--workers", &workers.to_string()])
             .args(["--rounds", &rounds.to_string()])
             .args(["--timeout-factor", timeout_factor])
+            .arg("--stage-timeouts")
+            .arg(stages)
             .env("CARGO_TARGET_DIR", &forbidden)
             .env("CARGO_BUILD_TARGET_DIR", &forbidden)
             .env("CARGO_BUILD_BUILD_DIR", &forbidden);
@@ -279,6 +286,10 @@ fn clean_fixture() {
     fs::write(warm.join("warm-proof"), "warm seed").unwrap();
     let (success, output) = fixture.measure(2, 2);
     assert!(success, "{output}");
+    for round in ["1/2", "2/2"] {
+        let seconds = seconds_after(&output, &format!("round {round}: 0/2 suites failed in "));
+        assert!((0.0..120.0).contains(&seconds), "{output}");
+    }
     let logs = fixture.logs();
     assert_eq!(logs.len(), 6, "{logs:?}");
     for log in logs
@@ -423,7 +434,8 @@ fn a_terminated_measurement_stops_its_suites_and_removes_their_worker_builds() {
         }
         thread::sleep(Duration::from_millis(20));
     };
-    assert!(!status.success());
+    // Like a shell, 128 + SIGTERM.
+    assert_eq!(status.code(), Some(143));
     assert_exited(&suites);
     assert_eq!(fixture.target_entries(), ["flake-logs", "mutation-tests"]);
 }
@@ -521,4 +533,239 @@ fn hung_under_load() {{
         "{logs:?}"
     );
     assert_exited(&[fs::read_to_string(fixture.root().join("hung.pid")).unwrap()]);
+}
+
+/// Fixture tests that record, per worker, which test ran in which order, so a log of the
+/// stages each load suite ran can be read back: `unit` is the library test, `slow` the
+/// integration test. Under load the library test runs `UNIT_UNDER_LOAD` and the integration
+/// test sleeps for six seconds; unloaded both return at once.
+const STAGED: &str = r#"
+pub fn under_load() -> bool {
+    let executable = std::env::current_exe().unwrap();
+    let build = executable.ancestors().nth(3).unwrap();
+    build.file_name().unwrap().to_str().unwrap().starts_with("worker-")
+}
+
+/// Appends `test` to this worker's order file.
+pub fn record(test: &str) {
+    use std::io::Write;
+    let executable = std::env::current_exe().unwrap();
+    let worker = executable.ancestors().nth(3).unwrap().file_name().unwrap();
+    let order = std::env::current_dir().unwrap().join("order").join(worker);
+    std::fs::create_dir_all(order.parent().unwrap()).unwrap();
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(order).unwrap();
+    writeln!(file, "{test}").unwrap();
+}
+
+#[test]
+fn unit() {
+    if !under_load() {
+        return;
+    }
+    record("unit");
+    UNIT_UNDER_LOAD
+}
+"#;
+
+const SLOW: &str = "#[test]\nfn slow() {\n    if !load_fixture::under_load() {\n        return;\n    }\n    load_fixture::record(\"slow\");\n    std::thread::sleep(std::time::Duration::from_secs(6));\n}\n";
+
+/// A fixture whose library test does `unit_under_load` under load, with the integration test
+/// `slow`, and hand-written stage timeouts for `--lib` and `--test slow`.
+fn staged(unit_under_load: &str, library_timeout: f64) -> Fixture {
+    let fixture = Fixture::new(&STAGED.replace("UNIT_UNDER_LOAD", unit_under_load));
+    fs::create_dir(fixture.root().join("tests")).unwrap();
+    fs::write(fixture.root().join("tests/slow.rs"), SLOW).unwrap();
+    fs::write(
+        fixture.root().join("stage-timeouts.json"),
+        format!(r#"{{"--lib": {library_timeout:.1}, "--test slow": 30.0}}"#),
+    )
+    .unwrap();
+    fixture
+}
+
+/// The order in which each worker's suite ran its tests.
+fn orders(fixture: &Fixture) -> Vec<String> {
+    let mut orders: Vec<_> = fs::read_dir(fixture.root().join("order"))
+        .map(|entries| {
+            entries
+                .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    orders.sort();
+    orders
+}
+
+/// Gate speed-up (#73, 2026-11-16): each load suite rehearses a mutant's run. It runs the
+/// library stage, then each target crate's integration stage, each under its own stage
+/// timeout, then the full workspace under the mutator's timeout, which may be longer than
+/// any stage timeout.
+#[test]
+fn each_load_suite_runs_the_workers_stages_in_order_under_their_own_timeouts() {
+    let fixture = staged("", 5.0);
+    let (success, output) = fixture.measure(2, 1);
+    assert!(success, "{output}");
+    assert_eq!(
+        orders(&fixture),
+        ["unit\nslow\nunit\nslow\n", "unit\nslow\nunit\nslow\n"],
+        "{output}"
+    );
+}
+
+/// The owner kept the load measurement so a load-sensitive run cannot pass as a killed mutant:
+/// a stage that fails, or outlives its stage timeout, under load fails the measurement, and
+/// that suite runs no later stage.
+#[test]
+fn a_load_stage_that_fails_or_outlives_its_stage_timeout_fails_the_measurement() {
+    for (unit_under_load, expected) in [
+        ("panic!(\"unit defect under load\");", "unit"),
+        (
+            "std::thread::sleep(std::time::Duration::from_secs(30));",
+            "stage timeout",
+        ),
+    ] {
+        let fixture = staged(unit_under_load, 2.0);
+        let (success, output) = fixture.measure(1, 1);
+        assert!(!success, "{output}");
+        assert!(output.contains(expected), "{output}");
+        assert!(output.contains("--lib"), "{output}");
+        assert_eq!(orders(&fixture), ["unit\n"], "{output}");
+        let logs = fixture.logs();
+        let suite = logs
+            .iter()
+            .find(|log| log.file_name().unwrap() == "r1-worker-1.log")
+            .unwrap();
+        assert!(output.contains(&suite.display().to_string()), "{output}");
+    }
+}
+
+/// Each option is required: a measurement without one is a usage error, not a crash.
+#[test]
+fn every_option_is_required() {
+    let fixture = Fixture::new("");
+    for option in [
+        "--workers",
+        "--rounds",
+        "--timeout-factor",
+        "--stage-timeouts",
+    ] {
+        let command = fixture.command(1, 1, "10");
+        let arguments: Vec<_> = command
+            .get_args()
+            .map(|argument| argument.to_owned())
+            .collect();
+        let position = arguments
+            .iter()
+            .position(|argument| argument == option)
+            .unwrap();
+        let mut without = Command::new(python());
+        without
+            .args(&arguments[..position])
+            .args(&arguments[position + 2..])
+            .stderr(Stdio::piped());
+        let output = without.output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{option}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(option),
+            "{option}"
+        );
+    }
+}
+
+/// Workers and rounds must be at least one and the timeout factor positive: a value one past
+/// each limit is a usage error, and the limit itself is accepted. An accepted measurement of a
+/// workspace that cannot build fails on that build instead.
+#[test]
+fn counts_and_the_timeout_factor_are_validated_at_their_limits() {
+    let fixture = Fixture::new("compile_error!(\"never builds\");\n");
+    for (workers, rounds, timeout_factor, accepted) in [
+        ("0", "1", "10", false),
+        ("1", "0", "10", false),
+        ("1", "1", "0", false),
+        ("1", "1", "-1", false),
+        ("1", "1", "0.5", true),
+    ] {
+        let command = fixture.command(1, 1, "10");
+        let mut arguments: Vec<_> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        for (option, value) in [
+            ("--workers", workers),
+            ("--rounds", rounds),
+            ("--timeout-factor", timeout_factor),
+        ] {
+            let position = arguments
+                .iter()
+                .position(|argument| argument == option)
+                .unwrap();
+            arguments[position + 1] = value.to_owned();
+        }
+        let output = Command::new(python())
+            .args(&arguments)
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .env_remove("CARGO_BUILD_BUILD_DIR")
+            .output()
+            .unwrap();
+        let expected = if accepted { 1 } else { 2 };
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{workers} {rounds} {timeout_factor}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// The number of seconds printed right after `prefix` in `output`.
+fn seconds_after(output: &str, prefix: &str) -> f64 {
+    let start = output
+        .find(prefix)
+        .unwrap_or_else(|| panic!("{prefix}: {output}"))
+        + prefix.len();
+    let digits: String = output[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect();
+    digits.parse().unwrap()
+}
+
+/// The mutation timeout is the timeout factor times the unloaded baseline run: a baseline
+/// that sleeps one second with factor ten gives at least ten seconds.
+#[test]
+fn the_mutation_timeout_is_the_factor_times_the_unloaded_baseline() {
+    let fixture = Fixture::new(&format!(
+        "{UNDER_LOAD}#[test]\nfn one_second_unloaded() {{ if !under_load() {{ std::thread::sleep(std::time::Duration::from_secs(1)); }} }}\n"
+    ));
+    let (success, output) = fixture.measure_with_timeout_factor(1, 1, "10");
+    assert!(success, "{output}");
+    let timeout = seconds_after(&output, "the mutation timeout is ");
+    assert!((10.0..60.0).contains(&timeout), "{output}");
+}
+
+/// A worker build that cannot be copied stops the measurement before any round runs.
+#[test]
+fn a_worker_build_that_cannot_be_copied_fails_the_measurement() {
+    let fixture = Fixture::new("");
+    let warm = fixture.root().join("target/mutation-tests");
+    fs::create_dir_all(&warm).unwrap();
+    let unreadable = warm.join("unreadable");
+    fs::write(&unreadable, "").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    let (success, output) = fixture.measure(1, 1);
+    assert!(!success, "{output}");
+    let rounds = fixture
+        .logs()
+        .iter()
+        .filter(|log| {
+            log.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("r1-")
+        })
+        .count();
+    assert_eq!(rounds, 0, "{output}");
+    assert_eq!(fixture.target_entries(), ["flake-logs", "mutation-tests"]);
 }

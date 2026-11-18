@@ -696,27 +696,37 @@ proving its plain binary carries no test hooks, before the workspace tests
 build it with hooks at the same path.
 The unchanged workspace must pass in a real mutation overlay before mutation;
 worker infrastructure failures cannot count as killed mutants.
-Both tiers measure mutation load before mutating, even when no changed shipped
-source needs mutation. The measurement warms
-`target/mutation-tests` and times one unloaded full-workspace run there, then
-runs its rounds (one for the ticket gate, five for the full gate) of 8
-full-workspace suites at once, each in a private copy of
-the warm build (copy-on-write where supported). As in mutation, each suite has
-its own session. A suite fails the measurement if any test fails or if it
-outlives the mutator's timeout (10 times the unloaded run, at least 2 s),
-because the mutator would count either outcome as a killed mutant and hide a
-survivor. A surviving mutant's run also stages library and crate tests within
-that timeout, so this catches stalled suites rather than every possible mutant
-timeout. A failure under load is a test defect; nothing is retried. The
-measurement stops after the failing round and names each failing test and test
-target with the number of suites it failed in. It then lists their logs. Logs
-from every run remain in a unique directory under `target/flake-logs/`. Worker
-builds are removed afterward, and the next measurement removes any that a killed
-one left.
 Each mutant first runs workspace library tests, then its crate's integration
 tests. A failing stage stops immediately; every mutant that passes both still
 runs the full workspace before it can count as a survivor. The unchanged
-baseline always runs the full workspace. Workers receive private copies of
+baseline always runs the full workspace. After coverage, with no load
+running, the gate times each earlier stage of every target once in the warm
+`target/mutation-tests` build and writes their **stage timeouts** (10 times
+each unloaded run, at least 2 s) to `target/mutation-stage-timeouts.json`. A
+mutant builds each earlier stage, then runs its tests under that stage's
+timeout; a stage that outlives it kills the run's whole process group, so the
+mutant counts as killed, as with the mutator's timeout. A test that hangs a
+mutant's library stage therefore frees its worker in seconds instead of after
+10 full-workspace runs. The full workspace has no stage timeout: the mutator's
+timeout for the whole run (10 times the unchanged full-workspace run, at least
+2 s) still bounds it.
+Both tiers then measure mutation load before mutating, even when no changed
+shipped source needs mutation. The measurement times one unloaded
+full-workspace run in the warm build, then runs its rounds (one for the ticket
+gate, five for the full gate) of 8 suites at once, each in a private copy of
+the warm build (copy-on-write where supported). Each suite rehearses a
+mutant's run on the unchanged workspace: in a session of its own, the earlier
+stages in order, each under its stage timeout, then the full workspace, all
+within the mutator's timeout. A suite fails the measurement if any stage has a
+failing test or outlives its timeout, because the mutator would count either
+outcome as a killed mutant and hide a survivor. A failure under load is a test
+defect; nothing is retried. The measurement stops after the failing round and
+names each failing test and test target with the number of suites it failed
+in, and the timeout each killed suite reached. It then lists their logs. Logs
+from every run remain in a unique directory under `target/flake-logs/`. Worker
+builds are removed afterward, and the next measurement removes any that a
+killed one left.
+Workers receive private copies of
 its warm build artifacts (copy-on-write where supported), rather than
 rebuilding dependencies from scratch for every changed file.
 `CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).

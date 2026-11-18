@@ -3,13 +3,19 @@
 The pinned mutator counts a mutant as killed when its test run fails, or outlives
 `timeout factor x the unloaded baseline run` (never less than two seconds), and it
 starts every test run in its own session (mutator `engine._apply_selected` and
-`runner.CommandRunner.run`). Each suite here runs the same way, so any suite that
-fails or outlives that timeout could have hidden a surviving mutant.
+`runner.CommandRunner.run`). Within that run, `test-mutation.py` runs the mutant's
+stages in order, and an earlier stage also kills the mutant when it fails or outlives
+its own stage timeout (STAGE_TIMEOUTS, which `test-mutation.py` measured unloaded).
+Each suite here rehearses that run on the unchanged workspace, in a session of its own:
+the earlier stages in order, each under its stage timeout, then the full workspace, all
+within the mutator's timeout. Any stage that fails or outlives its timeout here could
+have hidden a surviving mutant.
 """
 
 import argparse
 from collections import Counter
 from contextlib import suppress
+import json
 import os
 from pathlib import Path
 import re
@@ -21,6 +27,7 @@ import tempfile
 import time
 
 MINIMUM_TIMEOUT = 2.0
+POLL_SECONDS = 0.05
 FAILED_TEST = re.compile(r"^test (.+) \.\.\. FAILED$", re.MULTILINE)
 FAILED_TARGET = re.compile(r"^error: test failed, to rerun pass `(.+)`$", re.MULTILINE)
 SLOW_TEST = re.compile(r"^test (.+) has been running for over 60 seconds$", re.MULTILINE)
@@ -42,59 +49,117 @@ def positive_number(value):
     return number
 
 
-def start(root, cargo, environment, target, log, no_run):
-    command = [
-        cargo, "test", "--workspace", "--locked", "--no-fail-fast",
-        "--target-dir", str(target),
+def load_stages(path):
+    """The earlier stages, in the order workers run them, as `(arguments, stage timeout)`."""
+    return [
+        (selection.split(), float(timeout))
+        for selection, timeout in json.loads(path.read_text()).items()
     ]
-    if no_run:
-        command.append("--no-run")
-    output = log.open("w")
-    try:
-        process = subprocess.Popen(
-            command, cwd=root, env=environment, stdout=output,
-            stderr=subprocess.STDOUT, start_new_session=True,
+
+
+class Suite:
+    """One worker's rehearsal of a mutant's run: its stages in order, each in a session of
+    its own, logged to one file."""
+
+    def __init__(self, root, cargo, environment, target, log, stages, timeout):
+        self.command = [
+            cargo, "test", "--workspace", "--locked", "--no-fail-fast",
+            "--target-dir", str(target),
+        ]
+        self.root = root
+        self.environment = environment
+        self.log = log
+        self.stages = iter(stages)
+        self.started = time.monotonic()
+        self.timeout = timeout
+        self.process = None
+        self.limit = None
+        self.killed = None
+        # Line-buffered, so each line lands before the next stage's output.
+        self.output = log.open("w", buffering=1)
+
+    def advance(self):
+        """Starts the next stage; False when none remains."""
+        stage = next(self.stages, None)
+        if stage is None:
+            return False
+        arguments, stage_timeout = stage
+        self.limit = self.deadline(" ".join(arguments), stage_timeout)
+        self.process = subprocess.Popen(
+            self.command + arguments, cwd=self.root, env=self.environment,
+            stdout=self.output, stderr=subprocess.STDOUT, start_new_session=True,
         )
-    except BaseException:
-        output.close()
-        raise
-    return log, output, process
+        return True
+
+    def deadline(self, name, stage_timeout):
+        """The earlier of the stage's and the whole run's deadlines, with which one it is."""
+        limits = []
+        if stage_timeout is not None:
+            limits.append(
+                (time.monotonic() + stage_timeout, f"the {stage_timeout:.1f}s `{name}` stage timeout")
+            )
+        if self.timeout is not None:
+            limits.append(
+                (self.started + self.timeout, f"the {self.timeout:.1f}s mutation timeout")
+            )
+        return min(limits, default=None)
+
+    def finished(self):
+        """Whether the suite is done: passed, failed, or killed at a timeout."""
+        code = self.process.poll()
+        if code is None:
+            if self.limit is None or max(0.0, self.limit[0] - time.monotonic()):
+                return False
+            code = self.stop(self.limit[1])
+        print(f"exit={code}", file=self.output)
+        return code != 0 or not self.advance()
+
+    def failed(self):
+        return self.process.returncode != 0
+
+    def stop(self, reason):
+        """Kills the running stage's session for `reason` and returns its exit status."""
+        self.killed = reason
+        with suppress(ProcessLookupError):
+            os.killpg(self.process.pid, signal.SIGKILL)
+        print(f"Killed at {reason}", file=self.output)
+        return self.process.wait()
+
+    def close(self):
+        if self.process is not None and self.process.poll() is None:
+            print(f"exit={self.stop('an interruption')}", file=self.output)
+        self.output.close()
 
 
-def run_suites(root, cargo, environment, suites, timeout=None, no_run=False):
-    """Runs `(target, log)` suites at once, each in its own session.
+def run_suites(root, cargo, environment, suites, stages, timeout=None):
+    """Runs `(target, log)` suites at once. Each runs `stages`, `(arguments, stage timeout)`
+    pairs with None for no stage timeout, in order, stopping at the first that fails or
+    outlives its stage timeout or the suite's `timeout` seconds.
 
-    Returns the logs of failed suites and of those killed at `timeout` seconds.
+    Returns the logs of failed suites, and for those killed at a timeout, which one.
     Suites still running when the measurement is interrupted are killed too.
     """
     started = []
-    timed_out = []
     try:
         for target, log in suites:
-            started.append(start(root, cargo, environment, target, log, no_run))
-        deadline = None if timeout is None else time.monotonic() + timeout
-        for _, _, process in started:
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            with suppress(subprocess.TimeoutExpired):
-                process.wait(remaining)
-        timed_out = [log for log, _, process in started if process.poll() is None]
+            suite = Suite(root, cargo, environment, target, log, stages, timeout)
+            started.append(suite)
+            suite.advance()
+        running = list(started)
+        while running:
+            running = [suite for suite in running if not suite.finished()]
+            time.sleep(POLL_SECONDS)
     finally:
-        for log, output, process in started:
-            if process.poll() is None:
-                with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-            if log in timed_out:
-                print(f"Killed at the {timeout:.1f}s mutation timeout", file=output)
-            print(f"exit={process.returncode}", file=output)
-            output.close()
-    failed = [log for log, _, process in started if process.returncode != 0]
-    return failed, timed_out
+        for suite in started:
+            suite.close()
+    failed = [suite.log for suite in started if suite.failed()]
+    killed = {suite.log: suite.killed for suite in started if suite.killed}
+    return failed, killed
 
 
 def report_build_failure(log):
     print(f"Mutation load could not build the workspace: {log}", file=sys.stderr)
-    print(log.read_text(errors="replace"), file=sys.stderr, flush=True)
+    print(log.read_text(errors="replace"), file=sys.stderr)
 
 
 def stuck_tests(text):
@@ -102,13 +167,13 @@ def stuck_tests(text):
     return set(SLOW_TEST.findall(text)) - set(FINISHED_TEST.findall(text))
 
 
-def report_failures(failed, timed_out, timeout):
-    """Names each failing test and target, and each test stuck in a suite killed at the
+def report_failures(failed, killed):
+    """Names each failing test and target, and each test stuck in a suite killed at a
     timeout, with the number of suites it happened in."""
     summary = (
         ("Failing tests", failed, lambda text: set(FAILED_TEST.findall(text))),
         ("Failing test targets", failed, lambda text: set(FAILED_TARGET.findall(text))),
-        ("Tests running over 60 seconds when killed", timed_out, stuck_tests),
+        ("Tests running over 60 seconds when killed", killed, stuck_tests),
     )
     for title, logs, names_in in summary:
         names = Counter(
@@ -118,13 +183,13 @@ def report_failures(failed, timed_out, timeout):
             print(f"{title} (failed suites):", file=sys.stderr)
             for name, suites in sorted(names.items()):
                 print(f"  {suites:>3}  {name}", file=sys.stderr)
-    if timed_out:
-        print(f"Suites killed at the {timeout:.1f}s mutation timeout:", file=sys.stderr)
-        for log in timed_out:
-            print(f"  {log}", file=sys.stderr)
+    if killed:
+        print("Suites killed at a timeout:", file=sys.stderr)
+        for log, timeout in killed.items():
+            print(f"  {log}: {timeout}", file=sys.stderr)
     print("Failed suite logs:", file=sys.stderr)
     for log in failed:
-        print(f"  {log}", file=sys.stderr, flush=True)
+        print(f"  {log}", file=sys.stderr)
 
 
 def remove(path):
@@ -132,7 +197,7 @@ def remove(path):
         shutil.rmtree(path)
 
 
-def measure(root, cargo, workers, rounds, timeout_factor):
+def measure(root, cargo, workers, rounds, timeout_factor, stages):
     target = root / "target"
     scratch = target / "mutation-load"
     # A killed measurement cannot clean up after itself, so never let its builds accumulate.
@@ -140,25 +205,29 @@ def measure(root, cargo, workers, rounds, timeout_factor):
     history = target / "flake-logs"
     history.mkdir(parents=True, exist_ok=True)
     logs = Path(tempfile.mkdtemp(prefix="run-", dir=history))
-    print(f"Mutation load: {workers} workers, {rounds} rounds; logs: {logs}", flush=True)
+    print(f"Mutation load: {workers} workers, {rounds} rounds; logs: {logs}", file=sys.stderr)
     environment = os.environ.copy()
     for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
         environment.pop(key, None)
     warm = target / "mutation-tests"
     failed, _ = run_suites(
-        root, cargo, environment, [(warm, logs / "warm.log")], no_run=True,
+        root, cargo, environment, [(warm, logs / "warm.log")], [(["--no-run"], None)],
     )
     if failed:
         report_build_failure(failed[0])
         return 1
     # Like the mutator's baseline: unloaded, in the warm build the workers copy.
     started = time.monotonic()
-    failed, _ = run_suites(root, cargo, environment, [(warm, logs / "baseline.log")])
+    failed, _ = run_suites(
+        root, cargo, environment, [(warm, logs / "baseline.log")], [([], None)],
+    )
     timeout = max(MINIMUM_TIMEOUT, timeout_factor * (time.monotonic() - started))
     if failed:
-        report_failures(failed, [], timeout)
+        report_failures(failed, {})
         return 1
-    print(f"Unloaded baseline passed; the mutation timeout is {timeout:.1f}s.", flush=True)
+    print(f"Unloaded baseline passed; the mutation timeout is {timeout:.1f}s.", file=sys.stderr)
+    for arguments, stage_timeout in stages:
+        print(f"Stage `{' '.join(arguments)}` timeout: {stage_timeout:.1f}s.", file=sys.stderr)
     try:
         scratch.mkdir()
         builds = [scratch / f"worker-{worker}" for worker in range(1, workers + 1)]
@@ -167,15 +236,17 @@ def measure(root, cargo, workers, rounds, timeout_factor):
         for round_number in range(1, rounds + 1):
             started = time.monotonic()
             suites = [(build, logs / f"r{round_number}-{build.name}.log") for build in builds]
-            failed, timed_out = run_suites(root, cargo, environment, suites, timeout)
+            failed, killed = run_suites(
+                root, cargo, environment, suites, stages + [([], None)], timeout,
+            )
             print(
                 f"Mutation load round {round_number}/{rounds}: "
                 f"{len(failed)}/{workers} suites failed "
                 f"in {time.monotonic() - started:.1f}s",
-                flush=True,
+                file=sys.stderr,
             )
             if failed:
-                report_failures(failed, timed_out, timeout)
+                report_failures(failed, killed)
                 return 1
     finally:
         remove(scratch)
@@ -198,9 +269,11 @@ def main():
     parser.add_argument("--workers", type=positive_integer, required=True)
     parser.add_argument("--rounds", type=positive_integer, required=True)
     parser.add_argument("--timeout-factor", type=positive_number, required=True)
+    parser.add_argument("--stage-timeouts", type=Path, required=True)
     args = parser.parse_args()
     return measure(
         args.root.resolve(), args.cargo, args.workers, args.rounds, args.timeout_factor,
+        load_stages(args.stage_timeouts),
     )
 
 
