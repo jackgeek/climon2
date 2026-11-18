@@ -1167,6 +1167,8 @@ mod tests {
         /// Instances whose notification descriptor was looked up: the
         /// supervisor does so as it learns of their handles.
         looked_up: BTreeSet<[u8; 16]>,
+        /// How many times each instance was drained.
+        drains: BTreeMap<[u8; 16], usize>,
     }
 
     impl World {
@@ -1184,6 +1186,7 @@ mod tests {
         unstalled: BTreeSet::new(),
         submitted: Vec::new(),
         looked_up: BTreeSet::new(),
+        drains: BTreeMap::new(),
     });
     static CHANGED: Condvar = Condvar::new();
     const WAIT: Duration = Duration::from_secs(20);
@@ -1643,6 +1646,7 @@ mod tests {
 
     extern "C" fn drain(communication: *mut Communication, out: *mut Drained) -> Call {
         let fake = fake(communication);
+        *world().drains.entry(fake.id).or_default() += 1;
         if fake.script.drain_fails {
             return failure(native::INTERNAL_ERROR, b"internal_error", b"drain failed");
         }
@@ -3180,6 +3184,39 @@ mod tests {
             supervisor.stop();
             assert!(stopping.elapsed() < Duration::from_secs(10));
         }
+    }
+
+    /// LIM-02 (Monitor: capacity accounting, pure supplement): a client
+    /// whose reports fill its allowance is not waited on, so its pending
+    /// notification does not wake the supervisor: another, idle client is
+    /// still drained about once a tick (20 ms), not continually.
+    #[test]
+    fn a_congested_client_does_not_wake_the_supervisor() {
+        let [congested, idle] = [session(60, 1), session(60, 2)];
+        let presents = Script {
+            presents: true,
+            ..Script::default()
+        };
+        script(&congested, presents);
+        script(&idle, Script::default());
+        let mut limits = climon2_core::config::Limits::default().library();
+        limits.event_bytes = one_report(&congested);
+        limits.delivery_stall_ms = 600_000;
+        let mut supervised = limited(2, 20_000, fake_library(), limits);
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&congested, "2026-11-13T10:00:00.000Z"));
+        let opened = ClientEvent::Opened { status: false };
+        assert_eq!(next(supervisor), (congested.clone(), opened.clone()));
+        supervisor.start_client(metadata(&idle, "2026-11-13T10:00:01.000Z"));
+        let (id, event) = next(supervisor);
+        assert_eq!((&id, &event), (&idle, &opened));
+        supervisor.processed(&idle, backlog::footprint(&idle, &event));
+        let drains = || world().drains.get(&guid(&idle)).copied().unwrap_or(0);
+        let before = drains();
+        thread::sleep(Duration::from_millis(500));
+        let drained = drains() - before;
+        assert!(drained < 100, "{drained} drains in 500 ms");
+        supervisor.stop();
     }
 
     /// Owner decision on #116 (2026-11-16): once discovery proves a
