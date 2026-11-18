@@ -57,6 +57,7 @@ fn truncated(view: &View<'_>) -> bool {
 /// there from anywhere. With nothing in history there is nowhere to go.
 #[test]
 fn scrolling_stays_within_history_and_live() {
+    assert_eq!(scrolled(&model(100)), (0, false), "a fresh model is live");
     let mut model = printed(100, 6);
     assert_eq!(scrolled(&model), (0, false));
     model.scroll(1);
