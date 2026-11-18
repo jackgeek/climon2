@@ -7,7 +7,7 @@ discovery crate shared by CLI and monitor. #77 moved the CLI's session discovery
 into it: `climon2-discovery`, a shipped library that the CLI and, since #106,
 the monitor use. The monitor is its own shipped
 package and executable, `climon2-monitor` (spec #73, confirmed 2026-11-08): the
-CLI execs its own version's monitor for `c2 monitor` and `c2 mon` (or their
+CLI execs its own version's monitor for `c2 monitor` and `c2 m` (or their
 `climon2` spellings), as it execs the version-matched client, and that handoff
 between executables of one release is not frozen. The client library's `cdylib`
 artifact, agreed in spec #73, is recorded below (#75).
