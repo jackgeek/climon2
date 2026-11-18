@@ -683,11 +683,10 @@ impl Monitor {
 
     /// Every terminal's cache as the pressure policy sees it.
     fn caches(&self) -> Vec<pressure::Cache<SessionId>> {
-        let cache = |id: &SessionId| pressure::Cache {
-            key: id.clone(),
-            retained: self.registry.kind(id) != Some(Kind::Connected),
-            selected: self.selected.as_ref() == Some(id),
-            inspected: self.inspected.get(id).copied(),
+        let selected = self.selected.as_ref();
+        let cache = |id: &SessionId| {
+            let inspected = self.inspected.get(id).copied();
+            cache(id, self.registry.kind(id), selected, inspected)
         };
         self.terminals.keys().map(cache).collect()
     }
@@ -1269,6 +1268,23 @@ fn first_identifiers() -> supervisor::Identifiers {
     supervisor::Identifiers::default()
 }
 
+/// `id`'s cache as the pressure policy sees it, its session of `kind`
+/// with `selected` selected: it yields to other sessions unless its session
+/// is connected, and yields last if it is the selected one.
+fn cache(
+    id: &SessionId,
+    kind: Option<Kind>,
+    selected: Option<&SessionId>,
+    inspected: Option<Instant>,
+) -> pressure::Cache<SessionId> {
+    pressure::Cache {
+        key: id.clone(),
+        retained: kind != Some(Kind::Connected),
+        selected: selected == Some(id),
+        inspected,
+    }
+}
+
 /// A byte budget as a `usize`, saturating.
 fn within(budget: u64) -> usize {
     usize::try_from(budget).unwrap_or(usize::MAX)
@@ -1312,9 +1328,11 @@ fn incomplete(progress: &Progress) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, control, inspected,
-        placeholder, retained, revealed, terminal, without_view,
+        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, cache, control,
+        inspected, placeholder, retained, revealed, terminal, without_view,
     };
+    use climon2_core::SessionId;
+    use std::time::Instant;
 
     const CONTROLS: [Control; 5] = [
         Control::Acquiring,
@@ -1427,6 +1445,35 @@ mod tests {
             assert_eq!(shown, expected, "{kind:?}, finished {finished}");
         }
         assert!(retained(Kind::Retained, false, None).is_none());
+    }
+
+    /// History budgets under aggregate pressure (pure supplement, #119):
+    /// a terminal's cache yields to other sessions only while its session is
+    /// not connected (unconnected, retained or no longer listed), and yields
+    /// last only while its session is the selected one.
+    #[test]
+    fn only_a_disconnected_cache_yields_and_only_the_selected_one_yields_last() {
+        let id: SessionId = "0d5c0000-0000-4000-8000-000000000001".parse().unwrap();
+        let other: SessionId = "0d5c0000-0000-4000-8000-000000000002".parse().unwrap();
+        let inspected = Some(Instant::now());
+        let kinds = [
+            (Some(Kind::Connected), false),
+            (Some(Kind::Unconnected), true),
+            (Some(Kind::Retained), true),
+            (None, true),
+        ];
+        for (kind, retained) in kinds {
+            for (selected, last) in [(Some(&id), true), (Some(&other), false), (None, false)] {
+                let seen = cache(&id, kind, selected, inspected);
+                assert_eq!(seen.key, id);
+                assert_eq!(seen.inspected, inspected);
+                assert_eq!(
+                    (seen.retained, seen.selected),
+                    (retained, last),
+                    "{kind:?}, selected {selected:?}"
+                );
+            }
+        }
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the
