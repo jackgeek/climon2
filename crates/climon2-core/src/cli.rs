@@ -27,8 +27,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str =
-    "usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]";
+pub const USAGE: &str = "usage: c2 exec|x <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json]";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,28 +45,68 @@ impl CliArgs {
         let subcommand = arguments.next().ok_or(UsageError)?;
         let remaining: Vec<_> = arguments.collect();
         let name = subcommand.to_str();
-        match SUBCOMMANDS.iter().find(|(known, _)| Some(*known) == name) {
-            Some((_, parse)) => parse(remaining),
+        match SUBCOMMANDS
+            .iter()
+            .find(|command| name.is_some_and(|name| command.is_named(name)))
+        {
+            Some(command) => (command.parse)(remaining),
             None => parse_flag(name, &remaining),
         }
     }
 }
 
+/// Each command's full name and its single-letter shortcut, in usage order:
+/// the one list the parser and the usage line's test share.
+pub fn commands() -> impl Iterator<Item = (&'static str, &'static str)> {
+    SUBCOMMANDS
+        .iter()
+        .map(|command| (command.name, command.shortcut))
+}
+
 type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
 
-const SUBCOMMANDS: [(&str, Parser); 4] = [
-    ("exec", parse_exec),
-    ("list", parse_list),
-    ("attach", |arguments| {
-        parse_selector(arguments, CliArgs::Attach)
-    }),
-    ("kill", |arguments| parse_selector(arguments, CliArgs::Kill)),
+/// A command: its full name, its single-letter shortcut (a pure synonym) and
+/// its parser.
+struct Subcommand {
+    name: &'static str,
+    shortcut: &'static str,
+    parse: Parser,
+}
+
+impl Subcommand {
+    fn is_named(&self, name: &str) -> bool {
+        name == self.name || name == self.shortcut
+    }
+}
+
+/// Every command, in usage order. `r` is reserved for `relay`.
+const SUBCOMMANDS: [Subcommand; 4] = [
+    Subcommand {
+        name: "exec",
+        shortcut: "x",
+        parse: parse_exec,
+    },
+    Subcommand {
+        name: "attach",
+        shortcut: "a",
+        parse: |arguments| parse_selector(arguments, CliArgs::Attach),
+    },
+    Subcommand {
+        name: "kill",
+        shortcut: "k",
+        parse: |arguments| parse_selector(arguments, CliArgs::Kill),
+    },
+    Subcommand {
+        name: "list",
+        shortcut: "l",
+        parse: parse_list,
+    },
 ];
 
-/// Help and version flags accept no further arguments.
+/// Help (long flag only) and version flags accept no further arguments.
 fn parse_flag(name: Option<&str>, remaining: &[OsString]) -> Result<CliArgs, UsageError> {
     match (name, remaining.is_empty()) {
-        (Some("--help" | "-h"), true) => Ok(CliArgs::Help),
+        (Some("--help"), true) => Ok(CliArgs::Help),
         (Some("--version" | "-V"), true) => Ok(CliArgs::Version),
         _ => Err(UsageError),
     }

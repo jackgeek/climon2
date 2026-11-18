@@ -1,8 +1,10 @@
 # climon2-cli
 
 CLI orchestration for `exec COMMAND [ARG...]`, `attach SESSION-ID`,
-`kill SESSION-ID` and `list [--json]`. The usage string is
-`usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]`.
+`kill SESSION-ID` and `list [--json]`. Each command has a single-letter
+shortcut that is a pure synonym (`x`, `a`, `k`, `l`; `r` is reserved for
+`relay`), and help has only `--help` (#287). The usage string is
+`usage: c2 exec|x <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.

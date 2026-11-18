@@ -1,5 +1,9 @@
 //! #29 recovered baseline / #17: exact argv and inherited session environment.
-use climon2_core::{cli::CliArgs, selector::Selector, session::*};
+use climon2_core::{
+    cli::{self, CliArgs},
+    selector::Selector,
+    session::*,
+};
 use std::ffi::{OsStr, OsString};
 
 fn environment(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
@@ -109,12 +113,18 @@ fn attach_and_kill_accept_short_selectors_but_not_empty_or_extra_arguments() {
     }
 }
 
-/// #29: help and version flags, long or short, parse only when given alone.
+/// #29: help and version flags parse only when given alone. #287: help has
+/// only its long flag, so `-h` alone is a usage error (2).
 #[test]
 fn issue29_help_and_version_flags_take_no_arguments() {
+    assert_eq!(
+        CliArgs::parse([OsString::from("-h")])
+            .unwrap_err()
+            .exit_code(),
+        2
+    );
     for (flag, expected) in [
         ("--help", CliArgs::Help),
-        ("-h", CliArgs::Help),
         ("--version", CliArgs::Version),
         ("-V", CliArgs::Version),
     ] {
@@ -257,4 +267,84 @@ fn issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow()
     );
     assert_eq!(ordinal(0), "0th");
     assert_eq!(ordinal(u32::MAX), "4294967295th");
+}
+
+/// #287: each command and its single-letter shortcut, as the spec lists them.
+const SHORTCUTS: [(&str, &str); 4] = [("exec", "x"), ("attach", "a"), ("kill", "k"), ("list", "l")];
+
+/// #287: every command's single-letter shortcut is a pure synonym: given any
+/// arguments, valid or not, it parses exactly as the full name does.
+#[test]
+fn shortcuts_parse_exactly_as_their_full_commands() {
+    let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
+    let tails: [&[&str]; 15] = [
+        &[],
+        &["cmd", "--flag", ""],
+        &["--", "-cmd"],
+        &["--", ""],
+        &["-h"],
+        &["-h", "make", "-h"],
+        &["--json"],
+        &["--json", "--json"],
+        &["01234567"],
+        &["ABCDE-F0"],
+        &["01234567", "extra"],
+        &["short"],
+        &[""],
+        &["--help"],
+        &["extra"],
+    ];
+    for (full, shortcut) in SHORTCUTS {
+        let mut accepted = 0;
+        for tail in tails {
+            let long = [&[full][..], tail].concat();
+            let short = [&[shortcut][..], tail].concat();
+            assert_eq!(parse(&short), parse(&long), "{short:?}");
+            accepted += usize::from(parse(&short).is_ok());
+        }
+        assert!(accepted > 0, "{shortcut} accepted nothing");
+    }
+}
+
+/// #287: every command has exactly one single-letter shortcut, no two
+/// commands share one, no shortcut is another command's name, the usage line
+/// names each beside its command, and `r` stays reserved for `relay`.
+#[test]
+fn every_command_has_its_own_single_letter_shortcut() {
+    let commands: Vec<_> = cli::commands().collect();
+    assert_eq!(commands, SHORTCUTS);
+    let mut names: Vec<_> = commands
+        .iter()
+        .flat_map(|(full, shortcut)| [*full, *shortcut])
+        .collect();
+    let count = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        count,
+        "a shortcut or name is shared: {commands:?}"
+    );
+    for (full, shortcut) in &commands {
+        assert_eq!(shortcut.chars().count(), 1, "{full}");
+        assert_ne!(*shortcut, "r", "{full} takes relay's reserved shortcut");
+    }
+    // The usage line names exactly these commands, each beside its shortcut.
+    let named: Vec<_> = cli::USAGE
+        .trim_start_matches("usage: c2 ")
+        .split(" | ")
+        .map(|form| form.split(' ').next().unwrap())
+        .collect();
+    let expected: Vec<_> = SHORTCUTS
+        .iter()
+        .map(|(full, shortcut)| format!("{full}|{shortcut}"))
+        .collect();
+    assert_eq!(named, expected, "{}", cli::USAGE);
+    assert_eq!(
+        CliArgs::parse(["r"].map(OsString::from))
+            .unwrap_err()
+            .exit_code(),
+        2,
+        "r is reserved, not a command"
+    );
 }

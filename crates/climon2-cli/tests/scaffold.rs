@@ -8,7 +8,22 @@ fn missing_command_is_usage_error() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         output.stderr,
-        b"climon2: error: usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]\n"
+        b"climon2: error: usage: c2 exec|x <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json]\n"
+    );
+}
+
+/// #287: help has only its long flag; a bare `-h` is a usage error.
+#[test]
+fn dash_h_alone_is_a_usage_error_not_help() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_climon2-cli"))
+        .arg("-h")
+        .output()
+        .expect("run CLI");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        output.stderr,
+        b"climon2: error: usage: c2 exec|x <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json]\n"
     );
 }
 
@@ -18,7 +33,7 @@ fn help_and_version_print_exact_presentation_without_home() {
     for (flag, expected) in [
         (
             "--help",
-            "usage: c2 exec <command> [args...] | attach <session-id> | kill <session-id> | list [--json]\n"
+            "usage: c2 exec|x <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json]\n"
                 .to_owned(),
         ),
         (

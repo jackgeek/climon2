@@ -12,6 +12,26 @@ c2 list
 c2 list --json
 ```
 
+Every command has a single-letter shortcut that behaves exactly like its full
+name:
+
+| Command | Shortcut |
+| --- | --- |
+| `exec` | `x` |
+| `attach` | `a` |
+| `kill` | `k` |
+| `list` | `l` |
+
+```sh
+c2 x vim
+c2 a 3f2a9c1e
+c2 k 3f2a9c1e
+c2 l --json
+```
+
+Help is `c2 --help` only; `c2 -h` is a usage error. `-h` is kept for the
+future `exec --headless` option below.
+
 `c2` is the short command for climon2. The installer creates `c2 -> climon2`;
 the original `climon2` command remains supported without warnings. Both names
 run the same current version. Product names, version output, diagnostic prefixes,
@@ -35,8 +55,8 @@ already delivered.
 ## Sessions
 
 `exec` starts the command and attaches to it. There is no start-detached option.
-Future `c2 exec --headless <command> [args...]` is agreed but **not
-implemented**. It will return success only after daemon-confirmed creation,
+Future `c2 exec --headless <command> [args...]`, short form `c2 x -h`, is
+agreed but **not implemented**. It will return success only after daemon-confirmed creation,
 without an interactive client. A headless session will survive zero clients
 throughout its lifetime, including after later attachment loss, until command
 completion or explicit Kill. Ordinary leave policy below remains unchanged.

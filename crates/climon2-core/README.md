@@ -68,7 +68,10 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   `CommandArgs { command: OsString, args: Vec<OsString> }`, including empty
   trailing arguments and option-looking tokens. Optional `--` separates exec
   from a command. Attach and kill take exactly one `selector::Selector`. List
-  permits only `--json`; top-level help/version take no arguments.
+  permits only `--json`; top-level help (`--help` only) and version
+  (`--version`/`-V`) take no arguments. Every command also parses under its
+  single-letter shortcut (`x`, `a`, `k`, `l`), listed by `cli::commands()`;
+  `r` is reserved for `relay` (#287).
   `UsageError::exit_code` returns 2; `cli::USAGE` is the usage line.
 - `selector::Selector`: 1 to 32 hex digits after removing hyphens and folding
   case; anything else is a `UsageError`. `select` picks exactly one candidate by
@@ -115,6 +118,7 @@ Integration tests call only these public boundaries:
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_preserves_literal_os_arguments_and_list_rejects_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
 | Continuity messages and connection choice | `continuity_messages_have_exact_wire_codes_and_json`, `continuity_bodies_are_typed_objects_and_each_code_has_one_direction`, `a_connection_chooses_attach_or_kill_once_and_attachment_requests_need_attach` |
+| #287 shortcuts are pure synonyms, unique and named in the usage line; `-h` alone is not help | `shortcuts_parse_exactly_as_their_full_commands`, `every_command_has_its_own_single_letter_shortcut`, `issue29_help_and_version_flags_take_no_arguments` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
 
 `tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
