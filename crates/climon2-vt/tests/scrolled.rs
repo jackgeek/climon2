@@ -87,7 +87,8 @@ fn scrolling_stays_within_history_and_live() {
 /// back by one, so it keeps showing the same rows, whether the rows come
 /// one at a time, several in one read or by wrapping; output that pushes
 /// none (a scroll region below the top row, the cursor moving) moves
-/// nothing, and a live view stays live.
+/// nothing, and a live view stays live. A view one row back is scrolled
+/// too.
 #[test]
 fn a_scrolled_view_stays_anchored_while_output_continues() {
     let mut model = printed(100, 6);
@@ -116,6 +117,11 @@ fn a_scrolled_view_stays_anchored_while_output_continues() {
     let mut live = printed(100, 6);
     feed(&mut live, "\r\nrow7\r\nrow8");
     assert_eq!(live.view().scrolled(), 0);
+
+    let mut one_back = printed(100, 6);
+    one_back.scroll(1);
+    feed(&mut one_back, "\r\nrow7");
+    assert_eq!(one_back.view().scrolled(), 2, "scrolled back one row");
 }
 
 /// TRM-05 (crate case): eviction under a scrolled view. A model showing
