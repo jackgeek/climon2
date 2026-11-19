@@ -1,16 +1,77 @@
 # Workspace crate consumption
 
-This diagram includes every climon2 workspace crate, including test tooling and
-`xtask`, but excludes third-party crates. Arrows run from consumer to consumed
+Two diagrams cover every climon2 workspace crate, including test tooling and
+`xtask`, but exclude third-party crates. Arrows run from consumer to consumed
 crate. Solid arrows are normal Cargo dependencies; dotted arrows labelled
-`dev` are dev-dependencies used by tests. Dashed arrows labelled `planned` are
-not implemented. Runtime execution and communication are shown separately in
-the [artifact diagram](runtime-artifacts.md).
+`dev` are dev-dependencies used by tests. Runtime execution and communication
+are shown separately in the [artifact diagram](runtime-artifacts.md).
+
+## Shipped crates
+
+Only the crates that ship, and the normal dependencies between them.
 
 ```mermaid
 flowchart TB
-    subgraph shipped["Shipped crates"]
-        launcher["climon2-launcher"]
+    launcher["climon2-launcher"]
+    cli["climon2-cli"]
+    discovery["climon2-discovery"]
+    client["climon2-client"]
+    daemon["climon2-daemon"]
+    install["climon2-install"]
+    monitor["climon2-monitor"]
+    platform["climon2-platform"]
+    core["climon2-core"]
+    vt["climon2-vt"]
+
+    cli --> core
+    cli --> discovery
+    cli --> platform
+    discovery --> core
+    discovery --> platform
+    client --> core
+    client --> platform
+    daemon --> core
+    daemon --> platform
+    daemon --> vt
+    install --> core
+    monitor --> core
+    monitor --> discovery
+    monitor --> platform
+    monitor --> vt
+    platform --> core
+```
+
+| Crate | Purpose |
+| --- | --- |
+| `climon2-launcher` | The `climon2` executable that `c2` links to. It reads the install home's `current` version and hands off to that version's `climon2-cli`. |
+| `climon2-cli` | The `climon2-cli` executable behind every `c2` command: `exec`, `attach`, `kill`, `list` and `monitor`. It orchestrates startup and talks to other executables only through their contracts. |
+| `climon2-client` | The version-matched, byte-transparent terminal [client](../GLOSSARY.md#sessions) that connects a terminal to one session daemon ([ADR 0001](adr/0001-version-matched-client-and-frozen-hello.md)), and the client library the monitor loads for each session. |
+| `climon2-daemon` | The session daemon: it owns one session's PTY and output pump, so clients never own terminal handles. |
+| `climon2-install` | Atomic installation of a release payload into a climon2 executable home. |
+| `climon2-platform` | The shared platform seams of [ADR 0003](adr/0003-platform-and-shell-seams.md): connections, processes, PTYs, terminals, the runtime directory and logging. |
+| `climon2-core` | Platform-neutral session contracts, such as identity, configuration, the hello, metadata and exit status. It parses and applies policy, never performs platform I/O. |
+| `climon2-vt` | The virtual terminal of the session daemon and of the monitor's per-session models: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
+| `climon2-discovery` | Session discovery shared by the CLI, which runs whole passes, and the [monitor](../GLOSSARY.md#sessions), which runs incremental, bounded passes. |
+| `climon2-monitor` | The monitor: one terminal that tracks every live session, with the `climon2-monitor` binary that `c2 monitor` starts. |
+
+## Development and test-only crates
+
+Every edge that starts or ends at a development or test-only crate. Shipped
+crates appear only where such an edge touches them; the edges between them are
+in the diagram above and are not repeated here.
+
+```mermaid
+flowchart TB
+    subgraph development["Development and test-only crates"]
+        test_term["climon2-test-term"]
+        e2e["climon2-e2e"]
+        fixtures["climon2-fixtures"]
+        xtask["xtask"]
+        second["climon2-second-release"]
+        measure["climon2-measure"]
+    end
+
+    subgraph shipped["Shipped crates (edges between them above)"]
         cli["climon2-cli"]
         discovery["climon2-discovery"]
         client["climon2-client"]
@@ -19,33 +80,6 @@ flowchart TB
         monitor["climon2-monitor"]
         platform["climon2-platform"]
         core["climon2-core"]
-        vt["climon2-vt"]
-
-        cli --> core
-        cli --> discovery
-        cli --> platform
-        discovery --> core
-        discovery --> platform
-        client --> core
-        client --> platform
-        daemon --> core
-        daemon --> platform
-        daemon --> vt
-        install --> core
-        monitor --> core
-        monitor --> discovery
-        monitor --> platform
-        monitor --> vt
-        platform --> core
-    end
-
-    subgraph development["Development and test-only crates"]
-        test_term["climon2-test-term"]
-        e2e["climon2-e2e"]
-        fixtures["climon2-fixtures"]
-        xtask["xtask"]
-        second["climon2-second-release"]
-        measure["climon2-measure"]
     end
 
     cli -.->|"dev"| test_term
@@ -79,8 +113,18 @@ flowchart TB
     measure --> core
     measure --> platform
     measure --> test_term
-
 ```
+
+| Crate | Purpose |
+| --- | --- |
+| `climon2-test-term` | The real-terminal test harness. It runs shipped executables in isolated real terminals at the process boundary and proves which processes the test owns. |
+| `climon2-e2e` | Packaged acceptance: it builds and installs a release with the real installer, then drives it in a real terminal. |
+| `climon2-fixtures` | Stand-in executables for tests: a terminal program, a full-screen TUI, a CLI, a session daemon, the library host and the client library stand-in. |
+| `climon2-second-release` | The test-only [second-release fixture](../GLOSSARY.md#testing): a client library and session daemon built as another release, for cross-release tests. |
+| `climon2-measure` | The PERF-01 measurement harness that `cargo xtask measure` runs against an installed candidate archive. |
+| `xtask` | Developer automation run as `cargo xtask`: the test and quality gates, mutation and coverage checks, release checks, distribution builds and local installs. |
+
+The shipped crates in this diagram are described under the first diagram.
 
 The launcher has no workspace crate dependencies. Cycles through
 `climon2-test-term` are test-only: CLI, discovery, [client](../GLOSSARY.md#sessions)

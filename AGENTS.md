@@ -12,11 +12,14 @@ Features are incomplete if they are not tested by automated testing.
 
 When executable or dynamic-library artifacts, their consumption relationships,
 or their architecture decisions change, update `docs/runtime-artifacts.md`.
-Show consumption relationships rather than installation arrows.
 When workspace crates, their consumption relationships, or their architecture
-decisions change, update `docs/crate-relationships.md`; include all workspace
-crates and omit third-party crates. Keep current and planned relationships
-distinct in both diagrams and preserve their README links.
+decisions change, update `docs/crate-relationships.md`: include every workspace
+crate, omit third-party crates, and derive current edges from
+`cargo metadata --no-deps --format-version 1`, not memory.
+
+In both documents, the sentence above each diagram states its scope; keep every
+diagram within it. Keep current and planned relationships distinct and preserve
+the README links.
 
 ## Agent skills
 
@@ -35,3 +38,7 @@ Single-context layout: root `GLOSSARY.md` and `docs/adr/`. Read `docs/agents/dom
 ### Protocol docs
 
 Invoke `protocol-docs` when specifying or changing a communication protocol, plugin extension contract, or protocol documentation.
+
+### Human docs
+
+Invoke `writing-for-humans` when creating, editing, moving or removing `README.md` or a document under `docs/` outside `docs/adr/` and `docs/agents/`.
