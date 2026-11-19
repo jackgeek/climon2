@@ -1,9 +1,9 @@
 # Sound one host bell per presented toast
 
-**Agreed** from [the selector decision](https://github.com/jackgeek/climon2/issues/60), **implemented** by the monitor ([#115](https://github.com/jackgeek/climon2/issues/115)): it writes the byte right after painting the frame in which a toast begins drawing, once per toast, the queue's overflow toast included.
+**Agreed** from [the selector decision](https://github.com/jackgeek/climon2/issues/60), **implemented** by the monitor ([#115](https://github.com/jackgeek/climon2/issues/115)): it writes the byte once the frame first showing a toast's full title has been written to the host, once per toast, the queue's overflow toast included.
 The [monitor](../../../GLOSSARY.md#sessions) sends
 [BEL](../TERMS.md#bel) to its [host](../../../GLOSSARY.md#sessions)
-when a new eligible toast first begins drawing its border.
+when a new eligible toast first shows its full title.
 Use the [selector specification](../../monitor-selector.md),
 [shared host contract](../README.md#monitor-to-host-status-and-bell),
 [domain glossary](../../../GLOSSARY.md) and [technical terms](../TERMS.md).

@@ -7,6 +7,7 @@ lifecycle calls ([#85](https://github.com/jackgeek/climon2/issues/85)),
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
 status, viewing and acknowledgement ([#95](https://github.com/jackgeek/climon2/issues/95)),
+notifications and progress ([#98](https://github.com/jackgeek/climon2/issues/98)),
 termination: Kill, Command final and their terminal evidence
 ([#96](https://github.com/jackgeek/climon2/issues/96)), the snapshot's
 measurements, counters, limits and deadlines
@@ -16,9 +17,9 @@ the bootstrap and description before create by the shared loader
 shipped [client library](../../../GLOSSARY.md#sessions)
 (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified
-below. Its requirements are provisional bounded values
-until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
-ones. All eleven [function-table](../TERMS.md#function-table) calls follow
+below. Its requirements are still the provisional bounded values; replacing them
+with measured ones is
+[#297](https://github.com/jackgeek/climon2/issues/297). All eleven [function-table](../TERMS.md#function-table) calls follow
 the rules below, with one gap: snapshot reports no shared-release allocation.
 Snapshot's instance allocation counts every block the library's allocator
 holds for work on that instance, its diagnostics, workers, queued requests,
@@ -241,14 +242,16 @@ reconsiders it. Requirements incompatible with admitted
 limits reject explicitly: admission owns their upper bounds. A qualified
 worker count above the configured maximum is such a rejection; the maximum is
 never raised. The monitor implements this
-([#120](https://github.com/jackgeek/climon2/issues/120)). Before that, the
-loader checks only that the requirements are present: each one an instance
+([#120](https://github.com/jackgeek/climon2/issues/120)). The shared loader
+itself checks only that the requirements are present: each one an instance
 needs is nonzero (local allocation, owner stack and instance descriptors, and
 a worker stack whenever workers are required), and `reserved` is zero.
 Release resources count once and remain until exit.
 Each platform's library reports that platform's qualified requirements. On
 Linux the [notification descriptor](../TERMS.md#pollable-notification-descriptor) is one `eventfd`, created close-on-exec and
 nonblocking; it stays readable until the library clears it and counts once in
+`instance_descriptors`. On macOS it is the read end of a close-on-exec pipe,
+readable while it holds a byte; both ends of the pipe count in
 `instance_descriptors`.
 
 `snapshot` supplies bounded nonblocking current/peak instance and shared-release
@@ -401,15 +404,16 @@ independent shutdown.
 ## Errors, terminal evidence and cleanup
 
 Synchronous `cm1_call.code` values are `CM1_SUCCESS` through
-`CM1_RELEASE_MISMATCH` in the header. Non-success diagnoses respectively
+`CM1_RELEASE_MISMATCH` in the header; value 12 is retired and never returned.
+Non-success diagnoses respectively
 unsupported revision, malformed arguments, unsupported operation/capability,
 invalid public ID, capacity full, closed submission/stream, outstanding ownership,
 wrong thread, unsupported limit, exhausted resources, containable internal
-failure, failed local cleanup, local deadline expiry and exact-release mismatch.
+failure, local deadline expiry and exact-release mismatch.
 Corresponding library error strings are `unsupported_revision`,
 `invalid_argument`, `unsupported_operation` (or `unsupported_capability`),
 `invalid_request_id`, `queue_full`, `closed`, `busy`, `wrong_thread`,
-`unsupported_limit`, `resource_limit`, `internal_error`, `cleanup_failed`,
+`unsupported_limit`, `resource_limit`, `internal_error`,
 `timeout`, `release_mismatch`.
 Rejected submission never consumes its ID. Full can be retried only as local
 admission of the same still-unaccepted work and still-current authority, never
@@ -417,10 +421,10 @@ replay of accepted work.
 
 Asynchronous daemon errors preserve the
 [complete wire catalog](../daemon-client/core-v1.md#errors-and-bounded-delivery)
-with daemon origin; framing/transport failure uses transport origin.
+with daemon origin, including Kill's `cleanup_failed`; framing/transport failure uses transport origin.
 Native execution errors additionally use `stale_generation`, `cancelled`,
 `release_mismatch`, `invalid_configuration`, `unsupported_limit`, `timeout`,
-`delivery_stalled`, `worker_panic`, `cleanup_failed`, `internal_error`, and,
+`delivery_stalled`, `internal_error`, and,
 with library origin, `invalid_state`, `resource_limit`, `io_error`,
 `unsupported_revision` and `unsupported_capability`
 ([decided on #93](https://github.com/jackgeek/climon2/issues/93)).
@@ -528,6 +532,9 @@ this section.
   `focus-v1`: every revision-1 family.
   A required family outside the description is `CM1_UNSUPPORTED_OPERATION`
   with `unsupported_capability`; an optional one is not requested.
+- **Startup.** Create refuses a path of `PATH_MAX` bytes or more, and a
+  `filter` the current logger's grammar does not accept, with
+  `CM1_INVALID_ARGUMENT` (`invalid_argument`).
 - **Admission.** `submit` checks the tag (`CM1_OPEN` to `CM1_FOCUS`), reserved
   zero and a nonzero ID before the operation's arguments. A token list is null
   and zero or a pointer and a positive count; tokens are nonempty UTF-8, each
@@ -586,8 +593,8 @@ this section.
   without `focus-v1` selected, and Set viewing or Acknowledge without
   `status-v1` selected ([#95](https://github.com/jackgeek/climon2/issues/95)), `unsupported_capability`, and a frame
   over the daemon's request ceiling `unsupported_limit`: each rejected
-  without being sent. Set viewing's flag is 0 or 1 with reserved bytes zero
-  (`invalid_argument` at `submit`). The daemon
+  without being sent. The flag of Set viewing and Focus is 0 or 1 with
+  reserved bytes zero (`invalid_argument` at `submit`). The daemon
   judges the period and restoration, and for Set viewing and Acknowledge
   readiness and the latest viewing (`not_ready`, `not_viewing`, copied with
   daemon origin). A success must carry its own result, Input's every byte
@@ -737,7 +744,8 @@ this section.
   (`progress_bytes`, `progress_records`) that is not smaller than the
   event allowance it is reserved inside, and a `client_bytes` below the
   sum of the described instance allocation, `request_bytes`, `event_bytes`
-  and one `wire_frame_bytes` frame. The reserve is protected progress:
+  and one `wire_frame_bytes` frame, and a `max_workers` below the
+  described `workers`. The reserve is protected progress:
   Responses, Initial metadata, Status changed, Command final, Control
   granted and revoked, Restoration begin and complete and diagnostics may
   use the whole event allowance, while ordinary work (Display, Title
@@ -794,8 +802,8 @@ Later implementation must exercise actual packaged libraries through this header
   pending work, run cleanup/handle release/destroy/join, stalled/native-fault
   whole-process failure, independent instances and all #69 measurements.
 
-[Declaration checks](check.py) compile C examples/layout assertions for both
-targets and validate reference reachability. They deliberately do not use a mock
+[Declaration checks](check.py) compile C examples/layout assertions for every
+declared target and validate reference reachability. They deliberately do not use a mock
 library as production compatibility evidence. [Final acceptance #62](https://github.com/jackgeek/climon2/issues/62)
 assigns the agreed [acceptance matrix](../../monitor-acceptance.md).
 Actual-monitor conformance remains an unexecuted release gate.

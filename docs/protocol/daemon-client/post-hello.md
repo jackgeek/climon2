@@ -36,9 +36,10 @@ connection-fatal `unknown_message_type`, and a server type sent by a
 [client](../../../GLOSSARY.md#sessions) is `wrong_direction`, as the
 [core reference](core-v1.md#framing-and-validation) states for every frame.
 A peer starts revision 1 with Open or standalone Kill; any other request sent
-first is rejected, and the stream goes on: [Focus](request-focus.md) with
-`unsupported_capability`, since no Open selected `focus-v1`, and every other
-request with `invalid_state`.
+first is rejected, and the stream goes on: [Focus](request-focus.md),
+[Set viewing](request-viewing.md) and [Acknowledge](request-acknowledge.md)
+with `unsupported_capability`, since no Open selected `focus-v1` or
+`status-v1`, and every other request with `invalid_state`.
 
 The revision-1 advertisement in the hello reply never changes the frozen
 tokens (`attach`, `kill`, `state-v1` and `client-startup-v1`) and `state`

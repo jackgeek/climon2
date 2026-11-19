@@ -41,8 +41,10 @@ Related: [Response](response.md), [Command final](event-command-final.md).
 
 The [session daemon](../../../GLOSSARY.md#sessions) sends this event for
 every connection-fatal failure on a revision-1 connection, with a fixed
-diagnostic message; the code says what failed. It replaces any output not
-yet started on the stream, then closes the connection. The daemon decides
+diagnostic message; the code says what failed. It discards the output still
+queued for the stream and sends this event in its place, unless a frame is
+already partly written: then nothing queued is discarded and this event
+follows it. It then closes the connection. The daemon decides
 `frame_too_large` and `invalid_frame_length` from the length prefix before
 any body arrives, and `truncated_frame` when the stream ends inside a frame; a
 stream that ends between frames closes without this event. Every frame after

@@ -192,7 +192,7 @@ Input/output: reading or writing data to another resource, such as a socket.
 
 JavaScript Object Notation, a text format for objects, arrays, strings, numbers,
 booleans, and null. JSON wire examples in this reference show message bodies,
-not their length prefixes.
+not their length prefixes or type bytes.
 
 ## JSONC
 

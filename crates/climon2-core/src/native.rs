@@ -37,7 +37,7 @@ pub const WRONG_THREAD: u32 = 8;
 pub const UNSUPPORTED_LIMIT: u32 = 9;
 pub const RESOURCE_LIMIT: u32 = 10;
 pub const INTERNAL_ERROR: u32 = 11;
-pub const CLEANUP_FAILED: u32 = 12;
+// 12 is retired: no call returns it, and it is never reassigned.
 pub const TIMEOUT: u32 = 13;
 pub const RELEASE_MISMATCH: u32 = 14;
 
