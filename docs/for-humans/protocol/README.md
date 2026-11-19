@@ -13,11 +13,26 @@ the session daemon implements the agreed
 [mechanics and state diagrams](../behaviour/session-status.md) ([#91](https://github.com/jackgeek/climon2/issues/91), [#92](https://github.com/jackgeek/climon2/issues/92),
 [#98](https://github.com/jackgeek/climon2/issues/98)).
 
+**Audience:** Integrators and Contributors.
+
+## Shared terms
+
 Use the [domain glossary](../../../GLOSSARY.md) for climon2 concepts and the
 [technical terms](TERMS.md) for protocol vocabulary. Each operation page links
 to its owning specification. The [native header](monitor-client/client-v1.h)
 assigns complete revision-1 declarations; the [native contract](monitor-client/README.md)
 and daemon wire pages assign exact agreed schemas, separately from implementation.
+
+## Contents
+
+| Document or folder | Purpose |
+|---|---|
+| [TERMS.md](TERMS.md) | Technical vocabulary used across the protocol pages. |
+| [library-embedding.md](library-embedding.md) | How a program loads the client library and owns its instances. |
+| [terminal-integration.md](terminal-integration.md) | How the monitor drives its host terminal: input, focus, restoration and cleanup. |
+| [daemon-client/](daemon-client/README.md) | The frozen hello and wire revision 1 between a client and a session daemon. |
+| [monitor-client/](monitor-client/README.md) | The native revision-1 calls and records between the monitor and a client library. |
+| [monitor-host/](monitor-host/README.md) | The status reports and bell the monitor writes to its host. |
 
 ## Status and scope
 
@@ -707,128 +722,6 @@ additional detection strategies and plugin delivery are not prerequisites.
 policies remain out of scope. Passive connection retry is in scope; it is not
 permission to retry indeterminate operations. [Request IDs](TERMS.md#request-id)
 alone do not provide retry safety or exactly-once execution.
-
-## Operation and event index
-
-### Monitor-client: agreed native revision 1, bootstrap and lifecycle implemented
-
-Every release ships the client library (`libclimon2_client.dylib` on macOS,
-`libclimon2_client.so` on Linux), whose
-[compatibility check](monitor-client/request-hello.md) bootstrap and
-description are implemented. Its local instance lifecycle is implemented too
-([#85](https://github.com/jackgeek/climon2/issues/85)): [create](monitor-client/request-create.md),
-run, [shutdown](monitor-client/request-shutdown.md), the notification
-descriptor, [event delivery](monitor-client/event.md) and release, destroy,
-the [snapshot](monitor-client/request-snapshot.md),
-[client outcome](monitor-client/event-outcome.md) evidence and library
-[diagnostics](monitor-client/event-diagnostic.md). So are passive monitor
-connections ([#93](https://github.com/jackgeek/climon2/issues/93)):
-[request](monitor-client/request.md) admission, monitor-mode
-[Open](monitor-client/request-open.md),
-[Leave](monitor-client/request-detach.md), and their
-[Response](monitor-client/response.md),
-[Initial metadata](monitor-client/event-initial-metadata.md),
-[Title](monitor-client/event-title.md) and diagnostic records. So are the
-control, display, status, Kill, notification and progress entries
-([#94](https://github.com/jackgeek/climon2/issues/94) to [#96](https://github.com/jackgeek/climon2/issues/96), [#98](https://github.com/jackgeek/climon2/issues/98)). The monitor is the caller ([#106](https://github.com/jackgeek/climon2/issues/106) to
-[#120](https://github.com/jackgeek/climon2/issues/120)), except for the snapshot. The extension entries are agreed, not
-implemented.
-All entries inherit the [shared communication contract](#shared-in-process-communication-contract)
-and its semantic examples. The [header](monitor-client/client-v1.h),
-[complete native rules](monitor-client/README.md) and per-page C examples
-assign calls/records, not serialized messages. Helpers for create/run/destroy,
-shutdown/handle release, notification and measurements are indexed in
-[function calls and ownership](monitor-client/README.md#function-calls-and-ownership).
-
-| Operation or event | Direction | Purpose |
-|---|---|---|
-| [Request](monitor-client/request.md) | Monitor -> client; extensions either way | Identify and correlate work. |
-| [Response](monitor-client/response.md) | Opposite its request | Report one explicit outcome. |
-| [Event](monitor-client/event.md) | Client -> monitor; extensions either way | Report unsolicited changes. |
-| [Initial metadata](monitor-client/event-initial-metadata.md) | Client -> monitor | Atomic availability/status barrier before gap-free changes. |
-| [Compatibility check](monitor-client/request-hello.md) | Monitor <-> library | Validate release identity and embedding support. |
-| [Create](monitor-client/request-create.md) | Monitor owner thread -> library | Copy validated startup/limits and create local instance handles. |
-| [Shutdown](monitor-client/request-shutdown.md) | Monitor -> library control handle | Independent nonblocking shutdown intent. |
-| [Resource/progress snapshot](monitor-client/request-snapshot.md) | Monitor <-> library | Observe allocation/queue/resource and progress measurements. |
-| [Open](monitor-client/request-open.md) | Monitor -> client | Verify daemon support and establish the intended connection role. |
-| [Input](monitor-client/request-input.md) | Monitor -> client | Forward literal application bytes. |
-| [Resize](monitor-client/request-resize.md) | Monitor -> client | Request controlling geometry. |
-| [Take control](monitor-client/request-take-control.md) | Monitor -> client | Explicitly request takeover. |
-| [Viewing](monitor-client/request-viewing.md) | Monitor -> client -> daemon | Report selected presentation independently of retained control. |
-| [Readiness](monitor-client/request-ready.md) | Monitor -> client -> daemon | Report current complete restoration applied. |
-| [Acknowledge attention](monitor-client/request-acknowledge.md) | Monitor -> client -> daemon | Explicitly acknowledge current pending attention. |
-| [Application focus](monitor-client/request-focus.md) | Monitor -> client -> daemon | Optional non-user core focus state/forwarding report. |
-| [Detach](monitor-client/request-detach.md) | Monitor -> client | Request deliberate detach. |
-| [Kill](monitor-client/request-kill.md) | Monitor -> client | Confirm command termination and daemon cleanup through a standalone role. |
-| [Extension request](monitor-client/request-extension.md) | Either endpoint, through client | Request negotiated plugin work regardless of control. |
-| [Control](monitor-client/event-control.md) | Client -> monitor | Report grant or revocation. |
-| [Restoration start](monitor-client/event-restoration-start.md) | Client -> monitor | Begin a distinct restoration. |
-| [Display](monitor-client/event-display.md) | Client -> monitor | Deliver ordered presentation updates. |
-| [Restoration completion](monitor-client/event-restoration-complete.md) | Client -> monitor | End the identified restoration. |
-| [Geometry](monitor-client/event-geometry.md) | Client -> monitor | Report actual geometry. |
-| [Title state/change](monitor-client/event-title.md) | Daemon core -> client -> monitor | Supply current daemon title and ongoing changes regardless of control. |
-| [Session status](monitor-client/event-session-status.md) | Daemon core -> client -> monitor | Supply effective activity/attention status and its change timestamp. |
-| [Notification metadata](monitor-client/event-notification.md) | Daemon core -> client -> subscriber | Relay a recognized logical notification independently of control. |
-| [Progress metadata](monitor-client/event-progress.md) | Daemon core -> client -> subscriber | Relay progress information without implying attention or control. |
-| [Session end](monitor-client/event-session-ended.md) | Client -> monitor | Report command/session completion. |
-| [Client outcome](monitor-client/event-outcome.md) | Client -> monitor, when possible | Report client completion or failure. |
-| [Diagnostic](monitor-client/event-diagnostic.md) | Client -> monitor | Explicit inert native/daemon/transport error metadata. |
-| [Extension event](monitor-client/event-extension.md) | Either endpoint, through client | Report negotiated plugin information regardless of control. |
-
-### Daemon-client: current frozen hello
-
-| Message | Direction | Purpose |
-|---|---|---|
-| [Hello request](daemon-client/hello-request.md) | Client -> daemon | Begin the frozen handshake. |
-| [Hello reply](daemon-client/hello-reply.md) | Daemon -> client | Identify the session and advertise support/state. |
-
-The [post-hello page](daemon-client/post-hello.md) states what follows hello:
-daemon wire revision 1 only.
-
-### Daemon-client: wire revision 1, partly implemented
-
-Every page inherits the [complete shared wire rules](daemon-client/README.md):
-portable framing, strict JSON/binary types, IDs, capabilities, ordering,
-acceptance/errors, bounded delivery and unresolved owners. Hello advertises
-support; first Open/Kill validates before effects without a separate exchange.
-There are ten request types and fourteen server types, including Response.
-Examples are wire bodies, not native declarations or conformance evidence.
-Session daemons implement every request and server message of this
-revision: Open in both modes, Leave for
-[passive monitor connections](../../../GLOSSARY.md#attachment-and-control) and
-[attachments](../../../GLOSSARY.md#attachment-and-control), Input, Resize,
-Ready, Acquire, Focus, standalone Kill, Set viewing and Acknowledge
-([#91](https://github.com/jackgeek/climon2/issues/91)), Response, Initial metadata, Title changed, Status changed,
-Notification and Progress changed ([#98](https://github.com/jackgeek/climon2/issues/98)), the control and restoration
-records, Display, Geometry, Command final with the final status and Fatal
-error; each page states what is implemented.
-
-| Code | Message | Direction | Purpose |
-|---|---|---|---|
-| `0x30` | [Open](daemon-client/request-open.md) | Client -> daemon | Validate revision/families and enter monitor or interactive role. |
-| `0x31` | [Input](daemon-client/request-input.md) | Client -> daemon | Forward literal nonempty user bytes with authority IDs. |
-| `0x32` | [Resize](daemon-client/request-resize.md) | Client -> daemon | Request geometry under current authority. |
-| `0x33` | [Acquire](daemon-client/request-acquire.md) | Client -> daemon | Explicitly acquire control, not acknowledgement or resize. |
-| `0x34` | [Ready](daemon-client/request-ready.md) | Client -> daemon | Report complete current restoration applied. |
-| `0x35` | [Set viewing](daemon-client/request-viewing.md) | Client -> daemon | Report this attachment's unobstructed presentation. |
-| `0x36` | [Acknowledge attention](daemon-client/request-acknowledge.md) | Client -> daemon | Acknowledge currently pending attention without observed episode ID. |
-| `0x37` | [Leave](daemon-client/request-leave.md) | Client -> daemon | Remove membership/registration and accept departure. |
-| `0x38` | [Kill](daemon-client/request-kill.md) | Client -> daemon | Standalone termination with daemon-cleanup confirmation. |
-| `0x39` | [Focus](daemon-client/request-focus.md) | Client -> daemon | Optional non-user core application focus (#63 amendment). |
-| `0x40` | [Response](daemon-client/response.md) | Daemon -> client | Correlated explicit outcome/result/error. |
-| `0x41` | [Initial metadata](daemon-client/event-initial-metadata.md) | Daemon -> client | Atomic current availability/state before gap-free changes. |
-| `0x42` | [Title changed](daemon-client/event-title-changed.md) | Daemon -> client | Inert [Unicode](TERMS.md#unicode-and-utf-8) title. |
-| `0x43` | [Status changed](daemon-client/event-status-changed.md) | Daemon -> client | Effective state, stored time and episode. |
-| `0x44` | [Notification](daemon-client/event-notification.md) | Daemon -> client | Normalized source metadata, not an archive. |
-| `0x45` | [Progress changed](daemon-client/event-progress-changed.md) | Daemon -> client | Retained normalized progress. |
-| `0x46` | [Control granted](daemon-client/event-control-granted.md) | Daemon -> client | New authority, including hand-back/successor. |
-| `0x47` | [Control revoked](daemon-client/event-control-revoked.md) | Daemon -> client | Invalidate old authority immediately. |
-| `0x48` | [Restoration begin](daemon-client/event-restoration-begin.md) | Daemon -> client | Start a distinct restoration. |
-| `0x49` | [Display](daemon-client/event-display.md) | Daemon -> client | Ordered nonempty binary terminal bytes. |
-| `0x4a` | [Restoration complete](daemon-client/event-restoration-complete.md) | Daemon -> client | Sent barrier, not applied readiness. |
-| `0x4b` | [Geometry](daemon-client/event-geometry.md) | Daemon -> client | Actual daemon geometry. |
-| `0x4c` | [Command final](daemon-client/event-command-final.md) | Daemon -> client | Authoritative exit/signal and selected terminal status. |
-| `0x4d` | [Fatal error](daemon-client/event-fatal-error.md) | Daemon -> client | Best-effort connection failure diagnostic. |
 
 ## Sources and unresolved decisions
 

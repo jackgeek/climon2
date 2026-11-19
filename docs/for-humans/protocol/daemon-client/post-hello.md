@@ -69,7 +69,7 @@ The [complete core reference](README.md) specifies framing, types,
 [capabilities](../../../../GLOSSARY.md#sessions), errors, metadata, passive succession,
 [viewing](../../../../GLOSSARY.md#status-and-attention)/acknowledgement, command results,
 kill confirmation, source normalization and bounds obligations.
-Every type has a [message page](../README.md#daemon-client-wire-revision-1-partly-implemented).
+Every type has a [message page](README.md#wire-revision-1-partly-implemented).
 
 This wire format is not the in-process
 [monitor](../../../../GLOSSARY.md#sessions)-client

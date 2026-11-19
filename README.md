@@ -46,6 +46,8 @@ becomes the exit status of every client attached when it finishes. Nested
 sessions are supported. Session data defaults to `~/.climon2`; set
 `CLIMON2_HOME` to override it.
 
+The [documentation index](docs/for-humans/README.md) lists every document
+written for people to read.
 The [protocol reference](docs/for-humans/protocol/README.md) explains the current daemon
 handshake and the in-process monitor-client interface for future plugin authors.
 It distinguishes implemented behavior from agreed plans and unresolved details.

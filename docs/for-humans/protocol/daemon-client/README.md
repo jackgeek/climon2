@@ -70,6 +70,75 @@ ordinary attach and kill ([#100](https://github.com/jackgeek/climon2/issues/100)
 [daemon's contract tests](../../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 
+
+**Audience:** Integrators and Contributors.
+
+## Shared terms
+
+Every message page inherits the framing, shared types, capabilities,
+ordering and error rules in the sections of this page below. The
+[technical terms](../TERMS.md) explain protocol vocabulary such as a
+[frame](../TERMS.md#frame).
+
+## Contents
+
+The [hello handshake](../../../../GLOSSARY.md#sessions) is frozen across all
+climon2 versions:
+
+| Message | Direction | Purpose |
+|---|---|---|
+| [Hello request](hello-request.md) | Client -> daemon | Begin the frozen handshake. |
+| [Hello reply](hello-reply.md) | Daemon -> client | Identify the session and advertise support/state. |
+| [Post-hello boundary](post-hello.md) | Both | What follows hello: wire revision 1 only. |
+
+The [post-hello page](post-hello.md) states what follows hello:
+daemon wire revision 1 only.
+
+### Wire revision 1, partly implemented
+
+Every page inherits the shared wire rules on this page:
+portable framing, strict JSON/binary types, IDs, capabilities, ordering,
+acceptance/errors, bounded delivery and unresolved owners. Hello advertises
+support; first Open/Kill validates before effects without a separate exchange.
+There are ten request types and fourteen server types, including Response.
+Examples are wire bodies, not native declarations or conformance evidence.
+Session daemons implement every request and server message of this
+revision: Open in both modes, Leave for
+[passive monitor connections](../../../../GLOSSARY.md#attachment-and-control) and
+[attachments](../../../../GLOSSARY.md#attachment-and-control), Input, Resize,
+Ready, Acquire, Focus, standalone Kill, Set viewing and Acknowledge
+([#91](https://github.com/jackgeek/climon2/issues/91)), Response, Initial metadata, Title changed, Status changed,
+Notification and Progress changed ([#98](https://github.com/jackgeek/climon2/issues/98)), the control and restoration
+records, Display, Geometry, Command final with the final status and Fatal
+error; each page states what is implemented.
+
+| Code | Message | Direction | Purpose |
+|---|---|---|---|
+| `0x30` | [Open](request-open.md) | Client -> daemon | Validate revision/families and enter monitor or interactive role. |
+| `0x31` | [Input](request-input.md) | Client -> daemon | Forward literal nonempty user bytes with authority IDs. |
+| `0x32` | [Resize](request-resize.md) | Client -> daemon | Request geometry under current authority. |
+| `0x33` | [Acquire](request-acquire.md) | Client -> daemon | Explicitly acquire control, not acknowledgement or resize. |
+| `0x34` | [Ready](request-ready.md) | Client -> daemon | Report complete current restoration applied. |
+| `0x35` | [Set viewing](request-viewing.md) | Client -> daemon | Report this attachment's unobstructed presentation. |
+| `0x36` | [Acknowledge attention](request-acknowledge.md) | Client -> daemon | Acknowledge currently pending attention without observed episode ID. |
+| `0x37` | [Leave](request-leave.md) | Client -> daemon | Remove membership/registration and accept departure. |
+| `0x38` | [Kill](request-kill.md) | Client -> daemon | Standalone termination with daemon-cleanup confirmation. |
+| `0x39` | [Focus](request-focus.md) | Client -> daemon | Optional non-user core application focus (#63 amendment). |
+| `0x40` | [Response](response.md) | Daemon -> client | Correlated explicit outcome/result/error. |
+| `0x41` | [Initial metadata](event-initial-metadata.md) | Daemon -> client | Atomic current availability/state before gap-free changes. |
+| `0x42` | [Title changed](event-title-changed.md) | Daemon -> client | Inert [Unicode](../TERMS.md#unicode-and-utf-8) title. |
+| `0x43` | [Status changed](event-status-changed.md) | Daemon -> client | Effective state, stored time and episode. |
+| `0x44` | [Notification](event-notification.md) | Daemon -> client | Normalized source metadata, not an archive. |
+| `0x45` | [Progress changed](event-progress-changed.md) | Daemon -> client | Retained normalized progress. |
+| `0x46` | [Control granted](event-control-granted.md) | Daemon -> client | New authority, including hand-back/successor. |
+| `0x47` | [Control revoked](event-control-revoked.md) | Daemon -> client | Invalidate old authority immediately. |
+| `0x48` | [Restoration begin](event-restoration-begin.md) | Daemon -> client | Start a distinct restoration. |
+| `0x49` | [Display](event-display.md) | Daemon -> client | Ordered nonempty binary terminal bytes. |
+| `0x4a` | [Restoration complete](event-restoration-complete.md) | Daemon -> client | Sent barrier, not applied readiness. |
+| `0x4b` | [Geometry](event-geometry.md) | Daemon -> client | Actual daemon geometry. |
+| `0x4c` | [Command final](event-command-final.md) | Daemon -> client | Authoritative exit/signal and selected terminal status. |
+| `0x4d` | [Fatal error](event-fatal-error.md) | Daemon -> client | Best-effort connection failure diagnostic. |
+
 ## Transport and startup
 
 The [client](../../../../GLOSSARY.md#sessions) communicates with the

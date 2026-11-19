@@ -53,6 +53,92 @@ Read the [overview](../README.md), [domain glossary](../../../../GLOSSARY.md),
 [lifecycle](../../behaviour/monitor/lifecycle.md), and
 [operational limits](../../behaviour/monitor/operational-limits.md) together.
 
+
+**Builds on:** [daemon-client](../daemon-client/README.md). The library
+relays these calls and records over the daemon wire, so the pages here link
+straight to the daemon message each one relays.
+
+**Audience:** Integrators and Contributors.
+
+## Shared terms
+
+Every page here inherits the representation, shared values, ownership and
+ordering rules in the sections of this page below. The
+[technical terms](../TERMS.md) explain protocol vocabulary such as the
+[function table](../TERMS.md#function-table).
+
+## Contents
+
+Every release ships the client library (`libclimon2_client.dylib` on macOS,
+`libclimon2_client.so` on Linux), whose
+[compatibility check](request-hello.md) bootstrap and
+description are implemented. Its local instance lifecycle is implemented too
+([#85](https://github.com/jackgeek/climon2/issues/85)): [create](request-create.md),
+run, [shutdown](request-shutdown.md), the notification
+descriptor, [event delivery](event.md) and release, destroy,
+the [snapshot](request-snapshot.md),
+[client outcome](event-outcome.md) evidence and library
+[diagnostics](event-diagnostic.md). So are passive monitor
+connections ([#93](https://github.com/jackgeek/climon2/issues/93)):
+[request](request.md) admission, monitor-mode
+[Open](request-open.md),
+[Leave](request-detach.md), and their
+[Response](response.md),
+[Initial metadata](event-initial-metadata.md),
+[Title](event-title.md) and diagnostic records. So are the
+control, display, status, Kill, notification and progress entries
+([#94](https://github.com/jackgeek/climon2/issues/94) to [#96](https://github.com/jackgeek/climon2/issues/96), [#98](https://github.com/jackgeek/climon2/issues/98)). The monitor is the caller ([#106](https://github.com/jackgeek/climon2/issues/106) to
+[#120](https://github.com/jackgeek/climon2/issues/120)), except for the snapshot. The extension entries are agreed, not
+implemented.
+All entries inherit the [shared communication contract](../README.md#shared-in-process-communication-contract)
+and its semantic examples. The [header](client-v1.h),
+the rules on this page and per-page C examples
+assign calls/records, not serialized messages. Helpers for create/run/destroy,
+shutdown/handle release, notification and measurements are indexed in
+[function calls and ownership](README.md#function-calls-and-ownership).
+
+| Operation or event | Direction | Purpose |
+|---|---|---|
+| [Request](request.md) | Monitor -> client; extensions either way | Identify and correlate work. |
+| [Response](response.md) | Opposite its request | Report one explicit outcome. |
+| [Event](event.md) | Client -> monitor; extensions either way | Report unsolicited changes. |
+| [Initial metadata](event-initial-metadata.md) | Client -> monitor | Atomic availability/status barrier before gap-free changes. |
+| [Compatibility check](request-hello.md) | Monitor <-> library | Validate release identity and embedding support. |
+| [Create](request-create.md) | Monitor owner thread -> library | Copy validated startup/limits and create local instance handles. |
+| [Shutdown](request-shutdown.md) | Monitor -> library control handle | Independent nonblocking shutdown intent. |
+| [Resource/progress snapshot](request-snapshot.md) | Monitor <-> library | Observe allocation/queue/resource and progress measurements. |
+| [Open](request-open.md) | Monitor -> client | Verify daemon support and establish the intended connection role. |
+| [Input](request-input.md) | Monitor -> client | Forward literal application bytes. |
+| [Resize](request-resize.md) | Monitor -> client | Request controlling geometry. |
+| [Take control](request-take-control.md) | Monitor -> client | Explicitly request takeover. |
+| [Viewing](request-viewing.md) | Monitor -> client -> daemon | Report selected presentation independently of retained control. |
+| [Readiness](request-ready.md) | Monitor -> client -> daemon | Report current complete restoration applied. |
+| [Acknowledge attention](request-acknowledge.md) | Monitor -> client -> daemon | Explicitly acknowledge current pending attention. |
+| [Application focus](request-focus.md) | Monitor -> client -> daemon | Optional non-user core focus state/forwarding report. |
+| [Detach](request-detach.md) | Monitor -> client | Request deliberate detach. |
+| [Kill](request-kill.md) | Monitor -> client | Confirm command termination and daemon cleanup through a standalone role. |
+| [Extension request](request-extension.md) | Either endpoint, through client | Request negotiated plugin work regardless of control. |
+| [Control](event-control.md) | Client -> monitor | Report grant or revocation. |
+| [Restoration start](event-restoration-start.md) | Client -> monitor | Begin a distinct restoration. |
+| [Display](event-display.md) | Client -> monitor | Deliver ordered presentation updates. |
+| [Restoration completion](event-restoration-complete.md) | Client -> monitor | End the identified restoration. |
+| [Geometry](event-geometry.md) | Client -> monitor | Report actual geometry. |
+| [Title state/change](event-title.md) | Daemon core -> client -> monitor | Supply current daemon title and ongoing changes regardless of control. |
+| [Session status](event-session-status.md) | Daemon core -> client -> monitor | Supply effective activity/attention status and its change timestamp. |
+| [Notification metadata](event-notification.md) | Daemon core -> client -> subscriber | Relay a recognized logical notification independently of control. |
+| [Progress metadata](event-progress.md) | Daemon core -> client -> subscriber | Relay progress information without implying attention or control. |
+| [Session end](event-session-ended.md) | Client -> monitor | Report command/session completion. |
+| [Client outcome](event-outcome.md) | Client -> monitor, when possible | Report client completion or failure. |
+| [Diagnostic](event-diagnostic.md) | Client -> monitor | Explicit inert native/daemon/transport error metadata. |
+| [Extension event](event-extension.md) | Either endpoint, through client | Report negotiated plugin information regardless of control. |
+
+| Supporting file | Purpose |
+|---|---|
+| [client-v1.h](client-v1.h) | The C header: authoritative declarations, numeric tags and field order. |
+| [examples.c](examples.c) | C examples of each call; they compile but do not link to a shipped library. |
+| [layout.c](layout.c) | Compile-time checks of the header's struct layouts. |
+| [check.py](check.py) | CI check that the header and examples compile and every page is indexed here. |
+
 ## Representation and compatibility
 
 Revision 1 targets the supported platform C calling conventions (macOS arm64

@@ -54,11 +54,11 @@ class NativeDeclarations(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_reference_reachability_and_examples(self):
-        overview = (HERE.parent / "README.md").read_text()
+        index = (HERE / "README.md").read_text()
         for page in HERE.glob("*.md"):
             if page.name == "README.md":
                 continue
-            self.assertTrue(f"monitor-client/{page.name}" in overview, page.name)
+            self.assertIn(f"]({page.name})", index, page.name)
             text = page.read_text()
             self.assertIn("README.md", text, page.name)
             if "extension" not in page.name:
