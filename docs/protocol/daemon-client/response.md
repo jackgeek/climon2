@@ -1,6 +1,14 @@
 # Response — `0x40`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed; implemented for the results of Open, Input, Resize,
+Acquire, Ready, Set viewing, Acknowledge, Leave, Kill and Focus and for
+every rejection the
+[session daemon](../../../GLOSSARY.md#sessions) sends**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+The daemon's only `failed` outcome is a [Kill](request-kill.md#implemented-behavior)
+whose termination or cleanup did not complete, and it sends no
+`indeterminate` outcome. A rejected first role carries `known_final` once the
+command's result is final, as
+[Command final](event-command-final.md#implemented-behavior) describes.
 The [session daemon](../../../GLOSSARY.md#sessions) answers a
 [client](../../../GLOSSARY.md#sessions) request.
 See the [overview](../README.md), [glossary](../../../GLOSSARY.md),

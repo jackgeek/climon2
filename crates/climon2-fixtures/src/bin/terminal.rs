@@ -1,3 +1,4 @@
+use climon2_fixtures::BOUND;
 use std::{
     env, fs,
     io::{self, Write},
@@ -22,12 +23,17 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         return Err("expected fixture script".into());
     }
     let mut script = args.iter();
+    let mut raw = None;
     while let Some(action) = script.next() {
+        if action == "raw" {
+            raw = Some(climon2_fixtures::RawTerminal::enter()?);
+            continue;
+        }
         if action == "await-resize" {
             let initial = climon2_fixtures::size()?;
             print!("resize-ready");
             io::stdout().flush()?;
-            let deadline = Instant::now() + Duration::from_secs(2);
+            let deadline = Instant::now() + BOUND;
             while climon2_fixtures::size()? == initial {
                 if Instant::now() >= deadline {
                     return Err("resize deadline exceeded".into());
@@ -53,6 +59,10 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 print!("{value}");
                 io::stdout().flush()?;
             }
+            "await-file" => await_file(value)?,
+            "await-input" if raw.is_some() => await_input(value)?,
+            "echo-until" if raw.is_some() => echo_until(value)?,
+            "await-input" => return Err("await-input needs raw mode".into()),
             "exit" => return Ok(value.parse()?),
             "write-pid" => fs::write(value, std::process::id().to_string())?,
             "detach" => {
@@ -69,11 +79,11 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 nix::sys::signal::raise(signal)?;
             }
             "sleep" => {
-                let millis: u64 = value.parse()?;
-                if millis > 5000 {
-                    return Err("sleep exceeds 5 s fixture bound".into());
+                let duration = Duration::from_millis(value.parse()?);
+                if duration > BOUND {
+                    return Err("sleep exceeds the fixture bound".into());
                 }
-                thread::sleep(Duration::from_millis(millis));
+                thread::sleep(duration);
             }
             _ => return Err(format!("unknown fixture action: {action}").into()),
         }
@@ -87,13 +97,52 @@ fn report(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+/// Reads raw input until `expected` arrives, so a test can hold this fixture's
+/// next output until the host has read everything before it.
+fn await_input(expected: &str) -> io::Result<()> {
+    climon2_fixtures::read_until(|input| Ok(String::from_utf8_lossy(input).contains(expected)))?;
+    Ok(())
+}
+
+/// Writes every raw input byte straight back, unchanged, until the input
+/// so far contains `expected`: exact bytes both ways (NUL, `ff`, invalid
+/// UTF-8 and focus reports alike).
+fn echo_until(expected: &str) -> io::Result<()> {
+    let mut echoed = 0;
+    climon2_fixtures::read_until(|input| {
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(&input[echoed..])?;
+        stdout.flush()?;
+        echoed = input.len();
+        Ok(input
+            .windows(expected.len())
+            .any(|window| window == expected.as_bytes()))
+    })?;
+    Ok(())
+}
+
+/// Waits until `path` exists, so a test (or a library host) can order this
+/// fixture's next output after something it observed, without a sleep.
+fn await_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + BOUND;
+    while !std::path::Path::new(path).exists() {
+        if Instant::now() >= deadline {
+            return Err(format!("{path} never appeared").into());
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
 /// Starts a copy of this fixture running `script` like a daemon would: in its own session,
 /// detached from the terminal, and with an empty environment.
 fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
-    use nix::unistd::{
-        ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, getsid, setsid,
+    use nix::{
+        fcntl::{FcntlArg, FdFlag, fcntl},
+        poll::{PollFd, PollFlags, PollTimeout, poll},
+        unistd::{ForkResult, dup2_stderr, dup2_stdin, dup2_stdout, execve, fork, pipe, setsid},
     };
-    use std::{ffi::CString, os::unix::ffi::OsStringExt};
+    use std::{ffi::CString, os::fd::AsFd, os::unix::ffi::OsStringExt};
     let program = CString::new(env::current_exe()?.into_os_string().into_vec())?;
     let mut argv = vec![program.clone()];
     for argument in script {
@@ -103,9 +152,18 @@ fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
         .read(true)
         .write(true)
         .open("/dev/null")?;
+    // The child holds `started` until it execs or exits, which ends the poll below with EOF.
+    // That proves only that the child got past setsid or gave up: if setsid fails, the child
+    // reports the error and exits 127 while still in this session, and `detach` returns Ok.
+    // Polling the child's session instead loses a child that exits between two polls: macOS
+    // getsid reports an exited child as missing.
+    let (ready, started) = pipe()?;
+    for end in [&ready, &started] {
+        fcntl(end, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
+    }
     // The fixture is single-threaded, so the child may run arbitrary code before exec.
-    let child = match unsafe { fork() }? {
-        ForkResult::Parent { child } => child,
+    match unsafe { fork() }? {
+        ForkResult::Parent { .. } => {}
         ForkResult::Child => {
             let error = setsid()
                 .and_then(|_| dup2_stdin(&null))
@@ -116,14 +174,13 @@ fn detach(script: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("climon2-fixture: error: detach: {error}");
             std::process::exit(127);
         }
-    };
+    }
+    drop(started);
     // Until the child leads its own session, this fixture exiting would hang it up.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while getsid(Some(child)) != Ok(child) {
-        if Instant::now() >= deadline {
-            return Err("detached child never started its session".into());
-        }
-        thread::sleep(Duration::from_millis(1));
+    let timeout = PollTimeout::try_from(BOUND).map_err(|_| "fixture bound exceeds poll")?;
+    let mut descriptors = [PollFd::new(ready.as_fd(), PollFlags::POLLIN)];
+    if poll(&mut descriptors, timeout)? == 0 {
+        return Err("detached child never started its session".into());
     }
     Ok(())
 }

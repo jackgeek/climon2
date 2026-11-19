@@ -83,6 +83,53 @@ fn adr0001_version_matched_client_has_exact_frozen_invocation() {
     );
 }
 
+/// #105 (spec #73 Entry and startup, Introduction preference): the monitor
+/// keeps its preference file at the root of the climon2 home, beside
+/// `config.jsonc`, never inside the configuration.
+#[test]
+fn issue105_the_monitor_preference_file_is_in_the_climon2_home() {
+    let home = std::env::current_dir().unwrap().join("custom home");
+    let layout = HomeLayout::resolve(Some(home.as_os_str()), Path::new("ignored")).unwrap();
+    assert_eq!(
+        layout.monitor_preferences(),
+        home.join("monitor-preferences.json")
+    );
+}
+
+/// #74: the monitor finds its executable home and version folder from its own
+/// canonical path exactly as the CLI does, and the CLI names its own version's
+/// monitor with the same layout code.
+#[test]
+fn issue74_monitor_resolves_the_same_layout_as_the_cli() {
+    let root = std::env::current_dir().unwrap().join("install");
+    let monitor = root.join("2.0.0/climon2-monitor");
+    let layout = ExecutableLayout::from_binary_path(&monitor, VersionBinary::Monitor).unwrap();
+    assert_eq!(layout.root(), root);
+    assert_eq!(layout.version().as_str(), "2.0.0");
+    let cli = ExecutableLayout::from_cli_path(&root.join("2.0.0/climon2-cli")).unwrap();
+    assert_eq!(cli.binary(cli.version(), VersionBinary::Monitor), monitor);
+    for bad in [
+        "2.0.0/climon2-cli",
+        "2.0.0/climon2-monitor.app",
+        "debug/climon2-monitor",
+        "2.0.0/../climon2-monitor",
+    ] {
+        assert!(
+            ExecutableLayout::from_binary_path(&root.join(bad), VersionBinary::Monitor).is_err(),
+            "{bad}"
+        );
+    }
+    let windows = ExecutableLayout::from_binary_path(
+        &root.join("1.2.3/climon2-monitor.exe"),
+        VersionBinary::Monitor,
+    )
+    .unwrap();
+    assert_eq!(
+        windows.binary(windows.version(), VersionBinary::Cli),
+        root.join("1.2.3/climon2-cli.exe")
+    );
+}
+
 #[test]
 fn issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded() {
     assert_eq!(home_hash8(b"/home/example/.climon2"), "64c3a98c");
@@ -107,4 +154,50 @@ fn issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded(
     assert_eq!(runtime.socket_path(&id, length).unwrap(), socket);
     assert!(runtime.socket_path(&id, length - 1).is_err());
     assert!(RuntimeLayout::new(Path::new("relative"), 501, &root).is_err());
+}
+
+/// #84 LIB-01 (absolute exact-release lookup): an executable home is absolute
+/// and canonical by construction, as a loader needs, and names each version's
+/// client library inside that version's folder; the CLI's layout hands out
+/// its own home.
+#[test]
+fn issue84_executable_home_is_absolute_and_names_each_versions_client_library() {
+    let root = std::env::current_dir().unwrap().join("install");
+    let library = if cfg!(target_os = "macos") {
+        "libclimon2_client.dylib"
+    } else if cfg!(windows) {
+        "climon2_client.dll"
+    } else {
+        "libclimon2_client.so"
+    };
+    let home = ExecutableHome::new(&root).unwrap();
+    assert_eq!(home.path(), root);
+    let version = "1.2.3".parse().unwrap();
+    assert_eq!(
+        home.client_library(&version),
+        root.join("1.2.3").join(library)
+    );
+    let layout = ExecutableLayout::from_cli_path(&root.join("2.0.0/climon2-cli")).unwrap();
+    assert_eq!(layout.home(), home);
+    for bad in ["", "relative", "./install"] {
+        assert!(ExecutableHome::new(Path::new(bad)).is_err(), "{bad}");
+    }
+    assert!(ExecutableHome::new(&root.join("..")).is_err());
+}
+
+/// #155: a climon2 home an invocation already resolved and canonicalized is its
+/// own layout, whatever the user's home; a relative or empty root is refused.
+#[test]
+fn issue155_a_resolved_climon2_home_is_its_own_layout() {
+    let home = std::env::current_dir().unwrap().join("canonical home");
+    let layout = HomeLayout::at(&home).unwrap();
+    assert_eq!(layout.root(), home);
+    assert_eq!(layout.config(), home.join("config.jsonc"));
+    for bad in ["", "relative", "./home"] {
+        assert_eq!(
+            HomeLayout::at(Path::new(bad)).unwrap_err().to_string(),
+            "path must be nonempty and absolute",
+            "{bad:?}"
+        );
+    }
 }

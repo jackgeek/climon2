@@ -1,5 +1,4 @@
 use crate::Payload;
-use crate::payload::COMPANIONS;
 use crate::platform::Lock;
 use std::fs;
 use std::io;
@@ -30,12 +29,10 @@ impl Stage {
     }
 
     fn copy_companions(&self, payload: &Payload) -> io::Result<()> {
-        for (source, name) in payload.companions.iter().zip(COMPANIONS) {
+        for (name, source) in &payload.companions {
             fs::copy(source, self.version().join(name))?;
             #[cfg(feature = "test-hooks")]
-            if name == "climon2-cli" {
-                crate::hooks::checkpoint("copy-cli")?;
-            }
+            crate::hooks::checkpoint(&format!("copy-{name}"))?;
         }
         Ok(())
     }

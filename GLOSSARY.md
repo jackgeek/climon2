@@ -36,6 +36,10 @@ _Avoid_: Dashboard, multiplexer, switcher
 A model of a session's screen, kept current from the session's output; the session daemon's is the source of truth, and a monitor's is a copy.
 _Avoid_: Screen buffer, emulator, scrollback
 
+**Read-only view**:
+What a monitor paints a session from: its virtual terminal copy's cells, cursor, modes and normal history, which painting cannot change.
+_Avoid_: Placeholder, snapshot, cell schema
+
 **Hello handshake**:
 The first exchange on every connection to a session daemon, in which the daemon identifies its session; frozen across all climon2 versions.
 _Avoid_: Ping, version check
@@ -57,13 +61,21 @@ A session whose daemon answers the hello handshake with the matching session ID.
 _Avoid_: Running session, active session
 
 **Detached session**:
-A live session with no attached clients that continues after deliberate detach.
+A live session that keeps running with no attachments: an ordinary session after a deliberate detach, or a headless session whenever it has none.
 _Avoid_: Disconnected session, completed session
 
 **Headless session**:
 A session explicitly created to run without an initial interactive client and to
 remain alive with zero clients, including after later clients leave.
-_Avoid_: Detached session, persistent session
+_Avoid_: Persistent session
+
+**Ordinary session**:
+A session created with an initial interactive client, which survives zero clients only after a deliberate detach, not before its first attachment or after an unexpected loss of its last.
+_Avoid_: Normal session, regular session
+
+**Lifetime policy**:
+Whether a session is ordinary or headless, fixed when the session is created.
+_Avoid_: Session mode, persistence
 
 **Capabilities**:
 The operations or extensions a climon2 participant explicitly advertises as supported; support is never inferred from release versions.
@@ -80,6 +92,10 @@ _Avoid_: Dead session, orphan
 **Session metadata**:
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
+
+**Discovery pass**:
+One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
+_Avoid_: Scan, refresh, poll
 
 **Runtime directory**:
 The private, per-user directory holding the sockets that clients use to reach session daemons, one per climon2 home.
@@ -101,7 +117,7 @@ Probes, passive monitor connections and kill requests are not attachments.
 _Avoid_: Session, control
 
 **Passive monitor connection**:
-A monitor's connection that receives session metadata and is eligible to inherit control, but has not yet become an attachment.
+A monitor's connection that receives the session's core metadata, such as its title and status, and is eligible to inherit control, but has not yet become an attachment.
 _Avoid_: Observer-only attachment, read-only viewer
 
 **Successor**:
@@ -132,12 +148,16 @@ _Avoid_: Steal, lock, request approval
 The grant that returns control, when the controller leaves, to the most recently controlling client still attached.
 _Avoid_: Failover, fallback
 
+**Promotion**:
+The grant that makes the newest successor an attachment and the controller when the controller leaves and no other attachment remains.
+_Avoid_: Automatic takeover, failover
+
 **Detach**:
 End one client's attachment without ending the session or its command; it is deliberate only once the session daemon accepts the request.
 _Avoid_: Exit the session, kill, stop
 
 **Kill**:
-A request, made with `c2 kill`, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
+A request, made with `c2 kill` or a monitor's confirmed Delete, to end a session whatever its attachments; it is confirmed only after the command has ended and the session is cleaned up.
 _Avoid_: Stop, force-detach
 
 **Hang-up grace**:
@@ -158,7 +178,19 @@ _Avoid_: Space-to-control, hotkey
 
 **Placeholder**:
 The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
-_Avoid_: Viewer mode, read-only view
+_Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
+
+**Selector**:
+The monitor's overlaid list of every session row it tracks, opened with the client escape prefix and s, showing each row's status and label without resizing any session; its always-focused search narrows the list to the rows that match.
+_Avoid_: Session picker, menu, switcher, session list window
+
+**Run-local dismissal**:
+A monitor's record that a confirmed Delete removed a session's row, so that monitor never lists the session again until it exits; nothing is persisted and nothing else is deleted.
+_Avoid_: Archive, hidden session, forgetting
+
+**Key introduction**:
+The monitor's modal list of its key actions, spelled with the configured client escape prefix, shown at startup until the user declines it for that climon2 home, and on request as help.
+_Avoid_: Splash screen, onboarding, welcome screen
 
 ## Status and attention
 
@@ -182,9 +214,33 @@ _Avoid_: Lifecycle, connection status
 A connected controller's unobstructed, ready presentation of its selected session to the user, distinct from retaining control in the background or under a menu.
 _Avoid_: Attachment, control ownership
 
+**Deferred acknowledgement**:
+An explicit user action's acknowledgement of a session's pending attention (selecting it, jumping to it, or closing the selector back to it), held until the monitor views that session and dropped if the user moves on first.
+_Avoid_: Auto-acknowledgement, acknowledgement on visibility
+
+**Attention jump**:
+Prefix+j: moving to the connected session whose pending attention changed most recently, decided when the key is pressed, never the session a notification named.
+_Avoid_: Next toast, notification target
+
+**Host attention**:
+Whether any connected session needs attention, which a monitor reports to its host as its own program status, never by forwarding a session's.
+_Avoid_: Forwarded status, aggregate session status
+
 **Connection status**:
 A monitor's record of whether its client is connected to a session daemon, distinct from the session's last reported status.
 _Avoid_: Session status, daemon outcome
+
+**Not-connected row labels**:
+The status a monitor shows for a session row without a current daemon status: Starting while its client starts, Awaiting resources while it cannot be admitted, Unavailable when it cannot be reached or reports no status, and Disconnected once its connection is lost. The monitor's own enclosing session has no row at all. A row never seen connected is dropped, not shown Disconnected, once its session is proven gone; a row that was connected keeps Disconnected with its history.
+_Avoid_: Error state, dead, offline, unknown status
+
+**Resource-blocked**:
+A session row the monitor has not yet given a client because the resources that client, or its release, would reserve cannot be admitted now; the row shows Awaiting resources and is reconsidered fairly. It is local availability, not a daemon status.
+_Avoid_: Capped, omitted, queued, evicted
+
+**Final outcome**:
+A session command's authoritative result, its exact exit code or signal, which a monitor row shows as Succeeded for exit zero and Failed otherwise, and keeps after the connection ends.
+_Avoid_: Completion status, exit status, disconnection
 
 ## Restoration and presentation
 
@@ -210,7 +266,7 @@ It can contain unrelated output and copies of retained history.
 _Avoid_: Retained history, daemon history
 
 **Truncation notice**:
-The line `[climon2: older session scrollback was discarded]` that marks, without measuring, retained history lost before it could be restored.
+The line `[climon2: older session scrollback was discarded]` that marks, without measuring, retained history lost before it could be restored; a monitor shows the same line above the oldest history row it kept once it discarded older ones.
 _Avoid_: History gap, eviction marker
 
 **Presentation**:
@@ -224,6 +280,10 @@ _Avoid_: Raw mode, passthrough
 **Derived presentation**:
 Live output rendered from the virtual terminal's state, used when the controller's host is larger than the session in either dimension, which happens only beyond the maximum session size.
 _Avoid_: Emulated mode, redraw mode
+
+**Canonical presentation**:
+A monitor's restorations and live output, serialized at the session's own size for a fresh terminal of exactly that size, whatever size the monitor's host has.
+_Avoid_: Monitor presentation, normalized output
 
 **Release**:
 The bytes that return a terminal to the normal-shell baseline when an attachment's presentation ends.
@@ -333,8 +393,19 @@ A climon2-owned test program that checks the session contract (args, cwd, enviro
 _Avoid_: Test shell, dummy command
 
 **TUI fixture**:
-A climon2-owned full-screen test program that exercises alternate screen, cursor queries, mouse, bracketed paste, and resize redraws.
+A climon2-owned full-screen test program that exercises alternate screen, cursor queries, focus reporting, mouse, bracketed paste, and resize redraws.
 _Avoid_: Fake app, mock TUI
+
+**Client library stand-in**:
+A clearly labelled, test-only client library that is exact or carries one deliberate defect, and is never shipped; carrying a defect, it is a faulty library.
+_Avoid_: Mock library, fake library
+
+**Second-release fixture**:
+A clearly labelled, test-only second release, installed beside the release under test in a sibling version folder: the client library source built with its own release identity and without test hooks, and a session daemon with its release compiled in and a private behaviour of its own, so that a call or a connection crossing releases shows. It is never shipped.
+_Avoid_: Fake release, old version
+
+**Terminal oracle**:
+The test harness's emulated host, whose visible cells, cursor, modes, bells and status reports stand for what a user observes in their terminal.
 
 **Shell profile**:
 The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.
@@ -347,6 +418,26 @@ _Avoid_: Sanity test, canary
 **Release gate**:
 A check that must pass before a version can be released.
 _Avoid_: Quality gate, CI check
+
+**Release qualification**:
+The release gate between building and publishing that runs the complete acceptance matrix on the exact candidate archives, natively on x86-64 GNU/Linux and both macOS architectures, and publishes only when every scenario case passed or has the owner's disposition.
+_Avoid_: Release check, certification
+
+**Evidence record**:
+What release qualification stores for one scenario case, one required layer of one scenario on one platform: its state (not implemented, not run, passed, failed or blocked), the tests and artifacts behind it, and what was observed.
+_Avoid_: Test report, result manifest
+
+**Disposition**:
+The owner's recorded decision to accept a scenario case that did not pass, which lets the release be published while staying visible in its evidence records; it names its exact scenario and layer, so a performance disposition never waives a functional case.
+_Avoid_: Waiver, exemption
+
+**Measurement job**:
+The PERF-01 run of the test-only `climon2-measure` harness on a release candidate's exact archives, on hosted macOS arm64, macOS x86_64 and Ubuntu runners; a missed target is recorded as a failed Measure case needing the owner's written disposition, never as a failed build.
+_Avoid_: Benchmark, perf test
+
+**Standalone baseline**:
+One `climon2 attach` per session, each in its own terminal, doing the work a Measure case gives the monitor; the comparison every PERF-01 case reports.
+_Avoid_: Control group, fewer-process savings
 
 **Ticket gate**:
 `cargo xtask check`: the local qualification for one change, which mutates only the functions it adds or changes and measures mutation load for one round.

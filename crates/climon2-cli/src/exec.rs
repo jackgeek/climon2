@@ -2,8 +2,9 @@ use crate::Error;
 use climon2_core::{
     SessionId,
     cli::CommandArgs,
-    config::{ConfigSource, ExecConfig},
+    config::{Assembly, ConfigSource, ExecConfig},
     layout::{ExecutableLayout, HomeLayout, VersionBinary},
+    lifetime::Lifetime,
     metadata::SessionMetadata,
     protocol::TerminalSize,
     session::SessionEnvironment,
@@ -28,23 +29,24 @@ use std::{
 
 pub fn run(
     home: &Path,
+    lifetime: Lifetime,
     command: CommandArgs,
     general: &LogFile,
     filter: Option<&str>,
 ) -> Result<u32, Error> {
-    let (config, layout) = prepare(home)?;
+    let (config, layout) = prepare(home, lifetime)?;
     let (id, session) = new_session(home, general)?;
     let dispatch = session.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
-        launch(home, command, &layout, &id, filter, config)
+        launch(home, lifetime, command, &layout, &id, filter, config)
             .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
     })
 }
 
 /// Configuration and terminals are checked before anything is created.
-fn prepare(home: &Path) -> Result<(ExecConfig, ExecutableLayout), Error> {
+fn prepare(home: &Path, lifetime: Lifetime) -> Result<(ExecConfig, ExecutableLayout), Error> {
     let config = exec_config(home)?;
-    Ok((config, preflight()?))
+    Ok((config, preflight(lifetime)?))
 }
 
 fn new_session(home: &Path, general: &LogFile) -> io::Result<(SessionId, LogFile)> {
@@ -54,17 +56,19 @@ fn new_session(home: &Path, general: &LogFile) -> io::Result<(SessionId, LogFile
 }
 
 fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
-    let layout =
-        HomeLayout::resolve(Some(home.as_os_str()), Path::new("/")).map_err(io::Error::other)?;
+    let layout = HomeLayout::at(home).map_err(io::Error::other)?;
     ConfigSource::read(&layout)
         .and_then(|source| source.exec())
         .map_err(|error| Error::new(125, error))
 }
 
-/// TTY checks happen before anything is created or spawned.
-fn preflight() -> io::Result<ExecutableLayout> {
-    terminal::require_ttys()?;
-    executable_layout()
+/// TTY checks happen before anything is created or spawned; a headless
+/// session needs no terminal.
+fn preflight(lifetime: Lifetime) -> io::Result<ExecutableLayout> {
+    if lifetime == Lifetime::Ordinary {
+        terminal::require_ttys()?;
+    }
+    crate::executable_layout()
 }
 
 fn new_session_id() -> io::Result<SessionId> {
@@ -72,11 +76,6 @@ fn new_session_id() -> io::Result<SessionId> {
         .to_string()
         .parse()
         .map_err(io::Error::other)
-}
-
-fn executable_layout() -> io::Result<ExecutableLayout> {
-    let own_exe = std::env::current_exe()?.canonicalize()?;
-    ExecutableLayout::from_cli_path(&own_exe).map_err(io::Error::other)
 }
 
 fn session_log(home: &Path, id: &SessionId, general: &LogFile) -> io::Result<LogFile> {
@@ -93,7 +92,9 @@ struct Startup<'a> {
     home: &'a Path,
     layout: &'a ExecutableLayout,
     id: &'a SessionId,
+    lifetime: Lifetime,
     max_history_rows: u32,
+    assembly: Assembly,
     metadata: PathBuf,
     socket: PathBuf,
     size: TerminalSize,
@@ -102,19 +103,20 @@ struct Startup<'a> {
 
 fn launch(
     home: &Path,
+    lifetime: Lifetime,
     command: CommandArgs,
     layout: &ExecutableLayout,
     id: &SessionId,
     filter: Option<&str>,
     config: ExecConfig,
 ) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, id, config.scrollback.max_rows.get())?;
+    let startup = Startup::new(home, layout, id, lifetime, &config)?;
     let inherited = std::env::vars_os().collect::<Vec<_>>();
     let environment =
         SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
     warn_if_nested(&environment);
-    let _daemon = startup.ready(command, environment, filter)?;
-    startup.handoff(filter, config.client)
+    let daemon = startup.ready(command, environment, filter)?;
+    startup.finish(daemon, filter, config.client)
 }
 
 fn warn_if_nested(environment: &SessionEnvironment) {
@@ -128,21 +130,24 @@ impl Startup<'_> {
         home: &'a Path,
         layout: &'a ExecutableLayout,
         id: &'a SessionId,
-        max_history_rows: u32,
+        lifetime: Lifetime,
+        config: &ExecConfig,
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
         let metadata = home.join("sessions").join(format!("{id}.pty"));
-        let size = terminal_size()?;
+        let size = terminal_size();
         let cwd = std::env::current_dir().map_err(|error| Error::new(126, error))?;
         Ok(Startup {
             home,
             layout,
             id,
+            lifetime,
             metadata,
             socket,
             size,
             cwd,
-            max_history_rows,
+            max_history_rows: config.scrollback.max_rows.get(),
+            assembly: config.assembly,
         })
     }
 
@@ -191,12 +196,20 @@ impl Startup<'_> {
             .arg(self.layout.version().as_str())
             .arg("--cli-pid")
             .arg(std::process::id().to_string())
+            .arg("--lifetime")
+            .arg(self.lifetime.name())
             .arg("--rows")
             .arg(self.size.rows.to_string())
             .arg("--cols")
             .arg(self.size.cols.to_string())
             .arg("--scrollback-max-rows")
             .arg(self.max_history_rows.to_string())
+            .arg("--assembly-records")
+            .arg(self.assembly.records().to_string())
+            .arg("--assembly-bytes")
+            .arg(self.assembly.bytes().to_string())
+            .arg("--assembly-ms")
+            .arg(self.assembly.lifetime_ms().to_string())
             .arg("--cwd")
             .arg(&self.cwd);
         if let Some(filter) = filter {
@@ -210,6 +223,33 @@ impl Startup<'_> {
                 .arg(command.command)
                 .args(command.args);
         })
+    }
+
+    /// Ordinary exec becomes the client; headless exec only reports the session.
+    /// `daemon` stops the session unless the CLI succeeds.
+    fn finish(
+        &self,
+        daemon: Started<'_>,
+        filter: Option<&str>,
+        settings: climon2_core::keys::ClientSettings,
+    ) -> Result<u32, Error> {
+        match self.lifetime {
+            Lifetime::Ordinary => self.handoff(filter, settings),
+            Lifetime::Headless => Ok(self.announce(daemon)),
+        }
+    }
+
+    /// The daemon confirmed creation, so the session outlives this CLI and
+    /// exec succeeds even when its ID cannot be written to stdout; `list`
+    /// still shows the session.
+    fn announce(&self, daemon: Started<'_>) -> u32 {
+        daemon.disarm();
+        let mut stdout = io::stdout().lock();
+        if let Err(error) = writeln!(stdout, "{}", self.id).and_then(|()| stdout.flush()) {
+            tracing::warn!(%error, "cannot print the session ID");
+        }
+        tracing::debug!(session_id = %self.id, "headless session started");
+        0
     }
 
     fn handoff(
@@ -256,8 +296,20 @@ impl Startup<'_> {
     }
 }
 
-fn terminal_size() -> io::Result<TerminalSize> {
-    terminal::size(&terminal::input()?)
+/// TIOCGWINSZ's value for an unknown dimension.
+const UNKNOWN: u16 = 0;
+
+/// The stdin terminal's size; without one (headless exec), the fallback for
+/// an unknown size, 80x24.
+fn terminal_size() -> TerminalSize {
+    let unknown = TerminalSize {
+        cols: UNKNOWN,
+        rows: UNKNOWN,
+    };
+    terminal::input()
+        .and_then(|input| terminal::size(&input))
+        .unwrap_or(unknown)
+        .initial()
 }
 
 struct Started<'a> {
@@ -288,10 +340,15 @@ impl Drop for Started<'_> {
 }
 
 impl Started<'_> {
+    /// The session outlives this CLI.
+    fn disarm(self) {
+        std::mem::forget(self);
+    }
+
     fn stop(&self) {
         let _ = process::signal_group(self.pid, Signal::Terminate);
         let deadline = Instant::now() + Duration::from_secs(6);
-        while Instant::now() < deadline {
+        while deadline.checked_duration_since(Instant::now()).is_some() {
             match process::try_wait(self.pid) {
                 Ok(None) => thread::sleep(Duration::from_millis(10)),
                 _ => return,

@@ -1,0 +1,26 @@
+# Test-only measurement harness, never shipped (#121): drives an exact
+# candidate release archive through the PERF-01 workload matrix and writes
+# its Measure-case report. `cargo xtask measure` runs it.
+[package]
+name = "climon2-measure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "climon2-measure"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+climon2-core = { path = "../climon2-core" }
+climon2-platform = { path = "../climon2-platform" }
+climon2-test-term = { path = "../climon2-test-term" }
+libc = "0.2.191"
+portable-pty = { version = "0.9.0", default-features = false }
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3"

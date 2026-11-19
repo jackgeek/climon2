@@ -1,6 +1,8 @@
 # Control revoked — `0x47`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)) and monitor-mode
+connections ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) reports the end of the
 receiving [client](../../../GLOSSARY.md#sessions)'s
 [control](../../../GLOSSARY.md#attachment-and-control).
@@ -38,3 +40,23 @@ No [request ID](../TERMS.md#request-id)/defaults/unknown members. Invalid record
 Required control records must be preserved or the connection explicitly failed,
 not lossily coalesced. Numeric bounds/deadlines/policy remain #69.
 Related: [Ready](request-ready.md), [Leave](request-leave.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) sends Control revoked to
+an [attachment](../../../GLOSSARY.md#attachment-and-control), interactive or a
+[passive monitor connection](../../../GLOSSARY.md#attachment-and-control) its
+Acquire or a [promotion](../../../GLOSSARY.md#attachment-and-control) converted,
+whose control ends while the attachment stays: with reason `takeover` when
+another attachment attaches or takes control, and with
+reason `session_ending` when the session ends while it still controls, just
+before its stream closes. Each time, the
+[release](../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../GLOSSARY.md#restoration-and-presentation) reaches it first as
+[Display](event-display.md), and Control revoked carries the
+[control period](../../../GLOSSARY.md#attachment-and-control) and
+[restoration ID](../../../GLOSSARY.md#protocol-and-plugin-concepts) that Display used; no
+Display follows it. The [Command final](event-command-final.md#implemented-behavior)
+of a command whose result is final reaches the attachment after the Display
+of the command's last output and before the release and its
+`session_ending` revocation.

@@ -1,13 +1,13 @@
 use crate::{
-    classify::{Clear, Live, classify},
+    classify::{Clear, classify},
     derive::{Cache, derive},
     engine::Engine,
     geometry::{Geometry, STEP},
     history::Ledger,
     modes::{DIRECT, SHARED, cursor_style, transitions},
     presentation::{Mode, Presentation},
-    render::{cursor, cursors, screen},
-    restore::{Chunk, PROLOGUE, Restoration, Snapshot, lead},
+    render::{characters, cursor, cursors, screen},
+    restore::{Chunk, PROLOGUE, Restoration, Snapshot, canonical_lead, lead},
     sync::Latch,
     title,
     token::{Kind, Token, Tokenizer},
@@ -24,6 +24,42 @@ pub struct VtConfig {
     pub default_title: String,
 }
 
+/// A sequence the session daemon interprets before filtering, as the engine
+/// received it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal<'a> {
+    /// An OSC string: its body, between `ESC ]` and its terminator, and the
+    /// length of the whole sequence.
+    Osc { body: &'a [u8], length: usize },
+    /// `ESC c`, a full reset.
+    FullReset,
+}
+
+impl<'a> Signal<'a> {
+    fn of(token: &'a Token, clear: Clear) -> Option<Self> {
+        match (token.kind, clear) {
+            (Kind::Osc, _) => Some(Self::Osc {
+                body: osc_body(&token.bytes),
+                length: token.bytes.len(),
+            }),
+            (_, Clear::Reset) => Some(Self::FullReset),
+            _ => None,
+        }
+    }
+}
+
+/// An OSC token's body: after its introducer, which only C0 controls can
+/// precede, and before its BEL or ST terminator.
+fn osc_body(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|&byte| byte == b']')
+        .expect("an OSC token holds its introducer")
+        + 1;
+    let terminator = if bytes.ends_with(b"\x07") { 1 } else { 2 };
+    &bytes[start..bytes.len() - terminator]
+}
+
 /// The result of feeding PTY output.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Fed {
@@ -34,6 +70,10 @@ pub struct Fed {
     /// Oversized tokens dropped from both engine and output; log their count
     /// without content.
     pub dropped: u32,
+    /// Each change of the application's title, in order; `None` is unset.
+    pub titles: Vec<Option<String>>,
+    /// A token turned focus reporting (mode 1004) on, and it is still on.
+    pub focus_enabled: bool,
 }
 
 /// The session's virtual terminal: the front filter, the engine and the
@@ -93,15 +133,37 @@ impl Vt {
     pub fn grant(&mut self, presentation: &mut Presentation) -> (Vec<u8>, Restoration) {
         presentation.mode = Mode::of(presentation.cols, presentation.rows, self.geometry);
         let direct = presentation.mode == Mode::Direct;
-        let rows = self
-            .engine
-            .normal(Dimensions::history_size)
-            .min(self.ledger.max_rows);
-        let notice = self.ledger.evicted && rows > 0;
+        let (rows, notice) = self.retained();
         let suffix = self.suffix(direct);
         let restoration = Restoration::new(&self.ledger, rows, notice, presentation, suffix);
         presentation.cache = Cache::current(&self.engine, &self.ledger, &self.title_text());
         (lead(presentation, notice), restoration)
+    }
+
+    /// Take the snapshot point S for a canonical restoration: the session
+    /// serialized at its own geometry for a fresh terminal of exactly that
+    /// size, as a monitor-mode connection parses it into a new model. It
+    /// never preserves host content and never depends on a host's size:
+    /// `presentation` becomes a fresh record of a host of the session
+    /// geometry, so live output stays Direct. Returns phase A and the
+    /// restoration producing phases B and C, as [`Vt::grant`] does. Never
+    /// call while [`Vt::sync_pending`].
+    pub fn canonical(&mut self, presentation: &mut Presentation) -> (Vec<u8>, Restoration) {
+        *presentation = Presentation::new(self.geometry.cols(), self.geometry.rows());
+        let (rows, notice) = self.retained();
+        let suffix = self.suffix(true);
+        let restoration = Restoration::canonical(&self.ledger, rows, notice, presentation, suffix);
+        (canonical_lead(notice), restoration)
+    }
+
+    /// The retained history rows at the snapshot point, and whether the
+    /// truncation notice precedes them.
+    fn retained(&mut self) -> (usize, bool) {
+        let rows = self
+            .engine
+            .normal(Dimensions::history_size)
+            .min(self.ledger.max_rows);
+        (rows, self.ledger.evicted && rows > 0)
     }
 
     /// The live update for a Derived controller whose restoration has
@@ -172,10 +234,27 @@ impl Vt {
     /// Feed PTY output through the live output policy. Every completed
     /// token updates the engine; a partial token waits for a later read.
     pub fn feed(&mut self, bytes: &[u8], now: Instant) -> Fed {
+        self.feed_observed(bytes, now, |_, _, _| {})
+    }
+
+    /// [`Vt::feed`], calling `observe` with each [`Signal`] in stream order,
+    /// once the engine executed it, so the terminal it is given shows the
+    /// stream up to that point. What `observe` adds to the replies reaches
+    /// the program in order with the engine's own.
+    pub fn feed_observed(
+        &mut self,
+        bytes: &[u8],
+        now: Instant,
+        mut observe: impl FnMut(&Self, Signal<'_>, &mut Vec<u8>),
+    ) -> Fed {
         let mut fed = Fed::default();
         for token in self.tokenizer.push(bytes) {
-            self.token(&token, now, &mut fed);
+            let clear = self.token(&token, now, &mut fed);
+            if let Some(signal) = Signal::of(&token, clear) {
+                observe(self, signal, &mut fed.replies);
+            }
         }
+        fed.focus_enabled &= self.focus_reporting();
         fed
     }
 
@@ -203,16 +282,41 @@ impl Vt {
         self.engine.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
-    fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) {
+    /// Whether the application enabled focus reporting (mode 1004).
+    pub fn focus_reporting(&self) -> bool {
+        self.engine.mode().contains(TermMode::FOCUS_IN_OUT)
+    }
+
+    /// The application's own title: `None` while it has set none (or reset
+    /// it) and the default title shows.
+    pub fn application_title(&self) -> Option<&str> {
+        self.engine.title()
+    }
+
+    /// The active screen's characters as the application shows them now,
+    /// line by line and including blanks: what the session daemon samples
+    /// to notice activity. Rendition, the cursor, history and which screen
+    /// is active are not part of it.
+    pub fn viewport_characters(&self) -> String {
+        characters(self.engine.active())
+    }
+
+    /// Executes one token and applies its live output policy; returns the
+    /// history it cleared.
+    fn token(&mut self, token: &Token, now: Instant, fed: &mut Fed) -> Clear {
         fed.dropped += u32::from(token.kind == Kind::Oversized);
         let policy = classify(token);
         let title = self.engine.title().map(str::to_owned);
+        let reporting = self.focus_reporting();
         self.execute(&token.bytes, policy.clear, &mut fed.replies);
+        fed.focus_enabled |= !reporting && self.focus_reporting();
         self.latch.observe(policy.sync, now);
-        fed.live.extend_from_slice(live(token, &policy.live));
+        fed.live.extend_from_slice(policy.forwarded(token));
         if self.engine.title() != title.as_deref() {
             fed.live.extend(self.title());
+            fed.titles.push(self.application_title().map(str::to_owned));
         }
+        policy.clear
     }
 
     fn execute(&mut self, bytes: &[u8], clear: Clear, replies: &mut Vec<u8>) {
@@ -220,7 +324,7 @@ impl Vt {
             self.step(step, clear, replies);
         }
         if clear == Clear::Reset {
-            self.engine.reset_title();
+            self.engine.reset();
         }
     }
 
@@ -292,12 +396,5 @@ impl Vt {
             .title()
             .unwrap_or(&self.default_title)
             .to_owned()
-    }
-}
-
-fn live<'a>(token: &'a Token, live: &'a Live) -> &'a [u8] {
-    match live {
-        Live::Forward => &token.bytes,
-        Live::Replace(bytes) => bytes,
     }
 }

@@ -1,18 +1,146 @@
 # Monitor terminal integration
 
-**Status: agreed, unimplemented specification from [#63](https://github.com/jackgeek/climon2/issues/63).**
+**Status: agreed specification from [#63](https://github.com/jackgeek/climon2/issues/63), implemented as stated below.**
 This also records the confirmed input/configuration amendments to
-[#64](https://github.com/jackgeek/climon2/issues/64) and attention-jump amendment to
-[#59](https://github.com/jackgeek/climon2/issues/59). No executable changes or
-automated implementation evidence are supplied by this document.
+[#64](https://github.com/jackgeek/climon2/issues/64) and
+[attention](../../GLOSSARY.md#status-and-attention)-jump amendment to
+[#59](https://github.com/jackgeek/climon2/issues/59). This document supplies no
+executable changes or evidence itself.
+
+**Implemented with packaged evidence ([#74](https://github.com/jackgeek/climon2/issues/74), [#105](https://github.com/jackgeek/climon2/issues/105)):**
+the [monitor](../../GLOSSARY.md#sessions)'s own screen and exits, first
+with no [sessions](../../GLOSSARY.md#sessions) to show. It takes its own alternate screen
+with one permanent top row, enables [host](../../GLOSSARY.md#sessions)
+bracketed-paste, mouse and focus reporting, and never changes the host title.
+Only the typed [client escape prefix](../../GLOSSARY.md#attachment-and-control)
+followed by x (exit) or ? (the modal
+[key introduction](../../GLOSSARY.md#attachment-and-control), also opened at
+startup while key hints are on and its suppression is unsaved) acts, and the
+open dialog takes the other typed keys, a doubled prefix as one literal prefix,
+acting only on Enter and Space: pasted [bytes](TERMS.md#byte) are data, never
+complete a pending prefix and leave none pending. A host resize repaints the
+whole screen without blanking it or showing the cursor. Every exit writes the
+[release](../../GLOSSARY.md#restoration-and-presentation) bytes to the host
+before any diagnostic.
+
+**Implemented with crate tests only ([#83](https://github.com/jackgeek/climon2/issues/83)):**
+`climon2-vt`'s read-only Rust views of a monitor's
+[virtual terminal](../../GLOSSARY.md#sessions), described
+[below](#ownership-representation-and-fidelity).
+
+**Implemented with Contract evidence ([#87](https://github.com/jackgeek/climon2/issues/87)):**
+the [session daemon](../../GLOSSARY.md#sessions)'s side of
+[application focus](#host-focus-and-application-focus), served as
+[wire Focus](daemon-client/request-focus.md#implemented-behavior). It
+remembers the desired focus for the current
+[control period](../../GLOSSARY.md#attachment-and-control), forwards each
+change as the application's focus report while the application has focus
+reporting on, in request order after earlier input, and sends the known
+state once when reporting is newly enabled.
+
+**Implemented with Contract evidence ([#89](https://github.com/jackgeek/climon2/issues/89)):**
+the session daemon's side of
+[canonical monitor presentation](#canonical-monitor-presentation-amendment-to-daemon-wire-revision-1).
+A [passive monitor connection](../../GLOSSARY.md#attachment-and-control) that
+its Acquire or a [promotion](../../GLOSSARY.md#attachment-and-control) makes an
+[attachment](../../GLOSSARY.md#attachment-and-control) is granted at the
+session's current [geometry](TERMS.md#geometry), receives
+[restorations](../../GLOSSARY.md#restoration-and-presentation) with
+[canonical presentation](../../GLOSSARY.md#restoration-and-presentation),
+serialized at the effective session geometry for a fresh terminal of that
+size, and receives a new restoration at every new effective geometry before
+any byte at it.
+
+**Implemented with packaged evidence ([#108](https://github.com/jackgeek/climon2/issues/108)):** selection
+and painting. Enter in the selector on a connected row not known to be final
+selects it and takes [control](../../GLOSSARY.md#attachment-and-control); at
+startup only initial selection ([#266](https://github.com/jackgeek/climon2/issues/266)) selects a row, and no arrival moves
+the selection. Since
+[#110](https://github.com/jackgeek/climon2/issues/110), Enter on a Starting
+row or an Unavailable row without a connected client selects it without
+acquiring (no terminal content, its condition), and the monitor's own
+session has no row; Enter on disconnected and final rows selects them
+read-only ([#116](https://github.com/jackgeek/climon2/issues/116)). A
+selected connected session the monitor does not control shows only the
+[placeholder](../../GLOSSARY.md#attachment-and-control) (with the
+[take-control key](../../GLOSSARY.md#attachment-and-control)'s hint while
+one is bound and key hints are on), never its cache; that key, unprefixed,
+acquires it and is consumed, even on a host too small to show it (owner
+decision on #110), does nothing in a modal and is ordinary input for a
+ready controller. Switching keeps background control, and the monitor
+never takes control back by itself. Each
+[session](../../GLOSSARY.md#sessions) has one allocation-bounded model, kept for
+the monitor's run: each [restoration](../../GLOSSARY.md#restoration-and-presentation)
+is staged and replaces the model whole once complete, and only then is
+[Ready](monitor-client/request-ready.md) submitted. A model from an earlier
+[control period](../../GLOSSARY.md#attachment-and-control) is never shown, a
+Display at a [geometry](TERMS.md#geometry) the model lacks marks it stale
+until the next restoration, and a finished session's view freezes at its
+Command final only if a restoration was applied in the control period held
+then (never an earlier period's cache or a blank model); no Resize goes to a
+finished session. The selected session is painted directly below the top row at
+its effective geometry, with blank margins, its cells (at the engine's widths),
+colours (ANSI colours as their own SGR; an underline colour only on underlined
+cells, in SGR 58's colon form) and cursor, never in the top row; the top row
+shows its label and any error from the left, then fixed-width slots separated
+by `|` for its status (Unavailable until status reaches the monitor), control
+and, with key hints on, a hint. Host resizes go only to the selected
+controller, as the host width by its height less one, after every grant too; a
+host under four rows or five columns shows `Terminal too small` and sends no
+resize. Input readiness (applied, Ready accepted and a frame that shows the
+restoration now: selected, uncovered and with room) is tracked for the input
+router ([#109](https://github.com/jackgeek/climon2/issues/109)), which
+forwards keys to the selected session only while that readiness holds.
+
+**Implemented with packaged evidence ([#111](https://github.com/jackgeek/climon2/issues/111)):**
+[exact paste](#transparent-keyboard-and-exact-paste), mouse and focus for
+the selected session. A bracketed paste reaches the target that took input
+when it began, exactly, with the application's markers only while its
+bracketed-paste mode is on; a pending prefix before it becomes one literal
+prefix for that target, and none is left pending. A paste or gesture whose
+target stops taking input (a modal, a switch, a new control period or
+restoration, revocation or disconnect) is discarded through its end marker
+or release, and a pending prefix is discarded on such a change. A bracketed
+paste cut short while its control period lasts (a new restoration, a host
+too small) owes its application the end marker, sent under the session's
+current authority once that restoration is ready (owner decision on #111);
+after revocation or disconnect the daemon closes it. A paste the
+client's input queue refuses partway shows `Paste truncated`; the rest is
+discarded and the application is sent the end marker (owner decision on
+#111). Mouse reports are hit-tested and translated below the top row, in
+the application's reporting mode and encoding; chrome and overlay events
+stay local, and each gesture keeps the target where it began. The host's
+mouse tracking mirrors the level (1000, 1002 or 1003) of the application
+whose canvas is shown uncovered, otherwise the monitor's own button-event
+tracking (owner decision on #111). With
+`focus-v1`, [Focus](monitor-client/request-focus.md) follows selection,
+modal UI and host focus reports, once per change and once more for each
+newly ready restoration; without it no Focus is sent. Both that and a host
+that never reports focus (assumed focused) are documented limitations only,
+never shown on screen (owner decisions on #111). Toasts
+([#115](https://github.com/jackgeek/climon2/issues/115)) are nonmodal: one
+covering the selected session's canvas clears viewing while ready keys still
+reach it, a gesture begun before a toast appeared keeps its target over it,
+and a new click on a toast only dismisses it.
+
+**Implemented ([#109](https://github.com/jackgeek/climon2/issues/109), [#112](https://github.com/jackgeek/climon2/issues/112) to [#116](https://github.com/jackgeek/climon2/issues/116)):** the input router,
+including Escape closing the dialog when Escape is not the prefix
+([#109](https://github.com/jackgeek/climon2/issues/109)); history and synchronized updates ([#112](https://github.com/jackgeek/climon2/issues/112)); the selector
+([#113](https://github.com/jackgeek/climon2/issues/113)); the attention jump, hints and host reports ([#114](https://github.com/jackgeek/climon2/issues/114)); toasts
+and the bell ([#115](https://github.com/jackgeek/climon2/issues/115)); and read-only disconnected history with passive
+recovery ([#116](https://github.com/jackgeek/climon2/issues/116)), as each section below says. Native host selection and
+copy is a manual check, not an automated test. The
+[monitor README](../../crates/climon2-monitor/README.md#specification-mapping)
+lists the cases its tests do not yet claim.
 
 The later [selector and attention-presentation decision](../monitor-selector.md)
 confirms the captionless double-bordered selector, always-focused search,
-explicit read-only disconnected/final history selection and animated toasts.
+explicit read-only disconnected/final history selection and animated
+[toasts](TERMS.md#toast).
 It also adds the monitor's own
 [host program-status reports and configurable bell](README.md#monitor-to-host-status-and-bell).
-These are planned presentation/host signals, not session-byte passthrough, changed daemon
-[FSMs](TERMS.md#fsm) or a shipped monitor.
+These are presentation/host signals, not session-byte passthrough or changed daemon
+[FSMs](TERMS.md#fsm); the monitor emits them ([#114](https://github.com/jackgeek/climon2/issues/114), [#115](https://github.com/jackgeek/climon2/issues/115)).
 
 The [monitor](../../GLOSSARY.md#sessions) provides an
 [RDP-like](TERMS.md#rdp) remote terminal experience, not a read-only viewer.
@@ -40,9 +168,16 @@ cross-release cell [schema](TERMS.md#schema).
 
 The monitor parses those bytes into its own per-[session](../../GLOSSARY.md#sessions)
 [virtual terminal](../../GLOSSARY.md#sessions), using `climon2-vt`, and Ratatui
-paints its read-only Rust views. These views of cells, modes, cursor, and history
-are a planned addition; current `climon2-vt` is daemon-only and exposes no public
-cell views. No new workspace crate or executable placement is chosen.
+paints its read-only Rust views. `climon2-vt` provides these views of cells,
+modes, cursor, screens and history ([#83](https://github.com/jackgeek/climon2/issues/83)),
+and the monitor paints its selected session from them
+([#108](https://github.com/jackgeek/climon2/issues/108)). It also uses the crate
+for its release bytes and, before the host terminal changes, to check that its
+configured limits hold one session's mandatory model allocation
+([#167](https://github.com/jackgeek/climon2/issues/167)). The monitor runs as its own
+`climon2-monitor` executable, beside the other executables of its release
+([ADR 0004](../adr/0004-crate-layout-and-dependency-direction.md)); this contract
+chooses no workspace crate.
 The [allocation-aware prerequisite](../monitor-operational-limits.md#allocation-aware-terminal-prerequisite)
 explicitly reopens the unbounded combining-data/infallible-interface assumptions
 for future monitor qualification. Current engine behavior is unchanged.
@@ -64,6 +199,18 @@ Keyboard-protocol negotiation, [OSC](TERMS.md#osc) clipboard and hyperlinks
 remain filtered, not newly supported by choosing a renderer. Invalid
 [UTF-8](TERMS.md#unicode-and-utf-8) application bytes alone are not a protocol error.
 
+**Implemented ([#179](https://github.com/jackgeek/climon2/issues/179)):** the
+session's virtual terminal starts with alternate scroll (mode 1007) off, as
+xterm starts, although the Alacritty engine on its own starts with it on. The
+application turns it on with `ESC [ ? 1007 h`; `ESC [ ? 1007 l` and a full
+reset (`ESC c`) turn it off again. Every restoration sends the mode as the
+application left it, so a restoration before the application set it sends
+`ESC [ ? 1007 l`, and one after sends `ESC [ ? 1007 h`. **Decided (owner,
+2026-11-13):** for ordinary attaches this is the one intended change to the
+restoration bytes, which used to send `ESC [ ? 1007 h` although no application
+asked for it. A monitor's model starts the same way, so its views report
+alternate scroll only once the application enables it.
+
 ## Canonical monitor presentation: amendment to daemon wire revision 1
 
 For connections opened in monitor mode, **all daemon display/restoration bytes
@@ -77,10 +224,17 @@ against the outer host or an unclamped requested size. The geometry in
 The monitor parses at those dimensions and paints local margins itself.
 No additional presentation-geometry field is introduced.
 
-This is an agreed, unimplemented amendment, not existing behavior at `cb585d0`.
-Current ordinary-client restoration can use host coordinates: a 600x250 host
-around a 500x200 session cannot safely be reparsed as a 500x200 model.
-The single wire geometry suffices only with this new monitor policy.
+The session daemon implements this amendment
+([#89](https://github.com/jackgeek/climon2/issues/89)), and the monitor parses
+and paints at the effective geometry ([#108](https://github.com/jackgeek/climon2/issues/108)). Ordinary-client restoration can use host
+coordinates: a 600x250 host around a 500x200 session cannot safely be
+reparsed as a 500x200 model. The single wire geometry suffices only with this
+monitor policy. A monitor model is never reflowed in place: every change of
+the effective geometry is followed by a
+[Restoration begin](daemon-client/event-restoration-begin.md) at that
+geometry before any [Display](daemon-client/event-display.md) at it
+(developer decision on [#76](https://github.com/jackgeek/climon2/issues/76),
+2026-11-13).
 Ordinary interactive attach,
 [direct/derived presentation](../../GLOSSARY.md#restoration-and-presentation),
 [native scrollback](../../GLOSSARY.md#restoration-and-presentation), and
@@ -114,7 +268,8 @@ If there is too little supported application space, show explicit
 `Terminal too small`, retain clients/control/models, set
 [viewing](../../GLOSSARY.md#status-and-attention) false, and send neither
 application input nor invalid resize. Global commands remain usable.
-Marquee applies only to overflowing chrome labels, never to the application canvas.
+Nothing marquees, neither chrome nor the application canvas
+([owner decision on #112](https://github.com/jackgeek/climon2/issues/112), 2026-11-16).
 
 During resize/restoration retain the last coherent frame clipped/padded to the
 current area; do not repeatedly blank or flash a restoring screen. Construct the
@@ -146,7 +301,25 @@ Respect supported synchronized updates for coherent frames, but do not stall
 required UI, selector, or exit progress. Numerical scheduling/rendering budgets
 are in [operational limits](../monitor-operational-limits.md#ui-sampling-and-responsiveness).
 
+**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)):** while the application's synchronized update
+(`CSI ? 2026 h`) is open in the monitor's model, the monitor keeps painting
+the canvas it painted before the update, for that session at that host
+size, and draws the top row and overlays as ever; the update shows whole at
+its end (`CSI ? 2026 l`), which the session daemon sends a controller once
+vte's 150 ms timeout passes. The monitor never writes a synchronized update
+to its host. Resize and restoration keep the last coherent frame clipped or
+padded until the restoration at the new geometry is applied, and the
+monitor submits each desired size at once, so no resize intent is ever
+unsent to coalesce.
+
 ## Normal history, alternate screen, and stale inspection
+
+**Implemented ([#112](https://github.com/jackgeek/climon2/issues/112)), with stale inspection and recovery below by [#116](https://github.com/jackgeek/climon2/issues/116):**
+normal history scrolling, anchoring, eviction, return to live, the
+alternate-screen wheel and the cursor rules of this section and the next.
+The wheel moves one row a notch; while scrolled back the top row's control
+slot says `History`; the truncation notice sits above the oldest kept row
+(owner decisions, 2026-11-16).
 
 Normal-screen history is bounded internal
 [retained history](../../GLOSSARY.md#restoration-and-presentation), not host
@@ -184,14 +357,16 @@ transport loss, recoverable startup failure (including missing libraries), and
 safe worker panics; permanent rejection/invalid configuration and final outcomes
 stop it. Fresh instances wait for prior cleanup/join. No indeterminate work is
 replayed. Numerical backoff/budgets are in
-[operational limits](../monitor-operational-limits.md); all behavior is unimplemented.
+[operational limits](../monitor-operational-limits.md). The monitor implements
+this behavior ([#116](https://github.com/jackgeek/climon2/issues/116)).
 
 ## Chrome, cursor, and host copy
 
-Only the title/fallback **label** text marquees on overflow.
-Status/control/error information stays stationary. Short labels remain static;
-label changes restart the marquee; offsets and clipping respect
+Nothing marquees ([owner decision on #112](https://github.com/jackgeek/climon2/issues/112), 2026-11-16).
+A title/fallback **label** that overflows its room is truncated statically:
+it ends with `…` at the available width, and truncation respects
 [display cells](TERMS.md#display-cell), including wide/combining characters.
+Status/control/error information stays stationary.
 Full details remain accessible in the selector. Session titles are inert labels,
 not host-title updates.
 
@@ -327,9 +502,13 @@ prefix+j is data; s/x behavior is unchanged.
 
 Needs-attention toasts hint the actual configured prefix and lowercase j.
 The hint describes a dynamic jump to the most recent attention, not necessarily
-the toast's own session. `monitor.show_key_hints` is a planned boolean setting,
+the toast's own session. `monitor.show_key_hints` is a boolean setting,
 default `true`, controlling **all implicit monitor hints** in toast, chrome,
 selector, and empty UI. It changes neither bindings nor application text.
+The monitor honors it in its empty state, top row, placeholder, selector
+footer, startup key introduction and toasts
+([#82](https://github.com/jackgeek/climon2/issues/82) to
+[#115](https://github.com/jackgeek/climon2/issues/115)).
 The [selector](../monitor-selector.md#selector) shows its enabled hints in a
 footer below the session list, inside the menu. Disabling hints removes the
 footer and its reserved space without changing selector actions.
@@ -342,15 +521,16 @@ must be an object and `show_key_hints` a boolean; missing means default,
 wrong type or duplicate known field is an explicit error, unknown/unrelated
 settings remain ignored, and there is no live reload.
 No new monitor-specific binding settings are introduced.
-Planned `monitor.bell` is independently boolean and defaults to true.
+`monitor.bell` is independently boolean and defaults to true; the monitor
+rings the bell with its toasts ([#115](https://github.com/jackgeek/climon2/issues/115)).
 It emits one [host bell](monitor-host/bell.md) when each eligible toast first
 begins drawing, not per animation frame. Validate it in the same startup
 snapshot; wrong types/null or duplicate known fields fail before terminal setup.
 Disabling it does not hide toasts or suppress monitor-generated OSC 7501 reports.
 The [selector reference](../monitor-selector.md#toasts-and-bell) defines the
 three-row title toast/four-row hinted toast and clockwise draw/fade/erase order.
-The [README configuration example](../../README.md#configuration) distinguishes
-these planned fields from the current parser.
+The [README configuration example](../../README.md#configuration) documents both
+fields, which the current parser validates.
 
 ## Required implementation evidence
 

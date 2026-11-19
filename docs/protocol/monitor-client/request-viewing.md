@@ -1,6 +1,9 @@
 # Report viewing
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) performs it with `status-v1` selected ([#95](https://github.com/jackgeek/climon2/issues/95)), as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the monitor
+uses it ([#114](https://github.com/jackgeek/climon2/issues/114)).**
 The [monitor](../../../GLOSSARY.md#sessions) reports
 [viewing](../../../GLOSSARY.md#status-and-attention) through its
 [client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

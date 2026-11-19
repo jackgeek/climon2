@@ -4,87 +4,32 @@ mod attach;
 mod exec;
 mod kill;
 pub mod list;
+mod monitor;
 
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
-    layout::HomeLayout,
+    layout::{ExecutableLayout, VersionBinary},
+    lifetime::Lifetime,
     selector::Selector,
 };
 use climon2_platform::{
+    home,
     logging::{self, LogFile},
-    runtime,
 };
-use std::{
-    ffi::OsString,
-    fmt, io,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{ffi::OsString, io, path::Path, time::SystemTime};
 
-#[derive(Debug)]
-pub struct Error {
-    pub code: u32,
-    pub message: String,
-    pub logs: Option<PathBuf>,
+/// How the CLI fails: the thin main prints it and exits with its code.
+pub use climon2_core::failure::Failure as Error;
+
+/// The install layout around this CLI: every sibling it starts, and every
+/// client it execs, is found from it.
+fn executable_layout() -> io::Result<ExecutableLayout> {
+    home::executable_layout(VersionBinary::Cli)?.map_err(io::Error::other)
 }
 
-impl Error {
-    fn new(code: u32, message: impl fmt::Display) -> Self {
-        Self {
-            code,
-            message: message.to_string(),
-            logs: None,
-        }
-    }
-
-    fn logged(mut self, path: &Path) -> Self {
-        if self.logs.is_none() {
-            self.logs = Some(path.to_owned());
-        }
-        self
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Self::new(125, error)
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(out, "{}", one_line(&self.message))?;
-        if let Some(logs) = &self.logs {
-            write!(out, " (logs: {})", one_line(&logs.to_string_lossy()))?;
-        }
-        Ok(())
-    }
-}
-
-fn one_line(text: &str) -> String {
-    text.chars()
-        .map(|character| {
-            if character.is_control() {
-                character.escape_default().to_string()
-            } else {
-                character.to_string()
-            }
-        })
-        .collect()
-}
-
-impl std::error::Error for Error {}
-
-fn home() -> io::Result<PathBuf> {
-    let user_home = std::env::var_os("HOME").unwrap_or_default();
-    let override_value = std::env::var_os("CLIMON2_HOME");
-    let layout = HomeLayout::resolve(override_value.as_deref(), Path::new(&user_home))
-        .map_err(io::Error::other)?;
-    runtime::canonical_home(layout.root())
-}
-
-/// Arguments exclude argv[0]. Success is a final status, except successful exec,
-/// which replaces this process with the metadata version's client.
+/// Arguments exclude argv[0]. Success is a final status, except successful
+/// ordinary exec or attach, which replace this process with the metadata
+/// version's client, and monitor, which replaces it with this version's monitor.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
@@ -99,24 +44,32 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
 
 /// The subcommands that need a home; help and version are answered here.
 enum Work {
-    Exec(CommandArgs),
+    Exec(Lifetime, CommandArgs),
     List { json: bool },
+    Handoff(Handoff),
+}
+
+/// Subcommands that another executable of a version folder carries out: the
+/// client attaches or kills, and the monitor monitors.
+enum Handoff {
     Attach(Selector),
     Kill(Selector),
+    Monitor,
 }
 
 fn work(arguments: CliArgs) -> Result<Work, String> {
     match arguments {
-        CliArgs::Exec(command) => Ok(Work::Exec(command)),
+        CliArgs::Exec { lifetime, command } => Ok(Work::Exec(lifetime, command)),
         CliArgs::List { json } => Ok(Work::List { json }),
-        other => session_work(other),
+        other => handoff(other).map(Work::Handoff),
     }
 }
 
-fn session_work(arguments: CliArgs) -> Result<Work, String> {
+fn handoff(arguments: CliArgs) -> Result<Handoff, String> {
     match arguments {
-        CliArgs::Attach(selector) => Ok(Work::Attach(selector)),
-        CliArgs::Kill(selector) => Ok(Work::Kill(selector)),
+        CliArgs::Attach(selector) => Ok(Handoff::Attach(selector)),
+        CliArgs::Kill(selector) => Ok(Handoff::Kill(selector)),
+        CliArgs::Monitor => Ok(Handoff::Monitor),
         other => Err(presentation(&other)),
     }
 }
@@ -129,7 +82,7 @@ fn presentation(arguments: &CliArgs) -> String {
 }
 
 fn logged_run(work: Work) -> Result<u32, Error> {
-    let home = home()?;
+    let home = home::canonical()?;
     let general = LogFile::general(&home)?;
     let filter = std::env::var("CLIMON2_LOG").ok();
     let dispatch = general
@@ -144,9 +97,18 @@ fn logged_run(work: Work) -> Result<u32, Error> {
 
 fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> Result<u32, Error> {
     match work {
-        Work::Exec(command) => exec::run(home, command, general, filter),
+        Work::Exec(lifetime, command) => exec::run(home, lifetime, command, general, filter),
         Work::List { json } => list::run(home, json).map(|()| 0).map_err(Error::from),
-        Work::Attach(selector) => attach::run(home, selector),
-        Work::Kill(selector) => kill::run(home, &selector),
+        Work::Handoff(handoff) => handoff.run(home),
+    }
+}
+
+impl Handoff {
+    fn run(self, home: &Path) -> Result<u32, Error> {
+        match self {
+            Self::Attach(selector) => attach::run(home, selector),
+            Self::Kill(selector) => kill::run(home, &selector),
+            Self::Monitor => monitor::run(),
+        }
     }
 }

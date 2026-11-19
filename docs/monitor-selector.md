@@ -1,13 +1,70 @@
 # Monitor selector and attention presentation
 
-**Agreed planning specification from [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).**
-The [monitor](../GLOSSARY.md#sessions) is not shipped.
+**Agreed specification from [Shape the overlaid session selector](https://github.com/jackgeek/climon2/issues/60).**
+The [monitor](../GLOSSARY.md#sessions) grew from the empty walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74), whose packaged tests show
+that typed prefix+x exits it, with the
+[key introduction and help](#key-introduction-and-help) of
+[#105](https://github.com/jackgeek/climon2/issues/105).
+That dialog closes on a bare Escape when Escape is not the prefix
+([#109](https://github.com/jackgeek/climon2/issues/109)), and opens over the
+selector ([#113](https://github.com/jackgeek/climon2/issues/113)). The basic [selector](../GLOSSARY.md#attachment-and-control) of
+[#106](https://github.com/jackgeek/climon2/issues/106) is implemented: prefix+s
+overlays the captionless double border with status and title columns and a
+reversed highlight, Up and Down move it without wrapping, and Escape closes
+it, without resizing an application or acquiring anything (#113 adds the
+search, separator and footer below). Rows show the
+effective status their daemons report (Needs attention, Acknowledged,
+Running, Idle), Succeeded or Failed with the exact exit code or signal, or a
+not-connected label (Starting, Unavailable or Disconnected), and list in the
+status order of the
+[session-status mechanics](session-status.md#reporting-ordering-and-initial-selection)
+([#107](https://github.com/jackgeek/climon2/issues/107)); a row never seen
+connected is dropped once its session is proven gone. The monitor's own
+enclosing session is not listed at all (owner
+decision on [#110](https://github.com/jackgeek/climon2/issues/110),
+2026-11-14), which amends the earlier non-selectable "This monitor" row
+whose Enter explained why. Its keys come from the input router of
+[#109](https://github.com/jackgeek/climon2/issues/109) (INP-02), which uses no timer (owner decision on #109): a lone Escape is
+classified by the byte after it, so a cursor key split across host reads,
+even right after its Escape, never closes the selector, and Escape closes it
+when the next key arrives, which is then routed as itself (Escape followed by
+a key in one read behaves the same). The same holds for the key
+introduction. Bytes bound for the selected session, a lone Escape included,
+go to it at once. Enter selects the highlighted row
+([#108](https://github.com/jackgeek/climon2/issues/108)): a connected row not
+known to be final is acquired, and a Starting row or an Unavailable row
+without a connected client is selected without acquiring
+([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
+final rows are selected read-only
+([#116](https://github.com/jackgeek/climon2/issues/116)). The full selector of
+[#113](https://github.com/jackgeek/climon2/issues/113) is implemented: the
+always-focused search with its separator, `SkimMatcherV2` ordered-subsequence
+matching in row order, typed and pasted search text within `ui.search_bytes`,
+Up/Down/PageUp/PageDown without wrapping, the highlight rules for edits and
+live updates, row clicks, the wheel, cancelling by a click outside the box
+(owner decision on #113), and the key-hint footer, which names only select,
+cancel and help (owner decision on #113). Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)) is implemented as
+[below](#delete-terminate-and-remove). Toasts, their four-row lane below the
+selector and the bell
+([#115](https://github.com/jackgeek/climon2/issues/115)) are implemented as
+[below](#toasts-and-bell). Prefix+j, viewing,
+acknowledgement and the host attention reports
+([#114](https://github.com/jackgeek/climon2/issues/114)) are implemented as
+below. Initial selection
+([#266](https://github.com/jackgeek/climon2/issues/266)) selects and
+acquires a row at startup without closing an open selector or moving its
+highlight.
 The [throwaway prototype](https://github.com/jackgeek/climon2/pull/72) is a
 primary source, not monitor implementation or real daemon/client acceptance.
 Use the [terminal contract](protocol/terminal-integration.md) and
 [session-status mechanics](session-status.md) for existing authority and attention rules.
 The later [lifecycle specification](monitor-lifecycle.md) amends history,
-recovery, exit and selector termination/removal. All remain unimplemented.
+recovery, exit and selector termination/removal, implemented by
+[#116](https://github.com/jackgeek/climon2/issues/116),
+[#117](https://github.com/jackgeek/climon2/issues/117) and
+[#118](https://github.com/jackgeek/climon2/issues/118).
 
 ## Key introduction and help
 
@@ -20,7 +77,15 @@ prefix:
 |---|---|
 | prefix+x | Exit the monitor |
 | prefix+s | Open the session list |
+| prefix+j | Jump to the session that needs attention |
 | prefix+? | Show this dialog |
+
+Below them it lists the selector's own keys under **In the session list**:
+typing or pasting to search, the search's editing keys, Up/Down/PageUp/PageDown,
+the select and cancel keys (as the footer names them), Delete (`Del`, or
+`Del (fn+⌫)` on macOS, owner decision on #117), clicking a row or outside the
+box, and the wheel (owner decision on #113: the footer names only select,
+cancel and help, and help lists everything else).
 
 Provide an initially unchecked **Don't show again** checkbox. Persist the
 selected preference separately from the user's configuration, per climon2 home
@@ -145,6 +210,17 @@ There are no selector create/rename actions.
 
 The [lifecycle decision](monitor-lifecycle.md#selector-delete-terminate-and-remove)
 explicitly reopens the planning map's earlier selector killing/removal exclusion.
+[#117](https://github.com/jackgeek/climon2/issues/117) implements this section
+with these owner decisions: only forward Delete (`CSI 3 ~`) opens the
+confirmation; Tab and Left/Right move its focus, Enter activates and Escape
+cancels; either decision returns to the selector, a confirmed one showing the
+row as pending termination; inside it prefix+x exits, prefix+j cancels it and
+jumps, and prefix+s and prefix+? do nothing; a session whose daemon discovery
+proved gone is offered Remove, as a final one is (owner decision on #116). The
+monitor's own enclosing session is not listed, so Delete never reaches it: spec
+#73's scenario deleting it through a Kill-only instance is dropped (owner
+decision, 2026-11-16). The exact strings are in the
+[monitor README](../crates/climon2-monitor/README.md#on-screen-strings).
 Delete captures the highlighted session's immutable GUID and opens a modal
 showing its title and state. Default to **Cancel**; offer **Terminate and remove**,
 or **Remove** when already final. Cancel/Escape changes nothing and sends nothing.
@@ -177,10 +253,14 @@ Use the existing once-per-unviewed-episode/final-outcome notification rules.
 The selected terminal continues updating under the modal selector, while
 [viewing](../GLOSSARY.md#status-and-attention) and application keyboard focus
 remain gated. Nonmodal toasts retain the existing viewing/gesture semantics.
-Highlighting, opening/cancelling, dismissing a toast and host focus do not
-acknowledge attention.
+Highlighting, opening, dismissing a toast and host focus do not acknowledge
+attention. Closing or cancelling the selector back to the session does, once
+it is ready and unobstructed (Confirmed 2026-11-08; spec #73).
 
-A toast appears bottom-right outside selector hit targets, in a stable lane.
+A toast appears bottom-right outside selector hit targets, in a stable lane:
+the selector always leaves the host's bottom four rows to toasts, shrinking by
+them (owner decision on #115). Only needs-attention toasts carry the hint
+row.
 Its yellow border draws clockwise from the top-left across top/right/bottom/left;
 the title appears after the border completes. Main content is just the session
 label. Width is at most 40% of host width, with one-line display-cell-safe
@@ -193,19 +273,28 @@ then the border erases in the same clockwise order. Clicking starts dismissal
 without selection, acquisition or acknowledgement. During early dismissal,
 erase only the border already drawn. Distinct eligible episodes queue and
 repeated requests within a pending episode do not duplicate notifications.
+The queue holds three toasts, the one shown among them; when more arrive, one
+extra toast says `More events occurred. Check sessions list` in their place,
+without a hint, and nothing fails a connection (owner decision on #115).
+No toast announces a final outcome the monitor already knew at startup or at
+its first connection to the session: only one learned after the row was seen
+running (owner decision on #115).
 Animation never blocks session switching, selector input, resize or exit.
 
 Accepted prototype timings are 400 ms drawing, 2 seconds title hold,
-300 ms text fade, then 400 ms erasure. These are visual trials;
+300 ms text fade, then 400 ms erasure. The hold starts when the frame showing
+the full title has finished writing to the host (owner decision on #115,
+2026-11-17). These are visual trials;
 final operational/rendering/queue budgets are specified in
 [operational limits](monitor-operational-limits.md#ui-sampling-and-responsiveness).
 Too-small screens remain explicit, retain clients/control/models and global
 commands, and never send invalid application geometry or buffer input.
 
-Planned `monitor.bell` is boolean, default true. It controls one
-[host bell](protocol/monitor-host/bell.md) when each toast first begins drawing,
-including initial and queued presentations, not every frame, hint change,
-dismissal or coalesced request. Missing file/object/field uses the default.
+`monitor.bell` is boolean, default true. It controls one
+[host bell](protocol/monitor-host/bell.md) when each toast's full title is
+first shown, once that frame has been written to the host, including initial
+and queued presentations, not every frame, resize, hint change, dismissal or
+coalesced request, and not for a toast dismissed before its title showed. Missing file/object/field uses the default.
 Read one [climon2-home](../GLOSSARY.md#installation)
 [JSONC](protocol/TERMS.md#jsonc) snapshot before terminal setup; wrong types/null,
 duplicate known fields or unreadable/malformed input fail explicitly.
@@ -224,7 +313,9 @@ Use root `blocked`/`kind=question` while pending, `working` while monitoring
 without pending attention, and root `clear` on orderly exit.
 Report initial state and changes only; no heartbeat or capability query.
 These reports neither acknowledge sessions nor amend the enclosing daemon
-[FSM](protocol/TERMS.md#fsm).
+[FSM](protocol/TERMS.md#fsm). The monitor sends them
+([#114](https://github.com/jackgeek/climon2/issues/114)); the root `clear`
+follows the host's release on exit.
 
 ## Automated acceptance obligations
 
@@ -244,7 +335,7 @@ duplicate suppression, rejection/lost response without Kill replay, definitive
 termination and local cleanup/join before dismissal, no same-run rediscovery,
 non-acquiring fallback, and prohibited connected revoked-cache inspection.
 Include startup help with hints enabled/disabled and suppression saved/unsaved,
-the three actual-prefix bindings, reversible suppression across restarts and
+the four actual-prefix bindings, reversible suppression across restarts and
 releases, explicit save errors, and prefix+? despite either suppression.
 Cover repeated help, Enter/Escape/prefix handling, underlying selector
 search/highlight preservation, background progress, and modal input isolation

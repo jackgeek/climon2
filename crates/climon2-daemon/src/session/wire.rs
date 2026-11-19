@@ -1,0 +1,1107 @@
+//! Daemon wire revision 1 on the session loop, the only protocol after the
+//! frozen hello: passive monitor connections, ordinary interactive attachments and
+//! standalone Kills, their requests, their control and terminal records and
+//! their core metadata: the title, the effective status, notifications and
+//! progress.
+use super::{Session, delivery::Delivery};
+use crate::{
+    connection::{Connection, frame_limit},
+    control::{
+        self, Authority, Authorized, CleanupResult, CommandEnd, ConnectionId, Needs, Period,
+        Restoration, SessionEnd,
+    },
+    status,
+};
+use climon2_core::{
+    protocol::TerminalSize,
+    wire::{
+        Acknowledge, ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available,
+        Cleanup, CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked,
+        Counter, Display, Error, Failure, Families, Family, Focus, FocusBytes, Frame, FrameLimits,
+        Geometry, GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Notification,
+        Open, OperationalCode, Outcome, PartialCleanup, PartialTermination, Progress,
+        ProgressChanged, Ready, Rejection, Request, Resize, Response, RestorationBegin,
+        RestorationComplete, RevocationReason, SetViewing, Status, StatusChanged, Success,
+        TitleChanged,
+    },
+};
+use std::{collections::BTreeSet, io, num::NonZeroU32};
+
+const HAS_ROLE: &str = "this connection already has a role";
+const NO_ROLE: &str = "this connection has no role";
+const NOT_OPENED: &str = "this connection opened nothing";
+const UNSUPPORTED_REVISION: &str = "this daemon supports revision 1 only";
+const UNSUPPORTED_CAPABILITY: &str = "a required capability is not supported";
+const FOCUS_NOT_SELECTED: &str = "focus-v1 was not selected";
+const STATUS_NOT_SELECTED: &str = "status-v1 was not selected";
+const NOT_VIEWING: &str = "the latest reported viewing is not true";
+const EPISODES_EXHAUSTED: &str = "the session's attention episode identifiers are exhausted";
+const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal size";
+const EMPTY_INPUT: &str = "Input carries no bytes";
+const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
+
+/// What hello advertises: only the families this daemon implements.
+pub(super) fn advertisement() -> Advertisement {
+    let limits = FrameLimits {
+        max_request_frame_bytes: frame_limit(),
+        max_server_frame_bytes: frame_limit(),
+    };
+    Advertisement::new(
+        [
+            Family::MonitorV1,
+            Family::TitleV1,
+            Family::StatusV1,
+            Family::NotificationV1,
+            Family::ProgressV1,
+            Family::FocusV1,
+        ],
+        limits,
+    )
+}
+
+/// A revision-1 connection after its successful Open: the families it
+/// selected, which decide the core metadata it receives, and its role. A
+/// standalone Kill's connection is not one: it opened nothing.
+pub(super) struct Opened {
+    selected: BTreeSet<Family>,
+    role: Role,
+    /// Whether the command's result was already final when it opened: its
+    /// Initial metadata carries the result, and no Command final reached it.
+    opened_after_final: bool,
+}
+
+enum Role {
+    /// A passive monitor connection: registered, not an attachment until
+    /// its Acquire or a promotion converts it.
+    Monitor,
+    /// An attachment: an ordinary interactive one, or a converted passive
+    /// monitor connection.
+    Attachment(Attachment),
+}
+
+/// The connection's role, for requests that depend on it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Kind {
+    Monitor,
+    Attachment,
+}
+
+impl Role {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Monitor => Kind::Monitor,
+            Self::Attachment(_) => Kind::Attachment,
+        }
+    }
+
+    fn attachment(&self) -> Option<&Attachment> {
+        match self {
+            Self::Attachment(attachment) => Some(attachment),
+            Self::Monitor => None,
+        }
+    }
+
+    fn attachment_mut(&mut self) -> Option<&mut Attachment> {
+        match self {
+            Self::Attachment(attachment) => Some(attachment),
+            Self::Monitor => None,
+        }
+    }
+}
+
+struct Attachment {
+    /// The interactive Open that its admission or refusal answers; none
+    /// for a converted passive monitor connection.
+    open: Option<Counter>,
+    /// What it holds while it controls.
+    held: Option<Held>,
+}
+
+/// The authority an attachment's Display and control records carry, from
+/// its grant until its revocation, and the session geometry it last learned.
+#[derive(Clone, Copy)]
+struct Held {
+    authority: Authority,
+    geometry: TerminalSize,
+}
+
+impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
+    /// One revision-1 request. A stream that an earlier request in the same
+    /// read ended serves nothing more.
+    pub(super) fn request(&mut self, id: u64, request: Request) -> io::Result<()> {
+        if self.connections.get(&id).is_some_and(Connection::receiving) {
+            return self.serve(id, request);
+        }
+        Ok(())
+    }
+
+    fn serve(&mut self, id: u64, request: Request) -> io::Result<()> {
+        match request {
+            Request::Open(open) => self.open(id, open),
+            Request::Leave(leave) => self.leave(id, leave.request_id),
+            Request::Acquire(acquire) => self.acquire(id, acquire.request_id),
+            other => self.control_request(id, other),
+        }
+    }
+
+    fn control_request(&mut self, id: u64, request: Request) -> io::Result<()> {
+        match request {
+            Request::Ready(ready) => self.ready(id, ready),
+            Request::Kill(kill) => self.wire_kill(id, kill),
+            other => {
+                self.attachment_request(id, other);
+                Ok(())
+            }
+        }
+    }
+
+    fn attachment_request(&mut self, id: u64, request: Request) {
+        match request {
+            Request::Input(input) => self.wire_input(id, input),
+            Request::Resize(resize) => self.resize(id, resize),
+            Request::Focus(focus) => self.focus(id, focus),
+            other => self.status_request(id, other),
+        }
+    }
+
+    fn status_request(&mut self, id: u64, request: Request) {
+        match request {
+            Request::SetViewing(viewing) => self.set_viewing(id, viewing),
+            Request::Acknowledge(acknowledge) => self.acknowledge(id, acknowledge),
+            Request::Open(_)
+            | Request::Leave(_)
+            | Request::Acquire(_)
+            | Request::Ready(_)
+            | Request::Kill(_)
+            | Request::Input(_)
+            | Request::Resize(_)
+            | Request::Focus(_) => unreachable!("dispatched earlier in the chain"),
+        }
+    }
+
+    /// A later Open never repurposes an existing role.
+    fn open(&mut self, id: u64, open: Open) -> io::Result<()> {
+        if self.holds_role(id) {
+            self.has_role(id, open.request_id);
+            return Ok(());
+        }
+        self.first_role(id, open)
+    }
+
+    /// An Open that would give the connection its first role.
+    fn first_role(&mut self, id: u64, open: Open) -> io::Result<()> {
+        let capabilities = &open.capabilities;
+        let selected = select(
+            open.revision,
+            capabilities.required(),
+            capabilities.optional(),
+        );
+        match (selected, open.mode) {
+            (Ok(selected), Mode::Monitor) => {
+                self.register(id, open.request_id, selected);
+                Ok(())
+            }
+            (Ok(selected), Mode::Interactive(geometry)) => {
+                self.attach(id, open.request_id, selected, geometry)
+            }
+            (Err(error), _) => {
+                self.reject_role(id, open.request_id, error);
+                Ok(())
+            }
+        }
+    }
+
+    /// A passive monitor connection: success and Initial metadata at once.
+    /// It may inherit control from now on.
+    fn register(&mut self, id: u64, request_id: Counter, selected: BTreeSet<Family>) {
+        let opened = self.opened_with(selected, Role::Monitor);
+        self.opened.insert(id, opened);
+        self.control.register(ConnectionId(id));
+        self.report_opened(id, request_id);
+    }
+
+    /// An interactive Open attaches and is granted at once, under the leave
+    /// and takeover policy every attachment shares; its admission answers it.
+    /// A refused one has no effects, and its stream ends.
+    fn attach(
+        &mut self,
+        id: u64,
+        request_id: Counter,
+        selected: BTreeSet<Family>,
+        geometry: Geometry,
+    ) -> io::Result<()> {
+        let Some(host) = host_size(geometry) else {
+            let error = error(OperationalCode::InvalidGeometry, UNSUPPORTED_GEOMETRY);
+            self.reject_role(id, request_id, error);
+            return Ok(());
+        };
+        let effects = match self.control.attach(ConnectionId(id), host) {
+            Ok(effects) => effects,
+            Err(code) => {
+                self.reject_role(id, request_id, refusal(code));
+                return Ok(());
+            }
+        };
+        let attachment = Attachment {
+            open: Some(request_id),
+            held: None,
+        };
+        let opened = self.opened_with(selected, Role::Attachment(attachment));
+        self.opened.insert(id, opened);
+        self.effects(effects)
+    }
+
+    /// A successful Open's connection, which selected `selected`, in
+    /// `role`. Its Initial metadata, sent in the same pass, carries the
+    /// command's result when that is already final.
+    fn opened_with(&self, selected: BTreeSet<Family>, role: Role) -> Opened {
+        Opened {
+            selected,
+            role,
+            opened_after_final: self.command_result.is_some(),
+        }
+    }
+
+    /// An admitted interactive Open's success and Initial metadata, before
+    /// its grant.
+    pub(super) fn admitted(&mut self, id: u64) {
+        if let Some(request_id) = self.open_request(id) {
+            self.report_opened(id, request_id);
+        }
+    }
+
+    fn open_request(&self, id: u64) -> Option<Counter> {
+        self.opened.get(&id)?.role.attachment()?.open
+    }
+
+    /// Whether the connection has a revision-1 role: an Open's or a
+    /// standalone Kill's.
+    pub(super) fn holds_role(&self, id: u64) -> bool {
+        self.opened.contains_key(&id) || self.kills.contains_key(&id)
+    }
+
+    /// A passive monitor connection became an attachment, by its Acquire
+    /// or a promotion: no Open awaits an answer, and its output is
+    /// canonical, at the session geometry. The control state converts only
+    /// a registration whose connection is still open.
+    pub(super) fn convert(&mut self, id: u64) {
+        let Some(opened) = self.opened.get_mut(&id) else {
+            return;
+        };
+        let attachment = Attachment {
+            open: None,
+            held: None,
+        };
+        opened.role = Role::Attachment(attachment);
+        let delivery = Delivery::canonical(self.control.session_size());
+        self.deliveries.insert(id, delivery);
+    }
+
+    /// Success, then the atomic Initial metadata: the connection captures
+    /// the current core metadata and receives every later change.
+    fn report_opened(&mut self, id: u64, request_id: Counter) {
+        let Some(opened) = self.opened.get(&id) else {
+            return;
+        };
+        let title = available(&opened.selected, Family::TitleV1, || {
+            self.vt.application_title().map(str::to_owned)
+        });
+        let status = available(&opened.selected, Family::StatusV1, || self.status.status());
+        let progress = available(&opened.selected, Family::ProgressV1, || {
+            self.progress.current()
+        });
+        let success = Success::Opened {
+            connection_id: fresh_connection_id(),
+            selected_capabilities: tokens(&opened.selected),
+        };
+        self.respond(id, request_id, Outcome::Ok(success));
+        let metadata = initial_metadata(title, status, progress, self.command_result.clone());
+        self.send_wire(id, &metadata.to_frame());
+    }
+
+    /// Leave removes the role in one step and reports whether an attachment
+    /// was detached, then closes the stream. A connection that opened
+    /// nothing, a standalone Kill's included, has nothing to leave.
+    fn leave(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
+        match self.kind(id) {
+            None => {
+                self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
+                Ok(())
+            }
+            Some(kind) => self.depart(id, request_id, kind),
+        }
+    }
+
+    /// A passive monitor connection's registration ends, and an
+    /// attachment's Leave is an accepted detach: a controller's
+    /// presentation is released and control passes on first.
+    fn depart(&mut self, id: u64, request_id: Counter, kind: Kind) -> io::Result<()> {
+        let effects = self.control.leave(ConnectionId(id));
+        self.effects(effects)?;
+        self.left(id, request_id, kind == Kind::Attachment);
+        Ok(())
+    }
+
+    fn left(&mut self, id: u64, request_id: Counter, attachment_detached: bool) {
+        self.opened.remove(&id);
+        let left = Success::Left {
+            attachment_detached,
+        };
+        self.respond(id, request_id, Outcome::Ok(left));
+        self.end_stream(id);
+    }
+
+    /// Acquire takes control for a non-controlling attachment, converting
+    /// a passive monitor connection into one, and is an explicit no-op for
+    /// the controller. A connection that opened nothing, a standalone
+    /// Kill's included, has nothing to convert.
+    fn acquire(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
+        match self.kind(id) {
+            None => {
+                self.reject(id, request_id, OperationalCode::InvalidState, NOT_OPENED);
+                Ok(())
+            }
+            Some(_) => self.take_control(id, request_id),
+        }
+    }
+
+    /// The grant, its restoration's beginning and the revocation of the
+    /// previous controller precede the success.
+    fn take_control(&mut self, id: u64, request_id: Counter) -> io::Result<()> {
+        let (acquired, effects) = self.control.acquire(ConnectionId(id));
+        self.effects(effects)?;
+        let acquired = acquired.map(|acquisition| {
+            Success::Acquired(AuthorityResult {
+                changed: acquisition.changed,
+                authority: ids(acquisition.authority),
+            })
+        });
+        self.answer(id, request_id, acquired);
+        Ok(())
+    }
+
+    /// Input is accepted whole for forwarding from the ready controller
+    /// under its current authority, or rejected.
+    fn wire_input(&mut self, id: u64, input: Input) {
+        let needs = (input.authority, Needs::Readiness);
+        if self.authorized(id, input.request_id, needs).is_none() {
+            return;
+        }
+        let Some(accepted_bytes) = payload_length(&input.payload) else {
+            let error = error(OperationalCode::InvalidArgument, EMPTY_INPUT);
+            return self.reject_with(id, input.request_id, error);
+        };
+        self.pty_writes.input(id, &input.payload);
+        self.user_input(&input.payload);
+        let accepted = Success::InputAccepted { accepted_bytes };
+        self.respond(id, input.request_id, Outcome::Ok(accepted));
+    }
+
+    /// Resize records the controller's host size, even before readiness;
+    /// the next apply step applies it. Acceptance is not the actual
+    /// geometry, which a Geometry or a new restoration reports.
+    fn resize(&mut self, id: u64, resize: Resize) {
+        let needs = (resize.authority, Needs::Control);
+        if self.authorized(id, resize.request_id, needs).is_none() {
+            return;
+        }
+        let Some(host) = host_size(resize.geometry) else {
+            let error = error(OperationalCode::InvalidGeometry, UNSUPPORTED_GEOMETRY);
+            return self.reject_with(id, resize.request_id, error);
+        };
+        let recorded = self.control.resize(ConnectionId(id), host);
+        let accepted = recorded.map(|()| Success::ResizeAccepted {});
+        self.answer(id, resize.request_id, accepted);
+    }
+
+    /// Ready confirms the complete current restoration; once ready again it
+    /// is an explicit no-op.
+    fn ready(&mut self, id: u64, ready: Ready) -> io::Result<()> {
+        let needs = (ready.authority, Needs::Restored);
+        let Some(Authorized {
+            authority,
+            ready: was_ready,
+        }) = self.authorized(id, ready.request_id, needs)
+        else {
+            return Ok(());
+        };
+        let effects = self.control.ready(ConnectionId(id), authority.restoration);
+        self.effects(effects)?;
+        let confirmed = Success::Ready(AuthorityResult {
+            changed: !was_ready,
+            authority: ids(authority),
+        });
+        self.respond(id, ready.request_id, Outcome::Ok(confirmed));
+        Ok(())
+    }
+
+    /// Focus needs `focus-v1`, checked first, then the ready controller's
+    /// current authority. The desired focus of the control period is
+    /// remembered; a change is forwarded to the application as its focus
+    /// report while it has focus reporting on.
+    fn focus(&mut self, id: u64, focus: Focus) {
+        if !self.selects(id, Family::FocusV1) {
+            let code = OperationalCode::UnsupportedCapability;
+            return self.reject(id, focus.request_id, code, FOCUS_NOT_SELECTED);
+        }
+        let needs = (focus.authority, Needs::Readiness);
+        if self.authorized(id, focus.request_id, needs).is_none() {
+            return;
+        }
+        let changed = self.control.focus(ConnectionId(id), focus.focused);
+        let accepted_bytes = self.forward_focus(id, changed, focus.focused);
+        let accepted = Success::Focus {
+            changed,
+            focused: focus.focused,
+            accepted_bytes,
+        };
+        self.respond(id, focus.request_id, Outcome::Ok(accepted));
+    }
+
+    /// A changed desired focus is due while the application has focus
+    /// reporting on. Its report joins the controller's Input in request
+    /// order, so it follows the Input accepted before it however the
+    /// requests were read, and ends with that Input's admission.
+    fn forward_focus(&mut self, id: u64, changed: bool, focused: bool) -> FocusBytes {
+        if !(changed && self.vt.focus_reporting()) {
+            return FocusBytes::None;
+        }
+        self.pty_writes.input(id, focus_report(focused));
+        FocusBytes::Sequence
+    }
+
+    /// The application newly enabled focus reporting: it receives the
+    /// controller's desired focus once, if known, with the daemon's own
+    /// terminal replies; none is invented.
+    pub(super) fn focus_enabled(&mut self) {
+        if let Some(focused) = self.control.desired_focus() {
+            self.pty_writes.daemon(focus_report(focused));
+        }
+    }
+
+    /// Set viewing needs `status-v1`, checked first, then the controller's
+    /// current authority; viewing true also needs readiness, while false
+    /// is accepted during restoration too. It reports a fact and never
+    /// acknowledges attention.
+    fn set_viewing(&mut self, id: u64, request: SetViewing) {
+        if !self.status_selected(id, request.request_id) {
+            return;
+        }
+        let needs = if request.viewing {
+            Needs::Readiness
+        } else {
+            Needs::Control
+        };
+        if self
+            .authorized(id, request.request_id, (request.authority, needs))
+            .is_none()
+        {
+            return;
+        }
+        let changed = self.control.set_viewing(ConnectionId(id), request.viewing);
+        let reported = Success::Viewing {
+            changed,
+            viewing: request.viewing,
+        };
+        self.respond(id, request.request_id, Outcome::Ok(reported));
+    }
+
+    /// Acknowledge needs `status-v1`, checked first, then the ready
+    /// controller's current authority and its latest viewing true. It
+    /// acknowledges whatever attention is pending: its Status changed
+    /// precedes a changed success, and nothing pending is no change.
+    fn acknowledge(&mut self, id: u64, request: Acknowledge) {
+        if !self.status_selected(id, request.request_id) {
+            return;
+        }
+        let needs = (request.authority, Needs::Readiness);
+        if self.authorized(id, request.request_id, needs).is_none() {
+            return;
+        }
+        if !self.control.viewing() {
+            let code = OperationalCode::NotViewing;
+            return self.reject(id, request.request_id, code, NOT_VIEWING);
+        }
+        if self.status.exhausted() {
+            let code = OperationalCode::ResourceLimit;
+            return self.reject(id, request.request_id, code, EPISODES_EXHAUSTED);
+        }
+        let changed = self.status.acknowledge(&self.moment);
+        let acknowledged = Success::Acknowledgement {
+            changed: changed.is_some(),
+        };
+        self.report_status(changed);
+        self.respond(id, request.request_id, Outcome::Ok(acknowledged));
+    }
+
+    /// Whether the connection's Open selected `status-v1`; otherwise the
+    /// request is rejected with `unsupported_capability`.
+    fn status_selected(&mut self, id: u64, request_id: Counter) -> bool {
+        let selected = self.selects(id, Family::StatusV1);
+        if !selected {
+            let code = OperationalCode::UnsupportedCapability;
+            self.reject(id, request_id, code, STATUS_NOT_SELECTED);
+        }
+        selected
+    }
+
+    /// Accepted user-originated input from the ready controller: activity
+    /// and attention learn of it before its acceptance is answered.
+    /// Bytes holding only focus reports are not user input.
+    pub(super) fn user_input(&mut self, bytes: &[u8]) {
+        if !status::user_originated(bytes) {
+            return;
+        }
+        let changed = self.status.input(&self.moment);
+        self.report_status(changed);
+    }
+
+    /// The turn's timer and sample work, after the command's output was
+    /// read; a sample reads the viewport only when one is due. Notification
+    /// assemblies past their lifetime end.
+    pub(super) fn observe_status(&mut self) {
+        let vt = &self.vt;
+        let changed = self.status.poll(&self.moment, || super::sample(vt));
+        self.report_status(changed);
+        self.assembler.expire(self.moment.monotonic);
+    }
+
+    /// A changed effective status reaches every connection that selected
+    /// `status-v1`, in order and whatever the control state.
+    pub(super) fn report_status(&mut self, changed: Option<Status>) {
+        let Some(status) = changed else {
+            return;
+        };
+        let frame = StatusChanged::new(status)
+            .expect("the final status goes only with Command final")
+            .to_frame();
+        self.broadcast(Family::StatusV1, &frame);
+    }
+
+    /// A notification reaches every connection that selected
+    /// `notification-v1`, which needs `status-v1`, in order and whatever
+    /// the control state.
+    pub(super) fn report_notification(&mut self, notification: Notification) {
+        self.broadcast(Family::NotificationV1, &notification.to_frame());
+    }
+
+    /// Changed progress reaches every connection that selected
+    /// `progress-v1`, in order and whatever the control state.
+    pub(super) fn report_progress(&mut self, progress: Progress) {
+        self.broadcast(Family::ProgressV1, &ProgressChanged { progress }.to_frame());
+    }
+
+    /// The control a request under `(requested, needs)` has, or its
+    /// rejection, already answered. A connection without a role cannot have
+    /// any; the control state decides the rest.
+    fn authorized(
+        &mut self,
+        id: u64,
+        request_id: Counter,
+        (requested, needs): (AuthorityIds, Needs),
+    ) -> Option<Authorized> {
+        let authorized = if self.holds_role(id) {
+            self.control
+                .authorize(ConnectionId(id), authority(requested), needs)
+                .map_err(refusal)
+        } else {
+            Err(error(OperationalCode::InvalidState, NO_ROLE))
+        };
+        authorized
+            .inspect_err(|error| self.reject_with(id, request_id, error.clone()))
+            .ok()
+    }
+
+    fn kind(&self, id: u64) -> Option<Kind> {
+        Some(self.opened.get(&id)?.role.kind())
+    }
+
+    fn selects(&self, id: u64, family: Family) -> bool {
+        self.opened
+            .get(&id)
+            .is_some_and(|opened| opened.selected.contains(&family))
+    }
+
+    fn attachment_mut(&mut self, id: u64) -> Option<&mut Attachment> {
+        self.opened.get_mut(&id)?.role.attachment_mut()
+    }
+
+    /// The authority under which an attachment receives Display, from its
+    /// grant until its revocation, or `None`.
+    pub(super) fn display_authority(&self, id: u64) -> Option<Authority> {
+        let attachment = self.opened.get(&id)?.role.attachment()?;
+        attachment.held.map(|held| held.authority)
+    }
+
+    /// A grant: Control granted, then its restoration's beginning, both
+    /// at once; the restoration's Display follows from its snapshot.
+    pub(super) fn report_grant(
+        &mut self,
+        id: u64,
+        authority: Authority,
+        host: TerminalSize,
+        reason: GrantReason,
+    ) {
+        let geometry = control::geometry(host);
+        if !self.hold(id, authority, geometry) {
+            return;
+        }
+        let granted = ControlGranted {
+            authority: ids(authority),
+            geometry: wire_geometry(geometry),
+            reason,
+        };
+        self.send_wire(id, &granted.to_frame());
+        self.begin_restoration(id, authority, geometry);
+    }
+
+    /// A replacement restoration within the period: its beginning, at once.
+    pub(super) fn report_restoration(&mut self, id: u64, authority: Authority, host: TerminalSize) {
+        let geometry = control::geometry(host);
+        if self.hold(id, authority, geometry) {
+            self.begin_restoration(id, authority, geometry);
+        }
+    }
+
+    /// Records the authority an attachment now holds; false for a
+    /// connection that is no longer one.
+    fn hold(&mut self, id: u64, authority: Authority, geometry: TerminalSize) -> bool {
+        let Some(attachment) = self.attachment_mut(id) else {
+            return false;
+        };
+        attachment.held = Some(Held {
+            authority,
+            geometry,
+        });
+        true
+    }
+
+    fn begin_restoration(&mut self, id: u64, authority: Authority, geometry: TerminalSize) {
+        let begin = RestorationBegin {
+            authority: ids(authority),
+            geometry: wire_geometry(geometry),
+        };
+        self.send_wire(id, &begin.to_frame());
+    }
+
+    /// Every Display of the restoration of `authority` was sent.
+    pub(super) fn report_restored(&mut self, id: u64, authority: Authority) {
+        if self.display_authority(id) == Some(authority) {
+            let complete = RestorationComplete {
+                authority: ids(authority),
+            };
+            self.send_wire(id, &complete.to_frame());
+        }
+    }
+
+    /// Ends what an interactive attachment holds with Control revoked under
+    /// that authority; no Display follows it.
+    pub(super) fn report_revocation(&mut self, id: u64, reason: RevocationReason) {
+        let Some(held) = self
+            .attachment_mut(id)
+            .and_then(|attachment| attachment.held.take())
+        else {
+            return;
+        };
+        let revoked = ControlRevoked {
+            authority: ids(held.authority),
+            reason,
+        };
+        self.send_wire(id, &revoked.to_frame());
+    }
+
+    /// A ready controller's host changed: Geometry reports the session's
+    /// actual geometry when it is not the one the controller last learned.
+    pub(super) fn report_geometry(&mut self, id: u64) {
+        let session = self.control.session_size();
+        let Some(held) = self
+            .attachment_mut(id)
+            .and_then(|attachment| attachment.held.as_mut())
+        else {
+            return;
+        };
+        if held.geometry == session {
+            return;
+        }
+        held.geometry = session;
+        let actual = ActualGeometry {
+            period: period(held.authority),
+            geometry: wire_geometry(session),
+        };
+        self.send_wire(id, &actual.to_frame());
+    }
+
+    /// Terminal bytes as Display chunks under `authority`.
+    pub(super) fn display(&mut self, id: u64, authority: Authority, bytes: &[u8]) {
+        let display = Display {
+            authority: ids(authority),
+            payload: bytes.to_vec(),
+        };
+        self.send_wire(id, &display.to_frame());
+    }
+
+    /// Standalone Kill is validated like any first role; a later Kill never
+    /// repurposes an existing role. A valid one commits the session's
+    /// termination, or joins the one under way.
+    fn wire_kill(&mut self, id: u64, kill: Kill) -> io::Result<()> {
+        if self.holds_role(id) {
+            self.has_role(id, kill.request_id);
+            return Ok(());
+        }
+        let none = Families::default();
+        if let Err(error) = select(kill.revision, &kill.required_capabilities, &none) {
+            self.reject_role(id, kill.request_id, error);
+            return Ok(());
+        }
+        self.kills.insert(id, kill.request_id);
+        self.react(|control| control.kill(ConnectionId(id)))
+    }
+
+    /// The request a standalone Kill connection awaits the answer to.
+    pub(super) fn kill_request(&self, id: u64) -> Option<Counter> {
+        self.kills.get(&id).copied()
+    }
+
+    /// A standalone Kill's answer once the session ended, then the end of
+    /// its stream.
+    pub(super) fn answer_kill(&mut self, id: u64, request_id: Counter, end: &SessionEnd) {
+        self.respond(id, request_id, kill_answer(end));
+        self.end_stream(id);
+    }
+
+    /// The command's result, once it is final: no more of the command's
+    /// output follows. Every opened connection receives it as Command final
+    /// (a standalone Kill's connection, which opened nothing, gets it in its
+    /// answer instead), and later Opens in their Initial metadata.
+    /// Publishing it again sends nothing.
+    /// It is also the final status, which ends activity and attention: a
+    /// connection that selected `status-v1` receives it in the Command final.
+    pub(super) fn publish(&mut self, result: &CommandResult) {
+        if self.command_result.is_some() {
+            return;
+        }
+        self.command_result = Some(result.clone());
+        let status = self.status.finish(&self.moment, result);
+        self.send_final(result, status, |_| true);
+    }
+
+    /// The result a session held after its command exited, once the
+    /// session ends, however it ends: each connection that opened after the
+    /// Command final went out, and so learned the result only from its
+    /// Initial metadata, receives it as Command final now, so every opened
+    /// connection gets exactly one (owner decisions on #259). Nothing is
+    /// held when no result was final before this step.
+    pub(super) fn publish_held(&mut self) {
+        let Some(result) = self.command_result.clone() else {
+            return;
+        };
+        let status = self.status.status();
+        self.send_final(&result, status, |opened| opened.opened_after_final);
+    }
+
+    /// Command final of `result` to each opened connection `to` picks, with
+    /// the final `status` for one that selected `status-v1`.
+    fn send_final(&mut self, result: &CommandResult, status: Status, to: fn(&Opened) -> bool) {
+        let frame = |status| {
+            CommandFinal::new(result.clone(), status)
+                .expect("the final status agrees with its result")
+                .to_frame()
+        };
+        let (with_status, without) = (frame(Some(status)), frame(None));
+        let opened: Vec<(u64, bool)> = self
+            .opened
+            .iter()
+            .filter(|(_, opened)| to(opened))
+            .map(|(id, opened)| (*id, opened.selected.contains(&Family::StatusV1)))
+            .collect();
+        for (id, selected) in opened {
+            let frame = if selected { &with_status } else { &without };
+            self.send_wire(id, frame);
+        }
+    }
+
+    /// Sends a Title changed to every connection that selected `title-v1`,
+    /// in order and whatever the control state.
+    pub(super) fn titles(&mut self, titles: Vec<Option<String>>) {
+        for title in titles {
+            self.broadcast(Family::TitleV1, &TitleChanged { title }.to_frame());
+        }
+    }
+
+    /// Sends `frame` to every connection that selected `family`.
+    fn broadcast(&mut self, family: Family, frame: &Frame) {
+        let subscribers: Vec<u64> = self
+            .opened
+            .iter()
+            .filter(|(_, opened)| opened.selected.contains(&family))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in subscribers {
+            self.send_wire(id, frame);
+        }
+    }
+
+    /// An identifiable but impermissible request: `invalid_state`, and the
+    /// stream continues.
+    fn has_role(&mut self, id: u64, request_id: Counter) {
+        self.reject(id, request_id, OperationalCode::InvalidState, HAS_ROLE);
+    }
+
+    fn reject(&mut self, id: u64, request_id: Counter, code: OperationalCode, message: &str) {
+        self.reject_with(id, request_id, error(code, message));
+    }
+
+    /// A rejected first role has no effects, carries the command's result
+    /// once it is final, and ends its stream.
+    fn reject_role(&mut self, id: u64, request_id: Counter, error: Error) {
+        let known_final = self.command_result.clone();
+        self.rejection(id, request_id, error, known_final);
+        self.end_stream(id);
+    }
+
+    fn answer(&mut self, id: u64, request_id: Counter, result: Result<Success, OperationalCode>) {
+        match result {
+            Ok(success) => self.respond(id, request_id, Outcome::Ok(success)),
+            Err(code) => self.reject_with(id, request_id, refusal(code)),
+        }
+    }
+
+    /// A rejected later request has no effects, and its stream goes on.
+    fn reject_with(&mut self, id: u64, request_id: Counter, error: Error) {
+        self.rejection(id, request_id, error, None);
+    }
+
+    fn rejection(
+        &mut self,
+        id: u64,
+        request_id: Counter,
+        error: Error,
+        known_final: Option<CommandResult>,
+    ) {
+        let rejection = Rejection { error, known_final };
+        self.respond(id, request_id, Outcome::Rejected(rejection));
+    }
+
+    fn respond(&mut self, id: u64, request_id: Counter, outcome: Outcome) {
+        #[cfg(feature = "test-hooks")]
+        if Self::overflows(&outcome) {
+            return self.mark_lost(id);
+        }
+        self.send_wire(
+            id,
+            &Response {
+                request_id,
+                outcome,
+            }
+            .to_frame(),
+        );
+    }
+
+    /// The `rejection-overflow` fault: a rejection overflows its
+    /// connection's output queue.
+    #[cfg(feature = "test-hooks")]
+    fn overflows(outcome: &Outcome) -> bool {
+        matches!(outcome, Outcome::Rejected(_))
+            && crate::startup::selected_fault("rejection-overflow")
+    }
+
+    fn end_stream(&mut self, id: u64) {
+        if let Some(connection) = self.connections.get_mut(&id) {
+            connection.close_after_flush();
+        }
+    }
+
+    fn send_wire(&mut self, id: u64, frame: &Frame) {
+        let Some(connection) = self.connections.get_mut(&id) else {
+            return;
+        };
+        let queued = connection.queue_wire(frame);
+        self.queued_or_lost(id, queued);
+    }
+}
+
+/// A Kill succeeds only with the command's confirmed result after complete
+/// cleanup. Otherwise it failed: its termination or cleanup did not
+/// complete, and it reports the result the daemon knew, if any.
+fn kill_answer(end: &SessionEnd) -> Outcome {
+    match (&end.command, end.cleanup) {
+        (CommandEnd::Confirmed(command_result), CleanupResult::Complete) => {
+            Outcome::Ok(Success::Termination {
+                command_result: command_result.clone(),
+                cleanup: Cleanup::Complete,
+            })
+        }
+        (command, _) => Outcome::Failed(incomplete(command.known().cloned())),
+    }
+}
+
+fn incomplete(command_result: Option<CommandResult>) -> Failure {
+    let known = KnownResult::Termination(PartialTermination {
+        command_result,
+        cleanup: PartialCleanup::Incomplete,
+    });
+    let error = error(OperationalCode::CleanupFailed, CLEANUP_INCOMPLETE);
+    Failure::new(error, Some(known)).expect("a partial termination confirms nothing")
+}
+
+/// The application's focus report: `ESC [ I` for focus in, `ESC [ O` out.
+fn focus_report(focused: bool) -> &'static [u8] {
+    if focused { b"\x1b[I" } else { b"\x1b[O" }
+}
+
+/// The payload's length, positive and within the frame limit.
+fn payload_length(payload: &[u8]) -> Option<NonZeroU32> {
+    u32::try_from(payload.len()).ok().and_then(NonZeroU32::new)
+}
+
+/// A host size the daemon supports: each dimension fits a terminal size.
+fn host_size(geometry: Geometry) -> Option<TerminalSize> {
+    let cols = u16::try_from(geometry.cols.get()).ok()?;
+    let rows = u16::try_from(geometry.rows.get()).ok()?;
+    Some(TerminalSize { cols, rows })
+}
+
+/// A session geometry on the wire; its dimensions are never zero.
+fn wire_geometry(size: TerminalSize) -> Geometry {
+    let dimension =
+        |value: u16| NonZeroU32::new(u32::from(value)).expect("a session geometry is nonzero");
+    Geometry {
+        cols: dimension(size.cols),
+        rows: dimension(size.rows),
+    }
+}
+
+fn period(authority: Authority) -> Counter {
+    counter(authority.period.0)
+}
+
+/// The authority IDs a record carries.
+fn ids(authority: Authority) -> AuthorityIds {
+    AuthorityIds {
+        period: period(authority),
+        restoration_id: counter(authority.restoration.0),
+    }
+}
+
+/// The authority a request's IDs name.
+fn authority(ids: AuthorityIds) -> Authority {
+    Authority {
+        period: Period(ids.period.get()),
+        restoration: Restoration(ids.restoration_id.get()),
+    }
+}
+
+/// Periods and restorations are issued from 1.
+fn counter(value: u64) -> Counter {
+    Counter::new(value).expect("issued counters start at 1")
+}
+
+/// The families a first role request selects: every required family, which
+/// this daemon must support, and the supported optional ones. Unknown or
+/// unsupported optional families are not selected.
+fn select(
+    revision: u32,
+    required: &Families,
+    optional: &Families,
+) -> Result<BTreeSet<Family>, Error> {
+    if revision != 1 {
+        return Err(error(
+            OperationalCode::UnsupportedRevision,
+            UNSUPPORTED_REVISION,
+        ));
+    }
+    let required: Option<Vec<Family>> = required
+        .tokens()
+        .iter()
+        .map(|token| supported(token))
+        .collect();
+    let required = required.ok_or_else(unsupported_capability)?;
+    let optional = optional
+        .tokens()
+        .iter()
+        .filter_map(|token| supported(token));
+    let selected = required.iter().copied().chain(optional).collect();
+    dependencies(&required, selected)
+}
+
+/// `notification-v1` needs `status-v1`: without it, an optional
+/// `notification-v1` is not selected, and a required one rejects the
+/// request.
+fn dependencies(
+    required: &[Family],
+    mut selected: BTreeSet<Family>,
+) -> Result<BTreeSet<Family>, Error> {
+    if !selected.contains(&Family::StatusV1) {
+        selected.remove(&Family::NotificationV1);
+    }
+    let satisfied = required.iter().all(|family| selected.contains(family));
+    satisfied
+        .then_some(selected)
+        .ok_or_else(unsupported_capability)
+}
+
+fn unsupported_capability() -> Error {
+    error(
+        OperationalCode::UnsupportedCapability,
+        UNSUPPORTED_CAPABILITY,
+    )
+}
+
+fn supported(token: &str) -> Option<Family> {
+    Family::from_token(token).filter(|family| advertisement().supports(*family))
+}
+
+fn tokens(selected: &BTreeSet<Family>) -> Families {
+    let tokens = selected.iter().map(|family| family.token().to_owned());
+    Families::new(tokens.collect()).expect("a set holds each token once")
+}
+
+/// A family's current value when the connection selected it, otherwise
+/// explicitly unavailable.
+fn available<T>(
+    selected: &BTreeSet<Family>,
+    family: Family,
+    value: impl FnOnce() -> T,
+) -> Available<T> {
+    if selected.contains(&family) {
+        Available::Available(value())
+    } else {
+        Available::Unavailable
+    }
+}
+
+/// The title by value when `title-v1` is selected (an available `None` is
+/// unset), the effective status when `status-v1` is, the retained progress
+/// when `progress-v1` is, and the command's result once known.
+fn initial_metadata(
+    title: Available<Option<String>>,
+    status: Available<Status>,
+    progress: Available<Progress>,
+    command_result: Option<CommandResult>,
+) -> InitialMetadata {
+    InitialMetadata::new(title, status, progress, command_result)
+        .expect("the final status agrees with the known result")
+}
+
+/// A fresh logical connection identity, never reused.
+fn fresh_connection_id() -> Guid {
+    uuid::Uuid::new_v4()
+        .to_string()
+        .parse()
+        .expect("a v4 UUID is a canonical lowercase GUID")
+}
+
+fn error(code: OperationalCode, message: &str) -> Error {
+    Error {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+/// An operational refusal decided by the control state.
+fn refusal(code: OperationalCode) -> Error {
+    Error {
+        code: code.into(),
+        message: format!("request refused: {}", code.as_str()),
+    }
+}

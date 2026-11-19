@@ -1,4 +1,4 @@
-use crate::payload::COMPANIONS;
+use crate::payload::version_files;
 use crate::transaction::Stage;
 use std::fs;
 use std::io;
@@ -74,14 +74,15 @@ fn replace_version(stage: &Stage, destination: &Path, metadata: fs::Metadata) ->
 }
 
 fn identical(source: &Path, destination: &Path) -> io::Result<bool> {
-    if fs::read_dir(destination)?.count() != COMPANIONS.len() {
+    let files = version_files();
+    if fs::read_dir(destination)?.count() != files.len() {
         return Ok(false);
     }
-    identical_companions(source, destination)
+    identical_companions(source, destination, &files)
 }
 
-fn identical_companions(source: &Path, destination: &Path) -> io::Result<bool> {
-    for name in COMPANIONS {
+fn identical_companions(source: &Path, destination: &Path, files: &[String]) -> io::Result<bool> {
+    for name in files {
         if !identical_file(&source.join(name), &destination.join(name))? {
             return Ok(false);
         }

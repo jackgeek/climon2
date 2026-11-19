@@ -23,12 +23,38 @@ pub(crate) enum Clear {
     Reset,
 }
 
+/// What a token's sequence does that can push normal-screen rows into
+/// history, or changes where line feeds scroll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scrolling {
+    Nothing,
+    /// `ESC D` (IND) or `ESC E` (NEL): one line feed.
+    LineFeed,
+    /// `CSI n S` (SU): scrolls the region wherever the cursor is.
+    Up,
+    /// `CSI n M` (DL): scrolls the region below the cursor's row.
+    DeleteLines,
+    /// `CSI 2 J` (ED 2): the normal screen's rows scroll into history.
+    ClearScreen,
+    /// `CSI t ; b r` (DECSTBM): the 1-based top row, and the bottom row
+    /// when one is given. DECCOLM (`CSI ? 3 h` or `l`) resets the region
+    /// as `CSI r` does.
+    Region {
+        top: usize,
+        bottom: Option<usize>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Policy {
     pub(crate) live: Live,
     /// `Some(true)` for a synchronized-update begin, `Some(false)` for an end.
     pub(crate) sync: Option<bool>,
     pub(crate) clear: Clear,
+    /// How many more times the engine prints its preceding character
+    /// (`CSI n b`).
+    pub(crate) repeats: usize,
+    pub(crate) scrolling: Scrolling,
 }
 
 impl Policy {
@@ -37,6 +63,17 @@ impl Policy {
             live,
             sync: None,
             clear: Clear::Nothing,
+            repeats: 0,
+            scrolling: Scrolling::Nothing,
+        }
+    }
+
+    /// The bytes the policy forwards to a host for `token`: the token
+    /// itself, or its replacement.
+    pub(crate) fn forwarded<'a>(&'a self, token: &'a Token) -> &'a [u8] {
+        match &self.live {
+            Live::Forward => &token.bytes,
+            Live::Replace(bytes) => bytes,
         }
     }
 }
@@ -63,6 +100,9 @@ const STRIPPED_CSI: &[(u8, Option<u8>)] = &[
 /// host on a screen the engine never shows.
 const UNSUPPORTED_SCREENS: &[u16] = &[47, 1047];
 const SYNC_MODE: u16 = 2026;
+/// DECCOLM: the engine sets no column count, but setting or resetting it
+/// resets the scroll region to the whole screen.
+const COLUMN_MODE: u16 = 3;
 
 pub(crate) fn classify(token: &Token) -> Policy {
     match token.kind {
@@ -146,10 +186,15 @@ fn escape(dispatch: &Dispatch) -> Policy {
     } else {
         Clear::Nothing
     };
+    let scrolling = if dispatch.is(b'D', b"") || dispatch.is(b'E', b"") {
+        Scrolling::LineFeed
+    } else {
+        Scrolling::Nothing
+    };
     Policy {
-        live,
-        sync: None,
         clear,
+        scrolling,
+        ..Policy::of(live)
     }
 }
 
@@ -158,7 +203,79 @@ fn csi(dispatch: &Dispatch) -> Policy {
         live: csi_live(dispatch),
         sync: sync(dispatch),
         clear: csi_clear(dispatch),
+        repeats: repeats(dispatch),
+        scrolling: csi_scrolling(dispatch),
     }
+}
+
+/// Parameter `index`, unless it is missing or zero, which vte reads as its
+/// default.
+fn given(dispatch: &Dispatch, index: usize) -> Option<usize> {
+    let param = dispatch.params.get(index).copied();
+    param.filter(|&param| param != 0).map(usize::from)
+}
+
+fn csi_scrolling(dispatch: &Dispatch) -> Scrolling {
+    if dispatch.is(dispatch.action, b"") {
+        plain_scrolling(dispatch)
+    } else {
+        column_mode_reset(dispatch)
+    }
+}
+
+/// Scrolling by a CSI sequence without intermediates.
+fn plain_scrolling(dispatch: &Dispatch) -> Scrolling {
+    match dispatch.action {
+        b'J' => erase(dispatch),
+        b'r' => region(dispatch),
+        action => parameterless(action),
+    }
+}
+
+/// SU and DL scroll whatever their parameters.
+fn parameterless(action: u8) -> Scrolling {
+    match action {
+        b'S' => Scrolling::Up,
+        b'M' => Scrolling::DeleteLines,
+        _ => Scrolling::Nothing,
+    }
+}
+
+/// ED: only erasing the whole screen (`CSI 2 J`) scrolls.
+fn erase(dispatch: &Dispatch) -> Scrolling {
+    if given(dispatch, 0) == Some(2) {
+        Scrolling::ClearScreen
+    } else {
+        Scrolling::Nothing
+    }
+}
+
+/// DECCOLM, set or reset, also resets the scroll region to the whole screen.
+fn column_mode_reset(dispatch: &Dispatch) -> Scrolling {
+    if private_mode(dispatch).is_some() && dispatch.params.contains(&COLUMN_MODE) {
+        Scrolling::Region {
+            top: 1,
+            bottom: None,
+        }
+    } else {
+        Scrolling::Nothing
+    }
+}
+
+/// DECSTBM's rows as vte reads them: a missing or zero top is the first
+/// row, and a missing or zero bottom is none.
+fn region(dispatch: &Dispatch) -> Scrolling {
+    Scrolling::Region {
+        top: given(dispatch, 0).unwrap_or(1),
+        bottom: given(dispatch, 1),
+    }
+}
+
+/// vte prints its preceding character `n` times for `CSI n b`, once when `n`
+/// is absent or zero.
+fn repeats(dispatch: &Dispatch) -> usize {
+    let count = dispatch.params.first().filter(|_| dispatch.is(b'b', b""));
+    count.map_or(0, |&count| usize::from(count.max(1)))
 }
 
 fn csi_live(dispatch: &Dispatch) -> Live {

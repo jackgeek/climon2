@@ -1,6 +1,66 @@
 # Monitor operational limits
 
-**Status: agreed future specification, not implemented behavior.** This resolves
+**Status: agreed specification, implemented only as follows:
+the monitor and `exec` validate the `monitor.limits` configuration and the
+monitor reports its effective values
+([#82](https://github.com/jackgeek/climon2/issues/82)). At startup the monitor
+alone also refuses limits that cannot hold one session's mandatory current
+model and recent page
+([#167](https://github.com/jackgeek/climon2/issues/167)). `exec` passes the
+notification assembly limits to the session daemon, which enforces them
+with the release-constant notification text and record bounds
+([#98](https://github.com/jackgeek/climon2/issues/98)). Operating-system
+limits are checked at admission
+([#120](https://github.com/jackgeek/climon2/issues/120)). The client library
+rejects native instance limits it cannot honour, bounds worker cleanup by
+`cleanup_ms` and keeps its failure diagnostic within `event_bytes`
+([#85](https://github.com/jackgeek/climon2/issues/85)). For passive monitor
+connections it also enforces its request and event queues, outstanding
+operations and their outcome reserves, deliveries, drain ceilings,
+`wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
+`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)), and
+`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)). It
+keeps the progress reserve inside the event allowance for protected
+progress, bounds each restoration by `restoration_stall_ms` and
+`restoration_total_ms`, and never wraps its snapshot counters or wire
+request IDs ([#99](https://github.com/jackgeek/climon2/issues/99)). The
+session daemon keeps revision-1 connections within its own existing bounds,
+emits frames, titles and metadata records within the derived release
+constants, and never wraps request IDs, control periods or restoration IDs
+([#90](https://github.com/jackgeek/climon2/issues/90), see the
+[wire reference](protocol/daemon-client/core-v1.md#implemented-bounds)).
+The monitor ([#119](https://github.com/jackgeek/climon2/issues/119)) splits
+`memory.client_bytes` between each library instance and its model; drops,
+read-only and passively retried, a session whose model refuses an update;
+charges reports in flight to each client's `queues.event_bytes`, failing a
+client congested past `deadlines.delivery_stall_ms`; keeps history within
+`history_bytes_per_session`, `history_bytes_total` and `total_bytes` by the
+pressure order below; paints output at most `ui.fps` frames a second;
+rotates client work within the `ui` quanta; and never wraps connection
+generations or request IDs (see the
+[monitor README](../crates/climon2-monitor/README.md#memory-accounting-bounded-history-and-cadence-119)
+for what it does not yet charge or enforce). It also
+([#120](https://github.com/jackgeek/climon2/issues/120)) reserves each release
+load and each client's create against `memory.total_bytes`, the operating
+system's descriptor limit less `resources.descriptor_headroom` and the
+`resources` reservations, raised to a loaded release's qualified
+requirements; leaves what it cannot admit resource-blocked, reconsidered at
+most once per `retry.admission_ms`; rejects qualified workers above
+`resources.max_workers_per_client`; starts clients within `scheduling.loads`,
+`scheduling.starts` and `scheduling.newer_start_burst`; and reports a load
+past `deadlines.load_ms` (see the
+[monitor README](../crates/climon2-monitor/README.md#admission-and-fair-scheduling-120)
+for what it does not yet do). The monitor also bounds discovery by
+`scheduling.probes` and the `discovery` limits except `stall_ms`
+([#106](https://github.com/jackgeek/climon2/issues/106)), the selector's
+search by `ui.search_bytes`
+([#113](https://github.com/jackgeek/climon2/issues/113)), initial selection
+by `deadlines.start_ms` ([#266](https://github.com/jackgeek/climon2/issues/266)),
+passive retries by the `retry` backoff
+([#116](https://github.com/jackgeek/climon2/issues/116)), and shutdown by
+`deadlines.shutdown_ms`, `operation_ms` and `final_host_ms`
+([#118](https://github.com/jackgeek/climon2/issues/118)); nothing else
+enforces the limits yet.** This resolves
 [Define monitor operational limits](https://github.com/jackgeek/climon2/issues/69).
 It supplies requirements and evidence, not executable code or a benchmark suite.
 
@@ -50,6 +110,41 @@ Counts must fit the interface and applicable operating-system limits.
 Changing a setting never makes an allocation-aware engine unnecessary.
 These are ceilings, not instructions to preallocate every client's maximum.
 
+The monitor checks the mandatory current model and recent page at startup,
+before the host terminal changes, for one [session](../GLOSSARY.md#sessions)
+at the largest supported geometry, 500x200, as `climon2-vt` charges a
+terminal model there
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)):
+the current model (the 32 KiB reserve and both screens, 4,850,887 bytes) and
+the first 1000-row history chunk, which holds its recent page and is admitted
+at the first scroll (12,115,200 bytes), beside the monitor's one shared vte
+parser (2,097,152 bytes,
+[#166](https://github.com/jackgeek/climon2/issues/166)).
+`memory.client_bytes` is split between the session's client library and its
+terminal model ([#119](https://github.com/jackgeek/climon2/issues/119)): the
+library's `client_bytes` is its request and event queues, one wire frame
+and its 1,048,576-byte instance allocation (3,407,872 bytes by default,
+which must fit `memory.client_bytes`), and the model may hold the rest,
+never a second allowance. `memory.total_bytes` must hold the parser, the
+model and page and the library's share, 22,471,111 bytes by default;
+`memory.client_bytes` the model, page and library share, 20,373,959 bytes
+by default, since the parser is the monitor's, not a client's;
+`memory.history_bytes_total`, then `history_bytes_per_session`, must hold
+the page. Each total is checked before the budgets it contains, so a refusal
+names the limit to raise, with both byte counts. `exec` does not make this
+check: only the monitor has terminal models.
+
+The check guarantees admission, not restoration. A restoration is staged in a
+second model beside the current one, whose first history chunk never yields
+to it, and a restoration carries history, so it admits its own first chunk:
+staging one at 500x200 needs room for both models, at least 33,932,174 bytes
+in the model's share of a client's budget and, with the parser, 36,029,326
+in the total beside the library's share (ADR
+0007's 32.36 MiB per staged pair), more once the current model's history has
+grown. Limits below that admit the largest session but cannot stage its
+restoration, which follows every monitor-mode geometry change
+([#89](https://github.com/jackgeek/climon2/issues/89)).
+
 Report effective configured values, qualified reservations and exhaustion
 diagnostics explicitly. Classification and peer visibility are:
 
@@ -80,7 +175,7 @@ An illustrative override is:
   "monitor": {
     "limits": {
       "memory": {
-        "total_bytes": 536870912,
+        "total_bytes": 603979776,
         "client_bytes": 67108864,
         "history_bytes_per_session": 16777216,
         "history_bytes_total": 268435456,
@@ -97,14 +192,18 @@ An illustrative override is:
 }
 ```
 
-This is planned configuration, not a supported setting in the current monitor
-or daemon. It does not modify daemon `scrollback.max_rows`.
+The monitor and `exec` validate this configuration, the monitor alone also
+against its terminal models' mandatory allocation (above), but no other
+limit is enforced yet. Only `exec` passes `payload.assembly_records`,
+`payload.assembly_bytes` and `deadlines.assembly_ms` on, to the daemon it
+starts (#98); a monitor's configuration never reconfigures a running daemon,
+and it does not modify daemon `scrollback.max_rows`.
 
 ## Memory, history and admission
 
 | Field | Default |
 |---|---:|
-| `memory.total_bytes` | 536870912 (512 MiB) |
+| `memory.total_bytes` | 603979776 (576 MiB) |
 | `memory.client_bytes` | 67108864 (64 MiB per client/session, including its monitor model) |
 | `memory.history_bytes_per_session` | 16777216 (16 MiB) |
 | `memory.history_bytes_total` | 268435456 (256 MiB) |
@@ -128,11 +227,20 @@ All sub-budgets are included in the total, not added on top.
 
 Reserve thread/worker, descriptor and release requirements before admission,
 using the greater of configured reservation and qualified actual requirements.
+Qualified requirements come from the release's bootstrap once it is loaded
+(relaxed pre-load qualification, confirmed 2026-11-08): before the dynamic
+loader opens a release, admission reserves its configured
+`resources.release_bytes`, `resources.descriptors_per_load` and the loader's
+stack; once loaded, and before any create, that reservation is raised to the
+greater of configured and qualified. A raise aggregate capacity cannot cover
+leaves the release resource-blocked, its handle loaded, reconsidered under the
+admission rate limit.
 Reservations also consume aggregate capacity. Shared release resources count
 once; per-instance state counts separately. Successfully opened library handles,
 including later-rejected ones, and their reservations remain until process exit.
 A release without bounded qualified requirements is explicitly unsupported or
-resource-blocked; it is not assumed to use the default reservation.
+resource-blocked once loaded; it is not assumed to use the default
+reservation.
 Qualified requirements are measured and recorded per platform, because a
 release's macOS and Linux libraries can differ, for example in notification
 descriptors.
@@ -158,7 +266,12 @@ rows if fewer exist. Preserve current normal/alternate-screen state separately.
 Never completely erase that page merely to admit another session.
 No history is fabricated for a passive client that never received display data.
 
-The protected page/current model become admission obligations. Shortening history
+The protected page/current model become admission obligations. In
+`climon2-vt` the page's obligation arises at the normal screen's first
+scroll, when the model admits its first history chunk, rather than when the
+model is created: a model that never scrolled holds no history storage, and
+the first scroll is rejected, keeping the page, if its chunk cannot fit
+([#166](https://github.com/jackgeek/climon2/issues/166)). Shortening history
 does not remove a row, release
 [control](../GLOSSARY.md#attachment-and-control), or turn partial restoration into
 [readiness](../GLOSSARY.md#protocol-and-plugin-concepts).
@@ -189,6 +302,43 @@ updates, including auxiliary data, resize and transactional restoration copies.
 Checking size afterward, truncating accepted characters or relying on fewer
 processes is not sufficient. No engine patch, replacement or daemon behavior
 change is delivered here.
+
+#76 adds `climon2-vt`'s monitor `Model` on the unchanged engine. It charges
+each token's worst-case growth, from vte's own parse of the token, before
+the engine sees it. It admits history storage in the engine's chunks,
+stages restorations beside the current model and never reflows in place
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
+Before it rejects live output or a restoration, its oldest history yields a
+chunk at a time, never the chunk holding the newest page, and
+`Model::shorten_history()` lets the monitor shorten history the same way.
+Its tests show no stream passing a model's limit, including adversarial
+ones; the owner accepted that evidence, with the measured reserve, as the
+risk proof. The owner also decided that a monitor-mode geometry change is
+always followed by a restoration at that geometry (a wire amendment that
+[#89](https://github.com/jackgeek/climon2/issues/89) makes), and how
+per-model cost is to meet PERF-01.
+[#166](https://github.com/jackgeek/climon2/issues/166) implements that in
+`climon2-vt`: one `Parser` per monitor, whose 2 MiB buffer the monitor
+counts once, and the first history chunk admitted only at the first scroll.
+The owner then raised the default `memory.total_bytes` from 512 MiB to
+576 MiB and scoped PERF-01's 100 sessions to geometries up to 200x60
+(2026-11-15). At 576 MiB this holds 4,734, 979 and 124 models at 80x24,
+200x60 and 500x200 before they scroll, and 280, 109 and 35 once they hold
+their first chunk; 500x200 records that measured capacity instead of 100
+sessions
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
+#83's read-only history view labels truncation: rows beyond the row ceiling
+or released under pressure, and, as the owner decided, a full history that
+output could have overrun once growth was capped or refused, because the
+engine does not report the rows it discards there
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#read-only-views-for-painting)).
+The monitor keeps a model per session through the shared parser
+([#108](https://github.com/jackgeek/climon2/issues/108)) and, since #119,
+shortens history by the pressure policy above: a session's own history
+within its budget, then caches of sessions not connected, unselected ones
+least recently inspected first, the selected one last. It does not yet
+refuse a live model's growth for aggregate pressure before allocation, or
+charge renderer, search, toast and identity state to the total.
 
 ## Queues and transfers
 
@@ -310,6 +460,10 @@ cleanup deadlines also apply to discovery workers. Load workers have none: the
 system loader serializes loading and a load cannot be cancelled, so a load that
 never returns is a native fault, like a crash, and can block later loads
 ([library embedding](protocol/library-embedding.md#loading-and-instance-lifetime)).
+When both first starts and passive retries wait, they take turns for start
+slots (owner decision on #120). A Kill-only instance for a resource-blocked
+row goes through admission at the head of the queue (owner decision on #120;
+Delete is [#117](https://github.com/jackgeek/climon2/issues/117)'s).
 Initial selection remains pinned under the status/lifecycle rules, independently
 of scheduling fairness; failure never silently selects/acquires another session.
 
@@ -317,7 +471,7 @@ of scheduling fairness; failure never silently selects/acquires another session.
 
 | Field | Default |
 |---|---:|
-| `deadlines.load_ms` | 10000 total load/validation |
+| `deadlines.load_ms` | 10000 total load/validation; diagnostic only: a load past it is reported as loading slowly, never aborted (owner decision on [#120](https://github.com/jackgeek/climon2/issues/120)) |
 | `deadlines.start_ms` | 10000 through passive initial metadata synchronization |
 | `deadlines.operation_ms` | 5000 per ordinary accepted operation |
 | `deadlines.kill_ms` | 10000 for Kill outcome |
@@ -390,8 +544,6 @@ Daemon-initiated passive succession is still valid, not a replayed takeover.
 | `ui.fps` | 30 |
 | `ui.client_quantum_ms` | 2 |
 | `ui.background_quantum_ms` | 8 per UI turn |
-| `ui.toast_records` | 128 queued episodes |
-| `ui.toast_bytes` | 524288 |
 | `ui.search_bytes` | 4096 UTF-8 bytes |
 
 Rotate bounded client/background work fairly. Bound each indivisible
@@ -404,12 +556,21 @@ These are measurement targets under declared configuration/hardware, not
 hard real-time operating-system guarantees. Nondefault scheduling configurations
 must disclose their effect on these targets.
 
-Toast state has no unbounded secondary queue. Distinct accepted episodes remain
-ordered; congestion past the delivery deadline explicitly fails the affected
-notification stream/connection and reports undelivered notifications.
+Toast state has no unbounded secondary queue: the queue holds three waiting
+toasts, in order (owner decision on #115, 2026-11-16). When another toast
+would join a full queue, one extra toast saying `More events occurred. Check
+sessions list` follows the three in its place, and every later one coalesces
+into it until it shows; nothing fails a notification stream or connection.
+There is no toast setting.
 The selector's accepted visual timings are 400 ms border drawing, 2000 ms title
-hold, 300 ms text fade and 400 ms erasure. Use elapsed time and skip obsolete
-animation paints; never accumulate frames or block input/exit. Over-limit search/
+hold, 300 ms text fade and 400 ms erasure. The hold starts when the frame
+showing the full title (with any ellipsis) has finished writing to the host,
+and the toast's one bell rings then (owner decision on #115, 2026-11-17): a
+host that accepts output late still sees every title for its whole hold.
+Drawing, fading and erasure use elapsed time and skip obsolete animation
+paints; never accumulate frames or block input/exit. The host write itself
+still blocks the monitor while the host refuses output; making it
+non-blocking is follow-up work for render pacing (#119). Over-limit search/
 paste text is rejected visibly, without leaking to an application.
 
 Snapshot accounting permits one retained viewport character baseline and one
@@ -487,8 +648,11 @@ crash exposure and ordinary leave policy. Incomplete cleanup is never successful
 detach; protected history does not authorize unloading running code.
 
 Require reproducible CPU/memory, startup/load and sustained-display measurements
-for 1, 10 and 100 live sessions, one release and ten mixed releases where
-applicable, at 80x24 and 200x60, plus 500x200 boundary geometry.
+for 1, 10 and 100 live sessions at 80x24 and 200x60, one release and ten mixed
+releases where applicable, plus the 500x200 boundary geometry at 1 and 10
+sessions and its measured capacity, about 35 sessions with history and 124
+before any scroll at the default 576 MiB (owner, 2026-11-15,
+[#166](https://github.com/jackgeek/climon2/issues/166)).
 Cover passive idle, controlling background output, cold/warm loading, restoration/
 switching, selected sustained display, reconnect storms, continuous arrivals and
 stalled newer starts. Measure snapshot comparison/allocation and retained
@@ -502,4 +666,9 @@ point, not an admission cap or arbitrary-hardware promise. If defaults cannot
 admit a scenario, report that outcome and repeat with disclosed sufficient
 configuration where supported. Do not infer lower total use merely from fewer
 processes. Acceptance records limitations honestly; this specification claims
-none of this evidence has already been delivered.
+none of this evidence has already been delivered. The
+[measurement harness](../crates/climon2-measure/README.md) that takes these
+measurements on a candidate archive is implemented
+([#121](https://github.com/jackgeek/climon2/issues/121)), except the ten
+mixed-release cases, which it records `not run`; its reports belong to each
+release candidate, not to this document.

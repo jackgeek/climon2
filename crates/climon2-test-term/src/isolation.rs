@@ -3,8 +3,15 @@ use portable_pty::CommandBuilder;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    process::{Output, Stdio},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
 };
 use tempfile::TempDir;
 
@@ -49,6 +56,22 @@ pub fn bin_path(name: &str) -> PathBuf {
     path
 }
 
+/// The workspace's client library, which Cargo leaves beside the test
+/// executables in `deps/` (it uplifts only binaries).
+pub fn client_library_path() -> PathBuf {
+    let executable = env::current_exe().expect("locate test executable");
+    let path = executable
+        .parent()
+        .expect("deps directory")
+        .join(climon2_core::layout::client_library_name());
+    assert!(
+        path.is_file(),
+        "missing workspace client library {}; run cargo test --workspace (no nested builds)",
+        path.display()
+    );
+    path
+}
+
 /// Copies an executable a test will run. `cp` writes the copy, so this process never holds
 /// it open: Linux refuses to execute a file any process holds open for writing (ETXTBSY),
 /// and a child forked by another test thread holds every descriptor it inherited until it
@@ -65,6 +88,62 @@ pub fn copy_executable(from: &Path, to: &Path) {
         from.display(),
         to.display()
     );
+}
+
+/// Runs `command` with null stdin and collects its output, waiting at most
+/// `timeout` for it to exit. A command still running at the deadline is killed
+/// and reaped, and the test fails with a message naming its process ID.
+pub fn output_within(command: &mut std::process::Command, timeout: Duration) -> Output {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+    let stdout = drain(child.stdout.take().expect("piped stdout"));
+    let stderr = drain(child.stderr.take().expect("piped stderr"));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll child") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "{command:?} (pid {}) did not exit within {timeout:?}; killed and reaped",
+                child.id()
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    Output {
+        status,
+        stdout: stdout.join().expect("stdout reader"),
+        stderr: stderr.join().expect("stderr reader"),
+    }
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).expect("read child output");
+        bytes
+    })
+}
+
+/// The user's login shell from the password database, looked up once with
+/// the reentrant `getpwuid_r`. A command without `SHELL` makes portable-pty
+/// call `getpwuid`, whose static buffer parallel test threads overwrite, so a
+/// spawn could see another account's shell (for example `/usr/bin/nologin`).
+fn login_shell() -> &'static Path {
+    static SHELL: OnceLock<PathBuf> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map_or_else(|| PathBuf::from("/bin/sh"), |user| user.shell)
+    })
 }
 
 pub struct Isolation {
@@ -119,6 +198,7 @@ impl Isolation {
         );
         command.env("TERM", "xterm-256color");
         command.env("LANG", "en_US.UTF-8");
+        command.env("SHELL", login_shell());
         if let Some(profile) = env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }

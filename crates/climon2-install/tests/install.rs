@@ -3,7 +3,10 @@ mod support;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
-use support::{Workspace, script};
+use support::{COMPANIONS, LIBRARY, Workspace, script};
+
+/// Every file of a version folder: the executables and the client library.
+const VERSION_FILES: usize = COMPANIONS.len() + 1;
 
 /// Linux must replace a same-version executable without modifying its open inode.
 #[cfg(target_os = "linux")]
@@ -44,7 +47,8 @@ impl IsolatedCommand for Command {
     }
 }
 
-/// #21 / #24 / #33: the public library builds runnable layouts from release payloads.
+/// #21 / #24 / #33 / #74: the public library builds runnable layouts from release
+/// payloads, publishing every companion, including the monitor, in the version folder.
 #[test]
 fn fresh_install_publishes_complete_version_launcher_and_current() {
     let workspace = Workspace::new();
@@ -54,7 +58,7 @@ fn fresh_install_publishes_complete_version_launcher_and_current() {
     let report = climon2_install::install(&payload, &destination).unwrap();
     assert_eq!(report.executable_home, destination.canonicalize().unwrap());
     assert_eq!(fs::read(destination.join("current")).unwrap(), b"1.2.3\n");
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
+    for binary in COMPANIONS {
         let output = Command::new(destination.join("1.2.3").join(binary))
             .output()
             .unwrap();
@@ -77,6 +81,10 @@ fn fresh_install_publishes_complete_version_launcher_and_current() {
             .unwrap()
             .code(),
         Some(11)
+    );
+    assert_eq!(
+        fs::read(destination.join("1.2.3").join(LIBRARY)).unwrap(),
+        fs::read(source.join("1.2.3").join(LIBRARY)).unwrap()
     );
     assert_eq!(fs::read_dir(destination).unwrap().count(), 4);
 }
@@ -172,6 +180,10 @@ fn reinstall_repairs_same_version_with_missing_or_irregular_companions() {
     climon2_install::install(&payload, &destination).unwrap();
     assert!(fs::symlink_metadata(&daemon).unwrap().is_file());
     assert_eq!(Command::new(&daemon).status().unwrap().code(), Some(23));
+    let library = destination.join("1.2.3").join(LIBRARY);
+    fs::remove_file(&library).unwrap();
+    climon2_install::install(&payload, &destination).unwrap();
+    assert_eq!(fs::read(&library).unwrap(), b"#!/bin/sh\nlibrary 23\n");
     assert_eq!(fs::read(destination.join("current")).unwrap(), b"1.2.3\n");
 }
 
@@ -383,7 +395,7 @@ fn conflicting_short_commands_are_preserved_before_any_publication() {
 fn interruption_cleans_only_own_staging_and_rerun_recovers() {
     for mode in ["fail", "crash"] {
         for boundary in [
-            "copy-cli",
+            "copy-climon2-cli",
             "version-staged",
             "version-published",
             "launcher-published",
@@ -416,10 +428,10 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
             }
             assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
             let version = destination.join(env!("CARGO_PKG_VERSION"));
-            if ["copy-cli", "version-staged"].contains(&boundary) {
+            if ["copy-climon2-cli", "version-staged"].contains(&boundary) {
                 assert!(!version.exists());
             } else {
-                assert_eq!(fs::read_dir(&version).unwrap().count(), 3);
+                assert_eq!(fs::read_dir(&version).unwrap().count(), VERSION_FILES);
                 assert_eq!(
                     Command::new(version.join("climon2-cli"))
                         .status()
@@ -472,9 +484,15 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
 fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
     let workspace = Workspace::new();
     let source = workspace.payload("payload", "3.2.1", 0);
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
+    for binary in COMPANIONS {
         fs::copy(source.join("3.2.1").join(binary), source.join(binary)).unwrap();
     }
+    fs::create_dir(source.join("deps")).unwrap();
+    fs::copy(
+        source.join("3.2.1").join(LIBRARY),
+        source.join("deps").join(LIBRARY),
+    )
+    .unwrap();
     let launcher = std::env::current_exe()
         .unwrap()
         .parent()
@@ -496,6 +514,10 @@ fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
         let payload = climon2_install::Payload::from_siblings(&source, version).unwrap();
         assert_eq!(payload.version().to_string(), version);
         climon2_install::install(&payload, &destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join(version).join(LIBRARY)).unwrap(),
+            b"#!/bin/sh\nlibrary 0\n"
+        );
         for command in ["c2", "climon2"] {
             let output = Command::new(destination.join(command))
                 .args(["exec", "space 雪", "", "--option"])
@@ -543,7 +565,10 @@ fn publication_failures_do_not_advance_current_and_keep_unrelated_files() {
             b"untouched"
         );
         assert!(!destination.join(".climon2-install-stage").exists());
-        assert_eq!(fs::read_dir(destination.join("1.2.3")).unwrap().count(), 3);
+        assert_eq!(
+            fs::read_dir(destination.join("1.2.3")).unwrap().count(),
+            VERSION_FILES
+        );
         if blocked == "climon2" {
             assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
         }
@@ -619,6 +644,10 @@ fn invalid_payloads_and_version_targets_never_escape_their_layout() {
     for version in ["", "../escape", "/absolute", "1.2.3\n", "v1.2.3"] {
         assert!(climon2_install::Payload::from_directory(&source, version).is_err());
     }
+    let library = source.join("1.2.3").join(LIBRARY);
+    fs::rename(&library, workspace.root.join(LIBRARY)).unwrap();
+    assert!(climon2_install::Payload::from_directory(&source, "1.2.3").is_err());
+    fs::rename(workspace.root.join(LIBRARY), &library).unwrap();
     let cli = source.join("1.2.3/climon2-cli");
     fs::remove_file(&cli).unwrap();
     symlink(source.join("1.2.3/climon2-client"), &cli).unwrap();

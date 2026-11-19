@@ -20,23 +20,23 @@ flowchart TB
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
-            library[["libclimon2_client.dylib / .so<br/>planned Rust cdylib on macOS and Linux"]]
+            monitor["climon2-monitor<br/>monitor executable; Ratatui TUI"]
+            library[["libclimon2_client.dylib / .so<br/>Rust cdylib; C ABI bootstrap"]]
         end
         command(["Session command<br/>external executable"])
-        monitor(["Monitor runtime: monitor / mon<br/>planned Ratatui TUI; executable placement undecided"])
         source_monitor(["Source monitor runtime<br/>future forwarding provider"])
         browser(["Browser with xterm.js<br/>future external consumer"])
 
         launcher -->|"execs current version"| cli
-        cli -->|"starts for exec"| daemon
-        cli -->|"exec / attach / kill: session version"| client
+        cli -->|"starts for exec and exec --headless"| daemon
+        cli -->|"exec (not --headless) / attach / kill: session version"| client
         cli -->|"hello probes for discovery"| daemon
-        client -->|"daemon-client communication; current"| daemon
         daemon -->|"runs on session PTY"| command
-        cli -.->|"monitor / mon; planned"| monitor
-        monitor -.->|"loads session-version library; one client thread per live session"| library
-        client -.->|"loads same-release library; versioned C interface planned"| library
-        library -.->|"daemon-client communication; planned"| daemon
+        cli -->|"monitor / m: execs own version"| monitor
+        monitor -->|"hello probes for discovery"| daemon
+        monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
+        client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
+        library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
         monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
         browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
     end
@@ -49,23 +49,42 @@ flowchart TB
         daemon_fixture["climon2-daemon-fixture"]
         terminal_fixture["climon2-fixture"]
         tui_fixture["climon2-tui-fixture"]
-        owned_exec["climon2-test-owned<br/>Linux test ownership exec adapter"]
+        library_host["climon2-library-host"]
+        library_stand_in[["Client library stand-in<br/>test-only C dylib / .so; faulty library"]]
+        second_library[["Second-release fixture library<br/>test-only cdylib of release 0.0.97"]]
+        second_daemon["climon2-second-release-daemon<br/>second-release fixture's session daemon, release 0.0.97"]
+        owned_exec["climon2-test-owned<br/>test ownership exec adapter"]
+        measure["climon2-measure<br/>PERF-01 measurement harness and its sessions' workload"]
         terminal_root(["Requested test terminal root<br/>climon2 executable, fixture or external program"])
 
         xtask -->|"runs builds and tests"| cargo
         xtask -->|"install: runs verified production payload"| installer
         xtask -->|"runs runtime probes"| cli
+        xtask -->|"loads through the shared loader in release checks"| library
         cargo -->|"runs"| tests
         tests -->|"uses directly or as a session command"| cli_fixture
         tests -->|"uses directly or as a session command"| daemon_fixture
         tests -->|"uses directly or as a session command"| terminal_fixture
         tests -->|"uses directly or as a session command"| tui_fixture
-        tests -->|"execs registered terminal roots through; Linux only"| owned_exec
+        tests -->|"runs as the Library-layer host"| library_host
+        library_host -->|"loads through the shared loader; calls through the C ABI"| library
+        library_host -->|"hello probes for a session's state"| daemon
+        library -->|"daemon wire revision 1 to the host's fake daemon peer"| library_host
+        library -->|"allocates through its exported glibc malloc family; x86-64 GNU/Linux tests only"| library_host
+        tests -->|"loads through the shared loader in release-check and Fault-layer tests"| library_stand_in
+        tests -->|"loads through the shared loader in release-check tests"| second_library
+        library_host -->|"loads beside the release under test through the shared loader"| second_library
+        cli -->|"starts 0.0.97 sessions from the 0.0.97 folder"| second_daemon
+        second_library -->|"daemon wire revision 1: passive monitor connections"| second_daemon
+        xtask -->|"measure: runs through Cargo"| measure
+        xtask -->|"qualify: runs the packaged tests on the candidate archive and every workspace test"| cargo
+        measure -->|"installs the candidate archive, then runs its climon2 for exec --headless, monitor, attach and kill"| launcher
+        measure -->|"reads the embedded requirements through the shared loader"| library
+        daemon -->|"runs as the measured sessions' workload"| measure
+        tests -->|"execs registered terminal roots through"| owned_exec
         owned_exec -->|"execs with unchanged argv, environment and cwd"| terminal_root
     end
 
-    style library stroke-dasharray: 5 5
-    style monitor stroke-dasharray: 5 5
     style source_monitor stroke-dasharray: 5 5
     style browser stroke-dasharray: 5 5
 ```
@@ -81,41 +100,99 @@ Installation relationships are outside this consumption diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
-On Linux, `climon2-test-term` builds `climon2-test-owned` as test tooling, never
-as a release payload. It opens one test-owned file descriptor before execing
-the requested terminal root. Forked descendants inherit that descriptor across
-environment clearing and reparenting, so procfs leak checks do not depend on
-catching short-lived parents. Process identity, sampled ancestry, session
-membership and environment markers remain additional ownership evidence.
-Commands that explicitly close inherited descriptors cannot retain this
-additional evidence. macOS keeps its kernel process/image ancestry tracking
-and does not use this adapter.
+`climon2-test-term` builds `climon2-test-owned` as test tooling on Linux and
+macOS, never as a release payload. It opens one test-owned file descriptor
+before execing the requested terminal root. Forked descendants inherit that
+descriptor across environment clearing, new sessions and reparenting, so leak
+checks (procfs on Linux, `libproc` on macOS) do not depend on a sample catching
+short-lived parents. Process identity, sampled ancestry (macOS kernel
+process/image ids), session membership and environment markers remain
+additional ownership evidence. Commands that explicitly close inherited
+descriptors keep only that additional evidence.
 
-**Current:** no climon2 dynamic library is built or shipped. Cargo's ordinary
-`lib` targets, including `climon2-core`, `climon2-platform`, and `climon2-vt`,
-are not separately loaded dynamic libraries. System and third-party libraries
+**Current (#121):** `climon2-measure` is test tooling, never a release
+payload. `cargo xtask measure` runs it on an exact candidate archive: it
+installs the archive with that archive's own installer, starts the measured
+sessions through the installed `climon2` with itself (its `workload` command)
+as their session command, measures the installed monitor against one
+installed `climon2 attach` per session on emulated host terminals, and loads
+the candidate library through the shared loader only to read its embedded
+requirements. The [measurement workflow](../.github/workflows/measure.yml)
+runs it on release candidates and on manual dispatch.
+
+**Current (#122):** `cargo xtask qualify` is release tooling, never a
+release payload. `qualify run` runs the packaged tests against an exact
+candidate archive and every workspace test through Cargo, reads the
+measurement job's reports and the owner's records in `qualification/`, and
+writes one platform's [evidence records](../GLOSSARY.md#testing);
+`qualify verdict` judges every platform's records with the owner's
+dispositions. The [Release workflow](../.github/workflows/release.yml)
+publishes the records as workflow artifacts and as the release asset
+`climon2-<version>-qualification.tar.gz`, beside the archives, install script
+and `SHA256SUMS`; that asset is evidence, not something the installer reads.
+
+**Current (#75, #85, #93, #94):** every release builds and ships the client library in
+its version folder: `libclimon2_client.dylib` (universal arm64/x86_64) on macOS
+and `libclimon2_client.so` on x86-64 GNU/Linux, both from one Rust cdylib
+artifact of `climon2-client`. Each exports only the frozen
+`climon2_client_get_interface` bootstrap and implements the bootstrap,
+description and local instance lifecycle of
+[native revision 1](protocol/monitor-client/core-v1.md), and its instances
+open passive monitor connections or interactive attachments to session
+daemons over [daemon wire revision 1](protocol/daemon-client/core-v1.md) and
+relay control and display (#94). The library host fixture drives those instances
+through the function table, with the test-hooks library's fault injection,
+as the Library layer's instrumented host. It also serves a clearly labelled
+fake daemon peer that the library under test connects to, and probes real
+session daemons' hello state. On x86-64 GNU/Linux the host exports glibc's
+allocation entry points, which the loaded library binds to, so it can count
+the library's heap independently of the library's own allocation accounting
+(#180). The `climon2-client` crate's `#[global_allocator]`, which measures
+that accounting, replaces the allocator of every artifact that links the
+crate: the client library, the client executable and the package's own test
+binaries ([ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)). The
+Linux library links the GCC
+unwinder statically, because no unwinding leaves it, so it needs only glibc's
+libraries and has no soname, RPATH or RUNPATH, as the
+[Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
+release isolation; release checks enforce each rule. The monitor loads it
+(#106), the client executable loads it for ordinary attach (#101) and kill
+mode (#100), and test tooling loads it: the library host fixture and xtask's
+release checks. Cargo's ordinary
+`lib` targets, including `climon2-core`, `climon2-platform`,
+`climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
+libraries; the CLI's and the monitor's hello probes for discovery come from
+`climon2-discovery` linked into each executable. System and third-party libraries
 and individual generated test harness names are outside this artifact inventory.
-The planned node names both platforms' library files: `.dylib` on macOS and
-`.so` on x86-64 GNU/Linux. The
-[monitor integration decision](https://github.com/jackgeek/climon2/issues/125)
-agreed Linux loading and release isolation; neither library is built yet.
 
-**Planned:** the [monitor](../GLOSSARY.md#sessions) loads version-matched
-[client libraries](../GLOSSARY.md#sessions) directly into
-its own process, sharing a loaded library for sessions on the same release.
-Each live session has its own client thread. Clients start eagerly, newest
-first, with bounded concurrent progress; continuous discovery adds clients for
-new sessions. Background clients relay negotiated plugin data without taking
-control. Native client crashes can terminate the entire monitor. Ratatui powers
-the planned monitor's rendering; its terminal integration is agreed, unimplemented.
-The [agreed terminal contract](protocol/terminal-integration.md), not implemented,
-selects exact ordered terminal bytes/control/restoration through existing
-in-process record queues and monitor-owned `climon2-vt` models, with planned
-read-only Rust views for Ratatui. Session bytes never go directly to the host;
-daemon query authority stays unique. Monitor-mode daemon presentation uses
+**Current (#106):** the [monitor](../GLOSSARY.md#sessions) loads
+version-matched [client libraries](../GLOSSARY.md#sessions) directly into its
+own process through the shared loader, one load per release on a worker
+thread, sharing it for every session on that release. Each live session's
+passive client has its own owner thread. Clients start eagerly, newest created
+first, with bounded concurrent starts; continuous discovery adds clients for
+new sessions, and background clients never take control. Native client crashes
+can terminate the entire monitor. Ratatui draws the permanent top row, the
+body and the basic [selector](../GLOSSARY.md#attachment-and-control).
+
+**Current (#108):** Enter acquires the selected session through its client,
+which relays its control, restorations and display. The monitor parses them
+into its own allocation-bounded `climon2-vt` model per session and paints the
+selected one from `climon2-vt`'s read-only views, below the top row at the
+session's effective geometry; it submits Ready and Resize through the client.
+Session bytes never go directly to the host, and the daemon alone answers
+session queries.
+
+**Planned:** background clients relay negotiated plugin data.
+The [agreed terminal contract](protocol/terminal-integration.md), implemented
+by the monitor (#108 to #116), selects exact ordered terminal
+bytes/control/restoration through existing in-process record queues and
+monitor-owned `climon2-vt` models, with read-only Rust views for Ratatui.
+Monitor-mode daemon presentation uses
 effective session geometry, not host/requested dimensions, including background
-promotion. Optional core Focus is not a plugin/artifact addition. No executable
-placement or new dynamic library is chosen by this amendment.
+[promotion](../GLOSSARY.md#attachment-and-control); session daemons already
+serialize it so. Optional core Focus is not
+a plugin/artifact addition. No new dynamic library is chosen by this amendment.
 
 The [status/activity revision](session-status.md) puts title detection and both
 state machines and terminal-signal interpretation in
@@ -126,13 +203,15 @@ without control, not raw [OSC](protocol/TERMS.md#osc) passthrough to host termin
 and shell lifecycle choose explicit detection or heuristic fallback.
 Plugin implementation, configuration, and interface examples are deferred; the earlier title-plugin
 release prerequisite is superseded. No new plugin executable or dynamic library
-is specified. These are planned mechanics, not shipped behavior.
+is specified. The session daemon (#91, #92, #98), the client library (#95,
+#98) and the monitor (#107, #114, #115) implement these mechanics; only
+plugins remain deferred.
 
 The monitor retains a `climon2-vt` model per session for disconnected terminal/
 scrollback inspection and reconnects passively without automatic takeover.
 Known completion stops retries. These relationships do not introduce a session
 survival guarantee or a persisted archive of completed sessions.
-The [agreed lifecycle](monitor-lifecycle.md), not implemented, adds exponential
+The [agreed lifecycle](monitor-lifecycle.md), implemented by #116 to #118, adds exponential
 passive recovery, read-only disconnected history with a `Reconnecting...` overlay,
 and coordinated concurrent shutdown. Local instance cleanup and joins precede
 run-local selector dismissal; stalled cleanup ends the whole monitor process,
@@ -140,17 +219,77 @@ never an individual thread or loaded library. Connected revoked sessions show
 their placeholder, not cached history. Selector Delete uses the existing Kill
 semantics and adds confirmed termination/removal, not another runtime artifact.
 
-The agreed [operational limits](monitor-operational-limits.md), unimplemented,
-bound admission, queues, client threads/workers/descriptors and retained shared
+The agreed [operational limits](monitor-operational-limits.md), implemented as
+far as their status says (#119, #120), bound admission, queues, client threads/workers/descriptors and retained shared
 release resources. Resource-blocked rows remain visible; history pressure
 preserves a recent page. Unsafe growth/cleanup is explicit failure, not client
 eviction or unloading. Allocation-aware terminal qualification reopens the
-narrow unbounded-engine assumption; it chooses no new executable/library or
-consumption arrow, and does not sandbox trusted native code.
+narrow unbounded-engine assumption; `climon2-vt`'s allocation-bounded `Model`
+(#76), fed through one `Parser` shared per monitor (#166), provides it for
+the monitor's per-session models (#108); at startup the monitor also reads
+their mandatory allocation and the parser's size, to check that its limits
+hold one session's model beside the parser (#167). It chooses no new executable/library or consumption arrow, and does
+not sandbox trusted native code.
 
-The client executable will also load its same-release library for ordinary
-operations. The monitor node represents a runtime role, not a decision to ship
-an executable named `climon2-monitor`.
+**Current (#100, #101, #102):** for ordinary attach and in kill mode the
+client executable loads the library in its own version folder,
+`<executable home>/<version>/`, through the shared loader, whatever
+`current`, the working directory or search paths name, and drives one
+instance through the C ABI: an interactive Open and the bridge's Input,
+Resize, Acquire, Ready, Set viewing, Acknowledge and Leave for attach, or
+one Kill; the library speaks
+daemon wire revision 1 to the session daemon. The library instance writes
+its diagnostics to a log file of its own in the session-log directory,
+beside the client's,
+`<climon2 home>/logs/<session-id>/library-<UTC second>-<pid>.log`, since
+spec #73 places each instance's library log in its session's log. A missing,
+other-release or faulty library fails before any connection. Session
+daemons speak only the frozen hello and daemon wire revision 1: the
+version-private post-hello protocol is retired
+([#104](https://github.com/jackgeek/climon2/issues/104)), so no artifact
+consumes it.
+
+**Current (#84):** one validated loader for client libraries is part of
+`climon2-platform`, not a separate artifact; the monitor (#106) and the client
+executable (#100, #101) load through it. The library host and xtask's release
+checks load the client library through it too, from a version folder of an
+executable home. The [client library stand-in](../GLOSSARY.md#testing),
+`crates/climon2-fixtures/stand-in/client-library.c`, is compiled by tests,
+through `climon2_fixtures::stand_in`, into a test-only library, exact or with
+one defect: xtask's release-check tests
+load it through the same release checks as the real library, and
+`climon2-platform`'s loader tests load it, as the faulty library, through the
+loader. The client executable's tests put it beside the executable as the
+faulty library, and, with its `RECORD_STARTUP` probe, to record the limits
+the executable passes (#101). It is never shipped.
+
+**Current (#97):** the [second-release fixture](../GLOSSARY.md#testing) is
+two test-only artifacts of the `climon2-second-release` crate, both release
+0.0.97: its library, the `cdylib` of `climon2-client`'s library source built
+without test hooks, which Cargo leaves in `deps/`; and its session daemon,
+`climon2-second-release-daemon`, the `climon2-daemon` library behind a thin
+main that serves only 0.0.97 and gives its session's command
+`CLIMON2_SECOND_RELEASE_DAEMON`. The mixed-release Library-layer tests package
+both with this build's other executables as a 0.0.97 release and install it
+with the real installer in a sibling version folder, so that folder's CLI
+starts 0.0.97 sessions served by the fixture's daemon, and its client
+executable, this build's, kills them through that folder's 0.0.97 library
+(#100). One library host loads
+both releases' libraries through the shared loader, and each release's
+instances open passive monitor connections to their own release's daemons.
+xtask's tests run the release checks on the library as 0.0.97's. The
+packaged controlled-versions test runs this build's client executable from a
+0.0.97 folder beside that library, so that it attaches to a 0.0.97 session
+(#101). Neither is ever shipped. The developer accepted this fixture on 2026-11-15
+([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
+
+**Current (#74):** every version folder ships the `climon2-monitor` executable,
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m`, or their `climon2`
+spellings, reach it through the launcher and the current version's CLI, which
+execs its own version's monitor exactly as it execs a version-matched client,
+so the monitor is always the current version. That handoff between executables
+of one release is not frozen. Since #106 it discovers sessions and loads their
+libraries.
 
 The agreed [embedding design](protocol/library-embedding.md) loads
 `<executable home>/<session version>/libclimon2_client.dylib` on macOS, or
@@ -159,14 +298,25 @@ release-private dependency resolution, and explicit memory ownership.
 Every successfully opened library handle stays loaded until monitor exit,
 including handles rejected by later validation. Such releases remain in use
 until process exit; completed instance cleanup and joins do not unload them.
-These are planned relationships, not shipped artifacts. Complete interface
+The monitor's loading is current (#106), as is the client executable's for attach and kill (#100, #101). Complete interface
 declarations are specified in [native revision 1](protocol/monitor-client/core-v1.md),
 with explicit startup/role, ownership, cleanup and fresh-instance recovery calls.
-No new artifact or consumption arrow is added. Monitor-client communication and the
-[daemon wire revision 1](protocol/daemon-client/core-v1.md) are agreed
-specifications, not implemented.
+No new artifact or consumption arrow is added. Monitor-client communication is
+agreed and implemented by the client library (#85 to #98) and the monitor
+(#106 to #120).
+[Daemon wire revision 1](protocol/daemon-client/core-v1.md) is agreed and
+partly implemented: session daemons serve
+[passive monitor connections](../GLOSSARY.md#attachment-and-control),
+interactive [attachments](../GLOSSARY.md#attachment-and-control) and
+standalone [Kill](../GLOSSARY.md#attachment-and-control) over it, with the
+command's final result, and passive monitor connections that acquire or
+inherit control with
+[canonical presentation](../GLOSSARY.md#restoration-and-presentation), and
+it is the only protocol they speak after hello. The client library consumes
+it, as the diagram shows, and the monitor consumes it through that library
+(#106).
 
-The planned wire core is independent of the current private Unix socket carrier.
+The wire core is independent of the current private Unix socket carrier.
 The main/downstream monitor consumes source-monitor sessions over
 [TCP/IP](protocol/TERMS.md#tcpip) and presents them as local sessions.
 A browser consumes that monitor's forwarded terminal traffic over
@@ -177,13 +327,15 @@ discovery and remote authentication/security remain deliberately unresolved;
 same-[UID](protocol/TERMS.md#uid)/private-directory local checks do not define
 future transport security. No forwarding implementation is claimed.
 
-Future `c2 exec --headless` returns after daemon-confirmed creation without
-starting an interactive client. A [headless session](../GLOSSARY.md#sessions)
-keeps its explicit zero-client survival policy throughout its lifetime, including
-after later clients unexpectedly leave; command completion or existing CLI Kill
-ends it. The [lifecycle decision](monitor-lifecycle.md) agrees this narrow
-exception, not universal persistence or a new executable/library. Implementation
-remains unshipped; the current execution arrows above are unchanged.
+`c2 exec --headless` returns after daemon-confirmed creation without
+starting an interactive client: the CLI starts the daemon, passing the headless
+policy as a private startup argument, and never execs the client. A
+[headless session](../GLOSSARY.md#sessions) keeps its explicit zero-client
+survival policy throughout its lifetime, including after later clients
+unexpectedly leave; command completion or existing CLI Kill ends it. The
+[lifecycle decision](monitor-lifecycle.md) agrees this narrow exception, not
+universal persistence or a new executable/library. It is implemented and adds no
+artifact or relationship; only the CLI's labels above name it.
 
 The planned relationships are indexed by
 [Chart the interactive monitor specification](https://github.com/jackgeek/climon2/issues/57);

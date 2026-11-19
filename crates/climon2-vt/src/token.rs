@@ -3,10 +3,15 @@
 //! completes is exactly a unit the engine would act on, and holds partial
 //! tokens across reads.
 
-/// Largest control-string or CSI body kept; a longer token is dropped.
+/// Largest control-string or CSI body kept; a longer token is dropped. An
+/// OSC 0 or 2 title is the body after its `0;` or `2;`, so a title may
+/// have this many bytes.
 pub const MAX_BODY: usize = 4096;
 /// Introducer bytes held before a body (`ESC [`, `ESC ]`, `ESC P`, ...).
 const LIMIT: usize = MAX_BODY + 2;
+/// The beginnings of an OSC that sets the title, whose `0;` or `2;` does
+/// not count against [`MAX_BODY`].
+const TITLES: [&[u8]; 2] = [b"\x1b]0;", b"\x1b]2;"];
 const ESC: u8 = 0x1B;
 const ST: &[u8] = b"\x1b\\";
 
@@ -282,15 +287,20 @@ impl Tokenizer {
         }
     }
 
+    /// The controls the parser executed inside an abandoned sequence, as one
+    /// text token, so releasing thousands of them holds one buffer.
     fn flush_controls(&mut self, out: &mut Vec<Token>) {
-        let controls = self
+        let controls: Vec<u8> = self
             .held
             .iter()
             .copied()
-            .filter(|held| (0x00..=0x1F).contains(held) && *held != ESC)
-            .collect::<Vec<_>>();
-        for control in controls {
-            self.execute(control, out);
+            .filter(|&held| executed(held))
+            .collect();
+        if !controls.is_empty() {
+            out.push(Token {
+                kind: Kind::Text,
+                bytes: controls,
+            });
         }
     }
 
@@ -309,10 +319,17 @@ impl Tokenizer {
     fn ignore(&mut self, _: u8, _: &mut Vec<Token>) {}
 
     fn hold(&mut self, byte: u8, _: &mut Vec<Token>) {
-        self.oversized |= self.held.len() >= LIMIT;
+        self.oversized |= self.held.len() >= self.limit();
         if !self.oversized {
             self.held.push(byte);
         }
+    }
+
+    /// The bytes a held sequence may keep: its introducer and body, and a
+    /// title's `0;` or `2;` besides.
+    fn limit(&self) -> usize {
+        let title = TITLES.iter().any(|title| self.held.starts_with(title));
+        LIMIT + usize::from(title) * 2
     }
 
     fn finish(&mut self, byte: u8, out: &mut Vec<Token>) {
@@ -361,8 +378,19 @@ impl Tokenizer {
     }
 }
 
+/// A C0 control vte executes wherever it sits, in text or inside a
+/// sequence; ESC instead begins a sequence.
+pub(crate) fn executed(byte: u8) -> bool {
+    byte < 0x20 && byte != ESC
+}
+
+/// LF, VT or FF, each of which vte executes as a line feed.
+pub(crate) fn line_feed(byte: u8) -> bool {
+    matches!(byte, 0x0a..=0x0c)
+}
+
 /// Length of an unfinished but so far valid UTF-8 sequence ending the text.
-fn incomplete_utf8(text: &[u8]) -> usize {
+pub(crate) fn incomplete_utf8(text: &[u8]) -> usize {
     (text.len().saturating_sub(3)..text.len())
         .find(|&start| is_incomplete(&text[start..]))
         .map_or(0, |start| text.len() - start)

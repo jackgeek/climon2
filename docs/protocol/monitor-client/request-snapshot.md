@@ -1,6 +1,25 @@
 # Resource and progress snapshot
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements snapshot
+([#85](https://github.com/jackgeek/climon2/issues/85)): tracked instance
+allocation, queued and delivered records, deliveries, workers and descriptors.
+It tracks no shared-release allocation. Queued
+[requests](../TERMS.md#request) and outstanding operations are measured
+([#93](https://github.com/jackgeek/climon2/issues/93)). The monotonic
+counters count Input bytes as `submit` accepts them, Display bytes and
+records as they are drained and deliveries as they are released; none
+wraps: once one would pass its maximum, snapshot fails with
+`CM1_RESOURCE_LIMIT`
+([#99](https://github.com/jackgeek/climon2/issues/99)). Instance allocation
+is measured at the library's allocator: every block allocated while working
+for the instance, its diagnostics, workers, requests, records and connection
+included, from creation until the block is freed
+([#180](https://github.com/jackgeek/climon2/issues/180)). Each worker's thread
+handle, which the Rust standard library allocates outside the library's
+allocator, is not counted. State a library dependency keeps for the whole
+process or a caller's thread is shared-release allocation, so it is not
+counted either. The caller is not implemented.**
 The [monitor](../../../GLOSSARY.md#sessions) queries its
 [client](../../../GLOSSARY.md#sessions)'s local resource/progress measurements.
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

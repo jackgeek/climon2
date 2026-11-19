@@ -1,6 +1,10 @@
 # Kill
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements it
+([#96](https://github.com/jackgeek/climon2/issues/96)) as its
+[implemented behavior](core-v1.md#implemented-behavior) details; the
+monitor submits it for selector Delete ([#117](https://github.com/jackgeek/climon2/issues/117)).**
 The [monitor](../../../GLOSSARY.md#sessions) requests
 [Kill](../../../GLOSSARY.md#attachment-and-control) through its
 [client](../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
@@ -32,6 +36,10 @@ termination may expose a known command and incomplete/unknown cleanup;
 initial rejection may expose `CM1_KNOWN_FINAL`. Loss never authorizes replay.
 Default-Cancel selector Delete pins GUID identity, retains failed/uncertain rows
 and removes only after definitive termination plus local cleanup/join.
+The monitor submits it this way for a confirmed selector Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)): through the open
+instance, or a kill-only instance when none is open, with an empty
+`args.required`.
 See [wire Kill](../daemon-client/request-kill.md),
 [results/errors](core-v1.md#requests-and-result-mapping) and
 [lifecycle](../../monitor-lifecycle.md#selector-delete-terminate-and-remove).

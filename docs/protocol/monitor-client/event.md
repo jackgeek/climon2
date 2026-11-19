@@ -1,6 +1,24 @@
 # Event delivery
 
-**Status: agreed revision-1 specification, not implemented.**
+**Status: agreed revision-1 specification. The
+[client library](../../../GLOSSARY.md#sessions) implements drain and delivery
+release ([#85](https://github.com/jackgeek/climon2/issues/85)) and delivers
+[Response](response.md), [Initial metadata](event-initial-metadata.md),
+[Title](event-title.md) and [diagnostic](event-diagnostic.md) records
+([#93](https://github.com/jackgeek/climon2/issues/93)),
+[control](event-control.md), [Restoration begin](event-restoration-start.md)
+and [complete](event-restoration-complete.md), [Display](event-display.md)
+and [Geometry](event-geometry.md) records
+([#94](https://github.com/jackgeek/climon2/issues/94)), and
+[Command final](event-session-ended.md) records
+([#94](https://github.com/jackgeek/climon2/issues/94),
+[#96](https://github.com/jackgeek/climon2/issues/96)),
+[Session status](event-session-status.md) records
+([#95](https://github.com/jackgeek/climon2/issues/95)), and
+[Notification](event-notification.md) and [Progress](event-progress.md)
+records ([#98](https://github.com/jackgeek/climon2/issues/98)); extension
+records are not implemented. The monitor drains and releases every delivery
+([#106](https://github.com/jackgeek/climon2/issues/106)).**
 The [client](../../../GLOSSARY.md#sessions) delivers an
 [event](../TERMS.md#event) to the [monitor](../../../GLOSSARY.md#sessions).
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and

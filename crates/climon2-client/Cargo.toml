@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# The cdylib is libclimon2_client.dylib; `lib` keeps the rlib for the binary and tests.
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [features]
 test-hooks = []
 
@@ -18,6 +22,7 @@ tracing = "0.1.44"
 serde_json.workspace = true
 tempfile = "3.27.0"
 climon2-test-term = { path = "../climon2-test-term" }
+climon2-fixtures = { path = "../climon2-fixtures" }
 
 [lints]
 workspace = true

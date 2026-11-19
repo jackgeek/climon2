@@ -13,7 +13,8 @@ impl fmt::Display for ContractError {
 impl std::error::Error for ContractError {}
 
 macro_rules! validated_string {
-    ($name:ident, $validate:ident) => {
+    ($(#[$attribute:meta])* $name:ident, $validate:ident) => {
+        $(#[$attribute])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
@@ -55,8 +56,44 @@ macro_rules! validated_string {
     };
 }
 
-validated_string!(SessionId, validate_session_id);
+validated_string!(SessionId, validate_guid);
+validated_string!(
+    /// A daemon wire revision-1 GUID, such as a connection ID: a different
+    /// identity from a session ID with exactly its syntax, so the frozen
+    /// hello's accepted syntax never changes.
+    Guid,
+    validate_guid
+);
 validated_string!(VersionName, validate_version);
+
+impl SessionId {
+    /// The session ID whose 16 bytes are `bytes`, in canonical textual order
+    /// (`00 11 .. ff` is `00112233-4455-6677-8899-aabbccddeeff`), as the native
+    /// C ABI carries it.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(uuid::Uuid::from_bytes(bytes).hyphenated().to_string())
+    }
+
+    /// The 16 bytes of this session ID, in canonical textual order, as the
+    /// native C ABI carries it.
+    pub fn bytes(&self) -> [u8; 16] {
+        guid_bytes(&self.0)
+    }
+}
+
+impl Guid {
+    /// The 16 bytes of this GUID, in canonical textual order.
+    pub fn bytes(&self) -> [u8; 16] {
+        guid_bytes(&self.0)
+    }
+}
+
+/// The bytes of validated canonical GUID text.
+fn guid_bytes(text: &str) -> [u8; 16] {
+    uuid::Uuid::parse_str(text)
+        .expect("a GUID is validated canonical text")
+        .into_bytes()
+}
 validated_string!(Timestamp, validate_timestamp);
 validated_string!(MetadataPath, validate_metadata_path);
 
@@ -84,12 +121,13 @@ fn windows_absolute(value: &str) -> bool {
     })
 }
 
-fn validate_session_id(value: &str) -> Result<(), ContractError> {
-    let guid =
-        uuid::Uuid::parse_str(value).map_err(|_| ContractError("invalid session ID".into()))?;
+/// A lowercase canonical hyphenated GUID: the one rule for session IDs, wire
+/// GUIDs and the Linux boot ID in session metadata.
+pub(crate) fn validate_guid(value: &str) -> Result<(), ContractError> {
+    let guid = uuid::Uuid::parse_str(value).map_err(|_| ContractError("invalid GUID".into()))?;
     if guid.hyphenated().to_string() != value {
         return Err(ContractError(
-            "session ID must be a lowercase hyphenated GUID".into(),
+            "GUID must be lowercase and hyphenated".into(),
         ));
     }
     Ok(())
@@ -100,6 +138,8 @@ fn validate_version(value: &str) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// ADR 0005's RFC 3339 `created_at`; the daemon wire's `Utc` is stricter on
+/// purpose.
 fn validate_timestamp(value: &str) -> Result<(), ContractError> {
     if value.len() != 24 || !value.ends_with('Z') || value.as_bytes()[19] != b'.' {
         return Err(ContractError(

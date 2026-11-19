@@ -6,15 +6,22 @@ const PACKAGES: &[&str] = &[
     "climon2-core",
     "climon2-platform",
     "climon2-cli",
+    "climon2-discovery",
     "climon2-daemon",
     "climon2-client",
     "climon2-install",
+    "climon2-monitor",
     "climon2-vt",
     "climon2-test-term",
     "climon2-fixtures",
     "climon2-e2e",
+    "climon2-second-release",
+    "climon2-measure",
     "xtask",
 ];
+/// The second-release fixture is built as its own version, the release
+/// identity it describes (owner decision on #97, 2026-11-15; ADR 0004).
+const SECOND_RELEASE: (&str, &str) = ("climon2-second-release", "0.0.97");
 
 #[derive(Clone, Deserialize)]
 struct Metadata {
@@ -67,15 +74,27 @@ fn metadata() -> Metadata {
 fn is_test_only(name: &str) -> bool {
     matches!(
         name,
-        "climon2-test-term" | "climon2-fixtures" | "climon2-e2e" | "xtask"
+        "climon2-test-term"
+            | "climon2-fixtures"
+            | "climon2-e2e"
+            | "climon2-second-release"
+            | "climon2-measure"
+            | "xtask"
     )
 }
 
 fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
-        "climon2-cli" | "climon2-client" => &["climon2-core", "climon2-platform"],
+        "climon2-client" | "climon2-discovery" => &["climon2-core", "climon2-platform"],
+        "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
+        "climon2-monitor" => &[
+            "climon2-core",
+            "climon2-platform",
+            "climon2-vt",
+            "climon2-discovery",
+        ],
         _ => &[],
     }
 }
@@ -137,16 +156,17 @@ fn every_binary_package_has_an_integration_test() {
     }
 }
 
-/// #23/#24: one workspace version; none of these packages is published to crates.io.
+/// #23/#24: one workspace version, but for the second-release fixture's own (#97);
+/// none of these packages is published to crates.io.
 #[test]
 fn packages_share_one_version_and_are_not_publishable() {
     for package in metadata().packages {
-        assert_eq!(
-            package.version,
-            env!("CARGO_PKG_VERSION"),
-            "{}",
-            package.name
-        );
+        let version = if package.name == SECOND_RELEASE.0 {
+            SECOND_RELEASE.1
+        } else {
+            env!("CARGO_PKG_VERSION")
+        };
+        assert_eq!(package.version, version, "{}", package.name);
         assert_eq!(package.publish, Some(vec![]), "{}", package.name);
     }
 }
@@ -161,6 +181,7 @@ fn shipped_targets_have_the_agreed_names_and_libraries() {
         ("climon2-daemon", "climon2-daemon"),
         ("climon2-client", "climon2-client"),
         ("climon2-install", "climon2-install"),
+        ("climon2-monitor", "climon2-monitor"),
     ] {
         let package = metadata.packages.iter().find(|p| p.name == name).unwrap();
         let binaries: Vec<_> = package
@@ -230,6 +251,17 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-vt", "climon2-core", None, Some(".")),
         ("climon2-client", "climon2-vt", None, Some(".")),
         ("climon2-cli", "climon2-vt", None, Some(".")),
+        ("climon2-discovery", "climon2-cli", None, Some(".")),
+        ("climon2-discovery", "climon2-client", None, Some(".")),
+        ("climon2-discovery", "climon2-daemon", None, Some(".")),
+        ("climon2-discovery", "climon2-vt", None, Some(".")),
+        ("climon2-discovery", "climon2-monitor", None, Some(".")),
+        ("climon2-client", "climon2-discovery", None, Some(".")),
+        ("climon2-daemon", "climon2-discovery", None, Some(".")),
+        ("climon2-monitor", "climon2-client", None, Some(".")),
+        ("climon2-monitor", "climon2-daemon", None, Some(".")),
+        ("climon2-monitor", "climon2-cli", None, Some(".")),
+        ("climon2-cli", "climon2-monitor", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -250,6 +282,14 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-daemon", "climon2-test-term", Some("dev")),
         ("climon2-daemon", "climon2-vt", None),
         ("climon2-test-term", "climon2-daemon", None),
+        ("climon2-cli", "climon2-discovery", None),
+        ("climon2-discovery", "climon2-core", None),
+        ("climon2-discovery", "climon2-platform", None),
+        ("climon2-discovery", "climon2-test-term", Some("dev")),
+        ("climon2-monitor", "climon2-platform", None),
+        ("climon2-monitor", "climon2-vt", None),
+        ("climon2-monitor", "climon2-discovery", None),
+        ("climon2-test-term", "climon2-monitor", None),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {

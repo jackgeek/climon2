@@ -21,6 +21,7 @@ pub enum Role {
     Cli,
     Daemon,
     Client,
+    Monitor,
 }
 
 impl Role {
@@ -29,8 +30,19 @@ impl Role {
             Self::Cli => "cli",
             Self::Daemon => "daemon",
             Self::Client => "client",
+            Self::Monitor => "monitor",
         }
     }
+
+    /// The log of one process in this role: its role, UTC second and pid, so
+    /// it never collides with another process's log in the same directory.
+    fn process_log_name(self, at: SystemTime, pid: u32) -> io::Result<String> {
+        process_log_name(self.name(), at, pid)
+    }
+}
+
+fn process_log_name(name: &str, at: SystemTime, pid: u32) -> io::Result<String> {
+    Ok(format!("{name}-{}-{pid}.log", file_stamp(at)?))
 }
 
 pub struct LogFile {
@@ -57,18 +69,55 @@ fn file_stamp(at: SystemTime) -> io::Result<String> {
 
 /// Every client invocation gets its own log; a name collision is an ordinary failure.
 pub fn client_log_name(at: SystemTime, pid: u32) -> io::Result<String> {
-    Ok(format!("client-{}-{pid}.log", file_stamp(at)?))
+    Role::Client.process_log_name(at, pid)
+}
+
+/// The client library's own log for one client invocation, beside the
+/// client's in the session-log directory: named like it, by its UTC second
+/// and pid, under `library`.
+pub fn library_log_name(at: SystemTime, pid: u32) -> io::Result<String> {
+    process_log_name("library", at, pid)
 }
 
 fn session_log_name(role: Role) -> io::Result<String> {
     match role {
-        Role::Client => client_log_name(SystemTime::now(), std::process::id()),
+        Role::Client | Role::Monitor => {
+            role.process_log_name(SystemTime::now(), std::process::id())
+        }
         Role::Cli | Role::Daemon => Ok(format!("{}.log", role.name())),
     }
 }
 
+/// The CLI's general log is named by its UTC second and pid alone. Any other
+/// role's is a process log: the monitor runs under the pid of the CLI that
+/// exec'd it, possibly within the same second, so its log is named apart.
+fn general_log_name(role: Role, at: SystemTime, pid: u32) -> io::Result<String> {
+    match role {
+        Role::Cli => Ok(format!("{}-{pid}.log", file_stamp(at)?)),
+        Role::Daemon | Role::Client | Role::Monitor => role.process_log_name(at, pid),
+    }
+}
+
+/// Where the monitor's library instance for session `id` in connection
+/// `generation` logs: a new `library-<stamp>-<pid>-<generation>.log` in that
+/// session's private log directory, which this creates, named apart from the
+/// monitor's own general log and from the session's other generations, even
+/// within one second (#116's retries). The library creates the file itself.
+pub fn library_log(home: &Path, id: &SessionId, generation: u64) -> io::Result<PathBuf> {
+    let logs = home.join("logs");
+    crate::runtime::private_directory(&logs)?;
+    let directory = logs.join(id.as_str());
+    crate::runtime::private_directory(&directory)?;
+    let name = format!(
+        "library-{}-{}-{generation}.log",
+        file_stamp(SystemTime::now())?,
+        std::process::id()
+    );
+    Ok(directory.join(name))
+}
+
 impl LogFile {
-    fn open(directory: &Path, name: &str, role: &str) -> io::Result<Self> {
+    fn open(directory: &Path, name: &str, role: Role) -> io::Result<Self> {
         crate::runtime::private_directory(directory)?;
         let path = directory.join(name);
         let file = OpenOptions::new()
@@ -80,8 +129,9 @@ impl LogFile {
         let mut writer = CappedWriter::new(file);
         writeln!(
             writer,
-            "{} INFO climon2: role={role} pid={} version={}",
+            "{} INFO climon2: role={} pid={} version={}",
             timestamp()?,
+            role.name(),
             std::process::id(),
             env!("CARGO_PKG_VERSION")
         )?;
@@ -89,13 +139,18 @@ impl LogFile {
     }
 
     pub fn general(home: &Path) -> io::Result<Self> {
+        Self::general_as(home, Role::Cli)
+    }
+
+    /// The monitor's general log, named apart from the CLI's.
+    pub fn monitor(home: &Path) -> io::Result<Self> {
+        Self::general_as(home, Role::Monitor)
+    }
+
+    fn general_as(home: &Path, role: Role) -> io::Result<Self> {
         crate::runtime::private_directory(&home.join("logs"))?;
-        let stamp = file_stamp(SystemTime::now())?;
-        Self::open(
-            &home.join("logs/general"),
-            &format!("{stamp}-{}.log", std::process::id()),
-            "cli",
-        )
+        let name = general_log_name(role, SystemTime::now(), std::process::id())?;
+        Self::open(&home.join("logs/general"), &name, role)
     }
 
     pub fn session(
@@ -113,7 +168,7 @@ impl LogFile {
     }
 
     fn session_file(directory: &Path, role: Role) -> io::Result<Self> {
-        Self::open(directory, &session_log_name(role)?, role.name())
+        Self::open(directory, &session_log_name(role)?, role)
     }
 
     fn links(&mut self, cli_pid: Option<u32>, previous: Option<&Path>) -> io::Result<()> {
@@ -140,9 +195,7 @@ impl LogFile {
 
     pub fn capture_stderr(&self) -> io::Result<StderrCapture> {
         let (reader, writer) = crate::daemon::pipe()?;
-        // The saved descriptor is owned here and is never inherited across exec.
-        let saved =
-            owned_fd(unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3) })?;
+        let saved = saved_stderr()?;
         replace_stderr(writer.as_raw_fd())?;
         drop(writer);
         let mut sink = self.writer();
@@ -163,20 +216,17 @@ pub struct StderrCapture {
     reader: Option<std::thread::JoinHandle<io::Result<()>>>,
 }
 
-fn owned_fd(fd: libc::c_int) -> io::Result<OwnedFd> {
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // Every caller transfers a newly allocated descriptor.
+/// A duplicate of stderr, numbered above the standard streams, that is owned
+/// here and never inherited across exec.
+fn saved_stderr() -> io::Result<OwnedFd> {
+    let fd = crate::syscall::checked(unsafe {
+        libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3)
+    })?;
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 fn replace_stderr(fd: libc::c_int) -> io::Result<()> {
-    if unsafe { libc::dup2(fd, libc::STDERR_FILENO) } < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    crate::syscall::checked(unsafe { libc::dup2(fd, libc::STDERR_FILENO) }).map(drop)
 }
 
 impl Drop for StderrCapture {

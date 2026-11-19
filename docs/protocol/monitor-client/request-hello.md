@@ -1,7 +1,11 @@
 # Library compatibility check
 
-**Status: agreed revision-1 specification, not implemented.**
-The [monitor](../../../GLOSSARY.md#sessions) checks a loaded
+**Status: agreed revision-1 specification. The library's bootstrap and
+description are implemented ([#75](https://github.com/jackgeek/climon2/issues/75));
+the [monitor](../../../GLOSSARY.md#sessions) checks each release through the
+shared loader ([#84](https://github.com/jackgeek/climon2/issues/84), [#106](https://github.com/jackgeek/climon2/issues/106)) and reserves its qualified requirements
+([#120](https://github.com/jackgeek/climon2/issues/120)).**
+The monitor checks a loaded
 [client library](../../../GLOSSARY.md#sessions) before creating an instance.
 Use the [overview](../README.md), [glossary](../../../GLOSSARY.md) and
 [terms](../TERMS.md).

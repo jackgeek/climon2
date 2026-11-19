@@ -5,34 +5,35 @@ mod command;
 mod delivery;
 mod paste;
 mod pending;
+mod wire;
 mod writes;
 
 use crate::{
     args::Options,
-    connection::Connection,
-    control::{ConnectionId, Control, Effect, Lifecycle, Period},
+    connection::{Connection, Failure, Received},
+    control::{Authority, CommandEnd, ConnectionId, Control, Effect, Lifecycle, SessionEnd},
     pty::Pty,
+    status::{
+        self, Assembler, Clock, Detector, Interpreted, Now, Sample, Screen, SystemRandom, Tracker,
+    },
 };
 use climon2_core::{
-    exit::CLIMON2_ERROR,
-    hello::{SessionState, advertise},
-    protocol::{
-        ClientMessage, Frame, HANGUP_GRACE, HelloReply, MAX_DATA_FRAME_LENGTH, PROTOCOL_VERSION,
-        PTY_DRAIN_CAP, ServerMessage, TerminalSize,
-    },
+    hello::{SessionState, advertise_revision1},
+    protocol::{Frame, HANGUP_GRACE, HelloReply, PROTOCOL_VERSION, PTY_DRAIN_CAP, TerminalSize},
     title::default_title,
+    wire::{CommandResult, Counter, GrantReason, Notification, Progress, RevocationReason, Status},
 };
 use climon2_platform::{
     peer,
     runtime::{SocketFreshness, SocketListener, SocketStream},
     terminal::Signals,
 };
-use climon2_vt::{Geometry, Vt, VtConfig};
-use command::{Command, Drain, Read, classify};
-use delivery::{Delivery, Out};
+use climon2_vt::{Geometry, Signal, Vt, VtConfig};
+use command::{Command, Read, classify};
+use delivery::{DISPLAY_CHUNK, Delivery, Out};
 use paste::PasteTracker;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, VecDeque},
     io,
     time::{Duration, Instant},
 };
@@ -42,8 +43,7 @@ const OUTPUT_CHUNK: usize = 32 * 1024;
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPTS_PER_TICK: usize = 8;
 const INITIAL_TIMEOUT: Duration = Duration::from_secs(5);
-const TICK: Duration = Duration::from_millis(2);
-const FAILURE_MESSAGE: &str = "session failed; see daemon log";
+pub(crate) const TICK: Duration = Duration::from_millis(2);
 /// The kill requester standing for a termination signal; never a connection.
 const SIGNAL: ConnectionId = ConnectionId(u64::MAX);
 
@@ -55,18 +55,39 @@ struct Session<'a, C> {
     cleanup: C,
     connections: BTreeMap<u64, Connection>,
     deliveries: BTreeMap<u64, Delivery>,
+    /// Revision-1 connections after their Open: passive monitor connections
+    /// and interactive attachments.
+    opened: BTreeMap<u64, wire::Opened>,
+    /// Revision-1 connections whose standalone Kill awaits its answer: the
+    /// Kill's request ID.
+    kills: BTreeMap<u64, Counter>,
+    /// The command's result, once published as final.
+    command_result: Option<CommandResult>,
     control: Control,
     vt: Vt,
     next_id: u64,
     controller: Option<u64>,
-    pending_grants: BTreeMap<u64, (Period, TerminalSize)>,
-    pending_lost: BTreeSet<u64>,
+    /// Restorations, of grants and replacements, awaiting their snapshot.
+    pending_restorations: BTreeMap<u64, (Authority, TerminalSize)>,
+    /// The effects of losses marked inside output routing, which the
+    /// control state already applied: performed before any later effect.
+    marked: Vec<Effect>,
     pty_writes: PtyWrites,
     paste: PasteTracker,
     command: Command,
     initial_deadline: Instant,
     finish_deadline: Option<Instant>,
     socket_freshness: SocketFreshness,
+    /// The status detector's clock, read once at the start of each turn.
+    clock: Box<dyn Clock>,
+    /// This turn's clock reading.
+    moment: Now,
+    /// Activity, attention and the effective status they report.
+    status: Detector<SystemRandom>,
+    /// Incomplete OSC 99 notifications, under the session's fixed limits.
+    assembler: Assembler,
+    /// The retained normalized progress.
+    progress: Tracker,
 }
 
 pub(crate) fn serve(
@@ -77,6 +98,9 @@ pub(crate) fn serve(
     cleanup: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     let vt = session_vt(options)?;
+    let mut clock = status::daemon_clock();
+    let moment = clock.now();
+    let status = Detector::new(&moment, sample(&vt), status::first_episode(), SystemRandom);
     let result = Session {
         options,
         listener,
@@ -85,21 +109,36 @@ pub(crate) fn serve(
         cleanup,
         connections: BTreeMap::new(),
         deliveries: BTreeMap::new(),
-        control: Control::new(options.size),
+        opened: BTreeMap::new(),
+        kills: BTreeMap::new(),
+        command_result: None,
+        control: issued(Control::new(options.size, options.lifetime)),
         vt,
         next_id: Default::default(),
         controller: None,
-        pending_grants: BTreeMap::new(),
-        pending_lost: BTreeSet::new(),
+        pending_restorations: BTreeMap::new(),
+        marked: Vec::new(),
         pty_writes: PtyWrites::default(),
         paste: PasteTracker::default(),
         command: Command::Running,
         initial_deadline: Instant::now() + INITIAL_TIMEOUT,
         finish_deadline: None,
         socket_freshness: SocketFreshness::new(&options.socket, Instant::now()),
+        clock,
+        moment,
+        status,
+        assembler: Assembler::new(options.assembly),
+        progress: Tracker::default(),
     }
     .run();
     end_pty(pty, result)
+}
+
+/// The `CLIMON2_DAEMON_ISSUED` test hook brings the counters near exhaustion.
+fn issued(control: Control) -> Control {
+    #[cfg(feature = "test-hooks")]
+    let control = crate::startup::issued(control);
+    control
 }
 
 fn session_vt(options: &Options) -> io::Result<Vt> {
@@ -110,6 +149,79 @@ fn session_vt(options: &Options) -> io::Result<Vt> {
         default_title: default_title(&options.command, &options.arguments),
     };
     Ok(Vt::new(geometry, config))
+}
+
+/// What a status sample reads: the active viewport's characters and size,
+/// and the application's title.
+fn sample(vt: &Vt) -> Sample {
+    let geometry = vt.geometry();
+    Sample {
+        screen: Screen {
+            cols: geometry.cols(),
+            rows: geometry.rows(),
+            characters: vt.viewport_characters(),
+        },
+        title: vt.application_title().map(str::to_owned),
+    }
+}
+
+/// A metadata change the command's output made.
+enum Change {
+    Status(Status),
+    Notification(Notification),
+    Progress(Progress),
+}
+
+/// What the command's output drives, and the changes it made, in stream
+/// order.
+struct Observer<'a> {
+    detector: &'a mut Detector<SystemRandom>,
+    assembler: &'a mut Assembler,
+    progress: &'a mut Tracker,
+    now: &'a Now,
+    changes: Vec<Change>,
+}
+
+impl Observer<'_> {
+    /// What a sequence observed in the command's output does: a
+    /// program-status capability query is answered locally, in order with
+    /// the terminal's other replies; a terminal signal drives detection,
+    /// sampling the terminal as of its place in the output; a progress
+    /// report changes the retained progress; notification data may
+    /// complete a notification.
+    fn observe(&mut self, vt: &Vt, observed: Signal<'_>, replies: &mut Vec<u8>) {
+        if let Some(interpreted) = status::interpret(observed) {
+            self.apply(interpreted, vt, replies);
+        }
+    }
+
+    fn apply(&mut self, interpreted: Interpreted<'_>, vt: &Vt, replies: &mut Vec<u8>) {
+        match interpreted {
+            Interpreted::Query => replies.extend_from_slice(status::QUERY_REPLY),
+            Interpreted::Detect(signal) => {
+                let changed = self.detector.signal(self.now, signal, || sample(vt));
+                self.changes.extend(changed.map(Change::Status));
+            }
+            Interpreted::Progress(report) => {
+                let changed = self.progress.report(report);
+                self.changes.extend(changed.map(Change::Progress));
+            }
+            Interpreted::Notify(parsed) => self.notify(parsed),
+        }
+    }
+
+    /// A completed notification requests attention, and its record
+    /// carries the episode then pending: the status change, if any, comes
+    /// first.
+    fn notify(&mut self, parsed: status::Parsed<'_>) {
+        let Some(notified) = self.assembler.notification(self.now.monotonic, parsed) else {
+            return;
+        };
+        let changed = self.detector.notify(self.now);
+        self.changes.extend(changed.map(Change::Status));
+        let record = notified.record(self.detector.pending_episode());
+        self.changes.push(Change::Notification(record));
+    }
 }
 
 fn end_pty(pty: &mut Pty, result: io::Result<()>) -> io::Result<()> {
@@ -128,12 +240,30 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
+    /// One turn: the status clock is read once at its start, so the turn's
+    /// input comes before its timer and sample work.
     fn tick(&mut self, now: Instant) -> io::Result<bool> {
+        self.start_turn()?;
+        self.turn(now)?;
+        self.clock.turn_ended()?;
+        Ok(self.finished(now))
+    }
+
+    /// Waits while a test-hooks turn barrier holds the daemon, then reads
+    /// the status clock for the whole turn.
+    fn start_turn(&mut self) -> io::Result<()> {
+        self.clock.turn_starting()?;
+        self.moment = self.clock.now();
+        Ok(())
+    }
+
+    /// The turn's work: input first, then the command's output, timers and
+    /// samples, then delivery.
+    fn turn(&mut self, now: Instant) -> io::Result<()> {
         self.socket_freshness.refresh(now)?;
         self.incoming()?;
         self.pump(now)?;
-        self.outgoing(now)?;
-        Ok(self.finished(now))
+        self.outgoing(now)
     }
 
     fn pump(&mut self, now: Instant) -> io::Result<()> {
@@ -145,6 +275,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     // Incoming connections and frames.
 
     fn incoming(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::held() {
+            return Ok(());
+        }
         self.accept()?;
         for id in self.connection_ids() {
             self.service(id)?;
@@ -189,41 +323,35 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    fn received(&mut self, id: u64, received: io::Result<Vec<ClientMessage>>) -> io::Result<()> {
-        match received {
-            Ok(messages) => self.messages(id, messages),
-            Err(error) => self.protocol_failure(id, &error),
+    fn received(
+        &mut self,
+        id: u64,
+        (messages, failure): (Vec<Received>, Option<Failure>),
+    ) -> io::Result<()> {
+        self.messages(id, messages)?;
+        match failure {
+            Some(failure) => self.protocol_failure(id, failure),
+            None => Ok(()),
         }
     }
 
-    fn messages(&mut self, id: u64, messages: Vec<ClientMessage>) -> io::Result<()> {
+    fn messages(&mut self, id: u64, messages: Vec<Received>) -> io::Result<()> {
         for message in messages {
             if !self.connections.contains_key(&id) {
                 break;
             }
-            self.message(id, message)?;
+            self.dispatch(id, message)?;
         }
         Ok(())
     }
 
-    fn message(&mut self, id: u64, message: ClientMessage) -> io::Result<()> {
-        match message {
-            ClientMessage::Hello { .. } => self.hello(id),
-            ClientMessage::Input(bytes) => {
-                self.input(id, &bytes);
-                Ok(())
-            }
-            other => self.control_message(ConnectionId(id), other),
+    /// A message meets the effects of every loss marked before it.
+    fn dispatch(&mut self, id: u64, received: Received) -> io::Result<()> {
+        self.lose_marked()?;
+        match received {
+            Received::Hello => self.hello(id),
+            Received::Request(request) => self.request(id, request),
         }
-    }
-
-    fn control_message(&mut self, conn: ConnectionId, message: ClientMessage) -> io::Result<()> {
-        if let ClientMessage::Resize(size) = message {
-            self.control.resize(conn, size);
-            return Ok(());
-        }
-        let effects = control_effects(&mut self.control, conn, message);
-        self.effects(effects)
     }
 
     fn hello(&mut self, id: u64) -> io::Result<()> {
@@ -236,22 +364,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             climon2_version: self.options.version.clone(),
             protocol: PROTOCOL_VERSION,
         };
-        self.queue_frame(id, advertise(&reply, state)?);
+        self.queue_frame(
+            id,
+            advertise_revision1(&reply, state, &wire::advertisement())?,
+        );
         Ok(())
     }
 
-    /// Input is admitted only from the ready controller of the current period.
-    fn input(&mut self, id: u64, bytes: &[u8]) {
-        if !self.control.admits_input(ConnectionId(id)) {
-            return;
-        }
-        self.pty_writes.input(id, bytes);
-    }
-
-    fn protocol_failure(&mut self, id: u64, error: &io::Error) -> io::Result<()> {
+    fn protocol_failure(&mut self, id: u64, failure: Failure) -> io::Result<()> {
         if let Some(connection) = self.connections.get_mut(&id) {
-            connection.error(&protocol_error(error));
-            connection.close_after_flush();
+            connection.fail(failure);
         }
         self.remove_delivery(id);
         self.react(|control| control.lost(ConnectionId(id)))
@@ -277,17 +399,33 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.initial_deadline(now)
     }
 
+    /// A hang-up the daemon cannot confirm keeps only what it already knew.
     fn end_hangup(&mut self, now: Instant) -> io::Result<()> {
         if !self.command.hung_up(now) {
             return Ok(());
         }
-        let code = self.pty.end_hangup().unwrap_or(CLIMON2_ERROR);
-        self.end_command(code)
+        let end = match self.pty.end_hangup() {
+            Ok(result) => CommandEnd::Confirmed(result),
+            Err(_) => self.unconfirmed(),
+        };
+        self.end_command(end)
     }
 
-    fn end_command(&mut self, code: u32) -> io::Result<()> {
+    /// The command's end, unconfirmed, with any result already reaped.
+    fn unconfirmed(&self) -> CommandEnd {
+        CommandEnd::Unconfirmed(self.pty.result())
+    }
+
+    /// Nothing more of the command's output is read once it ended, so a
+    /// known result is final. A result held while the session went on
+    /// reaches, as the session ends, the connections that opened after it.
+    fn end_command(&mut self, command: CommandEnd) -> io::Result<()> {
+        if let Some(result) = command.known() {
+            self.publish(result);
+        }
+        self.publish_held();
         self.command = Command::Ended;
-        self.react(|control| control.command_exited(code))
+        self.react(|control| control.command_exited(command))
     }
 
     fn terminate_on_signal(&mut self) -> io::Result<()> {
@@ -309,11 +447,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         let Ok(status) = observed else {
             return self.fail("cannot observe the command");
         };
-        if let Some(code) = status {
-            self.command = Command::Draining {
-                code,
-                drain: Drain::new(now),
-            };
+        if let Some(result) = status {
+            self.command = Command::draining(result, now);
         }
         Ok(())
     }
@@ -334,10 +469,12 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn output(&mut self, now: Instant) -> io::Result<()> {
         self.read_pty(now)?;
+        self.observe_status();
         self.end_sync(now);
-        self.start_grants(now);
+        self.start_restorations(now);
         self.deliver(now);
-        Ok(())
+        self.lose_marked()?;
+        self.report_exit(now)
     }
 
     fn read_pty(&mut self, now: Instant) -> io::Result<()> {
@@ -361,10 +498,36 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
+    /// Feeds the command's output to the VT; the terminal signals in it
+    /// change the status, notify and change progress in order, reported
+    /// after its live output.
     fn fed(&mut self, bytes: &[u8], now: Instant) {
-        let fed = self.vt.feed(bytes, now);
+        let mut observer = Observer {
+            detector: &mut self.status,
+            assembler: &mut self.assembler,
+            progress: &mut self.progress,
+            now: &self.moment,
+            changes: Vec::new(),
+        };
+        let fed = self.vt.feed_observed(bytes, now, |vt, observed, replies| {
+            observer.observe(vt, observed, replies);
+        });
+        let changes = observer.changes;
         self.pty_writes.daemon(&fed.replies);
+        if fed.focus_enabled {
+            self.focus_enabled();
+        }
         self.route(fed.live);
+        changes.into_iter().for_each(|change| self.report(change));
+        self.titles(fed.titles);
+    }
+
+    fn report(&mut self, change: Change) {
+        match change {
+            Change::Status(status) => self.report_status(Some(status)),
+            Change::Notification(notification) => self.report_notification(notification),
+            Change::Progress(progress) => self.report_progress(progress),
+        }
     }
 
     fn route(&mut self, live: Vec<u8>) {
@@ -394,22 +557,22 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
-    fn start_grants(&mut self, now: Instant) {
+    fn start_restorations(&mut self, now: Instant) {
         if self.vt.sync_pending(now) {
             return;
         }
-        for (id, (period, host)) in std::mem::take(&mut self.pending_grants) {
-            self.grant(id, period, host, now);
+        for (id, (authority, host)) in std::mem::take(&mut self.pending_restorations) {
+            self.snapshot(id, authority, host, now);
         }
     }
 
-    fn grant(&mut self, id: u64, period: Period, host: TerminalSize, now: Instant) {
+    /// The snapshot for a restoration, of a grant or a replacement.
+    fn snapshot(&mut self, id: u64, authority: Authority, host: TerminalSize, now: Instant) {
         let Some(delivery) = self.deliveries.get_mut(&id) else {
             return;
         };
-        let lead = delivery.grant(&mut self.vt, period, host, now);
+        let lead = delivery.restore(&mut self.vt, authority, host, now);
         self.controller = Some(id);
-        self.reply(id, ServerMessage::Granted { period: period.0 });
         self.send_output(id, &lead);
     }
 
@@ -435,10 +598,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match out {
             Out::Prefix(bytes) => self.send_output(id, &bytes),
             Out::Live(bytes) => self.commit_live(id, bytes),
-            Out::RestoreEnd(period) => {
-                self.reply(id, ServerMessage::RestoreEnd { period: period.0 })
-            }
+            Out::RestoreEnd(authority) => self.restored(id, authority),
         }
+    }
+
+    fn restored(&mut self, id: u64, authority: Authority) {
+        self.report_restored(id, authority);
+        self.control.restored(ConnectionId(id), authority);
     }
 
     /// Committed live bytes beyond the live queue limit lose the attachment.
@@ -481,8 +647,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn outgoing(&mut self, now: Instant) -> io::Result<()> {
         self.flush_connections()?;
         self.lose_marked()?;
-        self.deadlines(now)?;
-        self.report_exit(now)
+        self.deadlines(now)
     }
 
     fn flush_connections(&mut self) -> io::Result<()> {
@@ -503,11 +668,9 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
+    /// Performs the effects of every loss marked so far.
     fn lose_marked(&mut self) -> io::Result<()> {
-        for id in std::mem::take(&mut self.pending_lost) {
-            self.react(|control| control.lost(ConnectionId(id)))?;
-        }
-        Ok(())
+        self.effects(Vec::new())
     }
 
     fn deadlines(&mut self, now: Instant) -> io::Result<()> {
@@ -534,22 +697,44 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             .iter()
             .filter_map(|(id, delivery)| Some((*id, delivery.expired(now)?)))
             .collect();
-        for (id, period) in expired {
-            self.react(|control| control.restore_deadline(ConnectionId(id), period))?;
+        for (id, authority) in expired {
+            self.react(|control| control.restore_deadline(ConnectionId(id), authority))?;
         }
         Ok(())
     }
 
-    /// The exit is reported once output drained, the initial attachment had
-    /// its chance and no grant awaits `Ready`.
+    /// The result is final once the command's output drained to the
+    /// connections and nothing that output produced is still held back
+    /// from them. A termination that waited for the drain then hangs up;
+    /// otherwise the exit is reported once, in addition, the initial
+    /// attachment had its chance and no grant awaits `Ready`.
     fn report_exit(&mut self, now: Instant) -> io::Result<()> {
-        let Some(code) = self.command.drained(now) else {
+        let Some(result) = self.delivered(now) else {
             return Ok(());
         };
+        self.publish(&result);
+        if self.command.hangs_up_when_drained() {
+            return self.hang_up(now);
+        }
         if self.awaiting(now) {
             return Ok(());
         }
-        self.end_command(code)
+        self.end_command(CommandEnd::Confirmed(result))
+    }
+
+    /// The command's result, once its output drained and nothing it
+    /// produced is still held back from a connection: no restoration is in
+    /// progress, with the live output behind it, and no synchronized update
+    /// holds a derived update or a grant's snapshot. Run after this pass's
+    /// restorations started, so a grant still waiting is held by an update.
+    /// Each hold ends within its own bounds: a restoration completes or its
+    /// stalled reader is lost, and the update's latch expires.
+    fn delivered(&self, now: Instant) -> Option<CommandResult> {
+        let held = self.vt.sync_pending(now) || self.deliveries.values().any(Delivery::restoring);
+        if held {
+            return None;
+        }
+        self.command.drained(now)
     }
 
     fn awaiting(&self, now: Instant) -> bool {
@@ -557,15 +742,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn starting(&self, now: Instant) -> bool {
-        self.control.snapshot().lifecycle == Lifecycle::Starting
-            && !super::passed(self.initial_deadline, now)
+        holds_exit(
+            self.control.snapshot().lifecycle,
+            self.initial_deadline,
+            now,
+        )
     }
 
     fn awaiting_ready(&self) -> bool {
-        !self.pending_grants.is_empty()
-            || self
-                .controller
-                .is_some_and(|id| !self.control.admits_input(ConnectionId(id)))
+        self.controller
+            .is_some_and(|id| !self.control.admits_input(ConnectionId(id)))
     }
 
     fn finished(&self, now: Instant) -> bool {
@@ -581,19 +767,21 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.effects(effects)
     }
 
+    /// Effects in the order of the transitions that returned them: those
+    /// of losses marked earlier come first, and those of a loss marked while
+    /// performing one follow the rest of its batch.
     fn effects(&mut self, effects: Vec<Effect>) -> io::Result<()> {
-        for effect in effects {
+        let mut queue = VecDeque::from(std::mem::take(&mut self.marked));
+        queue.extend(effects);
+        while let Some(effect) = queue.pop_front() {
             self.effect(effect)?;
+            queue.extend(std::mem::take(&mut self.marked));
         }
         Ok(())
     }
 
     fn effect(&mut self, effect: Effect) -> io::Result<()> {
         match effect {
-            Effect::Grant { conn, period, host } => {
-                self.pending_grants.insert(conn.0, (period, host));
-                Ok(())
-            }
             Effect::ResizeSession { size } => self.resize_session(size),
             other => self.shutdown_effect(other),
         }
@@ -613,7 +801,7 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     fn attachment_effect(&mut self, effect: Effect) {
         match effect {
             Effect::Admit { conn } => self.admit(conn.0),
-            Effect::Refuse { conn } => self.close_with_error(conn.0, "session is terminating"),
+            Effect::Convert { conn } => self.convert(conn.0),
             other => self.input_effect(other),
         }
     }
@@ -644,31 +832,54 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
 
     fn departure_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::AcceptDetach { conn } => self.terminal(conn.0, ServerMessage::Detached),
             Effect::Disconnect { conn } => self.remove_connection(conn.0),
+            Effect::EndAttachment { conn } => {
+                self.report_revocation(conn.0, RevocationReason::SessionEnding);
+            }
             other => self.result_effect(other),
         }
     }
 
     fn result_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::DeliverExit { conn, code } => {
-                self.terminal(conn.0, ServerMessage::Exit { code })
-            }
-            Effect::DeliverError { conn } => self.terminal(conn.0, failure_message()),
-            other => self.final_effect(other),
+            Effect::ConfirmKill { conn, end } => self.confirm_kill(conn.0, &end),
+            Effect::Finish => self.finish(),
+            other => self.grant_effect(other),
         }
     }
 
-    fn final_effect(&mut self, effect: Effect) {
+    fn grant_effect(&mut self, effect: Effect) {
         match effect {
-            Effect::ConfirmKill { conn, code } => {
-                self.terminal(conn.0, ServerMessage::Terminated { code });
-            }
-            Effect::Finish => self.finish(),
+            Effect::Grant {
+                conn,
+                authority,
+                host,
+                reason,
+            } => self.granted(conn.0, authority, host, reason),
+            Effect::Restore {
+                conn,
+                authority,
+                host,
+            } => self.replaced(conn.0, authority, host),
             // Every other effect was dispatched earlier in the chain.
             _ => {}
         }
+    }
+
+    /// Control is granted at once; the snapshot waits for the pending size
+    /// to apply and for any synchronized update to end.
+    fn granted(&mut self, id: u64, authority: Authority, host: TerminalSize, reason: GrantReason) {
+        self.report_grant(id, authority, host, reason);
+        self.pending_restorations.insert(id, (authority, host));
+    }
+
+    /// A replaced restoration's output ends at once.
+    fn replaced(&mut self, id: u64, authority: Authority, host: TerminalSize) {
+        if let Some(delivery) = self.deliveries.get_mut(&id) {
+            delivery.retire();
+        }
+        self.report_restoration(id, authority, host);
+        self.pending_restorations.insert(id, (authority, host));
     }
 
     fn resize_session(&mut self, size: TerminalSize) -> io::Result<()> {
@@ -681,44 +892,56 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    /// The grace is a loop deadline, so probes, refusals and joining kills
-    /// are served while the command session hangs up.
+    /// A command that already exited drains its output first, so a
+    /// termination never cuts that output short.
     fn begin_shutdown(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        self.observe_command(now)?;
+        if self.command.hang_up_when_drained() {
+            return Ok(());
+        }
+        self.hang_up(now)
+    }
+
+    /// The grace is a loop deadline, so probes, refusals and joining kills
+    /// are served while the command session hangs up. A failed hang-up
+    /// confirms nothing.
+    fn hang_up(&mut self, now: Instant) -> io::Result<()> {
         if self.pty.hang_up().is_err() {
-            return self.end_command(CLIMON2_ERROR);
+            return self.end_command(self.unconfirmed());
         }
         self.command = Command::HangingUp {
-            until: Instant::now() + HANGUP_GRACE,
+            until: now + HANGUP_GRACE,
         };
         Ok(())
     }
 
     fn run_cleanup(&mut self) -> io::Result<()> {
-        let effects = match (self.cleanup)() {
+        let effects = match self.clean_up() {
             Ok(()) => self.control.cleanup_finished(),
             Err(_) => self.control.authoritative_failure(),
         };
         self.effects(effects)
     }
 
+    /// Removes the session metadata and socket.
+    fn clean_up(&mut self) -> io::Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if crate::startup::selected_fault("cleanup") {
+            return Err(super::io_error("controlled cleanup fault"));
+        }
+        (self.cleanup)()
+    }
+
     fn finish(&mut self) {
         self.finish_deadline
-            .get_or_insert_with(|| Instant::now() + PTY_DRAIN_CAP);
+            .get_or_insert_with(|| flush_deadline(Instant::now()));
     }
 
     fn admit(&mut self, id: u64) {
         let delivery = Delivery::new(self.control.session_size());
         self.deliveries.insert(id, delivery);
-        self.reply(id, ServerMessage::Attached);
-    }
-
-    fn close_with_error(&mut self, id: u64, message: &str) {
-        self.terminal(
-            id,
-            ServerMessage::Error {
-                message: message.into(),
-            },
-        );
+        self.admitted(id);
     }
 
     fn enable_input(&mut self, id: u64) {
@@ -740,10 +963,11 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         if let Some(delivery) = self.deliveries.get_mut(&id) {
             delivery.resize(host);
         }
+        self.report_geometry(id);
     }
 
     fn release(&mut self, id: u64) {
-        self.pending_grants.remove(&id);
+        self.pending_restorations.remove(&id);
         if let Some(delivery) = self.deliveries.get_mut(&id) {
             let bytes = delivery.release();
             self.send_output(id, &bytes);
@@ -751,39 +975,35 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     }
 
     fn revoke(&mut self, id: u64) {
-        self.pending_grants.remove(&id);
+        self.pending_restorations.remove(&id);
         if let Some(delivery) = self.deliveries.get_mut(&id) {
             let bytes = delivery.end_sync();
             delivery.retire();
             self.send_output(id, &bytes);
         }
         self.forget_controller(id);
-        self.reply(id, ServerMessage::Revoked);
+        self.report_revocation(id, RevocationReason::Takeover);
     }
 
-    /// Sends a connection's last message and stops its session output.
-    fn terminal(&mut self, id: u64, message: ServerMessage) {
-        self.reply(id, message);
-        if let Some(connection) = self.connections.get_mut(&id) {
-            connection.close_after_flush();
+    /// A kill requester's answer: a standalone Kill's Response. A
+    /// termination signal, the other kill requester, needs none.
+    fn confirm_kill(&mut self, id: u64, end: &SessionEnd) {
+        if let Some(request_id) = self.kill_request(id) {
+            self.answer_kill(id, request_id, end);
         }
-        self.remove_delivery(id);
     }
 
     // Connection bookkeeping.
 
+    /// Session output in order, as Display under the attachment's
+    /// authority. Nothing is sent for no bytes, or without an authority.
     fn send_output(&mut self, id: u64, bytes: &[u8]) {
-        for chunk in bytes.chunks(MAX_DATA_FRAME_LENGTH - 1) {
-            self.reply(id, ServerMessage::Output(chunk.to_vec()));
-        }
-    }
-
-    fn reply(&mut self, id: u64, message: ServerMessage) {
-        let Some(connection) = self.connections.get_mut(&id) else {
+        let Some(authority) = self.display_authority(id) else {
             return;
         };
-        let queued = connection.queue(message);
-        self.queued_or_lost(id, queued);
+        for chunk in bytes.chunks(DISPLAY_CHUNK) {
+            self.display(id, authority, chunk);
+        }
     }
 
     fn queue_frame(&mut self, id: u64, frame: Frame) {
@@ -807,10 +1027,13 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         Ok(())
     }
 
-    /// Loses a connection from inside output routing; the state machine
-    /// hears of it after this iteration's output.
+    /// Loses a connection from inside output routing: the control state
+    /// applies the loss at once, so no later departure hands control to it
+    /// or promotes it, and only the loss's effects wait for the next
+    /// effects performed.
     fn mark_lost(&mut self, id: u64) {
-        self.pending_lost.insert(id);
+        let effects = self.control.lost(ConnectionId(id));
+        self.marked.extend(effects);
         self.remove_connection(id);
     }
 
@@ -819,10 +1042,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         self.remove_delivery(id);
     }
 
+    /// Stops all session output to a connection, including a passive
+    /// monitor connection's core metadata.
     fn remove_delivery(&mut self, id: u64) {
         self.deliveries.remove(&id);
+        self.opened.remove(&id);
+        self.kills.remove(&id);
         self.pty_writes.discard(id);
-        self.pending_grants.remove(&id);
+        self.pending_restorations.remove(&id);
         self.forget_controller(id);
     }
 
@@ -845,65 +1072,54 @@ fn accepted(result: io::Result<SocketStream>) -> io::Result<Option<SocketStream>
     })
 }
 
-fn control_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: ClientMessage,
-) -> Vec<Effect> {
-    match message {
-        ClientMessage::Attach(size) => control.attach(conn, size),
-        ClientMessage::Ready { period } => control.ready(conn, Period(period)),
-        other => departure_effects(control, conn, other),
-    }
-}
-
-fn departure_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: ClientMessage,
-) -> Vec<Effect> {
-    match message {
-        ClientMessage::TakeControl => control.take_control(conn),
-        ClientMessage::Detach => control.detach(conn),
-        other => ending_effects(control, conn, &other),
-    }
-}
-
-/// `Kill`, or a client `Error`, which is an unexpected loss.
-fn ending_effects(
-    control: &mut Control,
-    conn: ConnectionId,
-    message: &ClientMessage,
-) -> Vec<Effect> {
-    if matches!(message, ClientMessage::Kill) {
-        return control.kill(conn);
-    }
-    control.lost(conn)
-}
-
-fn failure_message() -> ServerMessage {
-    ServerMessage::Error {
-        message: FAILURE_MESSAGE.into(),
-    }
-}
-
-fn protocol_error(error: &io::Error) -> String {
-    if error.kind() == io::ErrorKind::InvalidData {
-        return error.to_string();
-    }
-    "invalid session protocol".into()
-}
-
 /// An ending session finishes at its drain deadline, with output still queued for a client
 /// that stopped reading, or sooner once every connection has drained.
 fn finished_at(deadline: Option<Instant>, now: Instant, drained: impl FnOnce() -> bool) -> bool {
     deadline.is_some_and(|deadline| super::passed(deadline, now) || drained())
 }
 
+/// Final flushing after the session finishes at `finishing` is bounded to one
+/// further second.
+fn flush_deadline(finishing: Instant) -> Instant {
+    finishing + PTY_DRAIN_CAP
+}
+
+/// Only a session still awaiting its initial attachment keeps an early command exit for
+/// that attachment, and only until its initial deadline. A headless session is never
+/// `Starting`, so it never holds one.
+fn holds_exit(lifecycle: Lifecycle, initial_deadline: Instant, now: Instant) -> bool {
+    lifecycle == Lifecycle::Starting && !super::passed(initial_deadline, now)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::finished_at;
+    use super::{finished_at, flush_deadline, holds_exit};
+    use crate::control::Control;
+    use climon2_core::{lifetime::Lifetime, protocol::TerminalSize};
     use std::time::{Duration, Instant};
+
+    /// HDL-01 (pure decision): an ordinary session keeps an
+    /// early command exit for its first attachment until its initial attach
+    /// window closes; a headless session, `detached` from startup, never holds it.
+    #[test]
+    fn only_an_unattached_ordinary_session_holds_an_early_exit_until_its_initial_deadline() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(5);
+        let unattached = |lifetime| {
+            Control::new(TerminalSize { cols: 80, rows: 24 }, lifetime)
+                .snapshot()
+                .lifecycle
+        };
+        assert!(holds_exit(unattached(Lifetime::Ordinary), later, now));
+        assert!(
+            !holds_exit(unattached(Lifetime::Ordinary), now, now),
+            "window closed"
+        );
+        assert!(
+            !holds_exit(unattached(Lifetime::Headless), later, now),
+            "headless"
+        );
+    }
 
     #[test]
     fn an_ending_session_finishes_at_its_deadline_or_once_drained() {
@@ -913,5 +1129,18 @@ mod tests {
         assert!(!finished_at(Some(later), now, || false), "draining");
         assert!(finished_at(Some(later), now, || true), "drained early");
         assert!(finished_at(Some(now), now, || false), "deadline reached");
+    }
+
+    /// Final flushing is bounded to one further second after the session
+    /// finishes: a connection that has not drained keeps it up until then,
+    /// and no longer.
+    #[test]
+    fn final_flushing_lasts_one_further_second() {
+        let finishing = Instant::now();
+        let deadline = Some(flush_deadline(finishing));
+        let almost = finishing + Duration::from_millis(999);
+        assert!(!finished_at(deadline, almost, || false), "still flushing");
+        let second = finishing + Duration::from_secs(1);
+        assert!(finished_at(deadline, second, || false), "bound reached");
     }
 }

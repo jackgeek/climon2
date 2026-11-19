@@ -10,9 +10,13 @@ workspace = true
 
 [dev-dependencies]
 climon2-core = { path = "../climon2-core" }
+climon2-fixtures = { path = "../climon2-fixtures" }
 climon2-install = { path = "../climon2-install" }
+# Only so that Cargo builds the second-release fixture's library (#97).
+climon2-second-release = { path = "../climon2-second-release" }
 climon2-test-term = { path = "../climon2-test-term" }
-nix = { version = "0.31", features = ["signal", "process", "user"] }
+libc = "0.2.191"
+nix = { version = "0.31", features = ["fs", "signal", "process", "user"] }
 portable-pty = { version = "0.9.0", default-features = false }
 serde_json.workspace = true
 tempfile = "3"

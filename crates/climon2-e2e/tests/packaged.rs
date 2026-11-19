@@ -2,14 +2,11 @@
 
 mod support;
 
-use climon2_test_term::{Terminal, controlled_bash, copy_executable};
+use climon2_fixtures::second_release;
+use climon2_test_term::{Terminal, bin_path, controlled_bash, copy_executable};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    time::{Duration, Instant},
-};
-use support::{Package, TIMEOUT, quote};
+use std::{fs, path::Path};
+use support::{LIBRARY, Package, TIMEOUT, quote, type_until};
 
 /// #21.6/#38: real installer → PATH launcher → CLI → daemon → client, from
 /// controlled outer bash to controlled inner bash; a second real PTY lists one
@@ -43,24 +40,6 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
     assert!(package.list().is_empty());
     package.assert_clean();
     package.assert_archive_default_levels();
-}
-
-/// Types `command` until `output` appears. A client drops keys typed before it confirmed
-/// its restoration, and nothing on the screen says when it has, so `command` must be
-/// harmless to repeat.
-fn type_until(terminal: &mut Terminal, command: &str, output: &str) {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        terminal.wait_for_input_ready(TIMEOUT).unwrap();
-        terminal.send(command).unwrap();
-        if terminal
-            .wait_for_text(output, Duration::from_secs(1))
-            .is_ok()
-        {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{output:?} never appeared");
-    }
 }
 
 fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
@@ -127,6 +106,16 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
         "",
         "print",
         "resize-ready",
+        // Answers the harmless probe, then shows the typed secret reached the command.
+        "raw",
+        "await-input",
+        "probe",
+        "print",
+        "input-ready",
+        "await-input",
+        "\r",
+        "print",
+        "input-received",
         "sleep",
         "5000",
         "report",
@@ -140,8 +129,9 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
     command.args(args);
     let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
     terminal.wait_for_text("resize-ready", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    terminal.send("input-secret-not-for-logs-72c").unwrap();
+    type_until(&mut terminal, "probe", "input-ready");
+    terminal.send("input-secret-not-for-logs-72c\r").unwrap();
+    terminal.wait_for_text("input-received", TIMEOUT).unwrap();
     terminal.resize(43, 137).unwrap();
     assert_eq!(
         terminal.wait_exit(TIMEOUT).unwrap(),
@@ -205,7 +195,7 @@ fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
     command.env("PS1", "ENCLOSING> ");
     let mut terminal = Terminal::spawn(command, 30, 160).unwrap();
     terminal.wait_for_text("ENCLOSING> ", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    type_until(&mut terminal, "echo enclosing-$((1+1))\n", "enclosing-2");
     terminal
         .send(format!(
             "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
@@ -251,10 +241,9 @@ fn installed_tui_roundtrips_queries_mouse_paste_and_resize_without_reset() {
     let mut terminal = launch(&package, "climon2-tui-fixture", &[path.to_str().unwrap()]);
     terminal.wait_for_bytes(b"\x1b[?1049h", TIMEOUT).unwrap();
     terminal.wait_for_text("cursor-ok", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
-    terminal
-        .send("\x1b[<0;7;9M\x1b[200~paste-exact\x1b[201~")
-        .unwrap();
+    // The first mouse report is the one recorded, so it is harmless to repeat.
+    type_until(&mut terminal, "\x1b[<0;7;9M", "mouse-ok");
+    terminal.send("\x1b[200~paste-exact\x1b[201~").unwrap();
     terminal
         .wait_for_text("mouse-ok paste-ok", TIMEOUT)
         .unwrap();
@@ -286,7 +275,7 @@ fn installed_real_vim_edits_and_saves() {
         &["-Nu", "NONE", "-i", "NONE", "-n", path.to_str().unwrap()],
     );
     terminal.wait_for_text("vim-original", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    type_until(&mut terminal, ":echo 'probe-'.(6*7)\r", "probe-42");
     terminal.send("Govim-through-session\x1b:wq\r").unwrap();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     drop(terminal);
@@ -310,7 +299,8 @@ fn installed_real_less_navigates_and_resizes() {
     .unwrap();
     let mut terminal = launch(&package, "/usr/bin/less", &["-R", path.to_str().unwrap()]);
     terminal.wait_for_text("less-top", TIMEOUT).unwrap();
-    terminal.wait_for_input_ready(TIMEOUT).unwrap();
+    // `=` shows the file's position until the next key, which less then obeys.
+    type_until(&mut terminal, "=", "(press RETURN)");
     terminal.resize(38, 132).unwrap();
     terminal.send("G").unwrap();
     terminal.wait_for_text("less-bottom", TIMEOUT).unwrap();
@@ -347,6 +337,8 @@ fn owned_bash(package: &Package, ignore_hangup: bool) -> Terminal {
 /// #19/#21.7/#38: killing the real installed client cannot request session
 /// termination; EOF drives the daemon's one leave policy, including the full
 /// five-second grace and group kill of a command that ignores hangup.
+/// HDL-01 (Monitor layer), ordinary case: headless sessions leave this policy
+/// unchanged for ordinary sessions.
 #[test]
 fn killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing() {
     let package = Package::new();
@@ -518,9 +510,11 @@ fn installed_log_headers_links_and_filters_survive_exec_handoffs() {
     }
 }
 
-/// #19/#20/#38: a slow pre-hello peer plus invalid framing on unrelated raw
-/// sockets cannot starve the actual installed client's input/output or the
-/// installed list's concurrent probe. No raw peer becomes a controlling client.
+/// #19/#20/#38 and COM-01 (Contract after retirement): a slow pre-hello
+/// peer plus invalid framing on unrelated raw sockets cannot starve the
+/// actual installed client's input/output or the installed list's
+/// concurrent probe. No raw peer becomes a controlling client, and the peer
+/// that never sends a hello is closed at its deadline without a byte.
 #[test]
 fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     use std::io::{Read, Write};
@@ -531,8 +525,7 @@ fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     };
     let package = Package::new();
     let mut terminal = launch_bash(&package, &bash);
-    terminal.send("echo $((40+2))-raw\n").unwrap();
-    terminal.wait_for_text("42-raw", TIMEOUT).unwrap();
+    type_until(&mut terminal, "echo $((40+2))-raw\n", "42-raw");
     let metadata = package.metadata();
     let mut pending = UnixStream::connect(metadata.socket_path.to_string()).unwrap();
     pending
@@ -556,11 +549,7 @@ fn installed_session_survives_raw_socket_abuse_and_pending_hello() {
     terminal.wait_for_text("54-still-live", TIMEOUT).unwrap();
     let mut response = Vec::new();
     pending.read_to_end(&mut response).unwrap();
-    let frame = climon2_core::protocol::read_frame(&mut response.as_slice()).unwrap();
-    assert!(matches!(
-        climon2_core::protocol::ServerMessage::from_frame(frame).unwrap(),
-        climon2_core::protocol::ServerMessage::Error { .. }
-    ));
+    assert_eq!(response, b"", "the pending peer was answered");
     drop(pending);
     terminal.send("exit 0\n").unwrap();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
@@ -583,8 +572,11 @@ fn actual_previous_release_remains_live_across_current_archive_install() {
     };
     let start = || {
         let mut terminal = launch_bash(&package, &bash);
-        terminal.send("echo $((6*7))-upgrade-ready\n").unwrap();
-        terminal.wait_for_text("42-upgrade-ready", TIMEOUT).unwrap();
+        type_until(
+            &mut terminal,
+            "echo $((6*7))-upgrade-ready\n",
+            "42-upgrade-ready",
+        );
         terminal
     };
     let mut previous = start();
@@ -686,8 +678,11 @@ fn debug_hook_mid_install_crash_recovers_without_stranding_live_client() {
     let installer = package.executable_home().join("install");
     copy_executable(&climon2_test_term::bin_path("climon2-install"), &installer);
     let mut terminal = launch_bash(&package, &bash);
-    terminal.send("echo $((6*7))-install-ready\n").unwrap();
-    terminal.wait_for_text("42-install-ready", TIMEOUT).unwrap();
+    type_until(
+        &mut terminal,
+        "echo $((6*7))-install-ready\n",
+        "42-install-ready",
+    );
     let session = package.metadata().session_id.to_string();
     let current = fs::read(package.executable_home().join("current")).unwrap();
     let invoke = |fault: Option<&str>| {
@@ -769,11 +764,29 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     let package = Package::private();
     let old_version = env!("CARGO_PKG_VERSION");
     let old_folder = package.executable_home().join(old_version);
-    let real_client = old_folder.join("client-real");
-    fs::rename(old_folder.join("climon2-client"), &real_client).unwrap();
+    // The real clients attach through their own version folder's library
+    // (#101), so each one lives as `climon2-client` in a folder of its
+    // session's release, beside that release's library.
+    let real_home = package.isolation.home().join("real-clients");
+    let real_client = |version: &str, library: &Path| {
+        let folder = real_home.join(version);
+        fs::create_dir_all(&folder).unwrap();
+        copy_executable(
+            &old_folder.join("client-real"),
+            &folder.join("climon2-client"),
+        );
+        copy_executable(library, &folder.join(LIBRARY));
+        folder.join("climon2-client")
+    };
+    fs::rename(
+        old_folder.join("climon2-client"),
+        old_folder.join("client-real"),
+    )
+    .unwrap();
+    let real_old = real_client(old_version, &old_folder.join(LIBRARY));
     executable_script(
         &old_folder.join("climon2-client"),
-        &frozen_client_fixture(&package, &real_client, old_version),
+        &frozen_client_fixture(&package, &real_old, old_version),
     );
     let start = || {
         let mut command = package.command("climon2");
@@ -784,9 +797,11 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         command.env("PS1", "PACKAGED> ");
         let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
         terminal.wait_for_text("PACKAGED> ", TIMEOUT).unwrap();
-        terminal.wait_for_input_ready(TIMEOUT).unwrap();
-        terminal.send("echo $((6*7))-version-ready\n").unwrap();
-        terminal.wait_for_text("42-version-ready", TIMEOUT).unwrap();
+        type_until(
+            &mut terminal,
+            "echo $((6*7))-version-ready\n",
+            "42-version-ready",
+        );
         terminal
     };
     let mut old = start();
@@ -811,21 +826,24 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
                 .display()
         )
     );
-    let fixture_version = "9.9.9";
+    // The second-release fixture's library describes its own release.
+    let fixture_version = second_release::VERSION;
+    let fixture_library = second_release::library(bin_path("climon2-cli").parent().unwrap());
     let payload_root = package.isolation.home().join("controlled-payload");
     let fixture_folder = payload_root.join(fixture_version);
     fs::create_dir_all(&fixture_folder).unwrap();
-    fs::copy(
-        package.executable_home().join("climon2"),
-        payload_root.join("climon2"),
-    )
-    .unwrap();
-    for binary in ["climon2-cli", "climon2-daemon"] {
-        fs::copy(old_folder.join(binary), fixture_folder.join(binary)).unwrap();
+    copy_executable(
+        &package.executable_home().join("climon2"),
+        &payload_root.join("climon2"),
+    );
+    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor"] {
+        copy_executable(&old_folder.join(binary), &fixture_folder.join(binary));
     }
+    copy_executable(&fixture_library, &fixture_folder.join(LIBRARY));
+    let real_fixture = real_client(fixture_version, &fixture_library);
     executable_script(
         &fixture_folder.join("climon2-client"),
-        &frozen_client_fixture(&package, &real_client, fixture_version),
+        &frozen_client_fixture(&package, &real_fixture, fixture_version),
     );
     let payload = climon2_install::Payload::from_directory(&payload_root, fixture_version).unwrap();
     climon2_install::install(&payload, &package.executable_home()).unwrap();
@@ -839,7 +857,13 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
             .any(|session| session["climon2_version"] == fixture_version)
     );
     assert_eq!(package.list_with_version(old_version).len(), 2);
-    let proof = fs::read_to_string(package.isolation.home().join("frozen-client-9.9.9")).unwrap();
+    let proof = fs::read_to_string(
+        package
+            .isolation
+            .home()
+            .join(format!("frozen-client-{fixture_version}")),
+    )
+    .unwrap();
     let invocation: Vec<_> = proof.lines().collect();
     assert_eq!(invocation.len(), 3);
     assert_eq!(&invocation[..2], ["attach", "--metadata"]);

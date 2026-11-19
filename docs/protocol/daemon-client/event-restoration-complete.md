@@ -1,6 +1,8 @@
 # Restoration complete — `0x4a`
 
-**Status: agreed, not implemented**, owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+**Status: agreed and implemented** for interactive attachments
+([#87](https://github.com/jackgeek/climon2/issues/87)) and monitor-mode
+connections ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../GLOSSARY.md#sessions) completes the identified
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) sent to the
 controlling [client](../../../GLOSSARY.md#sessions).
@@ -42,3 +44,16 @@ No [request ID](../TERMS.md#request-id)/defaults/unknown members. Invalid record
 cannot silently disappear under congestion; preserve or fail affected connection.
 #63 owns application mechanics and #69 numeric transfer/deadline/exhaustion
 policy. Related: [Control revoked](event-control-revoked.md).
+
+## Implemented behavior
+
+The [session daemon](../../../GLOSSARY.md#sessions) produces a restoration
+as the attachment drains it, while less than 1 [MiB](../TERMS.md#mib) waits in its queue, and
+sends Restoration complete after the last of its
+[Display](event-display.md) chunks. Live output that arrived meanwhile
+follows as Display of the same authority. [Ready](request-ready.md) is
+accepted only after Restoration complete was sent. When the command's
+output drained while a restoration was in progress,
+[Command final](event-command-final.md#implemented-behavior) waits for its
+Restoration complete and the live output behind it
+([#203](https://github.com/jackgeek/climon2/issues/203)).

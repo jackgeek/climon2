@@ -1,6 +1,46 @@
 # Client library embedding and lifetime
 
-**Status:** agreed design, not implemented. The
+**Status:** agreed design. The library side of the bootstrap and of
+instance lifetime is implemented: every installed version ships its
+[client library](../../GLOSSARY.md#sessions) file, exporting
+only `climon2_client_get_interface`
+([#75](https://github.com/jackgeek/climon2/issues/75)), and its instances are
+created, run, cleaned up and destroyed on their owner threads, and shut down,
+drained and released from any thread, as described below, with every panic
+contained and no process-global state changed
+([#85](https://github.com/jackgeek/climon2/issues/85)). An instance opens a
+passive monitor connection to its session's daemon on its owner thread,
+never raising `SIGPIPE` in the process
+([#93](https://github.com/jackgeek/climon2/issues/93)), or an interactive
+attachment, and relays control and display
+([#94](https://github.com/jackgeek/climon2/issues/94)), status, Set viewing
+and Acknowledge ([#95](https://github.com/jackgeek/climon2/issues/95)), and sends
+[Kill](../../GLOSSARY.md#attachment-and-control) on an auxiliary connection
+of its own ([#96](https://github.com/jackgeek/climon2/issues/96)). The one
+shared loader that the [monitor](../../GLOSSARY.md#sessions) and the
+[client executable](../../GLOSSARY.md#sessions) both use is implemented
+([#84](https://github.com/jackgeek/climon2/issues/84)): it performs the
+[lookup](#artifact-and-dependency-lookup), the load-failure classification and
+the description validation below, and keeps every handle it opens. The monitor
+uses it ([#106](https://github.com/jackgeek/climon2/issues/106)): it loads each
+session's exact-release library once per release on a worker thread, creates,
+runs and destroys each passive client's instance on that instance's own owner
+thread, submits monitor-mode Open, polls the borrowed notification
+descriptors, drains and releases every delivery, and on exit requests
+shutdown of every instance and waits up to `deadlines.shutdown_ms` for each to
+end, its handles to be released and its owner to be joined. An instance
+unconfirmed by then is reported and left, never destroyed, to process exit:
+the monitor does not claim it joined. It acquires the session selected with
+Enter and submits Ready and Resize through that instance
+([#108](https://github.com/jackgeek/climon2/issues/108)). The client
+executable loads its own version folder's library through it and drives
+ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)),
+with its viewing and acknowledgement
+([#102](https://github.com/jackgeek/climon2/issues/102)), and kill
+([#100](https://github.com/jackgeek/climon2/issues/100)) through the function
+table; test tooling uses it too. The monitor also recovers lost clients
+passively ([#116](https://github.com/jackgeek/climon2/issues/116)), shuts every instance down with a bounded fail-stop
+([#118](https://github.com/jackgeek/climon2/issues/118)) and admits each load and client against its limits ([#120](https://github.com/jackgeek/climon2/issues/120)). The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/core-v1.md), confirmed in
@@ -48,7 +88,22 @@ from the [install layout](../../GLOSSARY.md#installation). The library file is
 GNU/Linux; the version folder, not the file name, carries the release. Never
 substitute `current`, another installed release, or a library found through a
 search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
-filename beside itself and verifies its own exact release.
+filename beside itself and verifies its own exact release: its executable home
+and release are those of the version folder it runs from, so the library must
+describe that folder's release ([#100](https://github.com/jackgeek/climon2/issues/100)).
+
+On macOS, [dyld](TERMS.md#dynamic-loader) searches each `DYLD_LIBRARY_PATH`
+directory for the library file's name before it opens an absolute path, so
+that variable can substitute another file, such as another release's. After
+loading, and before anything else, the loader asks `dladdr` which file holds
+the loaded image's `climon2_client_get_interface`; an image without that
+symbol is the requested file only if dyld lists that path among its images.
+When the loaded image is not the requested path, the loader refuses the
+substitute with an explicit error, rather than blaming the requested file for
+a missing symbol, and keeps its handle loaded, like every opened handle (owner
+decisions on [#84](https://github.com/jackgeek/climon2/issues/84)). The working
+directory, `current` and `DYLD_FALLBACK_LIBRARY_PATH` never change which file
+an absolute path loads.
 
 Load with eager symbol resolution and local symbol visibility. Bundled private
 dependencies resolve relative to the library, not the current working directory
@@ -79,7 +134,17 @@ Classify Linux load failures from the loader's own checks, never from
 header that is not x86-64 is an incompatible architecture. A `dlopen` failure
 after both checks pass is a missing dependency, reported with the `dlerror()`
 text only for diagnosis. A missing `climon2_client_get_interface` is a missing
-symbol.
+symbol. A `CM1_INTERNAL_ERROR` from the bootstrap is a recoverable bootstrap
+failure only when it cleared the output storage, which the loader initializes
+to a value the bootstrap cannot return; otherwise it is a malformed description
+([bootstrap rules](monitor-client/core-v1.md#representation-and-compatibility);
+owner decision on [#84](https://github.com/jackgeek/climon2/issues/84)).
+macOS classifies the same way, except that a file without a
+[Mach-O slice](TERMS.md#mach-o-and-slices) dyld would load into the running
+process is an incompatible architecture. A file the loader cannot open at all,
+missing or unreadable, counts as a missing library, and an ELF header it
+cannot read as not x86-64 (owner decision on
+[#84](https://github.com/jackgeek/climon2/issues/84)).
 
 `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` come from the
 user's environment and still affect the glibc libraries the client library
@@ -98,7 +163,14 @@ A stalled load must not freeze global monitor actions. It can still prevent
 other releases from starting: the system loader serializes loading, and glibc
 holds one process-wide lock while a library and its initializers load. A load
 that never returns is a native fault, like a crash. There is no load deadline,
-because a load cannot be cancelled.
+because a load cannot be cancelled: `deadlines.load_ms` is diagnostic only. A
+load still running past it is logged and shown on the rows waiting for it as
+`library loading slowly`, and is never aborted (owner decision on
+[#120](https://github.com/jackgeek/climon2/issues/120), implemented there).
+On glibc that lock (its TLS lock) is also taken by every new thread, so while
+a load is stalled no new client or discovery probe can start, even for a
+release already loaded; clients already running continue. Whether the
+monitor should keep threads ready for that is an open question on #120.
 
 Retain every successfully opened library handle until monitor process exit,
 including handles rejected by later compatibility checks. Rejected libraries
@@ -128,8 +200,9 @@ validity and release operations follow the [native calls](monitor-client/core-v1
 [detach](../../GLOSSARY.md#attachment-and-control) is not proof of cleanup or
 thread completion. Cleanup failure must be reported, not called success.
 
-Never forcibly terminate a stalled thread or unload running code. The agreed,
-unimplemented [lifecycle contract](../monitor-lifecycle.md#coordinated-shutdown)
+Never forcibly terminate a stalled thread or unload running code. The agreed
+[lifecycle contract](../monitor-lifecycle.md#coordinated-shutdown), implemented
+by [#118](https://github.com/jackgeek/climon2/issues/118),
 requests shutdown concurrently for every owned instance, including passive,
 attached, partially started and failing ones. Keep draining/releasing deliveries;
 required atomic [Leave](daemon-client/request-leave.md) removes registration and
@@ -143,8 +216,10 @@ the whole monitor process. Never
 claim a stalled thread joined or a lost Leave response succeeded.
 Load/start concurrency, progress deadlines, and admission/exhaustion policies
 are specified in [operational limits](../monitor-operational-limits.md).
-That agreed, unimplemented specification accounts for thread/worker/descriptor
-reservations and retained per-release resources, not just ordinary queue bytes.
+That specification accounts for thread/worker/descriptor
+reservations and retained per-release resources, not just ordinary queue bytes;
+the monitor reserves them before each load and create
+([#120](https://github.com/jackgeek/climon2/issues/120)).
 
 ## Per-instance inputs and memory
 
@@ -204,12 +279,13 @@ supplies configurable delay, cap and jitter.
 
 This is not native-crash isolation. Abort, native faults, and panic-abort builds
 can terminate the monitor and every hosted client. No new session-survival
-guarantee exists: ordinary sessions retain the daemon's existing
-[leave policy](../../GLOSSARY.md#attachment-and-control) and agreed succession.
-Future [headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
+guarantee exists: [ordinary sessions](../../GLOSSARY.md#sessions) retain the
+daemon's existing [leave policy](../../GLOSSARY.md#attachment-and-control) and
+agreed succession.
+[Headless sessions](../../GLOSSARY.md#sessions) explicitly survive zero
 clients even after later attachment loss, until completion or
 [Kill](../../GLOSSARY.md#attachment-and-control); that lifetime
-exception is agreed, not implemented, and adds no native-crash isolation.
+exception is implemented and adds no native-crash isolation.
 
 ## Required automated evidence
 

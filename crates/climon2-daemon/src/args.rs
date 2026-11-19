@@ -1,4 +1,6 @@
-use climon2_core::{SessionId, VersionName, protocol::TerminalSize};
+use climon2_core::{
+    SessionId, VersionName, config::Assembly, lifetime::Lifetime, protocol::TerminalSize,
+};
 use std::{collections::BTreeMap, ffi::OsString, io, path::PathBuf};
 
 pub(crate) struct Options {
@@ -11,6 +13,10 @@ pub(crate) struct Options {
     pub readiness_fd: u32,
     pub size: TerminalSize,
     pub max_history_rows: u32,
+    /// The notification assembly limits `exec` validated, fixed for the
+    /// session's lifetime.
+    pub assembly: Assembly,
+    pub lifetime: Lifetime,
     pub command: OsString,
     pub arguments: Vec<OsString>,
     pub log: Option<String>,
@@ -29,8 +35,8 @@ impl Options {
     ) -> io::Result<Self> {
         let (id, version, cli_pid) = identity(&mut fields)?;
         let (home, socket, cwd) = locations(&mut fields)?;
-        let (readiness_fd, size, max_history_rows) = transport(&mut fields)?;
-        let log = only_log(fields)?;
+        let (readiness_fd, size, (max_history_rows, assembly)) = transport(&mut fields)?;
+        let (lifetime, log) = policy(fields)?;
         Ok(Self {
             id,
             version,
@@ -41,6 +47,8 @@ impl Options {
             readiness_fd,
             size,
             max_history_rows,
+            assembly,
+            lifetime,
             command,
             arguments,
             log,
@@ -92,6 +100,12 @@ fn insert_unique(
     Ok(())
 }
 
+/// The session's lifetime policy, then the optional log filter.
+fn policy(mut fields: BTreeMap<OsString, OsString>) -> io::Result<(Lifetime, Option<String>)> {
+    let lifetime = number(&mut fields, "--lifetime")?;
+    Ok((lifetime, only_log(fields)?))
+}
+
 /// `--log` is the only optional field; anything else left over is invalid.
 fn only_log(mut fields: BTreeMap<OsString, OsString>) -> io::Result<Option<String>> {
     let log = fields
@@ -124,15 +138,28 @@ fn locations(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(PathBuf, 
     ))
 }
 
-fn transport(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(u32, TerminalSize, u32)> {
-    let rows = scrollback_rows(fields)?;
+fn transport(
+    fields: &mut BTreeMap<OsString, OsString>,
+) -> io::Result<(u32, TerminalSize, (u32, Assembly))> {
+    let limits = limits(fields)?;
     let size = size(fields)?;
-    Ok((number(fields, "--readiness-fd")?, size, rows))
+    Ok((number(fields, "--readiness-fd")?, size, limits))
 }
 
-fn scrollback_rows(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<u32> {
+/// The notification assembly limits, each within its setting's range.
+fn assembly(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<Assembly> {
+    let records = number(fields, "--assembly-records")?;
+    let bytes = number(fields, "--assembly-bytes")?;
+    let lifetime_ms = number(fields, "--assembly-ms")?;
+    Assembly::new(records, bytes, lifetime_ms).ok_or_else(invalid)
+}
+
+/// The session's retained history rows and notification assembly limits,
+/// fixed for its lifetime.
+fn limits(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<(u32, Assembly)> {
     let rows = number(fields, "--scrollback-max-rows")?;
-    (rows <= 100_000).then_some(rows).ok_or_else(invalid)
+    let rows = (rows <= 100_000).then_some(rows).ok_or_else(invalid)?;
+    Ok((rows, assembly(fields)?))
 }
 
 fn size(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<TerminalSize> {
@@ -178,6 +205,15 @@ fn number<T: std::str::FromStr>(
 mod tests {
     use super::*;
 
+    const ASSEMBLY: [&str; 6] = [
+        "--assembly-records",
+        "32",
+        "--assembly-bytes",
+        "65536",
+        "--assembly-ms",
+        "5000",
+    ];
+
     fn arguments(max_rows: Option<&str>) -> Vec<OsString> {
         let mut args = vec![
             "--session-id",
@@ -196,8 +232,11 @@ mod tests {
             "80",
             "--cwd",
             "/home/test",
+            "--lifetime",
+            "ordinary",
         ];
         let mut values: Vec<_> = args.drain(..).map(OsString::from).collect();
+        values.extend(ASSEMBLY.map(OsString::from));
         if let Some(rows) = max_rows {
             values.extend([
                 OsString::from("--scrollback-max-rows"),
@@ -230,5 +269,69 @@ mod tests {
                 .max_history_rows,
             100_000
         );
+    }
+
+    fn with_lifetime(lifetime: &str) -> Vec<OsString> {
+        let mut values = arguments(Some("10000"));
+        let key = values
+            .iter()
+            .position(|value| value == "--lifetime")
+            .unwrap();
+        values[key + 1] = lifetime.into();
+        values
+    }
+
+    /// `--lifetime` spells the startup policy exactly as the CLI writes it.
+    #[test]
+    fn daemon_requires_a_known_lifetime() {
+        assert_eq!(
+            Options::parse(with_lifetime("ordinary")).unwrap().lifetime,
+            Lifetime::Ordinary
+        );
+        assert_eq!(
+            Options::parse(with_lifetime("headless")).unwrap().lifetime,
+            Lifetime::Headless
+        );
+        for value in ["", "Headless", "persistent"] {
+            assert!(Options::parse(with_lifetime(value)).is_err(), "{value:?}");
+        }
+    }
+
+    /// `arguments` with the value of `key` replaced by `value`, or without
+    /// `key` when `value` is `None`.
+    fn replaced(key: &str, value: Option<&str>) -> Vec<OsString> {
+        let mut values = arguments(Some("10000"));
+        let at = values.iter().position(|value| value == key).unwrap();
+        match value {
+            Some(value) => values[at + 1] = value.into(),
+            None => drop(values.drain(at..at + 2)),
+        }
+        values
+    }
+
+    /// LIM-01 (exec-provided assembly limits): the daemon requires the
+    /// three notification assembly limits `exec` validated, each in its
+    /// setting's range, and keeps them.
+    #[test]
+    fn daemon_requires_valid_assembly_limits() {
+        let parsed = Options::parse(arguments(Some("10000"))).unwrap().assembly;
+        assert_eq!(parsed, Assembly::new(32, 65_536, 5_000).unwrap());
+        let edges = [
+            ("--assembly-records", "4294967295"),
+            ("--assembly-bytes", "18446744073709551615"),
+            ("--assembly-ms", "3600000"),
+        ];
+        for (key, value) in edges {
+            assert!(Options::parse(replaced(key, Some(value))).is_ok(), "{key}");
+        }
+        for key in ["--assembly-records", "--assembly-bytes", "--assembly-ms"] {
+            for value in [None, Some("0"), Some("-1"), Some("x")] {
+                assert!(
+                    Options::parse(replaced(key, value)).is_err(),
+                    "{key} {value:?}"
+                );
+            }
+        }
+        assert!(Options::parse(replaced("--assembly-ms", Some("3600001"))).is_err());
     }
 }

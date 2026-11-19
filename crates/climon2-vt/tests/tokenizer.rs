@@ -118,6 +118,21 @@ fn can_and_sub_abort_escape_sequences() {
     );
 }
 
+/// LIM-03: the controls an abandoned sequence held are released as one text
+/// token, so a monitor model holds one buffer for thousands of them.
+#[test]
+fn controls_held_by_an_abandoned_sequence_are_one_text_token() {
+    assert_eq!(
+        tokens(&[b"\x1b[3\n\r1\x18\x1b(\x07\x08\x1b7"]),
+        [
+            text(b"\n\r"),
+            text(b"\x18"),
+            text(b"\x07\x08"),
+            token(Kind::Escape, b"\x1b7"),
+        ]
+    );
+}
+
 #[test]
 fn can_and_sub_end_control_strings_and_then_execute() {
     assert_eq!(
@@ -196,6 +211,28 @@ fn bodies_up_to_the_cap_are_kept_and_longer_ones_are_dropped() {
             [token(Kind::Oversized, b""), text(b"a")]
         );
     }
+}
+
+/// LIM-01 (derived release-constant title bound, at the limit and one
+/// past): an OSC 0 or 2 title may carry 4,096 bytes after its `0;` or `2;`,
+/// and one more drops it. Any other OSC's parameter counts against its body.
+#[test]
+fn a_title_may_carry_the_whole_body_after_its_selector() {
+    for selector in [&b"\x1b]0;"[..], b"\x1b]2;"] {
+        let kept = oversized(selector, 4096, b"\x07");
+        assert_eq!(kept.len(), 2 + 2 + 4096 + 1);
+        assert_eq!(tokens(&[&kept]), [(Kind::Osc, kept.clone())]);
+        let dropped = oversized(selector, 4097, b"\x07");
+        assert_eq!(
+            tokens(&[&dropped, b"a"]),
+            [token(Kind::Oversized, b""), text(b"a")]
+        );
+    }
+    let other = oversized(b"\x1b]1;", 4095, b"\x07");
+    assert_eq!(
+        tokens(&[&other, b"a"]),
+        [token(Kind::Oversized, b""), text(b"a")]
+    );
 }
 
 #[test]

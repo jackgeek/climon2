@@ -3,10 +3,62 @@
 **Status: developer-confirmed specification for
 [Define automated monitor acceptance criteria](https://github.com/jackgeek/climon2/issues/62),
 not implementation or executed acceptance evidence.** The
-[monitor](../GLOSSARY.md#sessions), packaged
-[client libraries](../GLOSSARY.md#sessions), new daemon wire and headless
-creation remain unimplemented. Resolving this specification does not pass a
-[release gate](../GLOSSARY.md#testing).
+[monitor](../GLOSSARY.md#sessions) is the walking skeleton of
+[#74](https://github.com/jackgeek/climon2/issues/74) with discovery, passive
+clients and the basic selector of
+[#106](https://github.com/jackgeek/climon2/issues/106), the row statuses,
+final outcomes and status order of
+[#107](https://github.com/jackgeek/climon2/issues/107), the selection,
+control and painting of [#108](https://github.com/jackgeek/climon2/issues/108),
+the input router of [#109](https://github.com/jackgeek/climon2/issues/109) and
+the switching, revocation and take-control key of
+[#110](https://github.com/jackgeek/climon2/issues/110),
+and the initial selection of
+[#266](https://github.com/jackgeek/climon2/issues/266), moved there from
+#107, and the later monitor tickets
+[#111](https://github.com/jackgeek/climon2/issues/111) to
+[#121](https://github.com/jackgeek/climon2/issues/121): paste, mouse and focus,
+the history viewport, selector search, viewing and the attention jump, toasts
+and the bell, the disconnection, read-only history and passive recovery of
+[#116](https://github.com/jackgeek/climon2/issues/116), Delete, the
+coordinated shutdown and exit status of
+[#118](https://github.com/jackgeek/climon2/issues/118), memory accounting,
+admission and the measurement job, whose cases are mapped in the crate
+READMEs' scenario-to-test tables.
+The daemon wire is partly implemented. Packaged
+[client libraries](../GLOSSARY.md#sessions) implement their bootstrap and
+description ([#75](https://github.com/jackgeek/climon2/issues/75)), their
+local instance lifecycle
+([#85](https://github.com/jackgeek/climon2/issues/85)), passive monitor
+connections ([#93](https://github.com/jackgeek/climon2/issues/93)), control
+and display ([#94](https://github.com/jackgeek/climon2/issues/94)), status,
+viewing and acknowledgement
+([#95](https://github.com/jackgeek/climon2/issues/95)), and Command final and
+Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
+which the monitor loads (#106); the client executable loads its own release's
+library for `climon2 kill`
+([#100](https://github.com/jackgeek/climon2/issues/100)), the LIB-01 and LIB-02
+executable cases, and for ordinary attach
+([#101](https://github.com/jackgeek/climon2/issues/101)), the COM-01 Monitor
+parity case, with its derived viewing and acknowledgement
+([#102](https://github.com/jackgeek/climon2/issues/102)), the STA-08
+ordinary-attach case. Session daemons speak only the frozen hello and daemon
+wire revision 1 since the private post-hello protocol was retired
+([#104](https://github.com/jackgeek/climon2/issues/104)), the COM-01
+Contract after retirement case, mapped in the core, daemon and packaged-test
+READMEs. The Library layer's
+[second-release fixture](../GLOSSARY.md#testing)
+([#97](https://github.com/jackgeek/climon2/issues/97)) runs both releases'
+libraries in one process, against sessions of each release's own daemon, for
+LIB-01 and LIB-03. Headless
+creation is implemented; its HDL-01 Contract cases and its Monitor-layer cases
+through the packaged CLI are mapped in the daemon and packaged-test READMEs,
+and its monitor-row case in the monitor README. Resolving this
+specification does not pass a [release gate](../GLOSSARY.md#testing).
+[Release qualification](../GLOSSARY.md#testing)
+([#122](https://github.com/jackgeek/climon2/issues/122)) records every
+scenario case's evidence with the candidate artifacts, as
+[distribution](distribution.md#release-qualification) describes.
 
 This document specifies evidence for the agreed thread-based Ratatui monitor.
 Read the [domain glossary](../GLOSSARY.md), [technical terms](protocol/TERMS.md)
@@ -72,7 +124,7 @@ and [selection lifetime](monitor-lifecycle.md#monitor-and-selection-lifetime).
 
 | ID | Setup and action | Required observable result | Layers |
 |---|---|---|---|
-| ENT-01 | Start `climon2 monitor` and `climon2 mon` from an installed release with equivalent settings and sessions. | Both open the same real monitor behavior; the launcher/install route is exercised, not a renderer fixture. | Monitor |
+| ENT-01 | Start `c2 monitor`, `c2 m`, `climon2 monitor` and `climon2 m` from an installed release with equivalent settings and sessions. | All open the same real monitor behavior; the launcher/install route is exercised, not a renderer fixture. | Monitor |
 | DSC-01 | Start with sessions having distinct creation times, effective statuses, change times and tied values; delay passive metadata. | Starts are bounded newest-created-first with ascending full [session ID](../GLOSSARY.md#protocol-and-plugin-concepts) ties. Initial selection is the first eligible status/time row after bounded collection, not newest-created or first-connected; uncertainty is explicit. | Contract, Monitor |
 | DSC-02 | Initially stall newer sessions or one release, then let work progress. | Older sessions/other releases get fair first-start progress; selector and exit remain responsive. Every live session is scheduled, never silently capped or omitted. | Monitor, Fault |
 | DSC-03 | Start empty, add sessions continuously while the selector/placeholder/live display is active, and request discovery during a pass. | Immediate initial discovery; subsequent pass starts one second after completion, without overlap. New sessions get passive clients automatically; starting/retained clients are reused, and selection does not move. | Contract, Monitor |
@@ -157,7 +209,7 @@ supplementary. Assert application observations as well as the painted host.
 | TRM-03 | Use host sizes 80x24, 200x60, boundary geometry and a larger-than-supported host; rapidly resize under selector/help/toasts and restoration. | One permanent top row; desired app area is width by height minus one. Canonical monitor bytes use effective session geometry, with blank local margins. Overlay layout is host-relative and never itself resizes the app; only actual host resize targets selected control. | Monitor |
 | TRM-04 | Delay/supersede restoration and resize results, shrink too small and recover while output continues. | Retain clipped/padded coherent transition frame without flashing partial models; transactionally replace all history/model, never union/deduplicate. Only unsent resize intents coalesce. `Terminal too small` disables viewing/input/invalid resize without buffering; global actions and clients keep progressing. | Monitor, Fault |
 | TRM-05 | Scroll normal history while output continues, type from an anchored viewport, evict history and return from alternate screen. | Normal viewport stays anchored; valid typing returns live and forwards. Evicted anchors move to oldest retained with explicit truncation. Alternate wheel never exposes normal history; capture/alternate-scroll modes determine app events. No monitor output leaks into native host history. | Monitor |
-| TRM-06 | Change short/overflowing/empty titles with wide/combining text while chrome status/control/error changes. | Latest nonempty title or command/arguments fallback is literal. Only overflowing label text marquees, with cell-safe offsets and restart on label changes; short labels/status/control/error stay stationary and the application canvas never marquees. | Monitor |
+| TRM-06 | Change short/overflowing/empty titles with wide/combining text while chrome status/control/error changes. | Latest nonempty title or command/arguments fallback is literal. Nothing marquees (owner decision on #112, 2026-11-16): overflowing label text is truncated statically, ending with `…` at a cell-safe width; short labels/status/control/error stay stationary. | Monitor |
 | INP-01 | Use default/custom prefix and takeover settings, null/invalid configuration, literal double prefix, unknown suffix, prefix+d, uppercase J and a lone prefix. | Shared settings/defaults apply; null monitor prefix fails before terminal changes, null takeover is allowed. Fixed s/x/j/? actions work; double prefix emits one literal; unknown suffix emits both without reinterpreting takeover; lone prefix waits. d/h/r add no monitor action. | Contract, Monitor |
 | INP-02 | Fragment/coalesce prefix, ordinary keys and mode-dependent cursor/keypad encodings; use Ctrl+[ prefix and identical Escape/Alt encodings. | Routing is independent of read boundaries and honors supported app modes. Subsequent bytes use the current screen/state. Identical encodings receive identical treatment; accepted Escape/Alt ambiguity is documented, not guessed away. | Monitor |
 | INP-03 | Paste exact binary payload with app bracketed-paste on/off, prefix commands inside it, a pending prefix, and fragmented markers. | Preserve payload; app markers appear only when app mode is on. Paste never executes shortcuts/completes pending commands. Pending prefix becomes one literal only for a currently accepting target; paste end clears it. Unbracketed paste remains indistinguishable from typing. | Contract, Monitor |
@@ -181,7 +233,7 @@ and [host reports/bell](protocol/README.md#monitor-to-host-status-and-bell).
 | HLP-01 | Vary hints/saved suppression, reopen prefix+?, reverse checkbox and restart across releases/homes; cause saving errors. | Startup introduction appears only when permitted; actual prefix+x/s/? content and initially unchecked choice are correct. Suppression is separate per-home preference, persistent/reversible; failures are explicit. Explicit help works regardless of hints/suppression and repeated help is a no-op. | Monitor, Fault |
 | HLP-02 | Open help over selector; Enter/Escape/prefix while clients output; close or exit. | Modal input isolation, no app resize/acquire/acknowledgement, retained control and background progress. Return restores underlying selector search/highlight; prefix-consuming Escape follows its limitation and prefix+x still exits. | Monitor |
 | NOT-01 | Request attention repeatedly, re-arm after acknowledgement, reconnect, open menus after suppressed pending attention, and report final while viewed/unviewed. | Once-per-episode/final-outcome deduplication persists for the monitor run. New pending attention while already viewed is not auto-acknowledged. Menu opens make never-toasted pending attention eligible immediately; a viewed final result is suppressed forever, not resurrected later. Other monitors' viewing never suppresses this one's toast. | Contract, Monitor |
-| NOT-02 | Queue distinct episodes; redraw/resize/dismiss mid-animation and change hints/bell. | Stable bottom-right yellow toast lane, width at most 40%, title-only content, three/four-row shape and safe ellipsis. Clockwise 400 ms draw, 2000 ms hold, 300 ms text fade and 400 ms erase skip obsolete paints without blocking input/exit; once-per-first-draw bell, never per frame/coalesced request. | Monitor, Measure |
+| NOT-02 | Queue distinct episodes; redraw/resize/dismiss mid-animation and change hints/bell. | Stable bottom-right yellow toast lane, width at most 40%, title-only content, three/four-row shape and safe ellipsis. Clockwise 400 ms draw, 2000 ms hold from when the full title's frame is written to the host, 300 ms text fade and 400 ms erase skip obsolete paints without blocking input/exit; one bell when the full title is first written, never per frame/resize/coalesced request or for a toast dismissed before its title showed. | Monitor, Measure |
 | NOT-03 | Invoke lowercase prefix+j from every UI state with changing attention order, tied times and no eligible target. | Choose newest currently connected pending attention by time/full-ID tie, not toast target; exclude stale/final/acknowledged. Close overlays, acquire only as needed and acknowledge once ready/unobstructed; cancel deferred acknowledgement on context change. None leaves selection and says `No sessions need attention`; pasted j/J are literal. | Monitor, Fault |
 | NOT-04 | Change aggregate connected pending attention, dismiss toasts, disable bell, then exit. | Initial/transition-only root `app=climon2-monitor` OSC 7501 blocked/question or working, then clear on orderly exit. No heartbeat/query/session text/child records/raw forwarding. Bell visibility/audibility never proves acknowledgement or host interpretation. | Contract, Monitor |
 | CFG-01 | Validate missing/default/unknown settings, wrong types/null, duplicate fields, unreadable/malformed JSONC; change the file while running. | One startup snapshot before terminal setup; explicit known-setting errors, ignored unrelated fields and no live reload. Hints hide all implicit hints, not bindings/app text; bell independently defaults true. Documentation preserves Escape/Alt warning. | Contract, Monitor, Docs |
@@ -254,8 +306,12 @@ time as a measured operating-system guarantee.
 | LIM-06 | Saturate retry/start/notification/discovery work and freeze newer starts/consumers while processing active input/selector/exit. | Configured quanta/deadlines/jitter/caps bound work and backlog; indivisible work is bounded too. Fair independent progress, non-overlapping retries/discovery and explicit stalled-stream results hold. | Monitor, Fault, Measure |
 | PERF-01 | Run the declared workload matrix below with production candidate artifacts and equivalent standalone clients. | Report total and attributable costs, admission outcomes, sustained display/backlog and latency distributions; demonstrate configured allocation limits and disclose limitations, not presumed savings from fewer processes. | Measure |
 
-Run the #69 evidence points: 1, 10 and 100 live sessions; one release and ten
-mixed releases where applicable; 80x24 and 200x60 plus 500x200 boundary geometry.
+Run the #69 evidence points: 1, 10 and 100 live sessions at 80x24 and 200x60;
+one release and ten mixed releases where applicable. At the 500x200 boundary
+geometry, run 1 and 10 sessions and the measured capacity instead of 100
+(owner, 2026-11-15, [#166](https://github.com/jackgeek/climon2/issues/166)): at
+the default 576 MiB about 35 sessions with history, 124 before any scroll
+([ADR 0007](adr/0007-daemon-owned-virtual-terminal.md#monitor-models-bounded-by-allocation-on-the-unchanged-engine)).
 Cover passive idle, controlling background output, cold/warm loading,
 restoration/switching, selected sustained output, reconnect storms, continuous
 arrivals and stalled newer starts. Record snapshot comparison/allocation,
@@ -278,6 +334,25 @@ diagnosis and an explicitly agreed disposition before release, not silent
 success. These are declared-environment targets, not hard real-time guarantees.
 Any additional processor/resident-memory regression threshold needs measurements
 and separate agreement; this specification invents none.
+
+The [measurement job](../GLOSSARY.md#testing)
+([#121](https://github.com/jackgeek/climon2/issues/121)) implements this
+workload as `cargo xtask measure` on the exact candidate archive, through the
+test-only [`climon2-measure`](../crates/climon2-measure/README.md) harness,
+and the [Measure workflow](../.github/workflows/measure.yml) runs it on hosted
+macos-15, macos-15-intel and ubuntu-24.04 for release candidates and on manual
+dispatch, never on pull requests (owner, 2026-11-16). Each scenario's window is
+60 s at fixed output rates; the comparison is the
+[standalone baseline](../GLOSSARY.md#testing). A missed target, a stall or
+defaults that cannot admit an exact population are recorded as a failed
+Measure case needing the owner's written disposition, which
+[#122](https://github.com/jackgeek/climon2/issues/122) requires before
+qualification; they do not fail the job. The job measures `workers`,
+`instance_descriptors` and `load_descriptors` and checks them against the
+requirements embedded in the release, which stay in source, with 25% headroom.
+Ten mixed releases are recorded as not run until a ten-release mixed-version
+fixture exists. The job's reports are the Measure evidence; this document is
+not.
 
 ## Documentation and evidence records
 
@@ -306,6 +381,14 @@ diagnostics must not log session content.
 This document is the specification, not the result manifest. No row is currently
 claimed passed. Store execution records with candidate test/qualification
 artifacts rather than editing a plan to imply tests ran.
+`cargo xtask qualify` ([#122](https://github.com/jackgeek/climon2/issues/122))
+writes one record per scenario case: each scenario's required layer on each
+qualified platform, taking its tests from the crate READMEs' scenario-to-test
+tables. The Release workflow runs it on the exact candidate archives, stores
+the records as workflow artifacts and a release asset, and publishes only
+when every case passed or has the owner's disposition recorded in
+`qualification/dispositions.json`
+([distribution](distribution.md#release-qualification)).
 
 ## Existing fixtures and missing capabilities
 
@@ -313,17 +396,17 @@ The following are reusable starting points, not monitor acceptance evidence:
 
 | Existing source | Capability and boundary |
 |---|---|
-| [Terminal harness](../crates/climon2-test-term/src/terminal.rs), especially modes at lines 73-116 and screen/history/query handling at 119-186 | Native PTY, emulated host, screen/history and mode/query assertions; useful for driving the actual monitor. Character-only screen text does not by itself prove combining-cell/rendition/cursor fidelity. |
+| [Terminal harness](../crates/climon2-test-term/src/terminal.rs), especially modes at lines 75-122 and screen/history/query/host-signal handling at 124-206, with the [terminal oracle](../GLOSSARY.md#testing)'s [cell and cursor views](../crates/climon2-test-term/src/cell.rs), [host signals](../crates/climon2-test-term/src/signals.rs) and [input injection](../crates/climon2-test-term/src/input.rs) | Native PTY and emulated host with screen/history and mode/query assertions; useful for driving the actual monitor. Per-cell text, width (wide and combining characters), colours and rendition, and cursor position, visibility, shape and blink; OSC 7501 reports and BEL captured with exact bytes, in the order the host's parser acts on them; focus, SGR mouse (press, drag, release, wheel) and bracketed-paste injection only in the modes the application enabled. [Generic terminal](../crates/climon2-fixtures/tests/terminal.rs) and TUI fixture tests prove these against independently specified expectations, not yet against the monitor. The host ignores blinking-text SGR, so neither it nor the oracle can show it. The oracle's cell, cursor and host-signal views use the same engine as production [`climon2-vt`](../crates/climon2-vt/Cargo.toml), `alacritty_terminal` 0.26.0 with vte 0.15, so an interpretation that engine makes, such as a Unicode width, a wide character at the right margin or DECSCUSR 0 as a steady block, looks correct to both. Monitor TRM tests therefore keep literal, hand-written expectations and never take them from the oracle's view of a session's own output. The harness reader never calls vte's `stop_sync`, so the oracle applies a synchronized update only at its end (or after 2 MiB more output), not after vte's 150 ms timeout: a monitor that held an update open would pass where a real host would show the half-drawn frame, and while an update spans reads `host_signals()` runs ahead of `cells()` and `cursor()`. The monitor never writes a synchronized update to its host ([#112](https://github.com/jackgeek/climon2/issues/112)): while an application's update is open it keeps painting the canvas it painted before it, so the packaged TRM-01 case only shows an update spanning two writes arriving whole, and the hold itself is proven by the monitor's pure supplement. |
 | [Isolation](../crates/climon2-test-term/src/isolation.rs), lines 40-110 | Per-test home/environment, owned processes and leak checks. Ordinary cleanup expectations must be adapted to the deliberately surviving headless/detached sessions owned by a test. |
-| [TUI fixture tests](../crates/climon2-fixtures/tests/tui.rs), lines 4-59 | Alternate screen, cursor queries, mouse, paste and resize reports through a PTY. They currently test the fixture, not the monitor. |
+| [TUI fixture tests](../crates/climon2-fixtures/tests/tui.rs), lines 7-118 | Alternate screen, cursor queries, focus, mouse, paste and resize reports through a PTY, with the exact input bytes the fixture received. They currently test the fixture and harness, not the monitor. |
 | [Packaged tests](../crates/climon2-e2e/tests/packaged.rs), lines 10-42 and 68-145 | Real installer/launcher/CLI/daemon/client path and application-observed runtime/resize/log-privacy checks. This route currently has no public client-library or monitor qualification. |
 | [Native documentation checks](protocol/monitor-client/check.py), lines 14-94 | C declaration/example compilation for both target layouts, reference reachability and relative links. No linked production library or runtime call evidence. |
 
 Genuinely missing release evidence includes the actual monitor and packaged
-public-library test path; independently packaged mixed-release/private-dependency
-fixtures; ABI lifetime/descriptor/allocator and fault/stall instrumentation;
+public-library test path; independently packaged private-dependency fixtures
+(the mixed-release fixture exists at the Library layer, #97, and releases
+have no private dependencies); ABI lifetime/descriptor/allocator and fault/stall instrumentation;
 monitor-integrated continuous-output/overlay/readiness/recovery/routing scenarios;
-rich cell/cursor/host-output oracles where the current text harness is insufficient;
 deterministic clock/scheduling and numerical exhaustion cases; and reproducible
 monitor resource/startup/display qualification. Reuse existing fixture capabilities
 where suitable, but name necessary extensions before treating scenarios as runnable.

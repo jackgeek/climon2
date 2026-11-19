@@ -76,7 +76,7 @@ fn list_presentation_quotes_controls_and_fits_terminal_width() {
     assert!(json.contains("\"depth\":3"));
 }
 
-/// #37: malformed metadata is hidden, warned about, and retained.
+/// #37, DSC-06 (CLI part): malformed metadata is hidden, warned about, and retained.
 #[test]
 fn malformed_metadata_is_hidden_warned_and_never_deleted() {
     let home = tempfile::tempdir().unwrap();
@@ -100,7 +100,8 @@ fn malformed_metadata_is_hidden_warned_and_never_deleted() {
     );
 }
 
-/// #37/#26: no socket plus a reused PID is stale; a matching live identity protects files.
+/// #37/#26, DSC-06 (CLI part): no socket plus a reused PID is stale; a matching live identity
+/// protects files.
 #[test]
 fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     let home = tempfile::tempdir().unwrap();
@@ -122,6 +123,8 @@ fn stale_cleanup_requires_connection_refusal_and_proven_dead_identity() {
     fs::remove_file(live.socket_path.as_str()).unwrap();
 }
 
+/// DSC-06 (CLI part), Linux: a session with no socket and no recorded Linux daemon identity is
+/// uncertain: hidden, warned about and never deleted.
 #[cfg(target_os = "linux")]
 #[test]
 fn uncertain_linux_daemon_identity_is_warned_and_metadata_is_retained() {
@@ -141,6 +144,8 @@ fn uncertain_linux_daemon_identity_is_warned_and_metadata_is_retained() {
     );
 }
 
+/// DSC-06 (CLI part): stale metadata whose socket is already gone is removed, and the absent
+/// socket is not reported as a failed cleanup.
 #[test]
 fn already_missing_stale_socket_does_not_report_cleanup_failure() {
     let home = tempfile::tempdir().unwrap();
@@ -182,10 +187,11 @@ fn refusing_socket(path: &str) {
     assert_eq!(unsafe { libc::close(socket) }, 0);
 }
 
-/// #37: missing sockets with a gone PID are stale, unlike failed hello exchanges.
+/// #37, DSC-06 (CLI part): missing sockets with a gone PID are stale, unlike failed hello
+/// exchanges.
 #[test]
 fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
-    use climon2_core::protocol::{Frame, read_frame, write_frame};
+    use climon2_core::protocol::read_frame;
     let home = tempfile::tempdir().unwrap();
     let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
     let pid = child.id();
@@ -207,7 +213,10 @@ fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
         let worker = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             read_frame(&mut socket).unwrap();
-            write_frame(&mut socket, &Frame::new(type_code, body).unwrap()).unwrap();
+            let length = u32::try_from(body.len() + 1).unwrap();
+            socket.write_all(&length.to_be_bytes()).unwrap();
+            socket.write_all(&[type_code]).unwrap();
+            socket.write_all(&body).unwrap();
         });
         assert!(discover(home.path()).unwrap().is_empty());
         worker.join().unwrap();
@@ -218,7 +227,8 @@ fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
     }
 }
 
-/// #37: ARGS truncation follows the real stdout terminal width, not a fixed character cap.
+/// #37, DSC-06 (CLI part): ARGS truncation follows the real stdout terminal width, not a fixed
+/// character cap.
 #[test]
 fn list_args_fit_the_real_stdout_terminal_width() {
     use climon2_core::protocol::{Frame, read_frame, write_frame};
@@ -282,11 +292,16 @@ fn list_created_column_uses_the_local_timezone() {
     assert!(output.status.success(), "{output:?}");
 }
 
-/// #37: list probes do not attach, interrupt the controller, or need version companions.
+/// #37, DSC-06 (CLI part): list probes do not attach, interrupt the controller, or need
+/// version companions.
 #[test]
 fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
-    use climon2_core::protocol::{
-        ClientMessage, ServerMessage, TerminalSize, read_frame, write_frame,
+    use climon2_core::{
+        protocol::{HelloRequest, read_frame, write_frame},
+        wire::{
+            self, ControlRecord, Counter, Families, FrameLimit, Geometry, Mode, Open, Ready,
+            Requested, ServerMessage,
+        },
     };
     use climon2_platform::daemon::{self, Readiness};
     use climon2_test_term::{Isolation, bin_path};
@@ -312,11 +327,21 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
         .arg(&socket)
         .args(["--version", env!("CARGO_PKG_VERSION"), "--cli-pid"])
         .arg(std::process::id().to_string())
+        .args(["--lifetime", "ordinary"])
         .args(["--rows", "24", "--cols", "80", "--cwd"])
         .arg(isolation.home());
     let pending = daemon::spawn(command, |command, fd| {
         command
-            .args(["--scrollback-max-rows", "10000"])
+            .args([
+                "--scrollback-max-rows",
+                "10000",
+                "--assembly-records",
+                "32",
+                "--assembly-bytes",
+                "65536",
+                "--assembly-ms",
+                "5000",
+            ])
             .arg("--readiness-fd")
             .arg(fd.to_string())
             .arg("--")
@@ -330,26 +355,28 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     controller
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    write_frame(
-        &mut controller,
-        &ClientMessage::Hello { protocol: 1 }.to_frame().unwrap(),
-    )
-    .unwrap();
-    assert!(matches!(
-        ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap(),
-        ServerMessage::Hello(_)
-    ));
-    write_frame(
-        &mut controller,
-        &ClientMessage::Attach(TerminalSize { cols: 80, rows: 24 })
-            .to_frame()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap(),
-        ServerMessage::Attached
-    );
+    let hello = HelloRequest { protocol: 1 }.to_frame().unwrap();
+    write_frame(&mut controller, &hello).unwrap();
+    read_frame(&mut controller).unwrap();
+    // An interactive Open over daemon wire revision 1 attaches at 80x24.
+    let limit = FrameLimit::new(1_048_576).unwrap();
+    let none = || Families::new(Vec::new()).unwrap();
+    let dimension = |value| std::num::NonZeroU32::new(value).unwrap();
+    let open = Open {
+        request_id: Counter::new(1).unwrap(),
+        revision: 1,
+        capabilities: Requested::new(none(), none()).unwrap(),
+        mode: Mode::Interactive(Geometry {
+            cols: dimension(80),
+            rows: dimension(24),
+        }),
+    };
+    wire::write_frame(&mut controller, &open.to_frame(), limit).unwrap();
+    let mut next = || {
+        let frame = wire::read_frame(&mut controller, limit).unwrap().unwrap();
+        ServerMessage::from_frame(&frame).unwrap()
+    };
+    assert!(matches!(next(), ServerMessage::Response(_)));
     let live = climon2_cli::list::discover_live(&home).unwrap();
     assert_eq!(live.len(), 1);
     let capabilities = live[0].extensions.capabilities.valid().unwrap();
@@ -379,21 +406,27 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
         json[0]["state"],
         serde_json::json!({"lifecycle":"attached","attachments":1,"controlled":true})
     );
+    // The controller confirms its restoration and receives the exit.
+    let mut request_id = 1;
     loop {
-        match ServerMessage::from_frame(read_frame(&mut controller).unwrap()).unwrap() {
-            ServerMessage::Output(_) | ServerMessage::Granted { .. } => (),
-            ServerMessage::RestoreEnd { period } => {
-                write_frame(
-                    &mut controller,
-                    &ClientMessage::Ready { period }.to_frame().unwrap(),
-                )
-                .unwrap();
+        let frame = wire::read_frame(&mut controller, limit).unwrap().unwrap();
+        match ServerMessage::from_frame(&frame).unwrap() {
+            ServerMessage::RestorationComplete(complete) => {
+                request_id += 1;
+                let ready = Ready {
+                    request_id: Counter::new(request_id).unwrap(),
+                    authority: complete.authority,
+                };
+                wire::write_frame(&mut controller, &ready.to_frame(), limit).unwrap();
             }
-            ServerMessage::Exit { code } => {
-                assert_eq!(code, 7);
+            ServerMessage::CommandFinal(result) => {
+                assert_eq!(
+                    result.command_result(),
+                    &wire::CommandResult::Exit { code: 7 }
+                );
                 break;
             }
-            message => panic!("unexpected controlling message: {message:?}"),
+            _ => (),
         }
     }
     drop(controller);
@@ -401,7 +434,7 @@ fn live_daemon_list_preserves_the_controlling_session_and_json_arguments() {
     isolation.assert_clean();
 }
 
-/// #37: partial hello replies never justify deletion.
+/// #37, DSC-06 (CLI part): partial hello replies never justify deletion.
 #[test]
 fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     assert_failed_hello_retains_artifacts(|socket| {
@@ -414,6 +447,8 @@ fn failed_hello_retains_artifacts_under_a_single_two_second_deadline() {
     });
 }
 
+/// DSC-06 (CLI part): a hello reply that stalls after one byte still ends its probe at the
+/// single two-second discovery deadline, and nothing is deleted.
 #[test]
 fn stalled_partial_hello_does_not_block_past_the_discovery_deadline() {
     assert_failed_hello_retains_artifacts(|socket| {
@@ -449,7 +484,8 @@ fn assert_failed_hello_retains_artifacts(
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }
 
-/// #37: a dead identity must never turn a non-socket path into a deletion target.
+/// #37, DSC-06 (CLI part): a dead identity must never turn a non-socket path into a deletion
+/// target.
 #[test]
 fn stale_metadata_cannot_unlink_a_regular_file_as_a_socket() {
     let home = tempfile::tempdir().unwrap();
@@ -469,7 +505,8 @@ fn stale_metadata_cannot_unlink_a_regular_file_as_a_socket() {
     fs::remove_file(metadata.socket_path.as_str()).unwrap();
 }
 
-/// ADR0001/#37: probes use only frozen hello, ignore version/protocol and future fields.
+/// ADR0001/#37, DSC-06 (CLI part): probes use only frozen hello, ignore version/protocol and
+/// future fields.
 #[test]
 fn frozen_probes_are_concurrent_and_sort_newest_first() {
     let home = tempfile::tempdir().unwrap();
@@ -579,7 +616,8 @@ fn list_json_adds_the_state_object_or_null() {
     assert_eq!(value[1], expected);
 }
 
-/// Section 1.11: malformed optional hello data is logged; the session stays listed.
+/// Section 1.11, DSC-06 (CLI part): malformed optional hello data is logged; the session stays
+/// listed.
 #[test]
 fn malformed_hello_extensions_are_logged_and_the_session_stays_live() {
     use climon2_core::protocol::{Frame, read_frame, write_frame};
@@ -653,4 +691,106 @@ fn list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated() {
         row(width - 1),
         format!("{}…", whole.strip_suffix("gh").unwrap())
     );
+}
+
+/// #77, DSC-06 (CLI part): discovery moved into `climon2-discovery`, and `list` still logs
+/// each probe's diagnostic in the general log once per session, at its old level, under the
+/// CLI's own target and with its errno: a hello from another session or a failed exchange,
+/// an unreachable socket, a session whose daemon still runs or whose identity is unknown,
+/// and a failed stale cleanup. Uncertain sessions keep their metadata.
+#[test]
+fn every_probe_diagnostic_is_logged_once_with_its_errno() {
+    use climon2_test_term::{Isolation, bin_path, exit_within, hello_peer, process_command};
+    use std::os::unix::fs::PermissionsExt;
+    let isolation = Isolation::new();
+    let home = runtime::canonical_home(&isolation.climon2_home()).unwrap();
+    let created = "2026-10-28T07:21:02.930Z";
+    let other = "{\"session_id\":\"12345678-1234-4234-8234-123456789aff\",\"climon2_version\":\"0.1.0\",\"protocol\":1}";
+    let peers: Vec<_> = [(31, other), (32, "{")]
+        .into_iter()
+        .map(|(suffix, body)| {
+            let metadata = metadata(&home, suffix, created);
+            save(&home, &metadata);
+            let worker = hello_peer(metadata.socket_path.as_str(), body, 1);
+            (metadata, worker)
+        })
+        .collect();
+    let unreachable = metadata(&home, 33, created);
+    let datagram =
+        std::os::unix::net::UnixDatagram::bind(unreachable.socket_path.as_str()).unwrap();
+    let alive = metadata(&home, 34, created);
+    let mut unknown = metadata(&home, 35, created);
+    unknown.daemon_pid = 0;
+    let mut stale = metadata(&home, 36, created);
+    stale.daemon_start_time = 0;
+    if let Some(identity) = &mut stale.daemon_linux_identity {
+        identity.start_ticks = 0;
+    }
+    let files: Vec<_> = [&unreachable, &alive, &unknown, &stale]
+        .into_iter()
+        .map(|metadata| save(&home, metadata))
+        .collect();
+    let sessions = home.join("sessions");
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o500)).unwrap();
+    let stdout = isolation.home().join("stdout");
+    let stderr = isolation.home().join("stderr");
+    let mut command = process_command(bin_path("climon2-cli"));
+    command
+        .env_clear()
+        .env("HOME", isolation.home())
+        .env("CLIMON2_HOME", &home)
+        .env("CLIMON2_LOG", "trace")
+        .env("CLIMON2_TEST_ID", isolation.id())
+        .arg("list")
+        .stdout(fs::File::create(&stdout).unwrap())
+        .stderr(fs::File::create(&stderr).unwrap());
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    let status = exit_within(command.spawn().unwrap(), std::time::Duration::from_secs(30));
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert!(status.is_some_and(|status| status.success()), "{status:?}");
+    assert_eq!(
+        fs::read(&stdout).unwrap(),
+        b"No climon2 sessions running.\n"
+    );
+    assert_eq!(fs::read(&stderr).unwrap(), b"");
+    let [log] = fs::read_dir(home.join("logs/general"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let log = fs::read_to_string(log).unwrap();
+    for line in [
+        "DEBUG climon2_cli::list: session probe did not match responded=true\n".to_owned(),
+        "DEBUG climon2_cli::list: session probe did not match responded=false\n".to_owned(),
+        format!(
+            "DEBUG climon2_cli::list: session connection failed errno={}\n",
+            libc::EPROTOTYPE
+        ),
+        "DEBUG climon2_cli::list: refused connection belongs to a live daemon\n".to_owned(),
+        " WARN climon2_cli::list: daemon identity is uncertain\n".to_owned(),
+        format!(
+            " WARN climon2_cli::list: stale session cleanup failed errno={}\n",
+            libc::EACCES
+        ),
+    ] {
+        assert_eq!(log.matches(&line).count(), 1, "{line}{log}");
+    }
+    assert!(files.iter().all(|file| file.exists()));
+    for (metadata, worker) in peers {
+        worker.join().unwrap();
+        fs::remove_file(metadata.socket_path.as_str()).unwrap();
+        fs::remove_file(
+            home.join("sessions")
+                .join(format!("{}.pty", metadata.session_id)),
+        )
+        .unwrap();
+    }
+    drop(datagram);
+    fs::remove_file(unreachable.socket_path.as_str()).unwrap();
+    files.iter().for_each(|file| fs::remove_file(file).unwrap());
+    isolation.assert_clean();
 }

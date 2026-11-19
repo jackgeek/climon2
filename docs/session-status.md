@@ -1,11 +1,34 @@
 # Session status, attention, and activity
 
-**Status: agreed specification, not implemented.** The developer confirmed this
-revision on 2026-11-06. It supersedes the earlier two-state activity heuristic,
+**Status: agreed specification, partly implemented.** The developer confirmed this
+revision on 2026-11-06. The session daemon implements the heuristic detection
+mode, both state machines, effective status, change times and episodes, and
+viewing and acknowledgement
+([#91](https://github.com/jackgeek/climon2/issues/91)), and the explicit and
+fallback detection modes, OSC 7501 program status, OSC 133 shell boundaries
+and full and soft resets
+([#92](https://github.com/jackgeek/climon2/issues/92)), and notification and
+progress signals ([#98](https://github.com/jackgeek/climon2/issues/98)), with
+the evidence in the
+[daemon's contract tests](../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios).
+The monitor shows
+each row's effective status or final outcome and orders rows as
+[below](#reporting-ordering-and-initial-selection)
+([#107](https://github.com/jackgeek/climon2/issues/107)), and makes the
+initial selection after a bounded collection
+([#266](https://github.com/jackgeek/climon2/issues/266)). It reports viewing,
+acknowledges attention, jumps to it with prefix+j and sends the host
+attention reports ([#114](https://github.com/jackgeek/climon2/issues/114)),
+shows toasts and rings the bell
+([#115](https://github.com/jackgeek/climon2/issues/115)), and recovers
+lost clients passively
+([#116](https://github.com/jackgeek/climon2/issues/116)), with the evidence
+in the [monitor's scenario table](../crates/climon2-monitor/README.md#specification-mapping).
+It supersedes the earlier two-state activity heuristic,
 title-plugin requirement, creation-time monitor ordering, and
 [attention](../GLOSSARY.md#status-and-attention) rules in
 [startup/discovery](https://github.com/jackgeek/climon2/issues/59).
-No executable implementation or automated acceptance evidence is claimed here.
+Beyond that, no executable implementation or automated acceptance evidence is claimed here.
 The approved [wire revision 1](protocol/daemon-client/core-v1.md), recorded for
 [#67](https://github.com/jackgeek/climon2/issues/67), subsequently amends
 [viewing](../GLOSSARY.md#status-and-attention),
@@ -13,8 +36,9 @@ explicit acknowledgement and local notification behavior below, without
 changing activity detectors, deadlines or either state machine.
 The subsequent agreed [#63 terminal contract](protocol/terminal-integration.md)
 adds [host](../GLOSSARY.md#sessions)/application focus, terminal-style history, canonical monitor
-presentation, and #64/#59 lowercase-j/configuration amendments. It is also
-unimplemented; neither diagram below changes.
+presentation, and #64/#59 lowercase-j/configuration amendments. The monitor
+implements it ([#108](https://github.com/jackgeek/climon2/issues/108) to
+[#116](https://github.com/jackgeek/climon2/issues/116)); neither diagram below changes.
 
 The [session daemon](../GLOSSARY.md#sessions) owns both
 [activity state and attention state](../GLOSSARY.md#status-and-attention).
@@ -238,6 +262,16 @@ attention, or detector selection. Do not aggregate child `working`/`blocked`
 into session status. Record validation and lifecycle still follow the
 upstream protocol; unsupported/invalid reports do not become `idle`.
 
+The session daemon implements this
+([#92](https://github.com/jackgeek/climon2/issues/92)). Where the upstream
+reference leaves validation open it chooses: a key over 16 bytes or an `app`
+over 32 bytes discards the report; `msg` and `title` must decode, padding
+optional, to [UTF-8](protocol/TERMS.md#unicode-and-utf-8) within their decoded limits (2,048 and 192 bytes) with no
+control character; and a pair holding `;` or another byte outside the value
+set is skipped like any malformed pair. Because only the root record drives
+detection, it keeps no child records: a report with a well-formed `id` pair changes
+nothing it observes, so it validates neither their `id` nor their other fields.
+
 Apply root reports from any live activity state:
 
 | Root report | Activity | Detection mode | Attention action |
@@ -359,9 +393,16 @@ This metadata is not live terminal-content mirroring and never grants control.
 Do not forward raw OSC sequences into outer terminals for interpretation.
 The [agreed wire reference](protocol/daemon-client/core-v1.md) specifies
 structured schemas, capabilities, ordering/correlation, source normalization
-and retention of current progress. [Native declarations](protocol/monitor-client/client-v1.h)
-and [numeric queue/assembly limits](monitor-operational-limits.md) are also
-agreed, not implemented.
+and retention of current progress. The session daemon implements these
+signals, their [Notification](protocol/daemon-client/event-notification.md#implemented-behavior)
+and [Progress changed](protocol/daemon-client/event-progress-changed.md#implemented-behavior)
+records and the notification assembly limits of the
+[operational limits](monitor-operational-limits.md), and the client library
+relays the records as its [native records](protocol/monitor-client/client-v1.h)
+([#98](https://github.com/jackgeek/climon2/issues/98)). The client library
+bounds its queues and keeps a reserve for progress
+([#93](https://github.com/jackgeek/climon2/issues/93),
+[#99](https://github.com/jackgeek/climon2/issues/99)).
 Implementing progress [UI](protocol/TERMS.md#ui) is not part of this revision.
 
 ## Viewing is not merely control
@@ -394,6 +435,9 @@ while switching/menu opening sends focus-out when valid. Optional core
 reporting is disabled, and truthfully distinguishes state acceptance from bytes
 accepted for forwarding. Newly enabled reporting emits current known state once;
 new readiness synchronizes latest local state without replaying old requests.
+The monitor coalesces Focus and Set viewing per session: while one of a kind is
+unanswered it sends no other, then sends the latest desired state once if it
+differs from the last sent; Acknowledge still goes once per explicit action.
 Missing library/daemon focus support keeps the session usable with an explicit
 limitation. These are [terminal focus semantics](protocol/terminal-integration.md#host-focus-and-application-focus),
 not another attention detector.
@@ -480,12 +524,15 @@ prefix+j stays data and s/x stay unchanged.
 
 Needs-attention toasts hint the actual configured prefix plus lowercase j,
 describing the dynamic most-recent jump rather than guaranteeing their own session.
-Planned `monitor.show_key_hints` is boolean, default true; it controls all implicit
+`monitor.show_key_hints` is boolean, default true; it controls all implicit
 toast/chrome/selector/empty hints, not bindings or application text. Validate the
 startup snapshot before terminal changes; wrong type/duplicate known fields fail,
-missing fields default, no live reload, and no new monitor bindings.
+missing fields default, no live reload, and no new monitor bindings. The monitor
+validates it and honors it for every hint it shows, toasts' included
+([#82](https://github.com/jackgeek/climon2/issues/82) to
+[#115](https://github.com/jackgeek/climon2/issues/115)).
 See the [canonical amendments](protocol/terminal-integration.md#attention-jump-and-configurable-hints)
-and [future configuration example](../README.md#planned-monitor-settings-not-implemented).
+and [configuration example](../README.md#configuration).
 
 ## Connection loss and retained terminal views
 
@@ -515,8 +562,9 @@ worker panics. Permanent protocol/interface rejection and invalid configuration
 stop retries with explicit errors. Definitive completion also stops retries.
 Wait for previous-instance deliveries/handles, workers and thread cleanup/join
 before any fresh attempt; never overlap replacement instances.
-The [agreed, unimplemented lifecycle contract](monitor-lifecycle.md) owns these
-rules; [operational limits](monitor-operational-limits.md#passive-retry)
+The [agreed lifecycle contract](monitor-lifecycle.md) owns these
+rules, which the monitor implements
+([#116](https://github.com/jackgeek/climon2/issues/116)); [operational limits](monitor-operational-limits.md#passive-retry)
 specifies numerical delays/caps/jitter.
 Reconnect passively and refresh status/title without automatically taking
 control, even if the session remains selected. Explicit user action resumes
@@ -550,14 +598,15 @@ first hands back to the most recently controlling attachment, otherwise promotes
 the newest accepted passive registration, before final-participant
 [leave policy](../GLOSSARY.md#attachment-and-control). Registration alone does
 not take over a detached session. Committed termination overrides succession.
-No new native-crash survival guarantee is implied. Future
-[headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
+No new native-crash survival guarantee is implied.
+[Headless sessions](../GLOSSARY.md#sessions) explicitly survive zero clients for
 their entire lifetime, including later attachment loss, until command completion
-or Kill; ordinary sessions retain leave policy. Future
+or Kill; ordinary sessions retain leave policy.
 `c2 exec --headless <command> [args...]` returns only after daemon-confirmed
-creation. This CLI spelling and lifetime are agreed in
-[lifecycle](monitor-lifecycle.md#future-headless-creation-and-existing-cli-kill),
-not implemented; preserve existing CLI kill and test it with headless sessions.
+creation. This CLI spelling and lifetime, specified in
+[lifecycle](monitor-lifecycle.md#headless-creation-and-existing-cli-kill), are
+implemented, and existing CLI kill ends headless sessions. A headless session
+without attachments reports the `detached` lifecycle.
 
 Keep selection identity through loss/completion/revocation/failed acquisition;
 never automatically acquire a replacement. Retain rows and metadata for this
@@ -574,9 +623,9 @@ title in the menu; otherwise use command plus arguments. Unsupported title
 delivery on older daemons does not block takeover. Render titles literally and
 mark cached data stale when delivery becomes uncertain.
 The monitor's permanent top row shows the title/fallback as a label only,
-marqueeing only overflowing label text with
-[display-cell](protocol/TERMS.md#display-cell)-safe clipping and
-restart on label changes; status/control/error remain stationary. Full details
+truncating overflowing label text statically, ending with `…` at a
+[display-cell](protocol/TERMS.md#display-cell)-safe width (nothing
+marquees); status/control/error remain stationary. Full details
 stay in the selector. Never change the host title.
 
 Users do not set terminal titles through climon2. Future user-assigned,
@@ -615,17 +664,21 @@ never routed to another/background session. Modal menus also clear keyboard focu
 ## Remaining work and required evidence
 
 The daemon wire schemas, compatibility/rejection, source normalization, viewing
-validation and notification identities are now agreed in #67, not implemented.
-The [lifecycle specification](monitor-lifecycle.md) now agrees recovery,
-concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence,
-bounded whole-process fail-stop and headless lifetime, all unimplemented.
-The [operational specification](monitor-operational-limits.md) now agrees
-numerical budgets/rate limits/retry intervals/retention (#69), not implemented.
+validation and notification identities are agreed in #67 and implemented by
+the session daemon (#86 to #92, #98) and the client library (#93 to #96, #98).
+The [lifecycle specification](monitor-lifecycle.md) agrees recovery,
+concurrent shutdown, truthful Leave/closure/outcome/cleanup/join evidence and
+bounded whole-process fail-stop, implemented by the monitor (#116, #118), and
+headless lifetime, which is implemented (#78).
+The [operational specification](monitor-operational-limits.md) agrees
+numerical budgets/rate limits/retry intervals/retention (#69); its status
+says which the monitor enforces (#116, #119, #120) and which it does not yet.
 [Native declarations](protocol/monitor-client/core-v1.md) are agreed in #71;
-the [acceptance matrix](monitor-acceptance.md) is agreed in #62, while
-real-library runtime evidence and automated monitor conformance remain future work.
-Terminal application is now agreed in the [#63 contract](protocol/terminal-integration.md),
-not implemented; its required real-monitor-host evidence includes history
+the [acceptance matrix](monitor-acceptance.md) is agreed in #62. The crate
+READMEs map tests to its scenarios; release qualification against it (#122)
+is not claimed here.
+Terminal application is agreed in the [#63 contract](protocol/terminal-integration.md)
+and implemented by the monitor (#108 to #116); its required real-monitor-host evidence includes history
 replacement, coherent resize, supported keys/mouse/paste, host/application focus,
 dynamic j/hints, gesture/notification routing, query authority and failure isolation.
 

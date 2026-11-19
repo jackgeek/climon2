@@ -4,6 +4,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+/// Every executable a release places in its version folder.
+pub const COMPANIONS: [&str; 4] = [
+    "climon2-cli",
+    "climon2-daemon",
+    "climon2-client",
+    "climon2-monitor",
+];
+/// The client library every version folder holds beside its executables.
+#[cfg(target_os = "macos")]
+pub const LIBRARY: &str = "libclimon2_client.dylib";
+#[cfg(target_os = "linux")]
+pub const LIBRARY: &str = "libclimon2_client.so";
 // Linux exec refuses inodes whose writable descriptors another test's fork
 // inherited. These fixtures share one process descriptor table, not a filesystem.
 #[cfg(target_os = "linux")]
@@ -36,9 +48,13 @@ impl Workspace {
         let root = self.root.join(name);
         fs::create_dir_all(root.join(version)).unwrap();
         fs::copy(env!("CARGO_BIN_EXE_climon2-install"), root.join("install")).unwrap();
-        for binary in ["climon2-cli", "climon2-daemon", "climon2-client"] {
+        for binary in COMPANIONS {
             script(&root.join(version).join(binary), &format!("exit {status}"));
         }
+        script(
+            &root.join(version).join(LIBRARY),
+            &format!("library {status}"),
+        );
         script(&root.join("climon2"), "exit 11");
         root
     }
