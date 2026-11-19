@@ -3,9 +3,10 @@
 //! type; once every group is read, each setting is checked against its range,
 //! and then the groups against each other. Every refusal names the settings it
 //! concerns. `Limits` exists only after both checks, and nothing outside this
-//! module can change it. The monitor reads its history rows, and checks that it
-//! holds one session's [`MandatoryAllocation`]; its values are otherwise only
-//! reported so far.
+//! module can change it. The monitor reads it through every accessor below but
+//! [`Limits::assembly`], and checks that it holds one session's
+//! [`MandatoryAllocation`]; only `exec` passes the assembly limits on, to the
+//! daemon it starts.
 use super::{ConfigError, Range, object};
 use crate::protocol::TerminalSize;
 use serde::{Deserialize, Serialize};
