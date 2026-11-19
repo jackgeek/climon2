@@ -15,6 +15,8 @@ the session daemon implements the agreed
 
 **Audience:** Integrators and Contributors.
 
+**Reference:** [technical terms](TERMS.md)
+
 ## Shared terms
 
 Use the [domain glossary](../../../GLOSSARY.md) for climon2 concepts and the

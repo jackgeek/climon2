@@ -11,6 +11,8 @@ Architecture decisions live in [`docs/adr/`](../adr/) and agent instructions in
 - **Integrators** write clients or plugins against its protocols.
 - **Contributors** change climon2's code.
 
+**Reference:** [domain glossary](../../GLOSSARY.md)
+
 ## Shared terms
 
 climon2 runs each command in a [session](../../GLOSSARY.md#sessions): one run

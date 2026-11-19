@@ -34,7 +34,10 @@ return api->submit(communication, &request);
 ```
 
 IDs increase strictly per instance's accepted submissions. Local rejection
-does not consume an ID, retain buffers or produce a later response. Acceptance
+does not consume an ID, retain buffers or produce a later response. The
+library maps these IDs onto the
+[daemon wire's request IDs](../daemon-client/README.md#correlation-and-context)
+and never assumes the two are equal. Acceptance
 copies all data and proves only queuing. Full/closed/malformed/unsupported/ID
 errors are synchronous; see [errors](README.md#errors-terminal-evidence-and-cleanup).
 Accepted work executes [FIFO](../TERMS.md#fifo) except independent shutdown;

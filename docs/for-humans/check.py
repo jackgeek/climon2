@@ -2,9 +2,11 @@
 
 Fails on an orphan, a folder without a README.md, a README without an
 audience or with an audience its parent lacks, a folder table missing a file,
-a `Builds on` declaration that is not one-way between siblings, and a link
+a `Builds on` declaration that is not one-way between siblings, a
+`Reference` declaration naming a missing or out-of-reach document, and a link
 the family-tree rule forbids. The rule applies inside each top-level subject
-folder; links between subjects are unrestricted. Run with `python3 docs/for-humans/check.py`.
+folder; links between subjects are unrestricted.
+Run with `python3 docs/for-humans/check.py`.
 """
 
 import os
@@ -15,12 +17,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 ROOT_README = ROOT / "README.md"
-TERMS = HERE / "protocol" / "TERMS.md"
 AUDIENCES = {"Users", "Integrators", "Contributors"}
 
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 AUDIENCE = re.compile(r"^\*\*Audience:\*\*(.*)$", re.MULTILINE)
 BUILDS_ON = re.compile(r"^\*\*Builds on:\*\*(.*)$", re.MULTILINE)
+REFERENCE = re.compile(r"^\*\*Reference:\*\*(.*)$", re.MULTILINE)
 FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
 
@@ -62,23 +64,23 @@ def audiences(readme):
     return {w.strip(" .") for w in words if w.strip(" .")}
 
 
-def builds_on(folder):
+def declared(folder, pattern):
+    """The paths a README's declaration line links, resolved."""
     readme = folder / "README.md"
-    if not readme.exists():
-        return set()
-    match = BUILDS_ON.search(readme.read_text())
+    match = pattern.search(readme.read_text()) if readme.exists() else None
     if not match:
         return set()
-    return {
-        Path(os.path.normpath(readme.parent / t.split("#", 1)[0])).parent
-        for t in LINK.findall(match.group(1))
-    }
+    return {Path(os.path.normpath(folder / t.split("#", 1)[0])) for t in LINK.findall(match.group(1))}
+
+
+def builds_on(folder):
+    return {path.parent for path in declared(folder, BUILDS_ON)}
 
 
 def check():
     errors = []
     dirs = folders()
-    declared = {d: builds_on(d) for d in dirs}
+    declared_on = {d: builds_on(d) for d in dirs}
 
     for folder in dirs:
         readme = folder / "README.md"
@@ -102,16 +104,32 @@ def check():
             want = child / "README.md" if child.is_dir() else child
             if want not in tabled:
                 errors.append(f"{rel}/README.md: table lacks {child.name}")
-        for other in declared[folder]:
+        for other in declared_on[folder]:
             if other.parent != folder.parent or other == folder or not other.is_dir():
                 errors.append(f"{rel}/README.md: Builds on {other.relative_to(ROOT)} is not a sibling folder")
-            elif folder in declared.get(other, set()):
+            elif folder in declared_on.get(other, set()):
                 errors.append(f"{rel}/README.md: Builds on {other.relative_to(ROOT)}, which builds on it")
+        for reference in declared(folder, REFERENCE):
+            if not reference.is_file():
+                errors.append(f"{rel}/README.md: Reference {reference} does not exist")
+            elif inside(reference, HERE) and not inside(reference, folder):
+                errors.append(f"{rel}/README.md: Reference {reference.relative_to(ROOT)} is outside the folder it serves")
 
     pages = sorted(HERE.rglob("*.md"))
+
+    def grants(page):
+        src = page.parent
+        return [g for d, gs in declared_on.items() if inside(src, d) for g in gs]
+
+    # Links a Builds on declaration allows; each may be answered by a reply.
+    built = {
+        (page, target)
+        for page in pages
+        for _, target in links(page)
+        if any(inside(target, g) for g in grants(page))
+    }
     for page in pages:
         src = page.parent
-        granted = [g for d, gs in declared.items() if inside(src, d) for g in gs]
         for _, target in links(page):
             if not inside(target, HERE):
                 continue
@@ -119,10 +137,10 @@ def check():
             allowed = (
                 tdir == src
                 or tdir in src.parents
-                or target == TERMS
+                or inside(target, src)
                 or (target.name == "README.md" and (tdir.parent == src or tdir.parent in src.parents))
-                or (page.name == "README.md" and inside(target, src))
-                or any(inside(target, g) for g in granted)
+                or (page, target) in built
+                or (target, page) in built
                 or (subject(page) and subject(target) and subject(page) != subject(target))
             )
             if not allowed:
