@@ -98,6 +98,47 @@ unchanged launcher; `climon2` remains supported without deprecation warnings.
 The installer is a release-payload executable, not a `c2 install` command.
 Installation relationships are outside this consumption diagram.
 
+## Windows (agreed, not implemented)
+
+Every Windows relationship is planned, so every arrow is dashed. The
+[I/O and transport decision](https://github.com/jackgeek/climon2/issues/211)
+adds the pinned ConPTY files to each version folder; see
+[ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented).
+Monitor library loading on Windows is undecided
+([#216](https://github.com/jackgeek/climon2/issues/216)).
+
+```mermaid
+flowchart TB
+    subgraph winruntime["Planned Windows runtime (x86_64 MSVC)"]
+        wlauncher["c2.exe / climon2.exe<br/>same frozen launcher"]
+        subgraph wversion["%LOCALAPPDATA%\climon2\&lt;version&gt;; versions coexist"]
+            wcli["climon2-cli.exe"]
+            wclient["climon2-client.exe"]
+            wdaemon["climon2-daemon.exe"]
+            conpty[["conpty.dll<br/>pinned Microsoft.Windows.Console.ConPTY"]]
+            openconsole["OpenConsole.exe<br/>pinned, same package"]
+        end
+        wcommand(["Session command<br/>external executable"])
+        inbox(["Inbox conhost.exe<br/>never used"])
+
+        wlauncher -.->|"spawns and waits for current version"| wcli
+        wcli -.->|"starts for exec"| wdaemon
+        wcli -.->|"exec / attach / kill: session version"| wclient
+        wcli -.->|"hello probes for discovery"| wdaemon
+        wclient -.->|"daemon-client communication over AF_UNIX"| wdaemon
+        wdaemon -.->|"loads by full path from own folder"| conpty
+        conpty -.->|"starts from beside the DLL"| openconsole
+        openconsole -.->|"hosts the session pseudoconsole"| wcommand
+        wdaemon -.->|"creates in ConPTY and session job"| wcommand
+        conpty -.-x|"fallback refused: exec fails with 125"| inbox
+    end
+```
+
+Only the daemon loads `conpty.dll`. The CLI and client never touch ConPTY.
+A missing `OpenConsole.exe` would make `conpty.dll` fall back to inbox
+`conhost.exe`, so the daemon checks both files first. Both files are payload of
+each release, so an upgrade never changes the engine under a live session.
+
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
 `climon2-test-term` builds `climon2-test-owned` as test tooling on Linux and
