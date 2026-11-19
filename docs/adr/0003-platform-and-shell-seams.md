@@ -2,7 +2,9 @@
 
 The runtime supports macOS 15+ on Apple Silicon and Intel, and x86_64
 GNU/Linux with an Ubuntu 24.04/glibc 2.39 release baseline. Arch Linux is a
-native development host. Windows ConPTY remains future work. Each
+native development host. Windows (x86_64 MSVC, Windows 11) is specified, not
+implemented; its I/O and transport decisions are under
+[Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented). Each
 platform-specific concern is its own module, with platform-neutral function
 signatures and `#[cfg(target_os = …)]` bodies. There are no trait objects or
 runtime platform dispatch. Unsupported targets hit `compile_error!` inside
@@ -27,7 +29,7 @@ More seams may emerge after the first release. Everything else counts as platfor
 
 ## Transport
 
-Clients reach daemons over AF_UNIX stream sockets on every OS, Windows included (Win10 1809+, the same minimum as ConPTY). Named pipes are not used, so session metadata keeps a socket path.
+Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 included (through socket2; the minimum build belongs to the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212)). Named pipes are not used, so session metadata keeps a socket path.
 
 ## Linux implementation
 
@@ -60,11 +62,72 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows included 
   actually compiles them. Shared source is qualified on the Linux development
   host; native CI retains runtime and archive coverage on both platforms.
 
+## Windows I/O and transport (agreed, not implemented)
+
+Decided in [Define Windows I/O and transport architecture](https://github.com/jackgeek/climon2/issues/211) (owner, 2026-11-19). Linux and macOS behaviour does not change.
+
+- **Seams.** The ADR 0003 seams in `climon2-platform` grow to cover socket
+  streams and listeners, waiting for readiness, terminal handles and PTY I/O.
+  Client `bridge`/`transport`, daemon `pty`/`session`/`connection` and CLI
+  `list` stop calling `libc` directly. Unix bodies move unchanged. Windows
+  bodies are registered native files, so the tick-loop logic stays shared and
+  qualified on the Linux development host.
+- **Multiplexing.** One thread per blocking handle: ConPTY output and input,
+  console input and console output. Sockets stay on `WSAPoll` inside the
+  existing tick loops. Thread channels are bounded to the byte limits the Unix
+  loops already enforce, and a full channel behaves like a full Unix buffer.
+  Nothing relies on `CancelSynchronousIo`: the console input thread waits on
+  its handle with a timeout and a stop flag, the ConPTY reader ends on a broken
+  pipe, and writers end when their channel closes.
+- **ConPTY.** A pinned, bundled `conpty.dll` and `OpenConsole.exe` (Microsoft's
+  `Microsoft.Windows.Console.ConPTY` package, stable releases only) live in
+  each version folder beside `climon2-daemon.exe`. The inbox engine re-renders
+  output and answers queries itself, which ADR 0007 forbids, so it is never
+  used. Only the daemon loads `conpty.dll`, by full path from its own folder
+  with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`. If
+  either file is missing, `exec` fails with 125, because `conpty.dll` would
+  otherwise fall back silently to inbox `conhost.exe`. The daemon calls the DLL
+  through `windows-sys`; portable-pty stays the Unix backend.
+- **End of output.** The daemon releases the pseudoconsole
+  (`ConptyReleasePseudoConsole`) after starting the command. `ERROR_BROKEN_PIPE`
+  on the output pipe replaces Unix `EIO`.
+- **Runtime directory.** `%LOCALAPPDATA%\c2\<hash8>\<uuid>.sock`, where
+  `<hash8>` is the climon2 home hash as on Unix and there is no uid segment.
+  `%TEMP%` is rejected because Disk Cleanup runs daily and deletes week-old
+  files and directories there, and Storage Sense deletes temp files not in use.
+  Nothing ages `%LOCALAPPDATA%`, so Windows has no freshness refresh. The path
+  is 77 bytes plus the profile folder name, within AF_UNIX's 107 usable bytes.
+  Over budget, `exec` fails with 125. Core's runtime layout takes the uid as
+  optional, so Unix names do not change.
+- **Access control.** The `<hash8>` directory is created with a protected DACL
+  holding one ACE: the current user's SID, full control. Before each use it
+  must not be a reparse point, its owner must be that SID, and its DACL must be
+  exactly that. Otherwise preparation fails with the Unix "unsafe runtime
+  directory" error. The socket file inherits the DACL. Windows AF_UNIX has no
+  peer credentials, so the per-connection peer check is a no-op. **This is
+  weaker than Unix:** `SO_PEERCRED` rejects root, while a Windows
+  administrator can bypass the DACL with `SeRestorePrivilege`. That is
+  accepted, because an administrator can already read the daemon's memory.
+- **Stale sockets.** The Unix rule applies: a NotFound or ConnectionRefused
+  connect plus proven-dead daemon identity permits cleanup. A socket is
+  recognised by its reparse tag `IO_REPARSE_TAG_AF_UNIX`, since std reports it
+  as a regular file. A stale file is deleted before re-binding.
+- **Client console.** `exec` and `attach` require stdin and stdout to be
+  console handles; redirected stdio and mintty are refused like a missing TTY.
+  Input is plain VT: the console is put in
+  `ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT` with processed input
+  off, and `ReadConsoleInputW` supplies key characters and
+  `WINDOW_BUFFER_SIZE_EVENT` resizes. Keys VT cannot express, such as
+  Ctrl+Break and Shift+Enter, are a documented limitation. Output enables
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN` and the
+  UTF-8 code page, and writes raw bytes with `WriteFile`, never splitting a
+  UTF-8 character across writes (a pure `climon2-core` boundary function, used
+  only on Windows). Every exit path restores both console modes and code pages.
+
 ## Notes for future ports
 
-- **Windows peer check:** Windows AF_UNIX has no peer credentials. Access control comes only from the runtime directory: its owner SID is checked, and its DACL grants only the current user. The per-connection peer check is a no-op.
-- **Windows runtime directory:** under `%TEMP%`, using the same `<hash8>` scheme, within AF_UNIX's 108-byte path limit.
-- **Windows hang-up:** ClosePseudoConsole (which delivers CTRL_CLOSE_EVENT), then 5 s, then TerminateProcess. portable-pty's `kill()` terminates immediately, so it can't provide the grace period.
+- **Windows peer check and runtime directory:** superseded by [Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented).
+- **Windows hang-up:** ClosePseudoConsole (which delivers CTRL_CLOSE_EVENT), then 5 s, then TerminateProcess. The daemon calls the bundled `conpty.dll` directly, not portable-pty. Timing belongs to the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212).
 - **Windows launcher:** it can't `exec`, so it spawns the CLI, waits, exits with the child's code, and ignores Ctrl+C. Its contract freezes when Windows first ships (ADR 0002).
 - **Windows exit status:** the Exit frame's `code` must carry a raw `u32` code (for example `0xC000013A`); 128+signal is Unix-only. The post-hello protocol is version-specific (ADR 0001), so widening it later is cheap.
 
@@ -76,6 +139,12 @@ Adding zsh, sh, pwsh, powershell or cmd is purely a test-harness change: a new s
 
 - **Platform traits with runtime dispatch:** rejected. They add speculative abstraction for implementations that don't exist yet.
 - **Named pipes on Windows:** rejected in favour of one transport everywhere.
+- **Inbox ConPTY on Windows:** rejected; it re-renders output and answers terminal queries, so ADR 0007 could not hold, and it differs per Windows build.
+- **A Windows per-connection peer check through `SIO_AF_UNIX_GETPEERPID`:** rejected; it is undocumented, exposed to PID reuse, and adds no boundary against administrators.
+- **`WSAEventSelect`, IOCP or the `polling` crate as the Windows waiter:** rejected; every option still needs ConPTY threads, and these add edge-triggered semantics, a pipe rewrite or undocumented AFD calls.
+- **Windows sibling files in each crate:** rejected in favour of `climon2-platform` seams, which keep one copy of the loop logic.
+- **win32-input-mode input on Windows:** rejected; it adds a Windows-only input dialect for clients and the monitor.
+- **`%TEMP%` as the Windows runtime root:** rejected; Windows cleans it automatically.
 - **Shell awareness in the product:** rejected. climon2 runs any PTY program.
 
 ## Consequences

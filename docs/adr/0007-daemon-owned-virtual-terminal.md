@@ -291,6 +291,7 @@ A front filter that mirrors vte 0.15.0's state machine splits PTY output into co
 - every other host-dependent request, keyboard-protocol negotiation, OSC 52, OSC 8, every other OSC and every DCS/SOS/PM/APC is stripped; the host is never asked anything in-band;
 - titles are tracked by value and re-emitted as a safely encoded `OSC 2`;
 - `CSI ? 47/1047 h/l` parameters are removed, because the engine does not implement them and the host must not diverge from it;
+- `CSI ? 9001 h/l` (win32-input-mode) parameters are removed on every platform (agreed, not implemented; [#211](https://github.com/jackgeek/climon2/issues/211)). ConPTY requests the mode at startup, and input stays plain VT, so no host may switch to it. ConPTY's DA1 is answered like any other query, and its `CSI ? 1004 h/l` is ordinary output;
 - everything else is forwarded unchanged.
 
 A token is classified by the sequence vte dispatches for it. Between `ESC` and the introducer, vte executes C0 controls without leaving its escape state, so they never change a token's kind ([#152](https://github.com/jackgeek/climon2/issues/152)); CAN and SUB, however, cancel the sequence, and ESC restarts it. The policy reads each escape sequence, CSI sequence and control string with vte once. When it strips a token or removes screen modes from it, the C0 controls vte executed in that token still reach the host, in order.

@@ -57,6 +57,48 @@ unchanged launcher; `climon2` remains supported without deprecation warnings.
 The installer is a release-payload executable, not a `c2 install` command.
 Installation relationships are outside this consumption diagram.
 
+## Windows (agreed, not implemented)
+
+This diagram shows only what Windows changes in the diagram above: how the
+launcher reaches the CLI, and how the daemon reaches the session command
+through ConPTY, the Windows pseudoconsole. It omits the client, monitor and
+client library, whose Windows loading is undecided
+([#216](https://github.com/jackgeek/climon2/issues/216)). Arrows run from
+consumer to consumed artifact. Every arrow is dashed, because nothing here
+exists yet. The decisions are in
+[ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented).
+
+```mermaid
+flowchart TB
+    subgraph winruntime["Planned Windows runtime (x86_64 MSVC)"]
+        wlauncher["c2.exe / climon2.exe"]
+        subgraph wversion["%LOCALAPPDATA%\climon2\&lt;version&gt;"]
+            wcli["climon2-cli.exe<br/>described above"]
+            wdaemon["climon2-daemon.exe<br/>described above"]
+            conpty[["conpty.dll"]]
+            openconsole["OpenConsole.exe"]
+        end
+        wcommand(["Session command"])
+        inbox(["Inbox conhost.exe"])
+
+        wlauncher -.->|"spawns and waits for current version"| wcli
+        wdaemon -.->|"loads by full path from own folder"| conpty
+        conpty -.->|"starts from beside the DLL"| openconsole
+        openconsole -.->|"hosts the session pseudoconsole"| wcommand
+        wdaemon -.->|"creates in ConPTY and session job"| wcommand
+        conpty -.-x|"fallback refused: exec fails with 125"| inbox
+    end
+```
+
+| Node | Purpose |
+|---|---|
+| `c2.exe` / `climon2.exe` | The frozen launcher. Windows cannot replace a process, so it starts the CLI and waits for it. `c2.exe` is a hard link or copy. |
+| `climon2-cli.exe`, `climon2-daemon.exe` | The same roles as on Unix. |
+| `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
+| `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |
+| Session command | The program the session runs. |
+| Inbox `conhost.exe` | Windows' own console host. It is never used: if `OpenConsole.exe` is missing, `conpty.dll` would fall back to it, so the daemon checks both files and `exec` fails with 125. |
+
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
 `climon2-test-term` builds `climon2-test-owned` as test tooling on Linux and
