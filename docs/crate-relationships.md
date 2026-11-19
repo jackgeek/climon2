@@ -44,14 +44,15 @@ flowchart TB
 | Crate | Purpose |
 | --- | --- |
 | `climon2-launcher` | The `climon2` executable that `c2` links to. It reads the install home's `current` version and hands off to that version's `climon2-cli`. |
-| `climon2-cli` | The `climon2-cli` executable behind every `c2` command: `exec`, `attach`, `kill` and `list`. It orchestrates startup and talks to other executables only through their contracts. |
-| `climon2-client` | The version-matched, byte-transparent terminal [client](../GLOSSARY.md#sessions) that connects a terminal to one session daemon ([ADR 0001](adr/0001-version-matched-client-and-frozen-hello.md)). |
+| `climon2-cli` | The `climon2-cli` executable behind every `c2` command: `exec`, `attach`, `kill`, `list` and `monitor`. It orchestrates startup and talks to other executables only through their contracts. |
+| `climon2-client` | The version-matched, byte-transparent terminal [client](../GLOSSARY.md#sessions) that connects a terminal to one session daemon ([ADR 0001](adr/0001-version-matched-client-and-frozen-hello.md)), and the client library the monitor loads for each session. |
 | `climon2-daemon` | The session daemon: it owns one session's PTY and output pump, so clients never own terminal handles. |
 | `climon2-install` | Atomic installation of a release payload into a climon2 executable home. |
 | `climon2-platform` | The shared platform seams of [ADR 0003](adr/0003-platform-and-shell-seams.md): connections, processes, PTYs, terminals, the runtime directory and logging. |
 | `climon2-core` | Platform-neutral session contracts, such as identity, configuration, the hello, metadata and exit status. It parses and applies policy, never performs platform I/O. |
-| `climon2-vt` | The session daemon's virtual terminal: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
-| `climon2-discovery` | **Planned, not implemented.** Session discovery shared by the CLI and the [monitor](../GLOSSARY.md#sessions). |
+| `climon2-vt` | The virtual terminal of the session daemon and of the monitor's per-session models: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
+| `climon2-discovery` | Session discovery shared by the CLI, which runs whole passes, and the [monitor](../GLOSSARY.md#sessions), which runs incremental, bounded passes. |
+| `climon2-monitor` | The monitor: one terminal that tracks every live session, with the `climon2-monitor` binary that `c2 monitor` starts. |
 
 ## Development and test-only crates
 
@@ -118,7 +119,9 @@ flowchart TB
 | --- | --- |
 | `climon2-test-term` | The real-terminal test harness. It runs shipped executables in isolated real terminals at the process boundary and proves which processes the test owns. |
 | `climon2-e2e` | Packaged acceptance: it builds and installs a release with the real installer, then drives it in a real terminal. |
-| `climon2-fixtures` | Stand-in executables for tests: a terminal program, a full-screen TUI, a CLI and a session daemon. |
+| `climon2-fixtures` | Stand-in executables for tests: a terminal program, a full-screen TUI, a CLI, a session daemon, the library host and the client library stand-in. |
+| `climon2-second-release` | The test-only [second-release fixture](../GLOSSARY.md#testing): a client library and session daemon built as another release, for cross-release tests. |
+| `climon2-measure` | The PERF-01 measurement harness that `cargo xtask measure` runs against an installed candidate archive. |
 | `xtask` | Developer automation run as `cargo xtask`: the test and quality gates, mutation and coverage checks, release checks, distribution builds and local installs. |
 
 The shipped crates in this diagram are described under the first diagram.
