@@ -504,10 +504,11 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   the placeholder (owner decision on #110); inside the selector or key
   introduction it does nothing, and for the ready controller it is
   ordinary input. Prefixed it is two literal bytes (#109).
-- **Never automatic.** The monitor acquires only on Enter or the
-  take-control key. A grant the daemon makes by itself (promotion or
-  hand-back) is applied and Ready is sent, in the background without
-  selection, input or resize; the selection is kept through revocation,
+- **Automatic only once.** The monitor acquires on Enter, the take-control
+  key and the attention jump (prefix+j) to a session it does not control.
+  The one automatic Acquire is initial selection's, at most once (#266).
+  A grant the daemon makes by itself (promotion or hand-back) is applied
+  and Ready is sent, in the background without selection, input or resize; the selection is kept through revocation,
   completion, loss and failed acquisition, and input never goes to another
   session.
 

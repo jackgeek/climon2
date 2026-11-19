@@ -1,6 +1,8 @@
 # Ready — `0x34`
 
 **Status: agreed and implemented** ([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+The [client library](../../../GLOSSARY.md#sessions) sends it ([#94](https://github.com/jackgeek/climon2/issues/94)); the [client executable](../../../GLOSSARY.md#sessions)'s ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)) and the
+[monitor](../../../GLOSSARY.md#sessions) ([#108](https://github.com/jackgeek/climon2/issues/108)) use it.
 The [client](../../../GLOSSARY.md#sessions) reports applied
 [restoration](../../../GLOSSARY.md#restoration-and-presentation) to the
 [session daemon](../../../GLOSSARY.md#sessions), as current
@@ -21,7 +23,8 @@ One [JSON](../TERMS.md#json) [frame](../TERMS.md#frame) with required
 
 Core support is required. The matching complete restoration must have been
 sent and applied by the client; for a [monitor](../../../GLOSSARY.md#sessions)
-this includes application to its presentation.
+this includes application to its presentation, as the monitor does
+([#108](https://github.com/jackgeek/climon2/issues/108)).
 Applied means transactionally replacing the complete current model/history,
 not painting it. It permits Ready/resize progress for background grants or before
 selected paint; selected application input additionally requires a coherent

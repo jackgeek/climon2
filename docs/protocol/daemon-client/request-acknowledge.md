@@ -3,7 +3,8 @@
 **Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91));
 the [client library](../../../GLOSSARY.md#sessions) sends it ([#95](https://github.com/jackgeek/climon2/issues/95)),
 and the [client executable](../../../GLOSSARY.md#sessions)'s ordinary attach
-uses it ([#102](https://github.com/jackgeek/climon2/issues/102)). Owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+uses it ([#102](https://github.com/jackgeek/climon2/issues/102)), as does the
+[monitor](../../../GLOSSARY.md#sessions) ([#114](https://github.com/jackgeek/climon2/issues/114)). Owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../GLOSSARY.md#sessions) asks the
 [session daemon](../../../GLOSSARY.md#sessions) to acknowledge current pending
 [attention](../../../GLOSSARY.md#status-and-attention).
@@ -43,6 +44,11 @@ non-user [Focus](request-focus.md). The
 [global lowercase j jump](../terminal-integration.md#attention-jump-and-configurable-hints)
 may select/acquire only if needed and then acknowledge once applied, painted,
 ready and unobstructed. Hiding a toast does not auto-acknowledge.
+The monitor implements this ([#114](https://github.com/jackgeek/climon2/issues/114)): Enter on a connected row, the jump
+and closing the selector back to the selected session each defer one
+Acknowledge until that session is viewed, and drop it if the selection, a
+modal over it or the control period changes first. Opening the selector,
+cancelling Delete, host focus-in and dismissing a toast never acknowledge.
 
 Unsupported family, no [attachment](../../../GLOSSARY.md#attachment-and-control)/
 control/readiness/viewing, stale authority,

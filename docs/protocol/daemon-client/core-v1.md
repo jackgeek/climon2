@@ -53,12 +53,10 @@ with takeover,
 [leave policy](../../../GLOSSARY.md#attachment-and-control), the
 [promotion](../../../GLOSSARY.md#attachment-and-control) of passive registrations
 and the [canonical presentation](../../../GLOSSARY.md#restoration-and-presentation)
-of monitor-mode connections. Until it serves them, it
-rejects the other
-requests without effects, as each request's page describes. The
+of monitor-mode connections. It serves all ten requests. The
 [client library](../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
-for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
+for control, display and Focus ([#94](https://github.com/jackgeek/climon2/issues/94)),
 for `status-v1` ([#95](https://github.com/jackgeek/climon2/issues/95)),
 with Command final, and for standalone Kill
 ([#96](https://github.com/jackgeek/climon2/issues/96)), and for
@@ -66,7 +64,10 @@ with Command final, and for standalone Kill
 ([#98](https://github.com/jackgeek/climon2/issues/98)), and the
 [client executable](../../../GLOSSARY.md#sessions) drives that library for
 ordinary attach and kill ([#100](https://github.com/jackgeek/climon2/issues/100),
-[#101](https://github.com/jackgeek/climon2/issues/101)). The
+[#101](https://github.com/jackgeek/climon2/issues/101)), as the
+[monitor](../../../GLOSSARY.md#sessions) does through the
+[native interface](../monitor-client/core-v1.md) for its sessions
+([#73](https://github.com/jackgeek/climon2/issues/73)). The
 [daemon's contract tests](../../../crates/climon2-daemon/README.md#daemon-wire-revision-1-acceptance-scenarios)
 are the evidence for the implemented parts.
 
@@ -240,7 +241,7 @@ promotion races. Promote before final-participant
 [leave policy](../../../GLOSSARY.md#attachment-and-control).
 
 Inheritance does not change monitor selection, resize, send input or acknowledge
-attention. Promotion creates ordinary attachment membership, which persists
+attention; the monitor keeps to this ([#110](https://github.com/jackgeek/climon2/issues/110)). Promotion creates ordinary attachment membership, which persists
 on switching away or [revocation](../../../GLOSSARY.md#attachment-and-control).
 Old authority is invalid immediately: receipt of revocation need not precede
 a new grant. Committed termination overrides succession and rejects new
@@ -274,6 +275,8 @@ Lost responses remain indeterminate and are never replayed, including Kill.
 Monitor removal waits for definitive termination then local cleanup/join,
 not merely discovery disappearance or a queued request. Cleanup stalls use
 bounded whole-monitor fail-stop; numerical budgets remain #69.
+The monitor implements this lifecycle: passive recovery ([#116](https://github.com/jackgeek/climon2/issues/116)),
+Delete's removal ([#117](https://github.com/jackgeek/climon2/issues/117)) and coordinated shutdown ([#118](https://github.com/jackgeek/climon2/issues/118)).
 
 ## Ordering and authority
 
@@ -422,6 +425,8 @@ resurrect a suppressed completion toast. UTC timestamps are not episode IDs.
 The [global lowercase j jump and hint configuration](../terminal-integration.md#attention-jump-and-configurable-hints)
 amend #64/#59, without changing status or notification identities.
 Dedicated [Focus](request-focus.md) never clears or acknowledges attention.
+The monitor implements these rules: viewing, acknowledgement and the jump
+([#114](https://github.com/jackgeek/climon2/issues/114)), toasts and their deduplication ([#115](https://github.com/jackgeek/climon2/issues/115)).
 
 ## Source normalization
 
@@ -556,7 +561,8 @@ the last attachment's departure.
 [native declarations, calls, errors and examples](../monitor-client/core-v1.md).
 Map the wire to the public interface; do not copy JSON or wire IDs as an ABI.
 The [#63 terminal contract](../terminal-integration.md) owns rendering/application/
-resize semantics and optional Focus; [operational limits](../../monitor-operational-limits.md) supplies numeric limits, deadlines
+resize semantics and optional Focus, which the monitor implements
+([#108](https://github.com/jackgeek/climon2/issues/108), [#109](https://github.com/jackgeek/climon2/issues/109), [#111](https://github.com/jackgeek/climon2/issues/111), [#112](https://github.com/jackgeek/climon2/issues/112)); [operational limits](../../monitor-operational-limits.md) supplies numeric limits, deadlines
 and policy; [agreed lifecycle](../../monitor-lifecycle.md) recovery, concurrent
 shutdown, cleanup/fail-stop, selector removal and headless lifetime.
 
@@ -615,13 +621,19 @@ hang-up grace after every
 unexpected departure, Kill in its harder cases, terminal sizes, restoration,
 retention, PTY write ordering, saturation and the headless lifetime; the
 private-protocol tests it replaced were deleted with that protocol
-([#104](https://github.com/jackgeek/climon2/issues/104)). The rest remains future.
+([#104](https://github.com/jackgeek/climon2/issues/104)). The monitor's
+tests cover menus, Focus, local toast scope and deduplication over this
+revision through the client library (FOC-01, NOT-01, NOT-02). The rest
+remains future.
 Native same/mixed-release evidence remains required by #65/#66/#71.
 The [lifecycle evidence obligations](../../monitor-lifecycle.md#required-automated-implementation-evidence)
 add Leave/promotion races, lost response versus closure/outcome/join, concurrent
-cleanup/fail-stop and passive recovery. These are future tests, not
-conformance/performance claims; the monitor implements this lifecycle
-([#116](https://github.com/jackgeek/climon2/issues/116), [#118](https://github.com/jackgeek/climon2/issues/118)). Headless creation and existing CLI kill of
+cleanup/fail-stop and passive recovery. The monitor implements this lifecycle
+([#116](https://github.com/jackgeek/climon2/issues/116), [#117](https://github.com/jackgeek/climon2/issues/117), [#118](https://github.com/jackgeek/climon2/issues/118)), and its unit and packaged
+tests now cover these obligations (EXT-01, EXT-02, REC-01, DEL-01 and DEL-02,
+mapped in the [monitor README](../../../crates/climon2-monitor/README.md#specification-mapping)),
+and the daemon's tests the Leave/promotion races (CTL-04). They are implementation
+evidence, not conformance/performance claims. Headless creation and existing CLI kill of
 headless sessions already have executed evidence on the current protocol
 (HDL-01 in the [acceptance matrix](../../monitor-acceptance.md)).
 The [acceptance matrix](../../monitor-acceptance.md) is agreed in #62;
