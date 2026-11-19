@@ -59,32 +59,29 @@ Installation relationships are outside this consumption diagram.
 
 ## Windows (agreed, not implemented)
 
-Every Windows relationship is planned, so every arrow is dashed. The
-[I/O and transport decision](https://github.com/jackgeek/climon2/issues/211)
-adds the pinned ConPTY files to each version folder; see
+This diagram shows only what Windows changes in the diagram above: how the
+launcher reaches the CLI, and how the daemon reaches the session command
+through ConPTY, the Windows pseudoconsole. It omits the client, monitor and
+client library, whose Windows loading is undecided
+([#216](https://github.com/jackgeek/climon2/issues/216)). Arrows run from
+consumer to consumed artifact. Every arrow is dashed, because nothing here
+exists yet. The decisions are in
 [ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented).
-Monitor library loading on Windows is undecided
-([#216](https://github.com/jackgeek/climon2/issues/216)).
 
 ```mermaid
 flowchart TB
     subgraph winruntime["Planned Windows runtime (x86_64 MSVC)"]
-        wlauncher["c2.exe / climon2.exe<br/>same frozen launcher"]
-        subgraph wversion["%LOCALAPPDATA%\climon2\&lt;version&gt;; versions coexist"]
-            wcli["climon2-cli.exe"]
-            wclient["climon2-client.exe"]
-            wdaemon["climon2-daemon.exe"]
-            conpty[["conpty.dll<br/>pinned Microsoft.Windows.Console.ConPTY"]]
-            openconsole["OpenConsole.exe<br/>pinned, same package"]
+        wlauncher["c2.exe / climon2.exe"]
+        subgraph wversion["%LOCALAPPDATA%\climon2\&lt;version&gt;"]
+            wcli["climon2-cli.exe<br/>described above"]
+            wdaemon["climon2-daemon.exe<br/>described above"]
+            conpty[["conpty.dll"]]
+            openconsole["OpenConsole.exe"]
         end
-        wcommand(["Session command<br/>external executable"])
-        inbox(["Inbox conhost.exe<br/>never used"])
+        wcommand(["Session command"])
+        inbox(["Inbox conhost.exe"])
 
         wlauncher -.->|"spawns and waits for current version"| wcli
-        wcli -.->|"starts for exec"| wdaemon
-        wcli -.->|"exec / attach / kill: session version"| wclient
-        wcli -.->|"hello probes for discovery"| wdaemon
-        wclient -.->|"daemon-client communication over AF_UNIX"| wdaemon
         wdaemon -.->|"loads by full path from own folder"| conpty
         conpty -.->|"starts from beside the DLL"| openconsole
         openconsole -.->|"hosts the session pseudoconsole"| wcommand
@@ -93,10 +90,14 @@ flowchart TB
     end
 ```
 
-Only the daemon loads `conpty.dll`. The CLI and client never touch ConPTY.
-A missing `OpenConsole.exe` would make `conpty.dll` fall back to inbox
-`conhost.exe`, so the daemon checks both files first. Both files are payload of
-each release, so an upgrade never changes the engine under a live session.
+| Node | Purpose |
+|---|---|
+| `c2.exe` / `climon2.exe` | The frozen launcher. Windows cannot replace a process, so it starts the CLI and waits for it. `c2.exe` is a hard link or copy. |
+| `climon2-cli.exe`, `climon2-daemon.exe` | The same roles as on Unix. |
+| `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
+| `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |
+| Session command | The program the session runs. |
+| Inbox `conhost.exe` | Windows' own console host. It is never used: if `OpenConsole.exe` is missing, `conpty.dll` would fall back to it, so the daemon checks both files and `exec` fails with 125. |
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
