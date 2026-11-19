@@ -126,7 +126,7 @@ fn issue20_size_rules_and_absolute_deadline_do_not_restart_for_partial_io() {
 #[test]
 fn protocol_reference_hello_examples_use_the_public_wire_contract() {
     let requests = json_examples(include_str!(
-        "../../../docs/protocol/daemon-client/hello-request.md"
+        "../../../docs/for-humans/protocol/daemon-client/hello-request.md"
     ));
     assert!(!requests.is_empty(), "document at least one hello request");
     for body in requests {
@@ -137,7 +137,7 @@ fn protocol_reference_hello_examples_use_the_public_wire_contract() {
     }
 
     let replies = json_examples(include_str!(
-        "../../../docs/protocol/daemon-client/hello-reply.md"
+        "../../../docs/for-humans/protocol/daemon-client/hello-reply.md"
     ));
     assert!(!replies.is_empty(), "document at least one hello reply");
     for body in replies {

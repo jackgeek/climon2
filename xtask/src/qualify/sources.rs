@@ -6,7 +6,7 @@ use super::Layer;
 use std::collections::BTreeSet;
 
 /// One acceptance-matrix scenario: its ID, setup, required result and
-/// required layers (docs/monitor-acceptance.md).
+/// required layers (docs/for-humans/behaviour/monitor/acceptance.md).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Scenario {
     pub(crate) id: String,
@@ -65,7 +65,7 @@ pub(crate) fn scenarios(matrix: &str) -> Result<Vec<Scenario>, String> {
 
 /// What one README row claims for one scenario: the layers its tests
 /// prove, or that they only supplement them (a pure supplement proves no
-/// layer, docs/monitor-acceptance.md "Contract"), and the tests.
+/// layer, docs/for-humans/behaviour/monitor/acceptance.md "Contract"), and the tests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Claim {
     pub(crate) id: String,

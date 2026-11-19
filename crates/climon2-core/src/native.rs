@@ -1,8 +1,8 @@
 //! Native client interface revision 1: `#[repr(C)]` declarations of the
-//! published header `docs/protocol/monitor-client/client-v1.h`.
+//! published header `docs/for-humans/protocol/monitor-client/client-v1.h`.
 //!
 //! The header is authoritative for declarations, numeric tags and field order;
-//! `core-v1.md` owns their semantics. Names map mechanically: `cm1_bytes` is
+//! The interface `README.md` beside it owns their semantics. Names map mechanically: `cm1_bytes` is
 //! [`Bytes`], `CM1_SUCCESS` is [`SUCCESS`], and C field names are kept (`final`
 //! is spelled `r#final`). The client library, the client executable and the
 //! monitor share these declarations without depending on each other. A layout

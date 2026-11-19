@@ -106,10 +106,10 @@ A connection's first frame must be a valid frozen hello of protocol 1
 length outside 1 to 1,048,576 bytes, any other type (refused as soon as its
 type byte arrives), malformed JSON, another protocol or the deadline closes
 the connection without a byte. Hello advertises the frozen tokens and
-`state`, then `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1` and
-`focus-v1`, and `daemon_wire_v1` with 1,048,576-byte request and server
+`state`, then `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`,
+`notification-v1`, `progress-v1` and `focus-v1`, and `daemon_wire_v1` with 1,048,576-byte request and server
 frame limits (`core::hello::advertise_revision1`). Every frame after hello is
-[daemon wire revision 1](../../docs/protocol/daemon-client/core-v1.md), the
+[daemon wire revision 1](../../docs/for-humans/protocol/daemon-client/README.md), the
 only protocol after hello since the version-private one was retired (#104):
 a type revision 1 does not define, a second hello or a retired private type
 included, is `unknown_message_type`. Every revision-1 frame
@@ -190,7 +190,7 @@ and for any synchronized update to end. A host dimension above 65,535 is
 `invalid_geometry`, and an interactive Open during committed termination is
 `session_terminating`; both end the stream. Input, Resize, Ready and Focus
 are checked in the
-[documented order](../../docs/protocol/daemon-client/core-v1.md#implemented-authority-checks):
+[documented order](../../docs/for-humans/protocol/daemon-client/README.md#implemented-authority-checks):
 family, role, attachment, termination, control, period, restoration, then
 readiness, and finally their own arguments (empty Input is
 `invalid_argument`, a geometry beyond 65,535 `invalid_geometry`). Display
@@ -240,7 +240,7 @@ at once a replacement Restoration begin at the new geometry within the same
 period, before any Display at it, so its model is never reflowed in place.
 
 Activity and attention (`src/status.rs`, #91 and #92) follow the
-[session status mechanics](../../docs/session-status.md) in all three
+[session status mechanics](../../docs/for-humans/behaviour/session-status.md) in all three
 detection modes: heuristic, explicit and fallback.
 A pure detector holds both state machines; every event takes the turn's
 clock reading, and its random source is injected. The loop reads the clock
@@ -580,7 +580,7 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | STA-01 and STA-02 (Contract, initial silence): a command silent from startup (`silent`, `sleep 120`) reports nothing at any sample through 15,000 ms and stays idle and cleared | `a_session_silent_from_startup_stays_idle_and_cleared` |
 | STA-01 (Contract, same-turn dispatch, turn barrier): an Input received while the daemon is held and served in the turn whose clock ends the user window re-arms it first: no idle, then idle two seconds later | `input_comes_before_a_timer_due_in_the_same_turn` |
 | STA-08 (Contract and Fault, revision-1 controller): Input holding only focus reports leaves pending attention while reaching the application; the application's queries never reach the controller's Display, so no reply can; typed bytes clear it | `focus_reports_and_terminal_queries_never_clear_attention` |
-| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence, the sampling delay range and focus-report input | the 15 heuristic `status::tests` unit tests in `src/status.rs` |
+| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence, the sampling delay range and focus-report input | the 14 heuristic `status::tests` unit tests in `src/status.rs` |
 | STA-03 (Contract, controllable clock): a capability query and child reports neither activate explicit detection nor aggregate; root `working` stays running silently past 40 s; root `done`/`error`/`idle` request attention, repeats coalesce, acknowledgement re-arms, and `done` is no completion; observed sequences never reach host output | `root_reports_drive_explicit_detection_while_children_and_queries_do_not` |
 | STA-03 and STA-05 (Contract, controllable clock): the user window's end restores remembered root `working` only in the current explicit scope; `D` retires it | `user_window_expiry_restores_explicit_working_only_in_its_scope` |
 | STA-03 (Contract, `status-query-record`): the daemon answers an OSC 7501 capability query itself, with every state and kind, before the engine's device-attributes reply | `program_status_queries_are_answered_locally_in_order` |
@@ -674,7 +674,7 @@ cleanup; logs intentionally survive.
 
 ### Monitor acceptance scenarios
 
-Contract-layer cases of the [acceptance matrix](../../docs/monitor-acceptance.md),
+Contract-layer cases of the [acceptance matrix](../../docs/for-humans/behaviour/monitor/acceptance.md),
 through the real daemon binary and raw-socket revision-1 peers in `tests/revision1/`,
 supplemented by pure decisions in the control state machine and the session
 loop. Each test's doc comment cites its ID and case. A headless session's

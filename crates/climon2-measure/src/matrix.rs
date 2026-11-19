@@ -1,4 +1,4 @@
-//! The PERF-01 workload matrix (docs/monitor-acceptance.md, PERF-01): the
+//! The PERF-01 workload matrix (docs/for-humans/behaviour/monitor/acceptance.md, PERF-01): the
 //! evidence points, the scenarios each runs and the fixed output rates each
 //! scenario's sessions write at.
 

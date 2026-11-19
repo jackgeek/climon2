@@ -160,4 +160,4 @@ Adding zsh, sh, pwsh, powershell or cmd is purely a test-harness change: a new s
 - Local full quality gates must pass for the exact release commit before
   tagging; this maintainer-owned check is not duplicated or certified by CI.
 - One release publishes both platform archives only after both native gates
-  pass; see [distribution](../distribution.md).
+  pass; see [distribution](../for-humans/distribution.md).

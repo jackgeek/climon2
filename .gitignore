@@ -1,3 +1,4 @@
 .DS_Store
 /target/
 /.metrics/
+__pycache__/

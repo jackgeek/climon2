@@ -1,0 +1,47 @@
+# Kill
+
+**Status: agreed revision-1 specification. The
+[client library](../../../../GLOSSARY.md#sessions) implements it
+([#96](https://github.com/jackgeek/climon2/issues/96)) as its
+[implemented behavior](README.md#implemented-behavior) details; the
+monitor submits it for selector Delete ([#117](https://github.com/jackgeek/climon2/issues/117)).**
+The [monitor](../../../../GLOSSARY.md#sessions) requests
+[Kill](../../../../GLOSSARY.md#attachment-and-control) through its
+[client](../../../../GLOSSARY.md#sessions). Use the [overview](../README.md),
+[glossary](../../../../GLOSSARY.md) and [terms](../TERMS.md).
+
+## Schema and example
+
+`CM1_KILL` uses `args.required`, a unique list of required
+[capability](../../../../GLOSSARY.md#sessions) tokens.
+Target is this instance's immutable session ID; no alternate target or authority.
+See [header](client-v1.h) and [mapping](README.md#requests-and-result-mapping).
+
+```c
+cm1_request request = {0};
+request.tag = CM1_KILL;
+request.request_id = 8;
+return api->submit(communication, &request);
+```
+
+Use a separately hello-validated first-role connection, never repurpose an opened
+passive/attached stream. A kill-only instance needs no Open. Verify exact daemon
+identity/release/revision/required support before effects. At most one pending
+Kill per immutable target; repeated daemon Kill joins termination without
+restarting grace. Committed termination overrides succession.
+
+Success `CM1_TERMINATION` requires a present authoritative command result and
+complete daemon cleanup, not exit zero or local thread join. Failed/indeterminate
+termination may expose a known command and incomplete/unknown cleanup;
+initial rejection may expose `CM1_KNOWN_FINAL`. Loss never authorizes replay.
+Default-Cancel selector Delete pins GUID identity, retains failed/uncertain rows
+and removes only after definitive termination plus local cleanup/join.
+The monitor submits it this way for a confirmed selector Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)): through the open
+instance, or a kill-only instance when none is open, with an empty
+`args.required`.
+See [wire Kill](../daemon-client/request-kill.md),
+[results/errors](README.md#requests-and-result-mapping) and
+[lifecycle](../../behaviour/monitor/lifecycle.md#selector-delete-terminate-and-remove).
+[#67](https://github.com/jackgeek/climon2/issues/67) owns termination;
+[#71](https://github.com/jackgeek/climon2/issues/71) owns native fields.

@@ -28,7 +28,7 @@ use std::{
 const CLANG_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn header_directory() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/monitor-client")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/for-humans/protocol/monitor-client")
 }
 
 fn header() -> String {

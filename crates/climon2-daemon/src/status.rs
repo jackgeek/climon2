@@ -1,5 +1,5 @@
 //! Daemon-core activity and attention: the two state machines of the
-//! [session status mechanics](../../../docs/session-status.md) and their
+//! [session status mechanics](../../../docs/for-humans/behaviour/session-status.md) and their
 //! detectors: heuristic, explicit and fallback.
 //!
 //! The detector is pure. Every event takes the clock reading it happens at,

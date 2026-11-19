@@ -196,18 +196,19 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   accepted; unknown fields are ignored; errors name their class.
   - `MonitorConfig` (spec #73 Configuration model) exists only with an escape
     prefix (`client.escape_prefix may not be null for climon2 monitor`); its
-    take-control key may be null. `escape_prefix()` gives the prefix, and
-    `settings()` gives `MonitorSettings` with `show_key_hints` (default true)
-    and `limits`. The take-control key and `bell` (default true) are validated
-    and reported only; they gain accessors with their first consumer.
+    take-control key may be null. `escape_prefix()` gives the prefix,
+    `take_control_key()` the optional take-control key, and `settings()`
+    gives `MonitorSettings` with `show_key_hints` (default true), `bell`
+    (default true) and `limits`.
     `Display` writes every effective value as JSON in the file's own shape.
   - `config::Limits` holds the eleven `monitor.limits` groups of
-    docs/monitor-operational-limits.md, with its defaults. Each setting is
+    docs/for-humans/behaviour/monitor/operational-limits.md, with its defaults. Each setting is
     read as its native `u32` or `u64` (overflow, null and other types are
     errors). `Limits` exists only once every setting is within its range and
     the cross-field rules hold (sub-budgets, reservations and the other
     monitor byte budgets within their totals, client queues within the queue
-    and client budgets, progress reserves,
+    and client budgets, the client library's share within the client budget,
+    progress reserves,
     chunk and record capacity, quanta, retry delays; the daemon's
     notification assembly limits are in no monitor total). `assembly()`
     gives those limits as `config::Assembly`, which exists only within the
@@ -215,20 +216,27 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     daemon can check its arguments with it. A range
     refusal has `MaxRows`'s shape, `<setting> must be an integer from <min> to
     <max>`, from the same range type; a broken rule names both settings and
-    their values. Its fields are private: `history_rows()` gives
-    `history.max_rows`, the rest is only reported so far, and gains accessors
-    with the code that enforces it. `hold(MandatoryAllocation { size,
-    current_model, recent_page })` refuses, as `ConfigError::Invalid`, limits
+    their values. Its fields are private and read through accessors grouped
+    by consumer: `library()` (the client library's `native::Limits`, whose
+    `client_bytes` is the library's share of `memory.client_bytes`: its
+    request and event queues, one wire frame and its instance allocation),
+    `model()` (the rest of `memory.client_bytes` and `history.max_rows`),
+    `history_rows()`, `discovery()`, `lanes()`, `admission()`, `retry()`,
+    `memory()`, `cadence()` and `search_bytes()`; settings without one are
+    only reported. `hold(MandatoryAllocation { size, parser, current_model,
+    recent_page })` refuses, as `ConfigError::Invalid`, limits
     that cannot hold one session's mandatory allocation, which the monitor
     charges with `climon2-vt` since core cannot (#167): `memory.total_bytes`
-    must hold the monitor's one shared parser and the current model and
-    recent page together (#166), then `client_bytes` the model and page, and
+    must hold the monitor's one shared parser, the current model and
+    recent page and the library's share together (#166), then `client_bytes`
+    the model, page and library's share, and
     `history_bytes_total`, then `history_bytes_per_session`, the page. Each
     total comes before the budgets it contains, so a refusal names the limit
     to raise, with the session size and both values. Holding it admits the
     largest session, not a restoration staged beside it (at least 33,932,174
-    bytes in a client's budget, 36,029,326 in the total, at 500x200). `exec` does not apply it. Operating-system
-    limits are left to admission (#120).
+    bytes in the model's share of a client's budget, 36,029,326 in the total
+    beside the library's share, at 500x200). `exec` does not apply it.
+    Operating-system limits are left to admission (#120).
 - `preferences::MonitorPreferences` (spec #73 Introduction preference): the
   schema of `monitor-preferences.json` (`FILE_NAME`), which keeps the key
   introduction's **Don't show again** choice apart from `config.jsonc`.
@@ -265,8 +273,13 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   the failure. The diagnostic is one line, control characters escaped, then
   ` (logs: <path>)` once `logged`; the first logs named keep it. An
   `io::Error` converts with the climon2 error code, 125.
+- `diagnostics`: content-free logging. `CappedWriter` caps a log at
+  `LOG_LIMIT` (8 MiB), ending it with one `log limit reached` notice once
+  something is dropped; `subscriber`/`dispatch` build a plain-text,
+  UTC-timestamped `tracing` dispatcher from a `CLIMON2_LOG` `Filter`, or the
+  build's `default_filter()` (`trace` in debug builds, `info` in release).
 - `native`: the `#[repr(C)]` declarations of native client interface revision 1
-  ([`client-v1.h`](../../docs/protocol/monitor-client/client-v1.h)), shared by
+  ([`client-v1.h`](../../docs/for-humans/protocol/monitor-client/client-v1.h)), shared by
   the client library, the client executable and the monitor without new crate
   edges. Names map mechanically (`cm1_optional_text` is `OptionalText`,
   `CM1_SUCCESS` is `SUCCESS`, `final` is `r#final`); `BOOTSTRAP` names the
@@ -294,9 +307,10 @@ Integration tests call only these public boundaries:
 | #105 home layout: the monitor preference file at the climon2 home's root | `issue105_the_monitor_preference_file_is_in_the_climon2_home` |
 | #74 `monitor`/`m` take no arguments and `mon` is gone (INP-01 derived refusal, #287) | `issue74_monitor_and_m_take_no_arguments_and_mon_is_gone` |
 | #287 shortcuts are pure synonyms, unique and named in the usage line; `-h` is `--headless`; `-h` alone is not help | `shortcuts_parse_exactly_as_their_full_commands`, `every_command_has_its_own_single_letter_shortcut`, `exec_dash_h_is_headless_only_as_the_first_argument`, `issue29_help_and_version_flags_take_no_arguments` |
-| CFG-01 (Contract): missing file, objects and fields mean every documented default; `show_key_hints` and `bell` are independent booleans; every setting's range at its limit and one past it, overflow of its native type included, a range refusal naming its setting; null, wrong types and duplicates at every level; unknown and unrelated settings ignored; the cross-field rules at their limit and one past, the daemon's assembly limits in no monitor total; one read of the home's file | `cfg01_missing_objects_and_fields_mean_every_documented_default`, `cfg01_hints_and_bell_are_independent_booleans`, `cfg01_every_setting_accepts_the_lower_limit_of_its_range`, `cfg01_every_setting_accepts_the_upper_limit_of_its_range`, `cfg01_one_past_every_range_is_rejected`, `cfg01_null_is_an_error_for_every_known_setting`, `cfg01_wrong_types_are_errors`, `cfg01_duplicate_known_fields_are_errors`, `cfg01_unknown_and_unrelated_settings_are_ignored`, `cfg01_sub_budgets_fit_their_totals`, `cfg01_reservations_fit_the_total`, `cfg01_other_monitor_byte_budgets_fit_the_total`, `cfg01_toasts_fit_the_aggregate_queue_budget`, `cfg01_daemon_owned_assembly_limits_are_outside_the_total`, `cfg01_client_queues_fit_the_queue_and_client_budgets`, `cfg01_progress_reserves_leave_room_in_their_event_allowances`, `cfg01_the_largest_chunk_fits_usable_capacity`, `cfg01_the_largest_record_fits_usable_capacity`, `cfg01_quanta_and_retry_delays_are_ordered`, `cfg01_the_snapshot_is_one_read_of_the_home_configuration` |
+| CFG-01 (Contract): missing file, objects and fields mean every documented default; `show_key_hints` and `bell` are independent booleans; every setting's range at its limit and one past it, overflow of its native type included, a range refusal naming its setting; null, wrong types and duplicates at every level; unknown and unrelated settings, the removed toast limits included, ignored; the client library's share within a client's budget; the cross-field rules at their limit and one past, the daemon's assembly limits in no monitor total; one read of the home's file | `cfg01_missing_objects_and_fields_mean_every_documented_default`, `cfg01_hints_and_bell_are_independent_booleans`, `cfg01_every_setting_accepts_the_lower_limit_of_its_range`, `cfg01_every_setting_accepts_the_upper_limit_of_its_range`, `cfg01_one_past_every_range_is_rejected`, `cfg01_null_is_an_error_for_every_known_setting`, `cfg01_wrong_types_are_errors`, `cfg01_duplicate_known_fields_are_errors`, `cfg01_unknown_and_unrelated_settings_are_ignored`, `cfg01_sub_budgets_fit_their_totals`, `cfg01_reservations_fit_the_total`, `cfg01_other_monitor_byte_budgets_fit_the_total`, `cfg01_the_removed_toast_limits_are_ignored`, `cfg01_daemon_owned_assembly_limits_are_outside_the_total`, `cfg01_client_queues_fit_the_queue_and_client_budgets`, `lim01_the_client_library_share_fits_the_client_budget`, `cfg01_progress_reserves_leave_room_in_their_event_allowances`, `cfg01_the_largest_chunk_fits_usable_capacity`, `cfg01_the_largest_record_fits_usable_capacity`, `cfg01_quanta_and_retry_delays_are_ordered`, `cfg01_the_snapshot_is_one_read_of_the_home_configuration` |
+| LIM-01 (Monitor, #108, #119, #120): the monitor reads its library, model, discovery, scheduling, UI and admission limits from the snapshot, the library's share of the client budget apart from the model's | `the_monitor_reads_its_library_discovery_and_scheduling_limits` |
 | CFG-01 (Contract, exec and attach cases): exec validates the `monitor` section, attach ignores it, and neither refuses a null escape prefix | `cfg01_exec_validates_the_monitor_section_and_attach_ignores_it` |
-| CFG-01 (Contract, mandatory model and recent page, #167, #166): the total holds the monitor's one parser and one 500x200 session's documented current model and recent page together, then a client's budget the model and page, and the history total, then a session's history budget, the page: each accepted at its limit and refused one byte short, each total named before the budgets it contains | `cfg01_the_total_holds_the_parser_and_the_largest_current_model_and_recent_page`, `cfg01_the_client_budget_holds_the_largest_current_model_and_recent_page`, `cfg01_the_history_total_holds_the_largest_recent_page`, `cfg01_the_history_budget_holds_the_largest_recent_page` |
+| CFG-01 (Contract, mandatory model and recent page, #167, #166): the total holds the monitor's one parser and one 500x200 session's documented current model and recent page together, beside the client library's share, then a client's budget the model, page and library's share, and the history total, then a session's history budget, the page: each accepted at its limit and refused one byte short, each total named before the budgets it contains | `cfg01_the_total_holds_the_parser_and_the_largest_current_model_and_recent_page`, `cfg01_the_client_budget_holds_the_largest_current_model_and_recent_page`, `cfg01_the_history_total_holds_the_largest_recent_page`, `cfg01_the_history_budget_holds_the_largest_recent_page` |
 | HLP-01 (Contract; derived scenario: the preference file's versioning and malformed files): a saved choice is one line of version 1; a version 1 file holds the choice; later versions, up to the largest, are read ignoring unknown fields, one past it malformed; every malformed shape refused with its reason | `hlp01_a_saved_choice_is_one_line_of_version_1_json`, `hlp01_a_version_1_file_holds_the_dont_show_again_choice`, `hlp01_later_versions_are_read_ignoring_unknown_fields`, `hlp01_malformed_files_are_refused_with_their_reason` |
 | INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
 | CFG-01 (Docs): the README spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_readme_documents_every_default_and_the_escape_warning` |
@@ -316,7 +330,7 @@ Integration tests call only these public boundaries:
 | STA-07 (codec case): status records keep exact UTC change times and attention-only episodes; a change time is written exactly from Unix milliseconds up to the last four-digit year | `utc_times_are_exact_calendar_milliseconds`, `utc_times_are_written_from_unix_milliseconds`, `status_episodes_belong_only_to_attention_states` |
 | DOC-01 layout case: Rust native declarations equal `client-v1.h` sizes, alignments, field offsets and sizes, tags and result codes (clang checks the host's native target; CI runs x86-64 GNU/Linux and arm64 and x86_64 macOS) | `rust_native_declarations_match_the_published_header`, `a_layout_difference_is_reported_against_the_header` |
 
-`tests/config.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
+`tests/config.rs`, `tests/diagnostics.rs`, `tests/hello.rs`, `tests/keys.rs`, `tests/selector.rs`,
 `tests/startup_envelope.rs` and `tests/title.rs` specify those modules one rule
 per test. `tests/monitor_config.rs` specifies the monitor's configuration
 snapshot from a hand-written table of every `monitor.limits` setting, its range
