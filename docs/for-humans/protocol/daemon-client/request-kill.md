@@ -114,7 +114,8 @@ failed write to the command's terminal, does not by itself fail a Kill whose
 termination was confirmed and cleaned up. While a Kill awaits its answer, a
 later Open or Kill on its connection is `invalid_state`, as are Leave and
 Acquire, since it opened nothing; Input, Resize and Ready are
-`not_attached`, and Focus is `unsupported_capability`. The Kill's connection
+`not_attached`, and Focus, Set viewing and Acknowledge are
+`unsupported_capability`. The Kill's connection
 receives no [Command final](event-command-final.md): its answer carries the
 result. `c2 kill` sends this Kill through its own release's client library
 ([#100](https://github.com/jackgeek/climon2/issues/100)).

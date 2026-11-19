@@ -48,8 +48,9 @@ sessions are supported. Session data defaults to `~/.climon2`; set
 
 The [documentation index](docs/for-humans/README.md) lists every document
 written for people to read.
-The [protocol reference](docs/for-humans/protocol/README.md) explains the current daemon
-handshake and the in-process monitor-client interface for future plugin authors.
+The [protocol reference](docs/for-humans/protocol/README.md) explains the daemon
+handshake and wire protocol, the in-process monitor-client interface and the
+monitor's reports to its host, for client and future plugin authors.
 It distinguishes implemented behavior from agreed plans and unresolved details.
 The [session status, attention, and activity mechanics](docs/for-humans/behaviour/session-status.md)
 include both daemon state machines and the monitor's ordering/recovery behavior;
@@ -466,18 +467,31 @@ to the general log in the climon2 home, including its effective
 configuration as JSON, never your input.
 
 Until you turn it off, the monitor starts with its key introduction over the
-empty state, listing its keys with your escape prefix:
+empty state, listing its keys with your escape prefix and the session list's
+own keys (on macOS, Delete is shown as `Del (fn+⌫)`):
 
 ```text
-┌ Keys ────────────────────────────────┐
-│ Ctrl+] then x  Exit the monitor      │
-│ Ctrl+] then s  Open the session list │
-│ Ctrl+] then ?  Show this dialog      │
-│                                      │
-│ [ ] Don't show again (Space)         │
-│                                      │
-│ Continue (Enter)                     │
-└──────────────────────────────────────┘
+┌ Keys ───────────────────────────────────────────────────┐
+│ Ctrl+] then x  Exit the monitor                         │
+│ Ctrl+] then s  Open the session list                    │
+│ Ctrl+] then j  Jump to the session that needs attention │
+│ Ctrl+] then ?  Show this dialog                         │
+│                                                         │
+│ In the session list:                                    │
+│ Type or paste  Search by status and title               │
+│ Left, Right, Home, End, Backspace  Edit the search      │
+│ Up, Down, PageUp, PageDown  Move the highlight          │
+│ Enter  Select the highlighted session                   │
+│ Esc  Cancel                                             │
+│ Del  Delete the highlighted session                     │
+│ Click a row  Highlight it                               │
+│ Click outside  Cancel                                   │
+│ Wheel  Scroll the list                                  │
+│                                                         │
+│ [ ] Don't show again (Space)                            │
+│                                                         │
+│ Continue (Enter)                                        │
+└─────────────────────────────────────────────────────────┘
 ```
 
 Enter continues to the empty state. Space checks **Don't show again**, or
@@ -489,8 +503,10 @@ showing your saved choice; doing so while it is open changes nothing. The
 dialog takes every other key and any paste, and none of them does anything
 else; the escape prefix followed by `x` still exits. The escape prefix pressed
 twice reaches the dialog as that key, so with `Ctrl+M` (Enter) as the prefix,
-Enter Enter continues. The escape prefix followed by `s` opens the session
-list (#106, #113). A bare Escape closes the dialog when the next key arrives
+Enter Enter continues. While the dialog is open, the escape prefix followed by
+`s` does nothing; once it is closed, it opens the session list (#106, #113).
+The escape prefix followed by `j` closes the dialog and jumps to the session
+needing attention (#114). A bare Escape closes the dialog when the next key arrives
 (#109), except with `Ctrl+[` as the prefix: then it never can, because Escape
 is the prefix.
 
@@ -593,8 +609,8 @@ The default executable home is `~/.local/share/climon2`. Add it to PATH:
 export PATH="$HOME/.local/share/climon2:$PATH"
 ```
 
-The installer prints a matching hint for custom destinations and never modifies
-shell startup files. Upgrades preserve existing version folders and live sessions.
+The installer prints a matching hint whenever the destination is not on PATH,
+and never modifies shell startup files. Upgrades preserve existing version folders and live sessions.
 Fresh installs and upgrades add `c2` in the same executable home, with no PATH
 change needed for existing users. An unrelated file or symlink named `c2` there
 blocks installation before publication; resolve the reported conflict and retry.
@@ -656,12 +672,15 @@ compatible with macOS `/bin/bash` 3.2.
 On arm64 macOS, install both Rust targets before running workspace tests,
 `dist` or `install`: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
-CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
-architectures. Windows runs neutral contracts only. Shared and Linux-specific
+CI runs full runtime, real-terminal and packaged tests on Linux, and on both
+macOS architectures while the repository variable `CLIMON2_MACOS_TESTS` is
+`on`; otherwise macOS only builds its release archive. Windows runs neutral
+contracts only. Shared and Linux-specific
 CRAP/mutation run on the dedicated Linux development host, with 8 mutation
 workers. CI does not repeat those quality checks.
 
-The macOS CI quality job uses `cargo xtask mutate --native-only`: CRAP scores
+The macOS CI quality job, which also needs `CLIMON2_MACOS_TESTS` on, uses
+`cargo xtask mutate --native-only`: CRAP scores
 only registered macOS-exclusive source, and mutation selects changed files
 within that set. Shared-only changes skip that quality run; release tags use
 `--native-only --mutate-all` to qualify every macOS-exclusive file. Coverage
@@ -768,7 +787,9 @@ versions and prints a PATH hint when needed; shell startup files are unchanged.
 A release requires a local `cargo xtask check --full --mutate-all` pass for the exact
 release commit; this is the maintainer's responsibility, not a duplicated CI
 job. A `v<workspace version>` tag runs full macOS-only mutation and the native
-runtime/archive gates. The same final
+runtime/archive gates (on macOS only while `CLIMON2_MACOS_TESTS` is on), then
+[release qualification](docs/for-humans/distribution.md#release-qualification)
+of the exact archives on all three platforms, whatever that variable says. The same final
 macOS archive must pass both architectures, and the Linux archive must pass
 Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
 before one GitHub Release and provenance attestation are published.

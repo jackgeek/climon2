@@ -16,7 +16,9 @@ it, without resizing an application or acquiring anything (#113 adds the
 search, separator and footer below). Rows show the
 effective status their daemons report (Needs attention, Acknowledged,
 Running, Idle), Succeeded or Failed with the exact exit code or signal, or a
-not-connected label (Starting, Unavailable or Disconnected), and list in the
+not-connected label (Starting, Unavailable or Disconnected, or Awaiting
+resources for a resource-blocked row of
+[#120](https://github.com/jackgeek/climon2/issues/120)), and list in the
 status order of the
 [session-status mechanics](../session-status.md#reporting-ordering-and-initial-selection)
 ([#107](https://github.com/jackgeek/climon2/issues/107)); a row never seen
@@ -35,7 +37,8 @@ go to it at once. Enter selects the highlighted row
 ([#108](https://github.com/jackgeek/climon2/issues/108)): a connected row not
 known to be final is acquired, and a Starting row or an Unavailable row
 without a connected client is selected without acquiring
-([#110](https://github.com/jackgeek/climon2/issues/110)); disconnected and
+([#110](https://github.com/jackgeek/climon2/issues/110)), as is an Awaiting
+resources row (#120); disconnected and
 final rows are selected read-only
 ([#116](https://github.com/jackgeek/climon2/issues/116)). The full selector of
 [#113](https://github.com/jackgeek/climon2/issues/113) is implemented: the
@@ -282,7 +285,8 @@ running (owner decision on #115).
 Animation never blocks session switching, selector input, resize or exit.
 
 Accepted prototype timings are 400 ms drawing, 2 seconds title hold,
-300 ms text fade, then 400 ms erasure. The hold starts when the frame showing
+300 ms text fade, then 400 ms erasure, and the monitor uses them (#115). The
+hold starts when the frame showing
 the full title has finished writing to the host (owner decision on #115,
 2026-11-17). These are visual trials;
 final operational/rendering/queue budgets are specified in
@@ -341,4 +345,7 @@ Cover repeated help, Enter/Escape/prefix handling, underlying selector
 search/highlight preservation, background progress, and modal input isolation
 without implicit acquisition or attention acknowledgement.
 The agreed [acceptance matrix](acceptance.md) assigns final scenarios
-and evidence layers for #62; executable monitor conformance remains future work.
+and evidence layers for #62. The crate READMEs map tests to its scenarios, and
+[release qualification](https://github.com/jackgeek/climon2/issues/122)
+records each release candidate's conformance against it; no release's
+conformance is claimed here.

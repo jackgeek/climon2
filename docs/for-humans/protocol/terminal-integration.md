@@ -12,10 +12,11 @@ the [monitor](../../../GLOSSARY.md#sessions)'s own screen and exits, first
 with no [sessions](../../../GLOSSARY.md#sessions) to show. It takes its own alternate screen
 with one permanent top row, enables [host](../../../GLOSSARY.md#sessions)
 bracketed-paste, mouse and focus reporting, and never changes the host title.
-Only the typed [client escape prefix](../../../GLOSSARY.md#attachment-and-control)
+Then only the typed [client escape prefix](../../../GLOSSARY.md#attachment-and-control)
 followed by x (exit) or ? (the modal
 [key introduction](../../../GLOSSARY.md#attachment-and-control), also opened at
-startup while key hints are on and its suppression is unsaved) acts, and the
+startup while key hints are on and its suppression is unsaved) acted (s and j
+came with the selector and the attention jump, below), and the
 open dialog takes the other typed keys, a doubled prefix as one literal prefix,
 acting only on Enter and Space: pasted [bytes](TERMS.md#byte) are data, never
 complete a pending prefix and leave none pending. A host resize repaints the
@@ -128,7 +129,12 @@ including Escape closing the dialog when Escape is not the prefix
 ([#109](https://github.com/jackgeek/climon2/issues/109)); history and synchronized updates ([#112](https://github.com/jackgeek/climon2/issues/112)); the selector
 ([#113](https://github.com/jackgeek/climon2/issues/113)); the attention jump, hints and host reports ([#114](https://github.com/jackgeek/climon2/issues/114)); toasts
 and the bell ([#115](https://github.com/jackgeek/climon2/issues/115)); and read-only disconnected history with passive
-recovery ([#116](https://github.com/jackgeek/climon2/issues/116)), as each section below says. Native host selection and
+recovery ([#116](https://github.com/jackgeek/climon2/issues/116)), as each section below says. Selector Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)), coordinated
+shutdown ([#118](https://github.com/jackgeek/climon2/issues/118)), memory
+accounting and cadence ([#119](https://github.com/jackgeek/climon2/issues/119))
+and admission ([#120](https://github.com/jackgeek/climon2/issues/120)) are
+implemented too. Native host selection and
 copy is a manual check, not an automated test. The
 [monitor README](../../../crates/climon2-monitor/README.md#specification-mapping)
 lists the cases its tests do not yet claim.
@@ -180,7 +186,10 @@ configured limits hold one session's mandatory model allocation
 chooses no workspace crate.
 The [allocation-aware prerequisite](../behaviour/monitor/operational-limits.md#allocation-aware-terminal-prerequisite)
 explicitly reopens the unbounded combining-data/infallible-interface assumptions
-for future monitor qualification. Current engine behavior is unchanged.
+for monitor qualification. The engine itself is unchanged: `climon2-vt`'s
+allocation-bounded monitor model meets the prerequisite around it
+([#76](https://github.com/jackgeek/climon2/issues/76),
+[#166](https://github.com/jackgeek/climon2/issues/166)).
 Never write session bytes directly to the [host](../../../GLOSSARY.md#sessions).
 The monitor parser must not send duplicate query replies; host replies remain
 monitor-local and bypass shortcut detection and real-user application input.
@@ -569,7 +578,8 @@ explicitly unavailable, with app input/viewing off and disconnected retained
 cache read-only where safe; other clients/selector/exit remain usable. It is not
 evidence of command completion. Rendering, host-output or shared-infrastructure
 failure initiates coordinated shutdown, not merely a row error.
-The [shutdown contract](../behaviour/monitor/lifecycle.md#coordinated-shutdown) concurrently
+The [shutdown contract](../behaviour/monitor/lifecycle.md#coordinated-shutdown),
+implemented by [#118](https://github.com/jackgeek/climon2/issues/118), concurrently
 requests all owned instances, drains/releases deliveries, attempts required
 atomic [Leave](daemon-client/request-leave.md), closes connections and joins
 cleaned-up workers/client threads.
@@ -582,8 +592,10 @@ Stalls use bounded whole-process failure, never thread killing/unloading or a
 false cleanup claim. Broken output permits only best-effort restoration/clear;
 report failure. [Numeric budgets](../behaviour/monitor/operational-limits.md) and
 [native calls](monitor-client/README.md) and the
-[acceptance matrix](../behaviour/monitor/acceptance.md) are agreed; executable
-conformance remains future work.
+[acceptance matrix](../behaviour/monitor/acceptance.md) are agreed. The
+monitor's end-to-end tests drive the installed monitor; the
+[monitor README](../../../crates/climon2-monitor/README.md#specification-mapping)
+maps the cases they claim and lists those they do not yet claim.
 No session-survival promise or containment of a native client crash is added.
 Native selection/copy limitations are manually verified where automation cannot
 honestly establish host-specific behavior. Documentation checks prove none of

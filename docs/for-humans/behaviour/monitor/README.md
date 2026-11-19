@@ -8,8 +8,8 @@ ships.
 
 ## Shared terms
 
-The monitor's main screen is the [selector](../../../../GLOSSARY.md#attachment-and-control):
-a list of sessions the user picks from. Showing a session's terminal to the
+The monitor's [selector](../../../../GLOSSARY.md#attachment-and-control) is
+an overlaid list of the sessions it tracks, which the user opens to pick one. Showing a session's terminal to the
 user is [viewing](../../../../GLOSSARY.md#status-and-attention) it; typing into
 it requires holding [control](../../../../GLOSSARY.md#attachment-and-control)
 of that session.

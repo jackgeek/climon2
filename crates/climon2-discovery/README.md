@@ -3,7 +3,7 @@
 One [discovery pass](../../GLOSSARY.md#sessions) over a climon2 home. This is
 the CLI's own session discovery, moved into a shipped library (#77, planned in
 [#59](https://github.com/jackgeek/climon2/issues/59)) so that `climon2 list`,
-`attach` and `kill`, and later the monitor, share one implementation. It depends
+`attach` and `kill`, and the monitor (#106), share one implementation. It depends
 only on `climon2-core` and `climon2-platform` (ADR 0004) and, like the platform
 seams, supports macOS and x86-64 GNU/Linux; it has no OS-specific code of its
 own.
@@ -96,7 +96,7 @@ that the CLI stays byte-for-byte unchanged while the monitor bounds its reads:
   None`), its behaviour before the extraction: whole files are read, nested as
   deeply as the JSON parser accepts. serde_json skips unknown members at any
   depth, so there is no depth limit in practice.
-- The monitor will pass the `monitor.limits` discovery values
+- The monitor passes the `monitor.limits` discovery values
   `metadata_file_bytes` (262144 by default) and `metadata_depth` (32).
 
 A bounded read stops one byte past `file_bytes`, so an oversized file is never
@@ -122,7 +122,6 @@ hello peers.
 | DSC-04 Contract case (uncertain disappearance), Linux: only the recorded boot ID and start ticks prove a session stale; a live identity with any start time, and a missing identity, are uncertain and kept even when cleanup is requested | `linux_daemon_identity_alone_proves_a_session_stale` |
 | DSC-04 Contract case (inaccessible discovery): a sessions directory that cannot be listed fails the pass with the listing error instead of reporting an empty home, and nothing is deleted | `a_sessions_directory_that_cannot_be_listed_fails_the_pass` |
 | DSC-01 Contract case (discovery order): newest created first, then ascending full session ID; a home without sessions is an empty pass | `sessions_are_newest_created_first_with_ascending_session_id_ties` |
-
 | DSC-03 and DSC-04 Contract cases (incremental passes): every entry once, in batches bounded by records and by bytes at and one byte short of the bound; complete versus completed empty passes; nothing deleted | `incremental_passes_report_every_entry_once_in_bounded_batches` |
 | DSC-03 Contract case (fair continuation while the directory changes) | `a_pass_continues_through_directory_changes_and_the_next_pass_reaches_what_it_missed` |
 | DSC-04 Contract and Fault cases (slow and dead probes, incomplete discovery) with DSC-03 fair continuation | `a_pass_deadline_reports_incomplete_progress_and_the_next_pass_continues_after_it` |

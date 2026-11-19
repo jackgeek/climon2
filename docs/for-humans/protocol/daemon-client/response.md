@@ -23,7 +23,7 @@ All fields required:
 |---|---|
 | `request_id` | [Counter](README.md#shared-types) matching the received request. |
 | `outcome` | `ok`, `rejected`, `failed`, `indeterminate`. |
-| `result` | Matching result variant below, or null on non-success. |
+| `result` | Matching result variant below; on non-success, null or a known result described below. |
 | `error` | Error on every non-success; null on success. |
 
 ```json

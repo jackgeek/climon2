@@ -158,8 +158,8 @@ libraries and has no soname, RPATH or RUNPATH, as the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) requires for
 release isolation; release checks enforce each rule. The monitor loads it
 (#106), the client executable loads it for ordinary attach (#101) and kill
-mode (#100), and test tooling loads it: the library host fixture and xtask's
-release checks. Cargo's ordinary
+mode (#100), and test tooling loads it: the library host fixture, xtask's
+release checks and `climon2-measure` (#121). Cargo's ordinary
 `lib` targets, including `climon2-core`, `climon2-platform`,
 `climon2-discovery` and `climon2-vt`, are not separately loaded dynamic
 libraries; the CLI's and the monitor's hello probes for discovery come from
@@ -185,8 +185,10 @@ Session bytes never go directly to the host, and the daemon alone answers
 session queries.
 
 **Planned:** background clients relay negotiated plugin data.
-The [agreed terminal contract](../protocol/terminal-integration.md), implemented
-by the monitor (#108 to #116), selects exact ordered terminal
+
+**Current (#108 to #116):** the
+[agreed terminal contract](../protocol/terminal-integration.md), implemented
+by the monitor, selects exact ordered terminal
 bytes/control/restoration through existing in-process record queues and
 monitor-owned `climon2-vt` models, with read-only Rust views for Ratatui.
 Monitor-mode daemon presentation uses
@@ -306,7 +308,7 @@ No new artifact or consumption arrow is added. Monitor-client communication is
 agreed and implemented by the client library (#85 to #98) and the monitor
 (#106 to #120).
 [Daemon wire revision 1](../protocol/daemon-client/README.md) is agreed and
-partly implemented: session daemons serve
+implemented: session daemons serve
 [passive monitor connections](../../../GLOSSARY.md#attachment-and-control),
 interactive [attachments](../../../GLOSSARY.md#attachment-and-control) and
 standalone [Kill](../../../GLOSSARY.md#attachment-and-control) over it, with the
