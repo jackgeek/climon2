@@ -1,6 +1,7 @@
 # Monitor to host
 
-The bytes the monitor writes to its host terminal to advertise attention and
+The bytes the monitor writes to its host terminal to advertise whether a
+session needs [attention](../../../../GLOSSARY.md#status-and-attention), and to
 ring the bell. The shared rules are in the overview's
 [monitor-to-host section](../README.md#monitor-to-host-status-and-bell).
 
@@ -8,9 +9,13 @@ ring the bell. The shared rules are in the overview's
 
 ## Shared terms
 
-The status reports are [OSC](../TERMS.md#osc) 7501 escape sequences: the host
-reads them to show whether any session the monitor watches needs attention.
-The bell is a single [BEL](../TERMS.md#bel) byte.
+A session needs attention when its command is waiting for the user. The
+status reports are
+[OSC](../TERMS.md#osc) 7501 escape sequences: the host reads them to show
+whether any session the monitor watches needs attention. A
+[toast](../TERMS.md#toast) is a short message the monitor draws over its
+screen; the bell is a single [BEL](../TERMS.md#bel) byte it writes as one
+appears.
 
 ## Contents
 
