@@ -13,7 +13,7 @@ pub(crate) const NO_ATTENTION: &str = "No sessions need attention";
 const NOTICE_FOR: Duration = Duration::from_secs(3);
 
 /// The monitor's root OSC 7501 reports to its host
-/// (docs/protocol/monitor-host): pending attention, monitoring without it,
+/// (docs/for-humans/protocol/monitor-host): pending attention, monitoring without it,
 /// and the root clear on orderly exit.
 pub(crate) const BLOCKED: &[u8] =
     b"\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x1b\\";

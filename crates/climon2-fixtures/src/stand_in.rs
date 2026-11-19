@@ -30,7 +30,7 @@ pub fn compile(output: &Path, release: &str, options: &[&str]) -> io::Result<()>
     command.arg("-dynamiclib");
     command
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/monitor-client"))
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/for-humans/protocol/monitor-client"))
         .arg(format!("-DRELEASE=\"{release}\""))
         .args(options)
         .arg("-o")

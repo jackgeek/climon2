@@ -10,7 +10,7 @@ normal-shell baseline in its release and, at startup, for `Model::mandatory`
 at `Geometry::LARGEST`, to check that its limits hold one session's model
 (#167).
 
-The [#63 terminal contract](../../docs/protocol/terminal-integration.md) has
+The [#63 terminal contract](../../docs/for-humans/protocol/terminal-integration.md) has
 the monitor paint each session with Ratatui from
 [read-only views](#read-only-views) of its model (#83). They are Rust types,
 not a native cross-release cell schema; the monitor paints its selected

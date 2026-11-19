@@ -17,7 +17,7 @@ reference in the same change.
    Distinguish agreed but unimplemented behavior from shipped behavior. Mark
    unresolved details explicitly and link their decision tickets.
 
-2. Maintain `docs/protocol/README.md` as the entry point. Explain which programs
+2. Maintain `docs/for-humans/protocol/README.md` as the entry point. Explain which programs
    communicate, the basic framing and message structure for each interface,
    startup and capability negotiation, and how to read the message reference.
    Link the domain glossary, technical terms, and a separate Markdown page for
@@ -25,7 +25,7 @@ reference in the same change.
    message's direction and purpose. Keep message-specific details on their
    own pages.
 
-3. Maintain message pages under `docs/protocol/<interface>/`. Use distinct
+3. Maintain message pages under `docs/for-humans/protocol/<interface>/`. Use distinct
    filenames for requests, responses, and events where names overlap. When one
    message type carries several operations, give each operation its own page.
    Each page must explain:
@@ -42,7 +42,7 @@ reference in the same change.
 
 4. Maintain domain concepts in root `GLOSSARY.md`, the single domain glossary
    for this repository. Invoke `domain-modeling` when changing those concepts.
-   Define non-intuitive technical vocabulary in `docs/protocol/TERMS.md`;
+   Define non-intuitive technical vocabulary in `docs/for-humans/protocol/TERMS.md`;
    keep wire schemas and implementation details in the message reference.
    Link both references from the overview and every message page. At the first
    prose occurrence of each domain term, non-intuitive technical term, or

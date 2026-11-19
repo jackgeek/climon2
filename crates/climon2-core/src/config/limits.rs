@@ -1,4 +1,4 @@
-//! `monitor.limits` (docs/monitor-operational-limits.md): eleven groups of
+//! `monitor.limits` (docs/for-humans/behaviour/monitor/operational-limits.md): eleven groups of
 //! budgets, ceilings, counts and durations. Each setting is read in its native
 //! type; once every group is read, each setting is checked against its range,
 //! and then the groups against each other. Every refusal names the settings it

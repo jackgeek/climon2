@@ -12,7 +12,7 @@ Evidence limits: earlier qualification ran against revision `bbb2cbf9470a6707b12
 
 ## Monitor models: bounded by allocation on the unchanged engine
 
-The [operational limits](../monitor-operational-limits.md#allocation-aware-terminal-prerequisite)
+The [operational limits](../for-humans/behaviour/monitor/operational-limits.md#allocation-aware-terminal-prerequisite)
 reopened the unchanged-engine and infallible-interface assumptions for the
 monitor role: models must be bounded by allocation, including combining and
 auxiliary cell data, resize and restoration staging, rejecting unsafe growth
@@ -130,7 +130,7 @@ The model keeps to its limit this way:
   at most `history_rows`.
 - **History yields before anything is rejected.** History is discarded
   truthfully as it exceeds the allocation ceiling, never required terminal
-  updates ([operational limits](../monitor-operational-limits.md#memory-history-and-admission)).
+  updates ([operational limits](../for-humans/behaviour/monitor/operational-limits.md#memory-history-and-admission)).
   When a token's growth does not fit even after measuring, the oldest history
   chunk is discarded, a chunk at a time and never the first: the engine's
   limit is lowered, the rows it drops and their cell data are released at
@@ -159,8 +159,8 @@ The model keeps to its limit this way:
   monitor model marks itself stale if a Display arrives at a geometry it does
   not have. Neither is made by #76: the agreed wire still says only that a
   restoration may follow a resize
-  ([Restoration begin](../protocol/daemon-client/event-restoration-begin.md)),
-  and a [Geometry](../protocol/daemon-client/event-geometry.md) event carries
+  ([Restoration begin](../for-humans/protocol/daemon-client/event-restoration-begin.md)),
+  and a [Geometry](../for-humans/protocol/daemon-client/event-geometry.md) event carries
   none. [#89](https://github.com/jackgeek/climon2/issues/89) amends those
   pages and tests the order; [#108](https://github.com/jackgeek/climon2/issues/108)
   adds the stale defence.
@@ -300,7 +300,7 @@ The engine is fed in steps of at most 64 bytes of text and C0 controls; every es
 
 ### Agreed terminal-status extension
 
-The [session-status revision](../session-status.md) adds daemon-core observation
+The [session-status revision](../for-humans/behaviour/session-status.md) adds daemon-core observation
 of OSC 7501, OSC 133, and OSC 9/99/777 before host-output filtering. The daemon
 answers OSC 7501 capability queries locally. Root program reports and
 shell lifecycle select explicit or heuristic activity detection; recognized
@@ -310,9 +310,9 @@ Raw sequences remain stripped from host output. Clients/monitors instead
 receive structured notification/progress metadata, including while background
 or noncontrolling. This extends local interpretation and daemon-owned replies,
 not the permission to send host-dependent requests to an outer terminal.
-The [agreed daemon wire](../protocol/daemon-client/core-v1.md) now specifies
+The [agreed daemon wire](../for-humans/protocol/daemon-client/README.md) now specifies
 structured schemas and source normalization;
-[native declarations](../protocol/monitor-client/core-v1.md) are also agreed.
+[native declarations](../for-humans/protocol/monitor-client/README.md) are also agreed.
 The session daemon implements this extension
 ([#92](https://github.com/jackgeek/climon2/issues/92),
 [#98](https://github.com/jackgeek/climon2/issues/98)); the filter and query
@@ -322,7 +322,7 @@ The [monitor](../../GLOSSARY.md#sessions)'s per-session `climon2-vt` copy for re
 inspection (#108, #116) is an explicit exception to the current no-client-emulator rule,
 not a competing terminal-query authority. Forwarding to other monitors and
 xterm.js browsers is a future consumer boundary, not permission for revoked
-core screen mirroring or a native library in a browser. The [agreed #63 terminal contract](../protocol/terminal-integration.md) now selects
+core screen mirroring or a native library in a browser. The [agreed #63 terminal contract](../for-humans/protocol/terminal-integration.md) now selects
 ordered exact daemon terminal bytes, reparsed into monitor-owned `climon2-vt`
 models and painted by Ratatui. This deliberately reopens the rejected
 client-side-emulator option for the monitor role, not ordinary clients or query
@@ -345,7 +345,7 @@ The monitor uses its own alternate screen and internal normal history, replaces
 whole models/history transactionally, and never writes session bytes directly
 to the host or emits duplicate query replies. Selected input also waits for
 coherent paint, while applied background models can report Ready without paint.
-The later [lifecycle amendment](../monitor-lifecycle.md) limits stale inspection
+The later [lifecycle amendment](../for-humans/behaviour/monitor/lifecycle.md) limits stale inspection
 to disconnected/final retained history: connected revoked clients show only
 the placeholder, with no revoked-cache inspection route. Disconnected history
 overlays exactly `Reconnecting...` while passive recovery is scheduled or active;

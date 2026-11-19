@@ -9,7 +9,7 @@ on:
       - "**"
       - "!**/*.md"
       - "!LICENSE"
-      - "docs/protocol/**/*.md"
+      - "docs/for-humans/protocol/**/*.md"
   pull_request:
     # ready_for_review re-runs checks when a draft integration PR is marked ready.
     types: [opened, synchronize, reopened, ready_for_review]
@@ -17,7 +17,7 @@ on:
       - "**"
       - "!**/*.md"
       - "!LICENSE"
-      - "docs/protocol/**/*.md"
+      - "docs/for-humans/protocol/**/*.md"
   workflow_call:
     inputs:
       mutate_all:
@@ -74,7 +74,7 @@ jobs:
           fi
       - uses: ./.github/actions/controlled-bash
       - name: Check native interface specification declarations and examples
-        run: python3 docs/protocol/monitor-client/check.py
+        run: python3 docs/for-humans/protocol/monitor-client/check.py
       - name: Run formatting, lint and real-terminal tests
         run: |
           cargo xtask fixtures-check

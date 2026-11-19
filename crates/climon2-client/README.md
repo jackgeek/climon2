@@ -199,7 +199,7 @@ arm64/x86_64) on macOS and `libclimon2_client.so` on x86-64 GNU/Linux. The
 file name comes from `climon2_core::layout::client_library_name`. It is an
 artifact, not another crate. It exports only the frozen
 `climon2_client_get_interface` bootstrap of
-[native client interface revision 1](../../docs/protocol/monitor-client/core-v1.md),
+[native client interface revision 1](../../docs/for-humans/protocol/monitor-client/README.md),
 using the shared `#[repr(C)]` declarations in `climon2_core::native`; Rust
 layouts, unwinding and allocators never cross it. Every entry contains panics
 and reports `CM1_INTERNAL_ERROR` instead; the bootstrap installs a silent panic
@@ -533,7 +533,7 @@ eager, local resolution (`RTLD_NOW | RTLD_LOCAL`); `current`, the working
 directory, `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` do not change
 which file loads. On macOS `DYLD_LIBRARY_PATH` can, so the shared loader
 (#84) refuses an image loaded from any other file than the one requested, as
-[library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)
+[library embedding](../../docs/for-humans/protocol/library-embedding.md#artifact-and-dependency-lookup)
 specifies. The macOS library's install name is its build path; nothing links
 against it.
 
@@ -609,7 +609,7 @@ private target directory and checks.
 | DOC-01 exported interface: only the bootstrap is exported, from the real release library and from a defective stand-in | `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`), `release_checks_reject_extra_exports` (`xtask/src/library.rs`) |
 | DOC-01 layout case on x86-64 GNU/Linux and both macOS architectures | `rust_native_declarations_match_the_published_header` (`climon2-core/tests/native_layout.rs`) |
 | #75 risk proof: `cargo test` builds the hooked library as a sibling artifact without nested builds (ELF on Linux, Mach-O on macOS); the plain library is the release build | `workspace_client_library_is_a_hooked_sibling_of_the_test_executables` (`climon2-fixtures/tests/hooks.rs`); plain: `release_check_builds_unhooked_binaries_in_a_private_target` (`xtask/tests/release.rs`) |
-| #75 packaging, Linux ([library embedding](../../docs/protocol/library-embedding.md#artifact-and-dependency-lookup)'s release-build rules): release checks reject a soname, RPATH, RUNPATH or a dependency beyond glibc | `release_checks_reject_a_soname_rpath_or_runpath`, `release_checks_reject_a_dependency_beyond_glibc` (`xtask/src/library.rs`) |
+| #75 packaging, Linux ([library embedding](../../docs/for-humans/protocol/library-embedding.md#artifact-and-dependency-lookup)'s release-build rules): release checks reject a soname, RPATH, RUNPATH or a dependency beyond glibc | `release_checks_reject_a_soname_rpath_or_runpath`, `release_checks_reject_a_dependency_beyond_glibc` (`xtask/src/library.rs`) |
 | #75 packaging: release checks accept the exact library and reject a wrong architecture, another release's version or hook markers | `release_checks_accept_the_exact_library`, `release_checks_reject_a_wrong_architecture`, `release_checks_reject_a_wrong_version`, `release_checks_reject_test_hook_markers` (`xtask/src/library.rs`) |
 | #84 packaging: release checks load the library through the shared loader, so a description it refuses (an incomplete function table) fails them | `release_checks_reject_a_description_the_loader_refuses` (`xtask/src/library.rs`) |
 | LIB-01 Library, mixed releases (#97; private-dependency resolution not exercised, releases ship none): this library and the second-release fixture's, loaded side by side by exact version folder whatever `current`, the working directory and search paths name, each instance registering with a session of its own release's daemon; one shared load per release | `mixed_releases_load_by_exact_version_and_run_side_by_side_whatever_current_cwd_and_search_paths` (`climon2-e2e/tests/mixed.rs`) |

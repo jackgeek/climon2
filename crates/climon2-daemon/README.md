@@ -109,7 +109,7 @@ the connection without a byte. Hello advertises the frozen tokens and
 `state`, then `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1` and
 `focus-v1`, and `daemon_wire_v1` with 1,048,576-byte request and server
 frame limits (`core::hello::advertise_revision1`). Every frame after hello is
-[daemon wire revision 1](../../docs/protocol/daemon-client/core-v1.md), the
+[daemon wire revision 1](../../docs/for-humans/protocol/daemon-client/README.md), the
 only protocol after hello since the version-private one was retired (#104):
 a type revision 1 does not define, a second hello or a retired private type
 included, is `unknown_message_type`. Every revision-1 frame
@@ -190,7 +190,7 @@ and for any synchronized update to end. A host dimension above 65,535 is
 `invalid_geometry`, and an interactive Open during committed termination is
 `session_terminating`; both end the stream. Input, Resize, Ready and Focus
 are checked in the
-[documented order](../../docs/protocol/daemon-client/core-v1.md#implemented-authority-checks):
+[documented order](../../docs/for-humans/protocol/daemon-client/README.md#implemented-authority-checks):
 family, role, attachment, termination, control, period, restoration, then
 readiness, and finally their own arguments (empty Input is
 `invalid_argument`, a geometry beyond 65,535 `invalid_geometry`). Display
@@ -240,7 +240,7 @@ at once a replacement Restoration begin at the new geometry within the same
 period, before any Display at it, so its model is never reflowed in place.
 
 Activity and attention (`src/status.rs`, #91 and #92) follow the
-[session status mechanics](../../docs/session-status.md) in all three
+[session status mechanics](../../docs/for-humans/behaviour/session-status.md) in all three
 detection modes: heuristic, explicit and fallback.
 A pure detector holds both state machines; every event takes the turn's
 clock reading, and its random source is injected. The loop reads the clock
@@ -674,7 +674,7 @@ cleanup; logs intentionally survive.
 
 ### Monitor acceptance scenarios
 
-Contract-layer cases of the [acceptance matrix](../../docs/monitor-acceptance.md),
+Contract-layer cases of the [acceptance matrix](../../docs/for-humans/behaviour/monitor/acceptance.md),
 through the real daemon binary and raw-socket revision-1 peers in `tests/revision1/`,
 supplemented by pure decisions in the control state machine and the session
 loop. Each test's doc comment cites its ID and case. A headless session's

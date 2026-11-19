@@ -11,9 +11,9 @@ Features are incomplete if they are not tested by automated testing.
   workflow takes precedence over skill instructions to push to the main line. Unless you are working on a sufficiently large feature, then with my permission you may merge to a feature branch.
 
 When executable or dynamic-library artifacts, their consumption relationships,
-or their architecture decisions change, update `docs/runtime-artifacts.md`.
+or their architecture decisions change, update `docs/for-humans/architecture/runtime-artifacts.md`.
 When workspace crates, their consumption relationships, or their architecture
-decisions change, update `docs/crate-relationships.md`: include every workspace
+decisions change, update `docs/for-humans/architecture/crate-relationships.md`: include every workspace
 crate, omit third-party crates, and derive current edges from
 `cargo metadata --no-deps --format-version 1`, not memory.
 

@@ -202,7 +202,7 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
     and reported only; they gain accessors with their first consumer.
     `Display` writes every effective value as JSON in the file's own shape.
   - `config::Limits` holds the eleven `monitor.limits` groups of
-    docs/monitor-operational-limits.md, with its defaults. Each setting is
+    docs/for-humans/behaviour/monitor/operational-limits.md, with its defaults. Each setting is
     read as its native `u32` or `u64` (overflow, null and other types are
     errors). `Limits` exists only once every setting is within its range and
     the cross-field rules hold (sub-budgets, reservations and the other
@@ -266,7 +266,7 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   ` (logs: <path>)` once `logged`; the first logs named keep it. An
   `io::Error` converts with the climon2 error code, 125.
 - `native`: the `#[repr(C)]` declarations of native client interface revision 1
-  ([`client-v1.h`](../../docs/protocol/monitor-client/client-v1.h)), shared by
+  ([`client-v1.h`](../../docs/for-humans/protocol/monitor-client/client-v1.h)), shared by
   the client library, the client executable and the monitor without new crate
   edges. Names map mechanically (`cm1_optional_text` is `OptionalText`,
   `CM1_SUCCESS` is `SUCCESS`, `final` is `r#final`); `BOOTSTRAP` names the

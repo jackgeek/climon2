@@ -28,7 +28,7 @@ pub fn json_examples(document: &str) -> Vec<String> {
 
 /// The directory of the daemon wire pages.
 fn directory() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/protocol/daemon-client")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/for-humans/protocol/daemon-client")
 }
 
 /// The file name of every daemon wire page.

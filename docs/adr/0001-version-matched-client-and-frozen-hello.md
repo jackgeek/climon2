@@ -5,7 +5,7 @@
 requires in-process, version-matched
 [client libraries](../../GLOSSARY.md#sessions) with one client thread per
 [live session](../../GLOSSARY.md#sessions). The [daemon-client decision](https://github.com/jackgeek/climon2/issues/67)
-specifies an agreed [portable wire revision 1](../protocol/daemon-client/core-v1.md),
+specifies an agreed [portable wire revision 1](../for-humans/protocol/daemon-client/README.md),
 now partly implemented, which replaced the version-private post-hello
 protocol this ADR first described.
 
@@ -26,7 +26,7 @@ the private message set was deleted from core, the daemon and the client. There
 were no prior releases, so nothing had to stay compatible with it. Session
 daemons now speak only the frozen hello and revision 1: every frame after
 hello is a revision-1 frame
-([post-hello boundary](../protocol/daemon-client/post-hello.md#after-hello)),
+([post-hello boundary](../for-humans/protocol/daemon-client/post-hello.md#after-hello)),
 and traffic that never completes a valid hello is closed without a byte.
 The existing hello tokens (`attach`, `kill`, `state-v1`,
 `client-startup-v1`) and the `state` object keep their meanings for CLI
@@ -40,8 +40,8 @@ first role request validate support before effects, without another exchange.
 There is no initial checksum. This does not implement forwarding or settle
 remote routing, multiplexing, discovery or security.
 
-The [#63 terminal amendment](../protocol/terminal-integration.md) adds optional
-core [Focus `0x39`](../protocol/daemon-client/request-focus.md), negotiated as
+The [#63 terminal amendment](../for-humans/protocol/terminal-integration.md) adds optional
+core [Focus `0x39`](../for-humans/protocol/daemon-client/request-focus.md), negotiated as
 `focus-v1` through existing additive capability advertisement and Open selection.
 It is not a plugin extension, release-number inference, or change to frozen
 hello required fields. Missing library/daemon focus support leaves sessions
@@ -53,7 +53,7 @@ presentation ([#89](https://github.com/jackgeek/climon2/issues/89)); the client
 library relays both ([#94](https://github.com/jackgeek/climon2/issues/94)), and
 the monitor sends Focus ([#111](https://github.com/jackgeek/climon2/issues/111)).
 
-The later [lifecycle contract](../monitor-lifecycle.md) agrees automatic
+The later [lifecycle contract](../for-humans/behaviour/monitor/lifecycle.md) agrees automatic
 exponential passive recovery, prior-instance cleanup/join before replacement
 (implemented by [#116](https://github.com/jackgeek/climon2/issues/116)),
 concurrent shutdown and bounded whole-process fail-stop (implemented by
@@ -68,17 +68,17 @@ the headless policy to the daemon it starts, which is always of its own
 version, as a private startup argument (`--lifetime`). Frozen hello and wire
 schemas are unchanged: a headless session without attachments advertises the
 existing `detached` lifecycle. Ordinary leave policy and native crash exposure
-are unchanged. [Numerical budgets](../monitor-operational-limits.md) and
-[native declarations](../protocol/monitor-client/core-v1.md) are now agreed;
-the [acceptance matrix](../monitor-acceptance.md) is agreed in #62.
+are unchanged. [Numerical budgets](../for-humans/behaviour/monitor/operational-limits.md) and
+[native declarations](../for-humans/protocol/monitor-client/README.md) are now agreed;
+the [acceptance matrix](../for-humans/behaviour/monitor/acceptance.md) is agreed in #62.
 Executable conformance of the other plans remains future work.
 
 A [session daemon](../../GLOSSARY.md#sessions) is only ever reached by the client from its own version. Session metadata records the daemon's version folder, and the CLI runs `<climon2 executable home>/<version>/climon2-client`, even when a different version is current; that executable loads the client library from its own folder. This keeps exact-release matching mandatory, and lets upgrades install alongside running sessions without breaking them. For the same reason, the hello handshake (framing and fields) is frozen forever: it is the one exchange that crosses versions, so any version of `climon2 list` can tell whether any daemon is live. What follows hello was first a version-private protocol, with no backward compatibility to maintain; the frozen revision 1 has replaced it.
 
 ## Frozen layout
 
-- **[Frame](../protocol/TERMS.md#frame):** a [big-endian](../protocol/TERMS.md#big-endian) `u32` length, then a 1-byte message type, then the body. The length covers type and body and must be between 1 and 1 MiB (1,048,576); any other length makes the reader close the connection.
-- **Hello:** type `0x01` in both directions with [JSON](../protocol/TERMS.md#json) bodies, where unknown fields are ignored. The client speaks first with `{"protocol":1}`, and the daemon replies `{"session_id":"<guid>","climon2_version":"<v>","protocol":<n>}`.
+- **[Frame](../for-humans/protocol/TERMS.md#frame):** a [big-endian](../for-humans/protocol/TERMS.md#big-endian) `u32` length, then a 1-byte message type, then the body. The length covers type and body and must be between 1 and 1 MiB (1,048,576); any other length makes the reader close the connection.
+- **Hello:** type `0x01` in both directions with [JSON](../for-humans/protocol/TERMS.md#json) bodies, where unknown fields are ignored. The client speaks first with `{"protocol":1}`, and the daemon replies `{"session_id":"<guid>","climon2_version":"<v>","protocol":<n>}`.
 - **Deadline:** 2 s. The daemon closes a connection that hasn't sent a valid hello within 2 s of accept. A prober treats no full reply within 2 s of starting to connect as not live.
 - **Growth:** the frame layout and existing hello fields never change, but a daemon may add optional fields to its hello reply, which every reader ignores if unknown. This is how any version's `list` can learn dynamic session state, because session metadata is write-once (ADR 0005).
 - **Client command line:** `<climon2 executable home>/<version>/climon2-client attach --metadata <absolute path>`, and nothing else. Every other input (`CLIMON2_HOME`, `CLIMON2_LOG`) reaches the client through the environment, where unknown variables are ignored. Any version's CLI can therefore start any version's client executable. The monitor uses the separate library embedding interface instead (#106).

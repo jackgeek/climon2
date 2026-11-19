@@ -53,7 +53,7 @@ release's logs contain no DEBUG or TRACE records.
 
 On Linux use `climon2-0.1.0-linux-x86_64-gnu.tar.gz` instead. Archive payload
 validation requires the host platform's suffix; a Darwin archive cannot stand
-in for Linux runtime qualification. See [distribution](../../docs/distribution.md).
+in for Linux runtime qualification. See [distribution](../../docs/for-humans/distribution.md).
 
 Internal-only fault injections (including the CLI's `CLIMON2_CLI_HOLD`, the
 daemon's `pty-write` and `pty-write-partial`, and the monitor's
