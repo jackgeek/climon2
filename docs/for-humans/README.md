@@ -36,3 +36,4 @@ line saying how much of it is implemented, and links the issue that settled it.
 | [protocol/](protocol/README.md) | The interfaces between climon2's programs, for plugin and client authors. |
 | [architecture/](architecture/README.md) | Diagrams of climon2's executables, libraries and crates. |
 | [check.py](check.py) | CI check that this tree follows its own rules: no orphans, complete tables, allowed links. |
+| [test_check.py](test_check.py) | Tests of `check.py` against small trees it builds itself. |

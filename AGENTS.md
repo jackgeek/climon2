@@ -41,4 +41,4 @@ Invoke `protocol-docs` when specifying or changing a communication protocol, plu
 
 ### Human docs
 
-Invoke `writing-for-humans` when creating, editing, moving or removing `README.md` or a document under `docs/` outside `docs/adr/` and `docs/agents/`.
+Invoke `writing-for-humans` when creating, editing, moving or removing `/README.md` or a document under `docs/for-humans/`.
