@@ -16,7 +16,7 @@ Every invocation writes its own session log,
 `<home>/logs/<session-id>/client-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log`, created
 `0600` with `create_new` and `O_NOFOLLOW`. No client truncates, deletes, shares
 or reopens another client's log, so concurrent and later clients of one session
-never collide; a collision would be an ordinary I/O failure. In kill mode the
+never collide; a collision would be an ordinary I/O failure. In both modes the
 client library instance writes its own diagnostics beside it, in
 `<home>/logs/<session-id>/library-<UTC YYYYMMDDTHHMMSSZ>-<pid>.log` (the
 client's pid), which the library creates the same way, under the client's
@@ -259,10 +259,14 @@ signal handlers or standard streams.
   diagnostics filter is nonempty `CLIMON2_LOG` grammar, parsed once into
   core's `diagnostics::Filter` even without a log file;
   reserved fields are zero. Limits are effective values: every field but
-  `max_workers` is nonzero, `client_bytes` covers the described
-  `instance_bytes`, `max_workers` the described `workers`, and
-  `drain_payload_bytes` at least `metadata_record_bytes`, else
-  `CM1_UNSUPPORTED_LIMIT`; accepted limits are returned unchanged. Malformed
+  `max_workers` is nonzero; `client_bytes` covers the described
+  `instance_bytes` plus `request_bytes`, `event_bytes` and
+  `wire_frame_bytes`; `max_workers` covers the described `workers`;
+  `drain_payload_bytes` is at least `metadata_record_bytes` and
+  `chunk_bytes`; and the progress reserve fits inside the event allowance
+  with room to spare (`progress_bytes` below `event_bytes`,
+  `progress_records` below `event_records`), else
+  `CM1_UNSUPPORTED_LIMIT` (#99); accepted limits are returned unchanged. Malformed
   input is `CM1_INVALID_ARGUMENT`. Then it creates the notification descriptor,
   the waker and, last, the optional log file at the caller's absolute path (`create_new`,
   mode `0600`, `O_NOFOLLOW`; a path that exists or whose directory is missing
@@ -306,8 +310,10 @@ signal handlers or standard streams.
   bytes, outstanding operations, queued and delivered records and their bytes,
   deliveries, workers and descriptors (the notification and waker descriptors,
   plus one for a log file and one for an open connection), with peaks, and the
-  drained and released counters. No shared-release allocation is tracked;
-  input and display measurements stay zero. Records and deliveries are
+  accepted Input bytes, delivered Display bytes, drained records and
+  released deliveries counters (#99). Those four only grow and never wrap:
+  once one would pass its maximum, every later `snapshot` fails
+  `CM1_RESOURCE_LIMIT`. No shared-release allocation is tracked. Records and deliveries are
   accounted in one place: a record from its queueing until its delivery's
   release.
 - Allocation is measured at the allocator
@@ -355,7 +361,11 @@ aborts the whole embedding process at the same points, a native crash
 nothing contains (#118); `worker` makes
 `run` start a worker that ends with its stream, `stall-cleanup` one whose
 cleanup never ends, and `joined-worker` one that briefly holds a block of
-`chunk_bytes` and ends, and that `run` joins before going on. Release builds
+`chunk_bytes` and ends, and that `run` joins before going on;
+`counters:<input>,<display>,<drained>,<released>` starts each new
+instance's snapshot counters at those values, and `wire-ids:<last>` makes
+each new connection's first wire request ID `last` plus one, both to
+reach exhaustion (#99). Release builds
 start no workers: an instance's connection runs on its owner thread, inside
 `run`.
 
@@ -391,25 +401,36 @@ server frames within `wire_frame_bytes`. Only then is the revision-1 Open
 sent, with the required families and the optional ones the daemon
 advertises. An Open refused before it is sent is answered `CM1_REJECTED`
 with the refusal, and the stream ends. The daemon's selection must hold
-every required family and nothing unrequested.
+every required family and nothing unrequested. Wire request IDs never wrap: a
+request that would need one past the last is refused with library
+`resource_limit` before it is sent (#99). Running out of descriptors while
+reading the metadata or connecting is also `resource_limit`.
 
 Records are Responses (opened: the connection GUID's canonical bytes and the
 selected tokens; left; a known final command result), the Initial metadata
 (the title unavailable unless `title-v1` is selected, the status unless
-`status-v1` is (#95); progress unavailable; the command result), Title changes (only after the Initial
+`status-v1` is (#95), the progress unless `progress-v1` is (#98); the command
+result), Title changes (only after the Initial
 metadata, only with `title-v1`) and diagnostics. A frame over
 `metadata_record_bytes` (type byte included) or a title over `title_bytes`
 fails the connection (`resource_limit`); nothing is truncated. While the
 event queue is full, the library stops reading the socket, so daemon
-records wait instead of being dropped. A delivery takes the oldest records,
+records wait instead of being dropped; when no waiting record is queued
+within `delivery_stall_ms`, the connection fails with library
+`delivery_stalled`, whose message counts the undelivered records. A delivery takes the oldest records,
 at most `drain_records`, stopping before `drain_payload_bytes`; create
 refuses `drain_payload_bytes` below `metadata_record_bytes`
 (`unsupported_limit`), so a record never exceeds it alone. Each record is
 charged to `event_bytes` twice `sizeof(cm1_record)`, for the `cm1_record` and the library's
 own copy (a compile-time check keeps that copy no larger), plus the bytes it
 owns once: copied text and token arrays; the library's own error text is
-static and costs nothing. Each outstanding request reserves one record's
-charge plus `metadata_record_bytes` for its outcome.
+static and costs nothing, except `delivery_stalled`'s composed message, which
+its record owns. Each outstanding request reserves one record's
+charge plus `metadata_record_bytes` for its outcome. `progress_records` and
+`progress_bytes` of the event allowance are a progress reserve (#99):
+ordinary work (Display, Title changed, Notification, Progress changed,
+Geometry and the outcome reserve) never uses it, so outcomes, control,
+status and restoration boundaries still find room.
 
 A wire violation, a closed or broken socket, a daemon Fatal error or an
 exceeded limit ends the connection: a diagnostic when it fits the event
@@ -417,7 +438,7 @@ queue, then failed terminal evidence with the error. Transport origin covers
 the socket, framing and the wire's rules (`io_error`, `truncated_frame`, the
 wire's framing codes, `invalid_record`, `invalid_request_id`); daemon origin
 the daemon's own errors, copied; library origin the library's judgments
-(`timeout`, `cancelled`, `invalid_state`, `stale_generation`,
+(`timeout`, `cancelled`, `delivery_stalled`, `invalid_state`, `stale_generation`,
 `resource_limit`, `unsupported_limit`, `invalid_configuration`,
 `release_mismatch`, `unsupported_revision`, `unsupported_capability`, and
 `io_error` for unreadable metadata). No Response is fabricated for a request
@@ -470,7 +491,10 @@ record's own, exact (`00 ff 41`, NUL, invalid UTF-8), and must fit
 below `chunk_bytes`, so a Display never exceeds a delivery alone. A
 departure or revocation reaches the caller after the release Display the
 daemon sends under the held authority; an attachment's confirmed Leave
-reports the attachment detached.
+reports the attachment detached. A restoration fails the connection with
+library `timeout` when none of its Display is queued within
+`restoration_stall_ms` of its beginning or its previous Display, or when it
+is not complete within `restoration_total_ms` (#99).
 
 Terminal evidence is stopped, without an error, after a confirmed departure
 or a shutdown before any role; otherwise failed with the first failure's
@@ -617,9 +641,9 @@ private target directory and checks.
 | #97 build strategy: the second-release fixture, this library's source built by the same Cargo run as release 0.0.97, passes the single-architecture release checks as 0.0.97's library (only the bootstrap exported; on Linux glibc only, no soname, RPATH or RUNPATH; no hook marker) and describes the wrong release as this version's | `release_checks_accept_the_second_release_fixture_as_its_own_release` (`xtask/src/library.rs`) |
 | Installed and packaged layouts carry the library | `fresh_install_publishes_complete_version_launcher_and_current` (`climon2-install`), `install_builds_production_artifacts_and_preserves_existing_versions` (`xtask/tests/install.rs`) |
 
-LIB-06 Library is not covered yet: without the fault hook this release starts
-no worker that could stall. Open
-([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
+LIB-06 Library is not covered: without the fault hook this release starts
+no worker that could stall, since an instance's connection runs on its owner
+thread inside `run`.
 
 ## Behavioral evidence
 

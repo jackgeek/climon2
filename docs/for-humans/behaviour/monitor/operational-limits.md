@@ -18,8 +18,12 @@ rejects native instance limits it cannot honour, bounds worker cleanup by
 connections it also enforces its request and event queues, outstanding
 operations and their outcome reserves, deliveries, drain ceilings,
 `wire_frame_bytes`, `metadata_record_bytes`, `title_bytes`, `start_ms` and
-`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)), and
-`kill_ms` for Kill ([#96](https://github.com/jackgeek/climon2/issues/96)). It
+`leave_ms` ([#93](https://github.com/jackgeek/climon2/issues/93)),
+`chunk_bytes`, `operation_ms` and `delivery_stall_ms` for control and display
+([#94](https://github.com/jackgeek/climon2/issues/94)), `kill_ms` for Kill
+([#96](https://github.com/jackgeek/climon2/issues/96)), and
+`notification_title_bytes` and `notification_body_bytes` for notifications
+([#98](https://github.com/jackgeek/climon2/issues/98)). It
 keeps the progress reserve inside the event allowance for protected
 progress, bounds each restoration by `restoration_stall_ms` and
 `restoration_total_ms`, and never wraps its snapshot counters or wire
@@ -193,8 +197,8 @@ An illustrative override is:
 ```
 
 The monitor and `exec` validate this configuration, the monitor alone also
-against its terminal models' mandatory allocation (above), but no other
-limit is enforced yet. Only `exec` passes `payload.assembly_records`,
+against its terminal models' mandatory allocation (above); only the limits
+the status above lists are enforced. Only `exec` passes `payload.assembly_records`,
 `payload.assembly_bytes` and `deadlines.assembly_ms` on, to the daemon it
 starts (#98); a monitor's configuration never reconfigures a running daemon,
 and it does not modify daemon `scrollback.max_rows`.
@@ -283,8 +287,8 @@ clean it up; if shared accounting/retention cannot remain safe, coordinate
 monitor failure. Neither path permits discarding the protected cache.
 
 Every discovered live identity gets a visible row and a client-start obligation.
-Insufficient admission resources leave it **resource-blocked, awaiting client**,
-with an actionable diagnostic and automatic fair retry. Existing clients remain
+Insufficient admission resources leave it **resource-blocked, awaiting client**
+(the monitor shows `Awaiting resources`), with an actionable diagnostic and automatic fair retry. Existing clients remain
 usable. Resource-blocked is local availability information, not a new daemon
 activity/attention status. No arbitrary hidden session cap, silent omission or live-client eviction
 is allowed. If all required identities/metadata cannot be retained, report
@@ -569,8 +573,8 @@ and the toast's one bell rings then (owner decision on #115, 2026-11-17): a
 host that accepts output late still sees every title for its whole hold.
 Drawing, fading and erasure use elapsed time and skip obsolete animation
 paints; never accumulate frames or block input/exit. The host write itself
-still blocks the monitor while the host refuses output; making it
-non-blocking is follow-up work for render pacing (#119). Over-limit search/
+still blocks the monitor while the host refuses output; render pacing
+(#119) did not make it non-blocking, which remains follow-up work. Over-limit search/
 paste text is rejected visibly, without leaking to an application.
 
 Snapshot accounting permits one retained viewport character baseline and one

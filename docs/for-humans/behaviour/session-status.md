@@ -675,8 +675,9 @@ numerical budgets/rate limits/retry intervals/retention (#69); its status
 says which the monitor enforces (#116, #119, #120) and which it does not yet.
 [Native declarations](../protocol/monitor-client/README.md) are agreed in #71;
 the [acceptance matrix](monitor/acceptance.md) is agreed in #62. The crate
-READMEs map tests to its scenarios; release qualification against it (#122)
-is not claimed here.
+READMEs map tests to its scenarios, and release qualification (#122) records
+each release candidate's evidence against it; no release's qualification is
+claimed here.
 Terminal application is agreed in the [#63 contract](../protocol/terminal-integration.md)
 and implemented by the monitor (#108 to #116); its required real-monitor-host evidence includes history
 replacement, coherent resize, supported keys/mouse/paste, host/application focus,

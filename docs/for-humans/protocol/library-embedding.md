@@ -32,7 +32,13 @@ end, its handles to be released and its owner to be joined. An instance
 unconfirmed by then is reported and left, never destroyed, to process exit:
 the monitor does not claim it joined. It acquires the session selected with
 Enter and submits Ready and Resize through that instance
-([#108](https://github.com/jackgeek/climon2/issues/108)). The client
+([#108](https://github.com/jackgeek/climon2/issues/108)), then the user's
+input ([#109](https://github.com/jackgeek/climon2/issues/109)), paste and
+focus ([#111](https://github.com/jackgeek/climon2/issues/111)), and Set
+viewing and Acknowledge
+([#114](https://github.com/jackgeek/climon2/issues/114)); its Delete action
+sends Kill through it ([#117](https://github.com/jackgeek/climon2/issues/117)).
+The client
 executable loads its own version folder's library through it and drives
 ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)),
 with its viewing and acknowledgement
@@ -45,8 +51,8 @@ passively ([#116](https://github.com/jackgeek/climon2/issues/116)), shuts every 
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/README.md), confirmed in
 [#71](https://github.com/jackgeek/climon2/issues/71), publishes complete declarations,
-[native-path](TERMS.md#native-path) encoding, result codes and compilable examples
-as a specification, not a shipped library.
+[native-path](TERMS.md#native-path) encoding, result codes and compilable examples;
+the shipped client library implements it.
 
 Use the [domain glossary](../../../GLOSSARY.md), [technical terms](TERMS.md),
 and [protocol overview](README.md) with this reference.
@@ -289,7 +295,14 @@ exception is implemented and adds no native-crash isolation.
 
 ## Required automated evidence
 
-These are obligations for later implementation, not tests already run:
+These obligations are the LIB-01 to LIB-06 scenarios of the
+[monitor acceptance matrix](../behaviour/monitor/acceptance.md); Library,
+Monitor and Fault tests now cover them, mapped to scenarios in the crate
+READMEs. One gap remains: releases ship no private
+dependencies, so no test can yet show that a private dependency never
+cross-binds between releases
+([#97](https://github.com/jackgeek/climon2/issues/97)).
+
 
 - Exercise packaged dynamic libraries through the public interface: multiple
   same-release instances and simultaneous different-release libraries.

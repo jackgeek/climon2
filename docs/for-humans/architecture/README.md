@@ -7,8 +7,9 @@ that run, and the workspace crates that build them.
 
 ## Shared terms
 
-Both diagrams draw **consumption**: an arrow runs from the thing that uses
-another to the thing it uses, never from an installer to what it installs.
+Every diagram in both documents draws **consumption**: an arrow runs from the
+thing that uses another to the thing it uses, never from an installer to what
+it installs.
 Each diagram states its own scope above it and describes its nodes in a table
 below it. When a change adds, removes or rewires an artifact or a crate, the
 same change updates the matching diagram.

@@ -94,6 +94,7 @@ flowchart TB
     test_term --> monitor
     test_term --> platform
     e2e -.->|"dev"| core
+    e2e -.->|"dev"| fixtures
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
     fixtures --> core
@@ -119,10 +120,10 @@ flowchart TB
 | --- | --- |
 | `climon2-test-term` | The real-terminal test harness. It runs shipped executables in isolated real terminals at the process boundary and proves which processes the test owns. |
 | `climon2-e2e` | Packaged acceptance: it builds and installs a release with the real installer, then drives it in a real terminal. |
-| `climon2-fixtures` | Stand-in executables for tests: a terminal program, a full-screen TUI, a CLI, a session daemon, the library host and the client library stand-in. |
+| `climon2-fixtures` | Stand-in executables for tests: a terminal program, a full-screen TUI, a CLI, a session daemon, the library host and the client library stand-in; it also tells tests where Cargo leaves the second-release fixture. |
 | `climon2-second-release` | The test-only [second-release fixture](../../../GLOSSARY.md#testing): a client library and session daemon built as another release, for cross-release tests. |
 | `climon2-measure` | The PERF-01 measurement harness that `cargo xtask measure` runs against an installed candidate archive. |
-| `xtask` | Developer automation run as `cargo xtask`: the test and quality gates, mutation and coverage checks, release checks, distribution builds and local installs. |
+| `xtask` | Developer automation run as `cargo xtask`: the test and quality gates, mutation and coverage checks, release checks, distribution builds, local installs, the PERF-01 measurement run and release qualification. |
 
 The shipped crates in this diagram are described under the first diagram.
 
@@ -181,8 +182,9 @@ consumes what that source consumes, `core` and `platform`, and not
 `climon2-client` itself. Its daemon binary runs the `climon2-daemon` library
 behind a thin main with that version compiled in. `climon2-e2e` and `xtask`
 consume the package as dev-dependencies only so that Cargo builds its
-`cdylib`; no code links it. The developer accepted this package on
-2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](../../adr/0004-crate-layout-and-dependency-direction.md)).
+`cdylib`; no code links it. Their tests find both artifacts through
+`climon2-fixtures`' `second_release` module, a dev-dependency of each. The
+developer accepted this package on 2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](../../adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so

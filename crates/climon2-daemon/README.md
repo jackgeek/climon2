@@ -106,8 +106,8 @@ A connection's first frame must be a valid frozen hello of protocol 1
 length outside 1 to 1,048,576 bytes, any other type (refused as soon as its
 type byte arrives), malformed JSON, another protocol or the deadline closes
 the connection without a byte. Hello advertises the frozen tokens and
-`state`, then `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1` and
-`focus-v1`, and `daemon_wire_v1` with 1,048,576-byte request and server
+`state`, then `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`,
+`notification-v1`, `progress-v1` and `focus-v1`, and `daemon_wire_v1` with 1,048,576-byte request and server
 frame limits (`core::hello::advertise_revision1`). Every frame after hello is
 [daemon wire revision 1](../../docs/for-humans/protocol/daemon-client/README.md), the
 only protocol after hello since the version-private one was retired (#104):
@@ -580,7 +580,7 @@ Each test's doc comment cites the acceptance-matrix IDs it covers.
 | STA-01 and STA-02 (Contract, initial silence): a command silent from startup (`silent`, `sleep 120`) reports nothing at any sample through 15,000 ms and stays idle and cleared | `a_session_silent_from_startup_stays_idle_and_cleared` |
 | STA-01 (Contract, same-turn dispatch, turn barrier): an Input received while the daemon is held and served in the turn whose clock ends the user window re-arms it first: no idle, then idle two seconds later | `input_comes_before_a_timer_due_in_the_same_turn` |
 | STA-08 (Contract and Fault, revision-1 controller): Input holding only focus reports leaves pending attention while reaching the application; the application's queries never reach the controller's Display, so no reply can; typed bytes clear it | `focus_reports_and_terminal_queries_never_clear_attention` |
-| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence, the sampling delay range and focus-report input | the 15 heuristic `status::tests` unit tests in `src/status.rs` |
+| STA-01, STA-02, STA-07 and LIM-05 (pure, injected clock and random source): every transition and dispatch rule of both machines, initial silence, the sampling delay range and focus-report input | the 14 heuristic `status::tests` unit tests in `src/status.rs` |
 | STA-03 (Contract, controllable clock): a capability query and child reports neither activate explicit detection nor aggregate; root `working` stays running silently past 40 s; root `done`/`error`/`idle` request attention, repeats coalesce, acknowledgement re-arms, and `done` is no completion; observed sequences never reach host output | `root_reports_drive_explicit_detection_while_children_and_queries_do_not` |
 | STA-03 and STA-05 (Contract, controllable clock): the user window's end restores remembered root `working` only in the current explicit scope; `D` retires it | `user_window_expiry_restores_explicit_working_only_in_its_scope` |
 | STA-03 (Contract, `status-query-record`): the daemon answers an OSC 7501 capability query itself, with every state and kind, before the engine's device-attributes reply | `program_status_queries_are_answered_locally_in_order` |

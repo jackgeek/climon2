@@ -152,9 +152,10 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   admitted limits.
 - `Library` exists only validated: `requirements()`, `functions()` (a
   `Functions` table whose eleven entries cannot be absent) and `bootstrap()`
-  for observers of the C ABI itself. The monitor (#106) and the client
-  executable (#100) will load through it; today the Library-layer host and
-  xtask's release checks do. Environment variables such as `LD_PRELOAD`,
+  for observers of the C ABI itself. The monitor (#106), the client
+  executable (#100, #101), the Library-layer host, xtask's release checks and
+  the PERF-01 harness (`climon2-measure`, to read requirements) load through
+  it. Environment variables such as `LD_PRELOAD`,
   `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` are neither cleared nor
   a reason to refuse.
 

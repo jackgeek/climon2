@@ -10,15 +10,18 @@ status, viewing and acknowledgement ([#95](https://github.com/jackgeek/climon2/i
 termination: Kill, Command final and their terminal evidence
 ([#96](https://github.com/jackgeek/climon2/issues/96)), the snapshot's
 measurements, counters, limits and deadlines
-([#99](https://github.com/jackgeek/climon2/issues/99)), and the validation of
-the bootstrap and description before create by the shared loader
+([#99](https://github.com/jackgeek/climon2/issues/99)), notifications and
+progress ([#98](https://github.com/jackgeek/climon2/issues/98)), simultaneous
+mixed releases ([#97](https://github.com/jackgeek/climon2/issues/97)), and the
+validation of the bootstrap and description before create by the shared loader
 ([#84](https://github.com/jackgeek/climon2/issues/84)).** The
 shipped [client library](../../../../GLOSSARY.md#sessions)
 (`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
 returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
-until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
-ones. All eleven [function-table](../TERMS.md#function-table) calls follow
+built into the library; the measurement job
+([#121](https://github.com/jackgeek/climon2/issues/121)) checks each against
+measured use with 25% headroom, but no measured values have replaced them yet. All eleven [function-table](../TERMS.md#function-table) calls follow
 the rules below, with one gap: snapshot reports no shared-release allocation.
 Snapshot's instance allocation counts every block the library's allocator
 holds for work on that instance, its diagnostics, workers, queued requests,
@@ -604,7 +607,9 @@ The Library-layer tests for
 [termination](../../../../crates/climon2-e2e/README.md#library-layer-termination-teststerminationrs-96)
 ([#96](https://github.com/jackgeek/climon2/issues/96)) and for
 [limits and accounting](../../../../crates/climon2-e2e/README.md#library-layer-limits-and-accounting-testslimitsrs-99)
-([#99](https://github.com/jackgeek/climon2/issues/99)) are the evidence for
+([#99](https://github.com/jackgeek/climon2/issues/99)) and for
+[mixed releases](../../../../crates/climon2-e2e/README.md#library-layer-mixed-releases-testsmixedrs-97)
+([#97](https://github.com/jackgeek/climon2/issues/97)) are the evidence for
 this section.
 
 - **Description.** `capabilities` lists exactly the families the library
@@ -880,8 +885,8 @@ Later implementation must exercise actual packaged libraries through this header
   pending work, run cleanup/handle release/destroy/join, stalled/native-fault
   whole-process failure, independent instances and all #69 measurements.
 
-[Declaration checks](check.py) compile C examples/layout assertions for both
-targets and validate reference reachability. They deliberately do not use a mock
+[Declaration checks](check.py) compile C examples/layout assertions for each
+declared target and validate reference reachability. They deliberately do not use a mock
 library as production compatibility evidence. [Final acceptance #62](https://github.com/jackgeek/climon2/issues/62)
 assigns the agreed [acceptance matrix](../../behaviour/monitor/acceptance.md).
 Actual-monitor conformance remains an unexecuted release gate.

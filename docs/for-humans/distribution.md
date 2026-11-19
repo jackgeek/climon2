@@ -63,7 +63,10 @@ alternatively select the checksum line for the downloaded archive.
 ## Release gates
 
 The checks workflow runs full runtime/terminal tests and strict formatting,
-Clippy and ShellCheck on native macOS arm64, macOS x86_64 and Linux x86_64.
+Clippy and ShellCheck on native Linux x86_64, and on macOS arm64 and macOS
+x86_64 while the repository variable `CLIMON2_MACOS_TESTS` is `on`; otherwise
+macOS only builds its release archive. The macOS quality and archive jobs
+below need that variable too.
 Shared and Linux-specific coverage-backed CRAP and mutation, including
 instrumentation/worker-isolation proofs, run on the dedicated Linux development
 host. CI does not repeat them. macOS arm64 CI runs
@@ -113,7 +116,9 @@ permits the first-platform-release exception.
 Before tagging, the maintainer must run `cargo xtask check --full --mutate-all` locally
 for the exact release commit. CI cannot certify that local result. Tagged
 releases require all macOS-exclusive source to pass CRAP and mutation in CI,
-plus every native runtime and archive job.
+plus every native runtime and archive job; on macOS these run only while
+`CLIMON2_MACOS_TESTS` is on, so release qualification below is what always
+covers both macOS architectures.
 
 ### Release qualification
 

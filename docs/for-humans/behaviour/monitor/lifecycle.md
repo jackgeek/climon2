@@ -198,7 +198,8 @@ Repeated exit requests or catchable signals neither restart the shutdown deadlin
 nor skip cleanup. Keyboard Ctrl+C remains application input according to the
 input contract; it is not a monitor exit binding.
 
-If cleanup stalls beyond the eventual budget, attempt host restoration and root
+If cleanup stalls beyond the shutdown deadline (`deadlines.shutdown_ms` in
+[operational limits](operational-limits.md)), attempt host restoration and root
 attention clear, report the affected instances and unconfirmed Leave/cleanup,
 then terminate the entire monitor process with failure. Never kill an individual
 thread, unload running code or claim a stalled thread joined. Whole-process

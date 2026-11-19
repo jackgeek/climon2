@@ -1,6 +1,6 @@
 # Daemon wire revision 1
 
-**Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), partly implemented.**
+**Status: developer-agreed specification in [#67](https://github.com/jackgeek/climon2/issues/67), implemented by session daemons and the client library.**
 This is the maintained contract, not evidence that any release conforms.
 The [#63 terminal contract](../terminal-integration.md) adds optional core
 [Focus](request-focus.md) and
@@ -53,9 +53,7 @@ with takeover,
 [leave policy](../../../../GLOSSARY.md#attachment-and-control), the
 [promotion](../../../../GLOSSARY.md#attachment-and-control) of passive registrations
 and the [canonical presentation](../../../../GLOSSARY.md#restoration-and-presentation)
-of monitor-mode connections. Until it serves them, it
-rejects the other
-requests without effects, as each request's page describes. The
+of monitor-mode connections. The
 [client library](../../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 for control and display ([#94](https://github.com/jackgeek/climon2/issues/94)),
@@ -94,7 +92,7 @@ climon2 versions:
 The [post-hello page](post-hello.md) states what follows hello:
 daemon wire revision 1 only.
 
-### Wire revision 1, partly implemented
+### Wire revision 1 messages
 
 Every page inherits the shared wire rules on this page:
 portable framing, strict JSON/binary types, IDs, capabilities, ordering,

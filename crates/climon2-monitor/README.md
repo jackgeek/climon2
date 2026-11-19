@@ -15,7 +15,8 @@ help (#105), session discovery, passive clients and the basic selector
 control and painting of the selected session (#108), the input router that
 sends typed keys to it (#109), and switching, revocation, taking control back
 and Enter on Starting and Unavailable rows (#110), initial selection
-(#266), paste, mouse and focus (#111), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), toasts and the bell (#115), disconnection, read-only history
+(#266), paste, mouse and focus (#111), history scrolling, faithful painting
+and static truncation (#112), the selector's search, navigation and footer (#113), viewing, acknowledgement, the prefix+j attention jump and the host attention reports (#114), toasts and the bell (#115), disconnection, read-only history
 and passive recovery (#116), Delete in the selector (#117), coordinated shutdown with a truthful exit
 status (#118), memory accounting, bounded history and the
 render and work cadence (#119), and admission, library loading and fair
@@ -40,13 +41,14 @@ scheduling (#120). Every string the monitor shows is in [On-screen strings](#on-
    largest geometry a session can have, `climon2-vt`'s `Geometry::LARGEST`
    (500x200), by the parts its `Model::mandatory` charges a blank model
    keeping `history.max_rows` (#167): `memory.total_bytes` the monitor's one
-   shared parser (`Parser::BYTES`, #166), the current model and the history
-   chunk holding its recent page together, then `client_bytes` the model and
-   chunk, and `history_bytes_total`, then `history_bytes_per_session`, that
-   chunk (`Limits::hold`). That admits the largest session but not a
-   restoration staged beside it, at least 33,932,174 bytes in a client's
-   budget (36,029,326 in the total) at 500x200, which follows every
-   monitor-mode geometry change (#89).
+   shared parser (`Parser::BYTES`, #166), the current model, the history
+   chunk holding its recent page and the client library's share (#119)
+   together, then `client_bytes` the model, chunk and library share, and
+   `history_bytes_total`, then `history_bytes_per_session`, that chunk
+   (`Limits::hold`). That admits the largest session but not a restoration
+   staged beside it, at least 33,932,174 bytes in the model's share of a
+   client's budget (36,029,326 in the total, with the parser) at 500x200,
+   which follows every monitor-mode geometry change (#89).
 5. The key introduction's preference is read from
    `<climon2 home>/monitor-preferences.json` (`HomeLayout::monitor_preferences`,
    schema `climon2_core::preferences`). A missing file saves nothing; an
@@ -86,7 +88,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `Keys`, one column of space inside its border, centred in the rows below the
   top row (an odd spare row falls above it, an odd spare column to its left):
   `<prefix> then x  Exit the monitor`, `… s  Open
-  the session list`, `… ?  Show this dialog`, a blank line, the selector's
+  the session list`, `… j  Jump to the session that needs attention`,
+  `… ?  Show this dialog`, a blank line, the selector's
   keys under `In the session list:` (owner decision on #113: the footer names
   only select, cancel and help, and help lists the rest; see
   [On-screen strings](#on-screen-strings)), a blank line, `[ ] Don't show
@@ -185,9 +188,9 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   selector requests nothing of discovery, so it can neither start a pass
   early nor overlap one. Each batch reaches the UI thread as it is probed. It never deletes metadata.
   Invalid metadata is logged and adds no row; an incomplete pass shows
-  `Discovery incomplete: <why>` under the body until a pass completes. The
-  thread is never joined: a pass cannot be interrupted, and it changes
-  nothing.
+  `Discovery incomplete: <why>` under the body until a pass completes. A
+  pass cannot be interrupted, and it changes nothing; only shutdown joins
+  the thread, once its current pass ends (#118).
 - **The registry** (`registry.rs`) is pure and the single owner of row state,
   keyed by full session ID: the discovery outcome and metadata, the connection
   status with the time the monitor entered it, the latest nonempty daemon
@@ -249,8 +252,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   opening hold one), and its owner destroys it. Whether it is retried is
   [#116's recovery](#disconnection-read-only-history-and-passive-recovery-116).
   The general log records `client
-  library loaded`, `client library loading slowly` or `client library
-  refused`, `client starting
+  library loaded`, `client library loading slowly`, `client library
+  resource-blocked` or `client library refused`, `client starting
   session=<id>`, `client published`, `client failed`, `client stopped`,
   `client ended`, `client retry scheduled session=<id> delay_ms=<n>` and
   client diagnostics, content-free.
@@ -637,7 +640,8 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   exit carry on. Whether to keep threads ready for that is an open owner
   question on #120.
 - **Not yet:** `discovery.stall_ms` is not applied; mandatory identity
-  exhaustion has no coordinated failure (it needs #118's fail-stop); model
+  exhaustion has no coordinated failure (#118's fail-stop does not cover
+  it); model
   growth, renderer, search, toast and identity state are not reserved at
   admission; and the operating system's thread limit is met only as a
   failed thread start (Unavailable, retried passively).
@@ -1033,8 +1037,8 @@ With `test-hooks` only, `CLIMON2_MONITOR_FAULT=draw` makes drawing fail,
 `CLIMON2_MONITOR_FAULT=poll` makes the kernel reject the wait for host input
 by giving it no descriptor table, `CLIMON2_MONITOR_FAULT=discovery` stalls
 discovery before its first pass for good, and `CLIMON2_MONITOR_FAULT=release`
-stalls the host's release for good. `cargo xtask test` first runs
-`cargo test -p climon2-monitor --test build` alone, which builds the plain
+stalls the host's release for good. `cargo xtask test` runs
+`cargo test -p climon2-monitor --test build` alone before the workspace tests, which builds the plain
 binary; the workspace tests that follow unify `test-hooks` through
 `climon2-test-term` into the same sibling path.
 
@@ -1091,7 +1095,7 @@ here as they implement them; `<…>` marks a value filled in at run time.
 ## Specification mapping
 
 Monitor-layer tests drive the installed product from `climon2-e2e`'s
-`tests/monitor.rs`; this crate keeps the build proof and pure key tests.
+`tests/monitor.rs`; this crate keeps the build proof and its pure unit tests.
 
 | Scenario | Named test |
 |---|---|
@@ -1156,8 +1160,8 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | DSC-04 (pure supplement): uncertainty never removes rows or tears down clients | `uncertainty_never_removes_rows_or_tears_down_clients` (`src/registry.rs`) |
 | Stale rows (owner decision on #106): a session proven gone drops its row unless it was ever connected | `a_session_proven_gone_drops_its_row_unless_it_was_ever_connected` (`src/registry.rs`) |
 | COM-01 and not-connected labels (pure supplement) | `connection_statuses_are_labelled_as_specified` (`src/registry.rs`) |
-| TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; static, cell-safe truncation with `…` at the limit and one past it, in the top row (beside its error) and the selector (owner decision on #112) | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `overflowing_text_is_truncated_display_cell_safe_with_an_ellipsis` (`src/registry.rs`), `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`), `the_selector_draws_a_captionless_double_border_with_two_columns` (`src/selector.rs`) |
-| SEL-01 basic cases (pure supplement) | `the_selector_draws_a_captionless_double_border_with_two_columns`, `up_and_down_move_without_wrapping_and_escape_closes`, `opening_an_open_selector_keeps_its_highlight`, `the_highlight_spans_its_row_and_stays_in_view`, `the_selector_draws_only_where_its_border_fits` (`src/selector.rs`) |
+| TRM-06 label cases (pure supplement): latest nonempty title, command fallback, literal, never IDs; static, cell-safe truncation with `…` at the limit and one past it, in the top row (beside its error) and the selector (owner decision on #112) | `labels_are_the_latest_nonempty_title_or_command_and_arguments_literally`, `overflowing_text_is_truncated_display_cell_safe_with_an_ellipsis` (`src/registry.rs`), `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`), `the_selector_draws_search_separator_and_two_columns` (`src/selector.rs`) |
+| SEL-01 basic cases (pure supplement) | `the_selector_draws_search_separator_and_two_columns`, `navigation_moves_without_wrapping_and_keeps_the_highlight_in_view`, `opening_highlights_the_selected_session_or_the_first_row`, `the_selector_draws_only_what_fits` (`src/selector.rs`) |
 | CTL-05 (Monitor), TRM-01 (Monitor, basic cases), initial selection (#266): the one Idle session selected and acquired once collection ends; plain, ANSI-coloured, bold-on-blue, wide and combining text and the cursor painted as written, live; a later arrival never moves the selection; the open selector covers the canvas and the control still reads Controlling | `the_initial_selection_is_acquired_and_painted_live` (e2e) |
 | TRM-02 (Monitor): only the daemon answers session queries; no session byte or title reaches the host; the host is never queried | `only_the_daemon_answers_session_queries_and_no_session_byte_reaches_the_host` (e2e) |
 | TRM-03 (Monitor) at 80x24, 200x60, 500x200 and a larger host: one top row; the desired area is the host less one row; canonical bytes at the effective geometry with blank margins | `the_selected_session_fills_the_host_below_one_top_row_at_its_effective_geometry` (e2e) |
@@ -1175,7 +1179,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | CTL-05 (Monitor: restoring) (#110): while a restoration is applied but its Ready not yet accepted, keys and a host resize reach no session, the background controller included; once ready, the session is sized to the host and keys reach it | `keys_and_resizes_during_a_restoration_reach_no_session` (e2e) |
 | DSC-05 (Monitor, Fault: failed acquisition and loss) (#110): a timed-out Acquire keeps the selection, shows the failure, and input reaches no session; the resumed daemon still serves that Acquire, so the other controller loses control and gets it back | `a_failed_acquisition_keeps_the_selection_and_redirects_no_input` (e2e) |
 | DSC-05 (Monitor: completion) | `a_finished_session_keeps_its_last_screen_and_cannot_be_acquired` (e2e) |
-| CTL-02, INP-01 takeover, spec #73 placeholders (pure supplement, #110): only an uncontrolled connected row shows the placeholder and takes the key; without a view, the placeholder, the condition or nothing; the placeholder's hint only with a bound key and hints on | `only_an_uncontrolled_connected_row_shows_the_placeholder`, `a_selected_row_without_a_view_shows_the_placeholder_its_condition_or_nothing` (`src/lib.rs`), `the_placeholder_and_the_no_content_state_say_why_nothing_is_painted` (`src/screen.rs`) |
+| CTL-02, INP-01 takeover, spec #73 placeholders (pure supplement, #110): only an uncontrolled connected row shows the placeholder and takes the key; without a view, the placeholder, the condition or nothing; the placeholder's hint only with a bound key and hints on | `only_an_uncontrolled_connected_row_shows_the_placeholder`, `a_selected_row_without_a_view_shows_the_placeholder_its_history_or_no_content` (`src/lib.rs`), `the_placeholder_and_the_no_content_state_say_why_nothing_is_painted` (`src/screen.rs`) |
 | CTL-05, COM-05 (pure supplement): Ready only after the apply; applied, Ready accepted and painted distinct, input needs all three; only Ready for the applied restoration counts | `ready_applied_and_painted_stay_distinct_and_input_needs_all_three`, `only_ready_accepted_for_the_applied_restoration_opens_input` (`src/terminal.rs`) |
 | TRM-04, COM-05 (pure supplement): staged restorations replace the model whole once applied; superseded ones never become current; a cache is never shown | `a_restoration_replaces_the_model_whole_only_once_applied`, `a_cache_from_an_earlier_period_is_never_shown` (`src/terminal.rs`) |
 | Carried from #76 (owner decision 2026-11-13): a Display at a geometry the model lacks marks it stale until the next restoration | `a_display_at_a_geometry_the_model_lacks_marks_it_stale_until_restored` (`src/terminal.rs`) |
@@ -1200,9 +1204,9 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | TRM-03, TRM-04 (pure supplement): the desired area; 4 rows and 5 columns enough, one fewer of either too small | `the_application_area_is_the_host_less_its_top_row_unless_too_small` (`src/screen.rs`) |
 | Top row (owner decision 2026-11-14, pure supplement): fixed slots for status, control and hint whatever the control word; the error clipped first, never squeezing out the label | `status_and_control_keep_their_slots_whatever_the_control`, `an_error_is_clipped_first_and_never_squeezes_out_the_label` (`src/screen.rs`) |
 | TRM-01 (pure supplement): the cursor only inside the host; a wide character the edge would cut left blank; each rendition reaches its cell; DECSCUSR for every shape | `the_cursor_shows_only_inside_the_host`, `a_wide_character_the_host_edge_would_cut_is_left_blank`, `each_rendition_reaches_its_cell`, `each_colour_reaches_its_cell_as_the_same_kind`, `each_cursor_shape_has_its_decscusr` (`src/screen.rs`) |
-| Spec #73 Enter (pure supplement, #108, #110): each row's kind by condition (connected, unconnected, retained, own); Enter chooses the highlighted row | `enter_kinds_follow_each_row_condition` (`src/registry.rs`), `enter_chooses_the_highlighted_row` (`src/selector.rs`) |
+| Spec #73 Enter (pure supplement, #108, #110): each row's kind by condition (connected, unconnected, retained, own); Enter chooses the highlighted row | `enter_kinds_follow_each_row_condition` (`src/registry.rs`), `search_edits_keep_a_matching_highlight_or_take_the_first_match` (`src/selector.rs`) |
 | Client supervisor (#108): control and display records reach the terminal as delivered; Acquire, Ready and Resize submitted in order and answered as themselves; a request refused at submit is not pending and consumes no ID; the pending ledger is bounded; a request before the client opens is refused as not connected | `control_and_display_records_reach_the_terminal_as_delivered`, `requests_are_submitted_in_order_and_answered_as_themselves`, `a_request_before_the_client_opens_is_refused_as_not_connected`, `a_request_refused_at_submit_is_not_pending_and_consumes_no_id`, `the_pending_ledger_is_bounded_by_the_requests_the_library_may_hold` (`src/supervisor.rs`) |
-| SEL-01, DSC-05 (pure supplement): rows found after an empty open, or losing the highlighted row, leave nothing highlighted until Up or Down highlights the first row | `with_nothing_highlighted_up_or_down_highlights_the_first_row` (`src/selector.rs`) |
+| SEL-01, DSC-05 (pure supplement): rows found after an empty open, or losing the highlighted row, leave nothing highlighted until Up or Down highlights the first row | `opening_highlights_the_selected_session_or_the_first_row`, `a_highlighted_row_that_leaves_or_stops_matching_is_unhighlighted_for_good` (`src/selector.rs`) |
 | HLP-01 (Monitor): at every start with hints on and nothing saved, the introduction lists the actual prefix with x, s and ? and an unchecked box; Enter continues, closing saves nothing, prefix+x exits from it | `the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved` (e2e) |
 | HLP-01 (Monitor): hints off or the choice saved keep it closed; prefix+? opens it regardless, showing the saved choice; prefix+? while open is a no-op; a later version's file with unknown fields is honoured | `the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_saved_choice_say` (e2e) |
 | HLP-01 (Monitor): Space saves and reverses the choice per climon2 home, exact version 1 bytes, mode 0600 under umask 000, by rename (a hard link keeps the old bytes), nothing left behind, a file already under the temporary name replaced; restarts and another home | `dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible` (e2e) |
@@ -1289,7 +1293,6 @@ copy (a host manual check), INP-04's disconnect case in the middle of a
 paste or gesture (the selection stays on the lost session, so nothing
 else could receive the rest, and a reconnect replays none of it),
 `discovery.stall_ms` and mandatory identity exhaustion's coordinated failure
-(#120's open questions; the latter needs #118), new clients of a loaded
-release during a stalled load on glibc (#120's open question), a session
-dropped at its memory limit and retried (#119), and the universal archive's runtime on both architectures, which
+(#120's open questions; #118's fail-stop does not cover the latter), new clients of a loaded
+release during a stalled load on glibc (#120's open question), and the universal archive's runtime on both architectures, which
 only CI's `dist` and `archive` jobs build and execute.
