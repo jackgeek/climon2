@@ -34,6 +34,7 @@ pub fn dispatch(a: &[&str]) {
         "windows" => emit(json!({"windows": list_windows(arg(1)).iter().map(|h| *h as usize).collect::<Vec<_>>()})),
         "close-window" => close_window(num(1, 0) as usize),
         "send-keys" => send_keys(num(1, 0) as usize, arg(2)),
+        "send-text" => send_text(num(1, 0) as usize, arg(2)),
         "argv0" => argv0(),
         // probes
         "j1" => j1(),
@@ -303,6 +304,37 @@ fn key(vk: u16, up: bool, ext: bool) -> INPUT {
     i
 }
 
+/// Types `text` then Enter with SendInput (KEYEVENTF_UNICODE), checking before every
+/// character that `hwnd` is still the foreground window.
+fn send_text(hwnd: usize, text: &str) {
+    let h = hwnd as HWND;
+    unsafe {
+        let alt = [key(VK_MENU, false, false), key(VK_MENU, true, false)];
+        SendInput(2, alt.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+        SetForegroundWindow(h);
+        sleep_ms(300);
+        for c in text.encode_utf16() {
+            if GetForegroundWindow() != h {
+                emit(json!({"probe": "send-text", "abort": "foreground is not the target", "fg": GetForegroundWindow() as usize}));
+                std::process::exit(3);
+            }
+            let mut seq = [key(0, false, false), key(0, true, false)];
+            for (i, k) in seq.iter_mut().enumerate() {
+                k.Anonymous.ki.wScan = c;
+                k.Anonymous.ki.dwFlags = KEYEVENTF_UNICODE | if i == 1 { KEYEVENTF_KEYUP } else { 0 };
+            }
+            SendInput(2, seq.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+            sleep_ms(5);
+        }
+        if GetForegroundWindow() != h {
+            std::process::exit(3);
+        }
+        let enter = [key(VK_RETURN, false, false), key(VK_RETURN, true, false)];
+        SendInput(2, enter.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+        emit(json!({"probe": "send-text", "text": text}));
+    }
+}
+
 /// Synthesised key presses with SendInput, only while `hwnd` is the foreground window.
 /// `keys` is a comma list of: ctrl-c, ctrl-break, esc.
 fn send_keys(hwnd: usize, keys: &str) {
@@ -332,6 +364,13 @@ fn send_keys(hwnd: usize, keys: &str) {
                     key(VK_CONTROL, true, false),
                 ],
                 "esc" => vec![key(VK_ESCAPE, false, false), key(VK_ESCAPE, true, false)],
+                // VS Code: open the integrated terminal.
+                "ctrl-backtick" => vec![
+                    key(VK_CONTROL, false, false),
+                    key(VK_OEM_3, false, false),
+                    key(VK_OEM_3, true, false),
+                    key(VK_CONTROL, true, false),
+                ],
                 _ => vec![],
             };
             let n = SendInput(seq.len() as u32, seq.as_ptr(), std::mem::size_of::<INPUT>() as i32);

@@ -1,0 +1,73 @@
+﻿{
+    "version":  "2.0.0",
+    "tasks":  [
+                  {
+                      "label":  "H1 cmd",
+                      "type":  "shell",
+                      "options":  {
+                                      "shell":  {
+                                                    "executable":  "cmd.exe",
+                                                    "args":  [
+                                                                 "/d",
+                                                                 "/c"
+                                                             ]
+                                                }
+                                  },
+                      "command":  "C:\\probes\\bin\\probe.exe --out C:\\probes\\out\\h1-vscode.jsonl spawn-test H1-vscode-task-cmd",
+                      "runOptions":  {
+                                         "runOn":  "folderOpen"
+                                     }
+                  },
+                  {
+                      "label":  "H1 powershell",
+                      "type":  "shell",
+                      "options":  {
+                                      "shell":  {
+                                                    "executable":  "powershell.exe",
+                                                    "args":  [
+                                                                 "-NoProfile",
+                                                                 "-Command"
+                                                             ]
+                                                }
+                                  },
+                      "command":  "\u0026 \u0027C:\\probes\\bin\\probe.exe\u0027 --out C:\\probes\\out\\h1-vscode.jsonl spawn-test H1-vscode-task-powershell",
+                      "runOptions":  {
+                                         "runOn":  "folderOpen"
+                                     }
+                  },
+                  {
+                      "label":  "H1 pwsh",
+                      "type":  "shell",
+                      "options":  {
+                                      "shell":  {
+                                                    "executable":  "pwsh.exe",
+                                                    "args":  [
+                                                                 "-NoProfile",
+                                                                 "-Command"
+                                                             ]
+                                                }
+                                  },
+                      "command":  "\u0026 \u0027C:\\probes\\bin\\probe.exe\u0027 --out C:\\probes\\out\\h1-vscode.jsonl spawn-test H1-vscode-task-pwsh",
+                      "runOptions":  {
+                                         "runOn":  "folderOpen"
+                                     }
+                  },
+                  {
+                      "label":  "H1 npm",
+                      "type":  "shell",
+                      "options":  {
+                                      "shell":  {
+                                                    "executable":  "cmd.exe",
+                                                    "args":  [
+                                                                 "/d",
+                                                                 "/c"
+                                                             ]
+                                                }
+                                  },
+                      "command":  "npm run probe",
+                      "runOptions":  {
+                                         "runOn":  "folderOpen"
+                                     }
+                  }
+              ]
+}

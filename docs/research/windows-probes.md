@@ -98,6 +98,11 @@ Each item contradicts an expectation or a decision in the handoff.
     `0x03`. Ctrl+C and Esc key-downs arrive with `vk = 0`. A client that reads
     characters from key-up records, or keys on the virtual-key code, would
     misread both.
+12. **H3, VS Code drops Ctrl+Break.** In a VS Code task terminal, Ctrl+Break
+    produced nothing at all: no `CTRL_BREAK_EVENT` and no input record (3 of 3
+    runs). Ctrl+C arrived as a single key-down, `vk 0`, character `0x03`, with
+    no key-up. Two Esc presses produced one record. A user in VS Code cannot
+    send Ctrl+Break to a session.
 
 ## Environment
 
@@ -110,8 +115,8 @@ Each item contradicts an expectation or a decision in the handoff.
 | Windows Terminal | 1.18.10301.0, Store/MSIX package `Microsoft.WindowsTerminal_1.18.10301.0_x64__8wekyb3d8bbwe`. Each elevated `wt -w new` started its own `WindowsTerminal.exe` process. |
 | PowerShell 7 | 7.7.0, Store/MSIX package `Microsoft.PowerShell` (installed by the developer during the session) |
 | Windows PowerShell | 5.1 |
-| VS Code | 1.146.0 (commit 69047191, x64), installed by winget during the session; **not probed** (see Not run) |
-| Node | LTS from winget, installed during the session; used by none of the probes that ran |
+| VS Code | 1.146.0 (commit 69047191, x64), installed by winget during the session. For H1–H3 the developer turned off workspace trust and allowed automatic tasks in VS Code's user settings, and each window was started from this session with `Code.exe -n <folder>`. |
+| Node | LTS from winget, installed during the session; used by the H1 npm script |
 | vim | `C:\Program Files\Vim\vim.exe`, installed by winget during the session |
 | edit.exe | `C:\WINDOWS\system32\edit.exe`, 1.2.1 |
 | Rust | rustc 1.96.0 (ac68faa20 2026-05-25), host x86_64-pc-windows-msvc, LLVM 22.1.2 |
@@ -148,7 +153,21 @@ Each context ran `spawn-test`: a self-report, then a child started with
 | This Claude Code session (WT tab → powershell → claude → cmd → powershell) | no | ok | no |
 | `Start-Process -Wait` from Windows PowerShell 5.1 | yes, `LimitFlags 0x0` | **error 5** | n/a |
 | `Start-Process -Wait` from pwsh 7.7.0 | yes, `LimitFlags 0x0` | **error 5** | n/a |
-| VS Code terminal, task, npm script | not run | | |
+| VS Code integrated terminal, default profile (Store `pwsh`), 2 runs | no | ok | no |
+| VS Code task, `cmd` shell | no | ok | no |
+| VS Code task, `powershell` shell | no | ok | no |
+| VS Code task, `pwsh` shell | no | ok | no |
+| VS Code task running `npm run probe` (`cmd` → `node` → `cmd` → probe) | no | ok | no |
+
+The VS Code workspaces are in `probes/windows-lifecycle/vscode/`. Each task
+runs when its folder opens (`runOptions.runOn: folderOpen`), and each opening
+counted as one run. In every VS Code row, the shell's parent was `Code.exe`.
+That `Code.exe` was started from this session, which is in no job.
+
+The integrated-terminal rows came from typing into the terminal with
+`SendInput`. A third typed run, meant to start `cmd`, ran in `pwsh` instead, so
+it counts as a second default-profile run. Typing was unreliable, so the tasks
+cover the individual shells.
 
 Package name: no context was packaged (`GetCurrentPackageFullName` returned
 15700 `APPMODEL_ERROR_NO_PACKAGE`), including probes run under Windows
@@ -162,7 +181,7 @@ runs above are the ones that count. That first run also showed no job.
 
 *Expectation (no job, or a job the child leaves, in every terminal host):*
 **held** for every terminal host tested. `Start-Process -Wait` is a job that
-forbids breakaway (surprise 4). The VS Code contexts were not measured.
+forbids breakaway (surprise 4).
 
 ### H2: does the detached child survive the host closing?
 
@@ -183,7 +202,20 @@ One `WM_CLOSE` run missed its window and was repeated (`h2-wmclose-2b.txt`).
 A tab could not be closed on its own without also closing its window,
 because closing a single tab needs UI input.
 
-*Expectation (continues):* **held** for Windows Terminal. VS Code not run.
+In VS Code, the "H2 heartbeat" task ran the same spawn when its folder
+opened. The window was then closed with `WM_CLOSE`, or every `Code.exe` was
+killed with `Stop-Process -Force`, three runs each. VS Code asked nothing on
+`WM_CLOSE` and exited.
+
+| Mode | Lines at close | +3 s | +30 s | `Code.exe` alive at +3 s |
+| --- | --- | --- | --- | --- |
+| VS Code `WM_CLOSE` (3 runs) | 4 | 7–8 | 34 | no |
+| VS Code, kill every `Code.exe` (3 runs) | 4 | 7 | 34 | no |
+
+The first run of each mode counted lines at +2 s (6) and +32 s (36), not at
+close and +3 s.
+
+*Expectation (continues):* **held** for Windows Terminal and VS Code.
 
 ### H3: what does each host deliver for Ctrl+Break and Ctrl+C?
 
@@ -203,9 +235,26 @@ Windows Terminal and classic conhost behaved identically, 3 runs each:
 | Esc | none | down `vk 0x00 ch 0x1B`; up `vk 0x1B ch 0x1B` |
 | Window closed | `CTRL_CLOSE_EVENT` | none |
 
+In VS Code, the "H3 client" task ran `client` when its folder opened, 3 runs.
+The same keys were sent to the VS Code window:
+
+| Key | Signal | Key records |
+| --- | --- | --- |
+| Ctrl+C | none | down `vk 0x00 ch 0x03 ctrl 0x0`; no up |
+| Ctrl+Break | **none** | **none** |
+| Esc, pressed twice | none | one down `vk 0x00 ch 0x1B`; no up |
+| Window killed | `CTRL_CLOSE_EVENT` in 1 of 3 runs | none |
+
+In the first three VS Code runs, no key reached the client at all, because the
+Welcome page held the keyboard focus. Those runs are kept in
+`h3-vscode-nofocus.jsonl`. The runs above set `workbench.startupEditor` to
+`none` in the workspace. A typed `x` (`SendInput` with `KEYEVENTF_UNICODE`)
+also never reached the client, while the keys in the table did.
+
 *Expectation (Ctrl+C is a `0x03` key record with no signal; Ctrl+Break is
-`CTRL_BREAK_EVENT` with no key-down):* **held** for both hosts, with the
-key-up detail in surprise 11. VS Code not run.
+`CTRL_BREAK_EVENT` with no key-down):* **held** for Windows Terminal and
+classic conhost, with the key-up detail in surprise 11. **Did not hold** for
+VS Code: Ctrl+C held, but Ctrl+Break never arrived (surprise 12).
 
 ## Jobs and breakaway
 
@@ -509,7 +558,7 @@ command line starting `probe`, `c2`, or `"some other name.exe"`: the child's
 
 | Probe part | Reason |
 | --- | --- |
-| H1, H2, H3 in the VS Code terminal, VS Code task and npm script | Running tasks unattended needs workspace trust turned off in VS Code's user settings, which the session's permission policy refused. A workspace ready for a human is at `C:\probes\vscode-h1` (tasks "H1 cmd/powershell/pwsh/npm", "H2 heartbeat", "H3 client"). |
+| H2 and H3 in VS Code's interactive terminal (not a task) | Typing into it with `SendInput` was unreliable. Tasks run in the same integrated terminal, and H1 covers the interactive default profile. |
 | H1 over SSH | The session was not connected over SSH; the Claude Code session row stands in. |
 | H2: closing a tab while its window stays open | Needs UI input. The tests closed the only window of a dedicated WT process, which ends both. |
 | H3 with real key presses | Nobody at the keyboard; `SendInput` was used. |

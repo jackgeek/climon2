@@ -1,0 +1,22 @@
+﻿{
+    "version":  "2.0.0",
+    "tasks":  [
+                  {
+                      "label":  "H2 heartbeat",
+                      "type":  "process",
+                      "command":  "C:\\probes\\bin\\probe.exe",
+                      "args":  [
+                                   "--out", "C:\\probes\\out\\h2-vscode.jsonl", "spawn-heartbeat",
+                                   "C:\\probes\\out\\h2-vscode-kill-3.txt"
+                               ],
+                      "runOptions":  {
+                                         "runOn":  "folderOpen"
+                                     }
+                  }
+              ]
+}
+
+
+
+
+

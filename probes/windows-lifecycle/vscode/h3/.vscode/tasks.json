@@ -1,0 +1,22 @@
+﻿{
+    "version":  "2.0.0",
+    "tasks":  [
+                  {
+                      "label":  "H3 client",
+                      "type":  "process",
+                      "command":  "C:\\probes\\bin\\probe.exe",
+                      "args":  [
+                                   "--out",
+                                   "C:\\probes\\out\\h3-vscode.jsonl",
+                                   "client",
+                                   "60"
+                               ],
+                      "presentation":  {
+                                           "focus":  true
+                                       },
+                      "runOptions":  {
+                                         "runOn":  "folderOpen"
+                                     }
+                  }
+              ]
+}
