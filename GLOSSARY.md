@@ -411,6 +411,10 @@ The test harness's emulated host, whose visible cells, cursor, modes, bells and 
 The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.
 _Avoid_: Shell config, shell adapter
 
+**Host model**:
+The test harness's description of how one qualified host terminal creates, feeds and closes the pseudoconsole it gives a client.
+_Avoid_: Host profile, host emulation
+
 **Smoke test**:
 The single end-to-end check that a freshly installed climon2 can start a bash session from bash, be listed, exit with the command's status, and leave nothing behind.
 _Avoid_: Sanity test, canary

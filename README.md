@@ -655,7 +655,9 @@ On arm64 macOS, install both Rust targets before running workspace tests,
 `dist` or `install`: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
 CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
-architectures. Windows runs neutral contracts only. Shared and Linux-specific
+architectures. Windows runs neutral contracts only. The agreed
+[Windows host and shell qualification](docs/windows-qualification.md) says what a
+Windows release will have to pass. Shared and Linux-specific
 CRAP/mutation run on the dedicated Linux development host, with 8 mutation
 workers. CI does not repeat those quality checks.
 
