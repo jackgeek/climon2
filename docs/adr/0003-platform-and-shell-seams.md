@@ -135,6 +135,8 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
 
 Adding zsh, sh, pwsh, powershell or cmd is purely a test-harness change: a new shell profile. Known controlled-startup flags: bash `--norc --noprofile`; zsh `-f`; sh with `ENV` unset (macOS `/bin/sh` is bash 3.2 in POSIX mode, Ubuntu's is dash); pwsh and powershell `-NoProfile`; cmd `/D`.
 
+The Windows shell profiles, the host models and the scenarios they run are specified in [Windows host and shell qualification](../windows-qualification.md).
+
 ## Considered options
 
 - **Platform traits with runtime dispatch:** rejected. They add speculative abstraction for implementations that don't exist yet.
