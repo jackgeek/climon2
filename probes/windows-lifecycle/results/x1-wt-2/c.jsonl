@@ -1,0 +1,3 @@
+{"chain":"c","mode":"close","phase":"start","pid":1860,"self_in_job":false,"t_ms":1795179930382.397}
+{"chain":"c","event":2,"phase":"enter","pid":1860,"t_ms":1795179939660.042}
+{"chain":"c","code":129,"event":2,"phase":"exit","pid":1860,"t_ms":1795179939660.291}

@@ -1,0 +1,27 @@
+{"exit":"0xC000013A","pid":7848,"ping_stopped":true,"probe":"C2","rep":0,"repair_call":null,"t_ms":1795179680934.335,"variant":"baseline"}
+{"exit":"0xC000013A","pid":7848,"ping_stopped":true,"probe":"C2","rep":1,"repair_call":null,"t_ms":1795179683445.293,"variant":"baseline"}
+{"exit":"0xC000013A","pid":7848,"ping_stopped":true,"probe":"C2","rep":2,"repair_call":null,"t_ms":1795179685958.709,"variant":"baseline"}
+{"flags":"0x00000008","host":"c2-ping baseline","host_exit":"0x00000000","pid":8080,"probe":"detach","t_ms":1795179685962.778}
+{"exit":null,"pid":9896,"ping_stopped":false,"probe":"C2","rep":0,"repair_call":null,"t_ms":1795179692497.728,"variant":"a-newgroup"}
+{"exit":null,"pid":9896,"ping_stopped":false,"probe":"C2","rep":1,"repair_call":null,"t_ms":1795179699013.381,"variant":"a-newgroup"}
+{"exit":null,"pid":9896,"ping_stopped":false,"probe":"C2","rep":2,"repair_call":null,"t_ms":1795179705530.469,"variant":"a-newgroup"}
+{"flags":"0x00000208","host":"c2-ping a-newgroup","host_exit":"0x00000000","pid":6340,"probe":"detach","t_ms":1795179705535.671}
+{"err":0,"ignore_ctrlc_ok":true,"pid":6848,"probe":"detach","t_ms":1795179705546.064}
+{"exit":null,"pid":3168,"ping_stopped":false,"probe":"C2","rep":0,"repair_call":null,"t_ms":1795179712061.427,"variant":"b-parent-ignored"}
+{"exit":null,"pid":3168,"ping_stopped":false,"probe":"C2","rep":1,"repair_call":null,"t_ms":1795179718576.083,"variant":"b-parent-ignored"}
+{"exit":null,"pid":3168,"ping_stopped":false,"probe":"C2","rep":2,"repair_call":null,"t_ms":1795179725083.464,"variant":"b-parent-ignored"}
+{"flags":"0x00000008","host":"c2-ping b-parent-ignored","host_exit":"0x00000000","pid":6848,"probe":"detach","t_ms":1795179725088.671}
+{"err":0,"ignore_ctrlc_ok":true,"pid":6084,"probe":"detach","t_ms":1795179725099.936}
+{"exit":"0xC000013A","pid":10544,"ping_stopped":true,"probe":"C2","rep":0,"repair_call":{"err":0,"ret":1},"t_ms":1795179727617.789,"variant":"c-both-repair"}
+{"exit":"0xC000013A","pid":10544,"ping_stopped":true,"probe":"C2","rep":1,"repair_call":{"err":0,"ret":1},"t_ms":1795179730129.381,"variant":"c-both-repair"}
+{"exit":"0xC000013A","pid":10544,"ping_stopped":true,"probe":"C2","rep":2,"repair_call":{"err":0,"ret":1},"t_ms":1795179732641.751,"variant":"c-both-repair"}
+{"flags":"0x00000208","host":"c2-ping c-both-repair","host_exit":"0x00000000","pid":6084,"probe":"detach","t_ms":1795179732645.611}
+{"exit":"0xC000013A","pid":3988,"ping_stopped":true,"probe":"C2","rep":0,"repair_call":{"err":0,"ret":1},"t_ms":1795179735172.099,"variant":"a-newgroup-repair"}
+{"exit":"0xC000013A","pid":3988,"ping_stopped":true,"probe":"C2","rep":1,"repair_call":{"err":0,"ret":1},"t_ms":1795179737684.171,"variant":"a-newgroup-repair"}
+{"exit":"0xC000013A","pid":3988,"ping_stopped":true,"probe":"C2","rep":2,"repair_call":{"err":0,"ret":1},"t_ms":1795179740197.704,"variant":"a-newgroup-repair"}
+{"flags":"0x00000208","host":"c2-ping a-newgroup-repair","host_exit":"0x00000000","pid":3892,"probe":"detach","t_ms":1795179740201.053}
+{"err":0,"ignore_ctrlc_ok":true,"pid":10964,"probe":"detach","t_ms":1795179740213.893}
+{"exit":"0xC000013A","pid":328,"ping_stopped":true,"probe":"C2","rep":0,"repair_call":{"err":0,"ret":1},"t_ms":1795179742732.485,"variant":"b-parent-ignored-repair"}
+{"exit":"0xC000013A","pid":328,"ping_stopped":true,"probe":"C2","rep":1,"repair_call":{"err":0,"ret":1},"t_ms":1795179745243.102,"variant":"b-parent-ignored-repair"}
+{"exit":"0xC000013A","pid":328,"ping_stopped":true,"probe":"C2","rep":2,"repair_call":{"err":0,"ret":1},"t_ms":1795179747755.045,"variant":"b-parent-ignored-repair"}
+{"flags":"0x00000008","host":"c2-ping b-parent-ignored-repair","host_exit":"0x00000000","pid":10964,"probe":"detach","t_ms":1795179747759.342}

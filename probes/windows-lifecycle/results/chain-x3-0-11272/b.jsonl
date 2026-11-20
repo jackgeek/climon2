@@ -1,0 +1,4 @@
+{"chain":"b","mode":"x3","phase":"start","pid":9128,"self_in_job":false,"t_ms":1795179762849.037}
+{"chain":"b","child":4792,"phase":"spawned","pid":9128,"t_ms":1795179762854.885}
+{"chain":"b","event":0,"phase":"enter","pid":9128,"t_ms":1795179764834.186}
+{"chain":"b","code":"0xC000013A","phase":"child-exited","pid":9128,"t_ms":1795179764839.387}

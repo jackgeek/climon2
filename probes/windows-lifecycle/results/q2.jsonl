@@ -1,0 +1,6 @@
+{"argv0":"probe","current_exe":"C:\\probes\\bin\\probe.exe","module":"C:\\probes\\bin\\probe.exe","pid":11456,"probe":"Q2-child","t_ms":1795172604725.643}
+{"argv0":"c2","current_exe":"C:\\probes\\bin\\probe.exe","module":"C:\\probes\\bin\\probe.exe","pid":11580,"probe":"Q2-child","t_ms":1795172604745.616}
+{"argv0":"some other name.exe","current_exe":"C:\\probes\\bin\\probe.exe","module":"C:\\probes\\bin\\probe.exe","pid":6556,"probe":"Q2-child","t_ms":1795172604762.056}
+{"argv0":"probe","current_exe":"C:\\probes\\bin\\probe.exe","module":"C:\\probes\\bin\\probe.exe","pid":7420,"probe":"Q2-child","t_ms":1795180016126.301}
+{"argv0":"c2","current_exe":"C:\\probes\\bin\\probe.exe","module":"C:\\probes\\bin\\probe.exe","pid":10380,"probe":"Q2-child","t_ms":1795180016195.491}
+{"argv0":"some other name.exe","current_exe":"C:\\probes\\bin\\probe.exe","module":"C:\\probes\\bin\\probe.exe","pid":10096,"probe":"Q2-child","t_ms":1795180016295.931}

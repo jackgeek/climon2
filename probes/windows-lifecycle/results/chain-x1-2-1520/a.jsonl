@@ -1,0 +1,4 @@
+{"chain":"a","mode":"close","phase":"start","pid":544,"self_in_job":true,"t_ms":1795179760323.206}
+{"chain":"a","child":10156,"phase":"spawned","pid":544,"t_ms":1795179760326.093}
+{"chain":"a","event":2,"phase":"enter","pid":544,"t_ms":1795179762319.405}
+{"chain":"a","child_wait":"0x00000000","code":"0x00000081","event":2,"phase":"exit","pid":544,"t_ms":1795179762320.102}

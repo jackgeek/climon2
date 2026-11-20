@@ -1,0 +1,16 @@
+{"exit":"0xC000013A","ms":4.84814453125,"part":"ping","pid":7408,"ping_stopped":true,"probe":"C1","rep":0,"t_ms":1795179443629.176,"tail":"r ::1:\\r\\r\\n\\r    Packets: Sent = 3, Received = 3, Lost = 0 (0% loss),\\r\\r\\n\\rApproximate round trip times in milli-seconds:\\r\\r\\n\\r    Minimum = 0ms, Maximum = 0ms, Average = 0ms\\r\\r\\n\\rControl-C\\r\\r\\n\\r\\e[?1004l\\e[?9001l","write":{"err":0,"n":1,"ok":true,"t_ms":1795179443624.3025}}
+{"exit":"0xC000013A","ms":5.416015625,"part":"ping","pid":7408,"ping_stopped":true,"probe":"C1","rep":1,"t_ms":1795179446140.443,"tail":"r ::1:\\r\\r\\n\\r    Packets: Sent = 3, Received = 3, Lost = 0 (0% loss),\\r\\r\\n\\rApproximate round trip times in milli-seconds:\\r\\r\\n\\r    Minimum = 0ms, Maximum = 0ms, Average = 0ms\\r\\r\\n\\rControl-C\\r\\r\\n\\r\\e[?1004l\\e[?9001l","write":{"err":0,"n":1,"ok":true,"t_ms":1795179446135.008}}
+{"exit":"0xC000013A","ms":5.47216796875,"part":"ping","pid":7408,"ping_stopped":true,"probe":"C1","rep":2,"t_ms":1795179448651.584,"tail":"r ::1:\\r\\r\\n\\r    Packets: Sent = 3, Received = 3, Lost = 0 (0% loss),\\r\\r\\n\\rApproximate round trip times in milli-seconds:\\r\\r\\n\\r    Minimum = 0ms, Maximum = 0ms, Average = 0ms\\r\\r\\n\\rControl-C\\r\\r\\n\\r\\e[?1004l\\e[?9001l","write":{"err":0,"n":1,"ok":true,"t_ms":1795179448646.099}}
+{"console_window":4653576,"get_mode_ok":true,"handler_ok":true,"mode_after":"0x000003B8","mode_before":"0x000001F7","mode_set":"0x000003B8","pid":8560,"probe":"raw-reader","set_err":0,"set_ok":true,"t_ms":1795179448673.731}
+{"bytes":"03","esc":"\\x03","pid":8560,"t_ms":1795179450659.49}
+{"pid":8560,"probe":"client-exit","reason":"deadline","t_ms":1795179454674.549}
+{"part":"raw-reader","pid":7408,"probe":"C1","reader_exit":"0x00000000","rep":0,"t_ms":1795179454677.96,"write":{"err":0,"n":1,"ok":true,"t_ms":1795179450659.3855}}
+{"console_window":4719112,"get_mode_ok":true,"handler_ok":true,"mode_after":"0x000003B8","mode_before":"0x000001F7","mode_set":"0x000003B8","pid":1904,"probe":"raw-reader","set_err":0,"set_ok":true,"t_ms":1795179454701.2}
+{"bytes":"03","esc":"\\x03","pid":1904,"t_ms":1795179456683.416}
+{"pid":1904,"probe":"client-exit","reason":"deadline","t_ms":1795179460701.79}
+{"part":"raw-reader","pid":7408,"probe":"C1","reader_exit":"0x00000000","rep":1,"t_ms":1795179460704.925,"write":{"err":0,"n":1,"ok":true,"t_ms":1795179456683.328}}
+{"console_window":4784648,"get_mode_ok":true,"handler_ok":true,"mode_after":"0x000003B8","mode_before":"0x000001F7","mode_set":"0x000003B8","pid":980,"probe":"raw-reader","set_err":0,"set_ok":true,"t_ms":1795179460725.974}
+{"bytes":"03","esc":"\\x03","pid":980,"t_ms":1795179462709.855}
+{"pid":980,"probe":"client-exit","reason":"deadline","t_ms":1795179466726.674}
+{"part":"raw-reader","pid":7408,"probe":"C1","reader_exit":"0x00000000","rep":2,"t_ms":1795179466729.594,"write":{"err":0,"n":1,"ok":true,"t_ms":1795179462709.7393}}
+{"flags":"0x00000008","host":"c1","host_exit":"0x00000000","pid":7020,"probe":"detach","t_ms":1795179466732.795}
