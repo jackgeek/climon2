@@ -1,0 +1,71 @@
+
+Microsoft DiskPart version 10.0.26100.1150
+
+Copyright (C) Microsoft Corporation.
+On computer: runnervmbpeip
+
+
+    0 percent completed
+  100 percent completed
+
+
+DiskPart successfully created the virtual disk file.
+
+DiskPart successfully selected the virtual disk file.
+
+  100 percent completed
+
+
+DiskPart successfully attached the virtual disk file.
+raw disk: number=2 size=21474836480 name=Msft Virtual Disk
+
+DriveLetter    : R
+FileSystem     : ReFS
+FileSystemType : ReFS
+Size           : 21407727616
+
+
+--- fsutil fsinfo volumeinfo R:
+Volume Name : refsprobe
+Volume Serial Number : 0x4e77a9bb
+Max Component Length : 255
+File System Name : ReFS
+Is ReadWrite
+Is Thinly-Provisioned
+Supports Case-sensitive filenames
+Preserves Case of filenames
+Supports Unicode in filenames
+Preserves & Enforces ACL's
+Supports Sparse files
+Supports Reparse Points
+Returns Handle Close Result Information
+Supports POSIX-style Unlink and Rename
+Supports Stream Snapshots
+Supports Case-Sensitive Directories
+Supports Encrypted File System
+Supports Named Streams
+Supports Hard Links
+Supports Extended Attributes
+Supports Open By FileID
+Supports USN Journal
+Supports Integrity Streams
+Supports Block Cloning
+Supports Sparse VDL
+Supports File Ghosting
+--- fsutil fsinfo refsinfo R:
+REFS Volume Serial Number :                0xce4e77ca4e77a9bb
+REFS Volume Version :                      3.14
+REFS Driver Maximum Supported Version :    3.14
+Number Sectors :                           0x00000000027e0000
+Total Clusters :                           0x00000000004fc000
+Free Clusters  :                           0x00000000004a6ec4
+Total Reserved :                           0x0000000000025048
+Bytes Per Sector  :                        512
+Bytes Per Physical Sector :                4096
+Bytes Per Cluster :                        4096
+Fast Tier Data Fill Percentage :           0.0%
+Slow Tier Data Fill Percentage :           0.0%
+Fast Tier to Slow Tier Rate (Clusters/s) : 0
+Metadata Checksum Type :                   CHECKSUM_TYPE_CRC64
+Data Checksum Type :                       CHECKSUM_TYPE_NONE
+

@@ -1,0 +1,34 @@
+dumpbin=C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.52.37025\bin\Hostx64\x64\dumpbin.exe
+vs=18.12.0
+nupkg=https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.25.261109001/microsoft.windows.console.conpty.1.25.261109001.nupkg
+nupkg sha256=3D77F535DF848E44225C2A8912AC844FECB23F3057732B639F3034B587496F09
+=== rust exe, default
+path=D:\a\climon2\climon2\probes\windows-install\target\release\winprobe.exe size=413696
+imports: KERNEL32.dll, api-ms-win-core-synch-l1-2-0.dll, ntdll.dll, VCRUNTIME140.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-heap-l1-1-0.dll
+vcruntime140*/msvcp140* imports: VCRUNTIME140.dll
+ucrt (api-ms-win-crt-* / ucrtbase) imports: 5
+=== rust cdylib, default
+path=D:\a\climon2\climon2\probes\windows-install\target\release\probedll.dll size=109056
+imports: api-ms-win-core-synch-l1-2-0.dll, KERNEL32.dll, ntdll.dll, VCRUNTIME140.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-heap-l1-1-0.dll
+vcruntime140*/msvcp140* imports: VCRUNTIME140.dll
+ucrt (api-ms-win-crt-* / ucrtbase) imports: 2
+=== rust exe, +crt-static
+path=D:\a\climon2\climon2\probes\windows-install\target-static\release\winprobe.exe size=510464
+imports: KERNEL32.dll, api-ms-win-core-synch-l1-2-0.dll, ntdll.dll
+vcruntime140*/msvcp140* imports: none
+ucrt (api-ms-win-crt-* / ucrtbase) imports: 0
+=== rust cdylib, +crt-static
+path=D:\a\climon2\climon2\probes\windows-install\target-static\release\probedll.dll size=202752
+imports: api-ms-win-core-synch-l1-2-0.dll, KERNEL32.dll, ntdll.dll
+vcruntime140*/msvcp140* imports: none
+ucrt (api-ms-win-crt-* / ucrtbase) imports: 0
+=== conpty.dll x64 1.25.261109001
+path=D:\a\_temp\conpty\x\runtimes\win-x64\native\conpty.dll size=119608
+imports: api-ms-win-core-libraryloader-l1-2-0.dll, api-ms-win-core-synch-l1-1-0.dll, api-ms-win-core-heap-l1-1-0.dll, api-ms-win-core-errorhandling-l1-1-0.dll, api-ms-win-core-processthreads-l1-1-0.dll, api-ms-win-core-localization-l1-2-0.dll, api-ms-win-core-debug-l1-1-0.dll, api-ms-win-core-handle-l1-1-0.dll, api-ms-win-core-string-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, api-ms-win-core-profile-l1-1-0.dll, api-ms-win-core-sysinfo-l1-1-0.dll, api-ms-win-core-interlocked-l1-1-0.dll, api-ms-win-core-rtlsupport-l1-1-0.dll, api-ms-win-core-fibers-l1-1-0.dll, api-ms-win-core-util-l1-1-0.dll, api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-string-l1-1-0.dll, api-ms-win-core-wow64-l1-1-1.dll, api-ms-win-core-namedpipe-l1-1-0.dll, api-ms-win-core-file-l1-1-0.dll, api-ms-win-core-psapi-l1-1-0.dll, api-ms-win-core-file-l1-2-0.dll, api-ms-win-core-file-l1-2-2.dll, api-ms-win-core-file-l2-1-0.dll, api-ms-win-core-heap-l2-1-0.dll, api-ms-win-core-synch-l1-2-0.dll, api-ms-win-crt-locale-l1-1-0.dll
+vcruntime140*/msvcp140* imports: none
+ucrt (api-ms-win-crt-* / ucrtbase) imports: 5
+=== OpenConsole.exe x64 1.25.261109001
+path=D:\a\_temp\conpty\x\build\native\runtimes\x64\OpenConsole.exe size=1089336
+imports: api-ms-win-core-libraryloader-l1-2-0.dll, api-ms-win-core-synch-l1-1-0.dll, api-ms-win-core-heap-l1-1-0.dll, api-ms-win-core-errorhandling-l1-1-0.dll, api-ms-win-core-processthreads-l1-1-0.dll, api-ms-win-core-localization-l1-2-0.dll, api-ms-win-core-debug-l1-1-0.dll, api-ms-win-core-handle-l1-1-0.dll, api-ms-win-core-string-l1-1-0.dll, api-ms-win-core-winrt-error-l1-1-0.dll, api-ms-win-eventing-provider-l1-1-0.dll, api-ms-win-core-processenvironment-l1-1-0.dll, api-ms-win-core-com-l1-1-0.dll, api-ms-win-core-util-l1-1-0.dll, api-ms-win-core-winrt-l1-1-0.dll, api-ms-win-core-winrt-string-l1-1-0.dll, api-ms-win-core-synch-l1-2-0.dll, ntdll.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, api-ms-win-crt-string-l1-1-0.dll, api-ms-win-crt-convert-l1-1-0.dll, api-ms-win-core-threadpool-l1-2-0.dll, ext-ms-win-uiacore-l1-1-0.dll, OLEAUT32.dll, api-ms-win-shcore-scaling-l1-1-1.dll, api-ms-win-ntuser-sysparams-l1-1-0.dll, api-ms-win-core-shlwapi-legacy-l1-1-0.dll, api-ms-win-core-heap-obsolete-l1-1-0.dll, api-ms-win-core-heap-l2-1-0.dll, api-ms-win-core-largeinteger-l1-1-0.dll, api-ms-win-core-registry-l1-1-0.dll, api-ms-win-core-sysinfo-l1-1-0.dll, ext-ms-win-uiacore-l1-1-1.dll, PROPSYS.dll, api-ms-win-shell-namespace-l1-1-0.dll, api-ms-win-core-path-l1-1-0.dll, api-ms-win-core-registry-l2-1-0.dll, api-ms-win-core-processthreads-l1-1-1.dll, api-ms-win-core-psapi-l1-1-0.dll, api-ms-win-core-namedpipe-l1-1-0.dll, api-ms-win-shcore-obsolete-l1-1-0.dll, api-ms-win-core-file-l1-1-0.dll, api-ms-win-core-sidebyside-l1-1-0.dll, api-ms-win-core-profile-l1-1-0.dll, api-ms-win-core-interlocked-l1-1-0.dll, api-ms-win-core-rtlsupport-l1-1-0.dll, api-ms-win-core-fibers-l1-1-0.dll, USER32.dll, GDI32.dll, SHELL32.dll, WINMM.dll, IMM32.dll, USP10.dll, api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-core-memory-l1-1-0.dll, d2d1.dll, DWrite.dll, dxgi.dll, d3d11.dll, api-ms-win-core-synch-l1-2-1.dll, D3DCOMPILER_47.dll, api-ms-win-core-libraryloader-l1-2-1.dll, api-ms-win-core-version-l1-1-0.dll, api-ms-win-core-realtime-l1-1-0.dll, api-ms-win-core-io-l1-1-0.dll, api-ms-win-core-file-l1-2-0.dll, api-ms-win-core-file-l1-2-2.dll, api-ms-win-core-file-l2-1-0.dll, icu.dll
+vcruntime140*/msvcp140* imports: none
+ucrt (api-ms-win-crt-* / ucrtbase) imports: 7

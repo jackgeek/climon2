@@ -614,7 +614,8 @@ fn p5(out: &mut Out) {
         let (mut wr, mut rn) = (BTreeMap::new(), BTreeMap::new());
         let start = Instant::now();
         let mut i = 0u64;
-        while i < 1000 || start.elapsed() < Duration::from_secs(3) {
+        let secs = std::env::var("WINPROBE_P5_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+        while i < 1000 || start.elapsed() < Duration::from_secs(secs) {
             i += 1;
             let (w, r) = replace(&cur, &format!("v{i}\n"), use_raw);
             tally(&mut wr, &w);
@@ -624,7 +625,7 @@ fn p5(out: &mut Out) {
         }
         let writer_ok = rn.len() == 1 && rn.contains_key("ok") && wr.len() == 1;
         out.note(
-            &format!("b [{how}]: writer, {i} replacements in {} ms, no retries", start.elapsed().as_millis()),
+            &format!("b [{how}]: writer, {i} replacements in {} s, no retries", start.elapsed().as_secs()),
             writer_ok,
             &format!("temp-write results {wr:?}; rename results {rn:?}"),
         );
@@ -644,7 +645,13 @@ fn read_loop(cur: &Path, stop: &Path, res: &Path, ready: &Path) {
     fs::write(ready, "").unwrap();
     while !(total % 64 == 0 && stop.exists()) {
         total += 1;
-        match fs::read_to_string(cur) {
+        // Open and read separately so a failure names the call that failed.
+        let opened = File::open(cur).map_err(|e| ("open", e));
+        let read = opened.and_then(|mut f| {
+            let mut s = String::new();
+            f.read_to_string(&mut s).map(|_| s).map_err(|e| ("read", e))
+        });
+        match read {
             Ok(s) => {
                 let v = s
                     .strip_prefix('v')
@@ -659,8 +666,8 @@ fn read_loop(cur: &Path, stop: &Path, res: &Path, ready: &Path) {
                     None => *m.entry(format!("torn:{s:?}")).or_default() += 1,
                 }
             }
-            Err(e) => {
-                *m.entry(format!("os_error_{}", e.raw_os_error().unwrap_or(-1))).or_default() += 1
+            Err((call, e)) => {
+                *m.entry(format!("{call}:os_error_{}", e.raw_os_error().unwrap_or(-1))).or_default() += 1
             }
         }
     }

@@ -1,0 +1,366 @@
+{"probe":"setup","step":"base folder","ok":true,"os_error":null,"detail":"R:\\climon2-probe"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: delete [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: delete [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe.old-1"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1","step":"Single: running=climon2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"1","step":"seq a: rename running exe aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"seq a: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1","step":"seq b: write new exe to temp name","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"seq b: rename new exe into the original name [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"seq b: run the new exe at the original name","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"1","step":"seq b: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"1","step":"seq: rename the aside file a second time [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"seq d: rename a new file over the aside (running) image [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"seq c: delete aside file while its process runs [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"1","step":"seq c: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 13->19, exit=None"}
+{"probe":"1","step":"seq c: delete aside file after its process exited","ok":false,"os_error":2,"detail":"still failing after 5 s, attempts=489: The system cannot find the file specified. (os error 2)"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: delete [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: delete [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=climon2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: delete [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=c2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: delete [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"HardLink: running=c2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2","step":"only climon2.exe running: rename climon2.exe aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"only climon2.exe running: rename c2.exe aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"only climon2.exe running: rename new climon2.exe in [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"only climon2.exe running: hard-link new c2.exe","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"only climon2.exe running: run new climon2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"only climon2.exe running: run new c2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"only climon2.exe running: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"only climon2.exe running: delete first aside name while running [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"only climon2.exe running: delete second aside name while running [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"2","step":"only climon2.exe running: delete second aside name while running [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"2","step":"only climon2.exe running: old process healthy after deletes","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"2","step":"only climon2.exe running: delete aside name after exit","ok":true,"os_error":null,"detail":"attempts=1 elapsed_ms=0 first_error=none"}
+{"probe":"2","step":"only climon2.exe running: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2","step":"both names running: rename climon2.exe aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"both names running: rename c2.exe aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"both names running: rename new climon2.exe in [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"both names running: hard-link new c2.exe","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"both names running: run new climon2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"both names running: run new c2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2","step":"both names running: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2","step":"both names running: old c2 process still healthy","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"2","step":"both names running: delete first aside name while running [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"2","step":"both names running: delete second aside name while running [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"2","step":"both names running: delete second aside name while running [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"2","step":"both names running: old process healthy after deletes","ok":true,"os_error":null,"detail":"heartbeat 13->19, exit=None"}
+{"probe":"2","step":"both names running: delete aside name after exit","ok":true,"os_error":null,"detail":"attempts=1 elapsed_ms=0 first_error=none"}
+{"probe":"2","step":"both names running: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: delete [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: delete [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe.old-1"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=climon2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: delete [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=climon2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: delete [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=c2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: delete [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: delete [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-aside: then delete the aside file [std::fs::remove_file]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe.old-1 climon2.exe"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-over [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3","step":"Copy: running=c2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"4","step":"running-exe: process healthy before","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"4","step":"running-exe: rename new folder over the existing one [std::fs::rename]","ok":false,"os_error":145,"detail":"The directory is not empty. (os error 145)"}
+{"probe":"4","step":"running-exe: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"running-exe: rename folder aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"running-exe: rename new folder into the old name [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"running-exe: process healthy after","ok":true,"os_error":null,"detail":"heartbeat 7->12, exit=None"}
+{"probe":"4","step":"running-exe: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.old-1 host.exe"}
+{"probe":"4","step":"loaded-dll: process healthy before","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"4","step":"loaded-dll: rename new folder over the existing one [std::fs::rename]","ok":false,"os_error":145,"detail":"The directory is not empty. (os error 145)"}
+{"probe":"4","step":"loaded-dll: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"loaded-dll: rename folder aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"loaded-dll: rename new folder into the old name [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"loaded-dll: process healthy after","ok":true,"os_error":null,"detail":"heartbeat 7->12, exit=None"}
+{"probe":"4","step":"loaded-dll: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.old-1 host.exe"}
+{"probe":"4","step":"idle-files: rename new folder over the existing one [std::fs::rename]","ok":false,"os_error":145,"detail":"The directory is not empty. (os error 145)"}
+{"probe":"4","step":"idle-files: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"idle-files: rename folder aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"idle-files: rename new folder into the old name [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"idle-files: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.old-1 host.exe"}
+{"probe":"4","step":"open-file: rename new folder over the existing one [std::fs::rename]","ok":false,"os_error":145,"detail":"The directory is not empty. (os error 145)"}
+{"probe":"4","step":"open-file: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"open-file: rename folder aside [std::fs::rename]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"open-file: rename folder aside [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"open-file: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.new host.exe ready"}
+{"probe":"4","step":"open-file: rename folder aside after the process exited [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"process-cwd: process healthy before","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"4","step":"process-cwd: rename new folder over the existing one [std::fs::rename]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"process-cwd: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4","step":"process-cwd: rename folder aside [std::fs::rename]","ok":false,"os_error":32,"detail":"The process cannot access the file because it is being used by another process. (os error 32)"}
+{"probe":"4","step":"process-cwd: rename folder aside [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":32,"detail":"The process cannot access the file because it is being used by another process. (os error 32)"}
+{"probe":"4","step":"process-cwd: process healthy after","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"4","step":"process-cwd: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.new host.exe"}
+{"probe":"4","step":"process-cwd: rename folder aside after the process exited [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"4","step":"idle: rename folder over an existing EMPTY folder [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: delete [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe.old-1"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1-raw","step":"Single: running=climon2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe new.tmp"}
+{"probe":"1-raw","step":"seq a: rename running exe aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"1-raw","step":"seq a: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"1-raw","step":"seq b: write new exe to temp name","ok":true,"os_error":null,"detail":""}
+{"probe":"1-raw","step":"seq b: rename new exe into the original name [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"1-raw","step":"seq b: run the new exe at the original name","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"1-raw","step":"seq b: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"1-raw","step":"seq: rename the aside file a second time [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"1-raw","step":"seq d: rename a new file over the aside (running) image [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1-raw","step":"seq c: delete aside file while its process runs [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"1-raw","step":"seq c: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 13->19, exit=None"}
+{"probe":"1-raw","step":"seq c: delete aside file after its process exited","ok":true,"os_error":null,"detail":"attempts=1 elapsed_ms=0 first_error=none"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: delete [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: delete [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=climon2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: delete [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: delete [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"HardLink: running=c2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2-raw","step":"only climon2.exe running: rename climon2.exe aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"only climon2.exe running: rename c2.exe aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"only climon2.exe running: rename new climon2.exe in [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"only climon2.exe running: hard-link new c2.exe","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"only climon2.exe running: run new climon2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"only climon2.exe running: run new c2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"only climon2.exe running: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"only climon2.exe running: delete first aside name while running [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"only climon2.exe running: delete second aside name while running [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"2-raw","step":"only climon2.exe running: old process healthy after deletes","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"2-raw","step":"only climon2.exe running: delete aside name after exit","ok":true,"os_error":null,"detail":"attempts=1 elapsed_ms=0 first_error=none"}
+{"probe":"2-raw","step":"only climon2.exe running: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"2-raw","step":"both names running: rename climon2.exe aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"both names running: rename c2.exe aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"both names running: rename new climon2.exe in [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"both names running: hard-link new c2.exe","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"both names running: run new climon2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"both names running: run new c2.exe","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"2-raw","step":"both names running: old process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"2-raw","step":"both names running: old c2 process still healthy","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"2-raw","step":"both names running: delete first aside name while running [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"2-raw","step":"both names running: delete second aside name while running [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"2-raw","step":"both names running: old process healthy after deletes","ok":true,"os_error":null,"detail":"heartbeat 13->19, exit=None"}
+{"probe":"2-raw","step":"both names running: delete aside name after exit","ok":true,"os_error":null,"detail":"attempts=1 elapsed_ms=0 first_error=none"}
+{"probe":"2-raw","step":"both names running: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: delete [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe.old-1"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe new.tmp"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: delete [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=climon2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: delete [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-over: run the new file","ok":true,"os_error":null,"detail":"exit=Some(0) stdout=v2-ok"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=climon2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: delete [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: delete: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: delete: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: rename-aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: rename-aside: then delete the aside file [DeleteFileW]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: rename-aside: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: rename-aside: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe.old-1 climon2.exe"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: rename-over [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: rename-over: process still healthy","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"3-raw","step":"Copy: running=c2.exe target=c2.exe: rename-over: folder afterwards","ok":true,"os_error":null,"detail":"c2.exe climon2.exe new.tmp"}
+{"probe":"4-raw","step":"running-exe: process healthy before","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"4-raw","step":"running-exe: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4-raw","step":"running-exe: rename folder aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"running-exe: rename new folder into the old name [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"running-exe: process healthy after","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"4-raw","step":"running-exe: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.old-1 host.exe"}
+{"probe":"4-raw","step":"loaded-dll: process healthy before","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"4-raw","step":"loaded-dll: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4-raw","step":"loaded-dll: rename folder aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"loaded-dll: rename new folder into the old name [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"loaded-dll: process healthy after","ok":true,"os_error":null,"detail":"heartbeat 7->12, exit=None"}
+{"probe":"4-raw","step":"loaded-dll: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.old-1 host.exe"}
+{"probe":"4-raw","step":"idle-files: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4-raw","step":"idle-files: rename folder aside [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"idle-files: rename new folder into the old name [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"idle-files: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.old-1 host.exe"}
+{"probe":"4-raw","step":"open-file: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4-raw","step":"open-file: rename folder aside [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4-raw","step":"open-file: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.new host.exe ready"}
+{"probe":"4-raw","step":"open-file: rename folder aside after the process exited [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"process-cwd: process healthy before","ok":true,"os_error":null,"detail":"heartbeat 1->7, exit=None"}
+{"probe":"4-raw","step":"process-cwd: rename new folder over the existing one [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"4-raw","step":"process-cwd: rename folder aside [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":32,"detail":"The process cannot access the file because it is being used by another process. (os error 32)"}
+{"probe":"4-raw","step":"process-cwd: process healthy after","ok":true,"os_error":null,"detail":"heartbeat 7->13, exit=None"}
+{"probe":"4-raw","step":"process-cwd: root afterwards","ok":true,"os_error":null,"detail":"0.1.0 0.1.0.new host.exe"}
+{"probe":"4-raw","step":"process-cwd: rename folder aside after the process exited [MoveFileExW REPLACE_EXISTING]","ok":true,"os_error":null,"detail":""}
+{"probe":"4-raw","step":"idle: rename folder over an existing EMPTY folder [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"5","step":"a: write temp while a reader holds `current` open","ok":true,"os_error":null,"detail":""}
+{"probe":"5","step":"a: std::fs::rename temp over held-open `current`","ok":true,"os_error":null,"detail":""}
+{"probe":"5","step":"a: MoveFileExW REPLACE_EXISTING temp over held-open `current`","ok":true,"os_error":null,"detail":""}
+{"probe":"5","step":"a: 100 more std replacements while held open","ok":true,"os_error":null,"detail":"{\"ok\": 100}"}
+{"probe":"5","step":"a: path content after replacements","ok":true,"os_error":null,"detail":"Ok(\"v102\\n\")"}
+{"probe":"5","step":"a: what the old open handle reads afterwards","ok":true,"os_error":null,"detail":"Ok(\"Ok(3) \\\"v0\\\\n\\\"\")"}
+{"probe":"5","step":"b [std::fs::rename]: writer, 4478 replacements in 3000 ms, no retries","ok":true,"os_error":null,"detail":"temp-write results {\"ok\": 4478}; rename results {\"ok\": 4478}"}
+{"probe":"5","step":"b [std::fs::rename]: reader 0","ok":true,"os_error":null,"detail":"reads=14592 ok=14592 failures=0 max_version_seen=4478 by_kind={}"}
+{"probe":"5","step":"b [std::fs::rename]: reader 1","ok":true,"os_error":null,"detail":"reads=13824 ok=13824 failures=0 max_version_seen=4478 by_kind={}"}
+{"probe":"5","step":"b [MoveFileExW REPLACE_EXISTING]: writer, 12151 replacements in 3000 ms, no retries","ok":false,"os_error":null,"detail":"temp-write results {\"ok\": 12151}; rename results {\"ok\": 1692, \"os_error_5\": 10459}"}
+{"probe":"5","step":"b [MoveFileExW REPLACE_EXISTING]: reader 0","ok":true,"os_error":null,"detail":"reads=18496 ok=18496 failures=0 max_version_seen=12147 by_kind={}"}
+{"probe":"5","step":"b [MoveFileExW REPLACE_EXISTING]: reader 1","ok":true,"os_error":null,"detail":"reads=17536 ok=17536 failures=0 max_version_seen=12147 by_kind={}"}
+{"probe":"6","step":"holder process takes the lock","ok":true,"os_error":null,"detail":"locked"}
+{"probe":"6","step":"second process try_lock while held","ok":true,"os_error":null,"detail":"WouldBlock"}
+{"probe":"6","step":"second handle in a third process try_lock while held","ok":true,"os_error":null,"detail":"WouldBlock"}
+{"probe":"6","step":"1000 rename-over replacements of another file in the lock's folder while held","ok":true,"os_error":null,"detail":"{\"ok\": 1000}"}
+{"probe":"6","step":"second process try_lock after the renames","ok":true,"os_error":null,"detail":"WouldBlock"}
+{"probe":"6","step":"rename the lock's parent folder aside while held [std::fs::rename]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"6","step":"rename the lock's parent folder aside while held [MoveFileExW REPLACE_EXISTING]","ok":false,"os_error":5,"detail":"Access is denied. (os error 5)"}
+{"probe":"6","step":"taskkill /F the holder","ok":true,"os_error":null,"detail":"exit=Some(0) SUCCESS: The process with PID 7524 has been terminated."}
+{"probe":"6","step":"lock is free after the holder was killed","ok":true,"os_error":null,"detail":"result=locked attempts=1 ms_since_taskkill_started=49"}
+{"probe":"6","step":"holder process takes the lock","ok":true,"os_error":null,"detail":"locked"}
+{"probe":"6","step":"rename the locked lock file aside [std::fs::rename]","ok":true,"os_error":null,"detail":""}
+{"probe":"6","step":"try_lock on the original path after rename-aside (a new file)","ok":true,"os_error":null,"detail":"locked"}
+{"probe":"6","step":"try_lock on the aside name (the held file)","ok":true,"os_error":null,"detail":"WouldBlock"}
+{"probe":"6","step":"delete the aside (still locked) lock file [std::fs::remove_file]","ok":true,"os_error":null,"detail":""}
+{"probe":"9","step":"std::fs::hard_link (CreateHardLinkW) in this folder","ok":true,"os_error":null,"detail":""}
+{"probe":"9","step":"link content equals original","ok":true,"os_error":null,"detail":"R:\\climon2-probe\\p9-145"}
+{"probe":"9","step":"create an alternate data stream on this volume","ok":true,"os_error":null,"detail":""}

@@ -12,6 +12,8 @@ jobs:
   probe:
     runs-on: windows-2025
     timeout-minutes: 15
+    env:
+      WINPROBE_P5_SECS: "20"
     defaults:
       run:
         shell: pwsh
