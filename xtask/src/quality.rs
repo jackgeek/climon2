@@ -16,10 +16,11 @@ use std::{
 };
 
 const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
-/// The owner's fork of unclebob/mutator: upstream a5a0cb80 plus its Windows fixes (a typed
-/// test command's `$NAME` expanded past cmd.exe; a timed-out command's tree killed; worker trees
-/// deeper than the 260-character path limit deleted).
-const MUTATOR: &str = "72cc2c95f7b34c0408e3b55f5cd8510b3a050858";
+/// The owner's fork of unclebob/mutator: upstream a5a0cb80 plus its Windows fixes. A typed
+/// test command's `$NAME` is expanded past cmd.exe, a timed-out command's tree is killed,
+/// worker trees past the 260-character path limit are deleted, and a mutant of a CRLF
+/// source is written byte for byte.
+const MUTATOR: &str = "7dc09821d8ab5d077a90fbc4e9ad8c3613a9ea49";
 /// Each pinned quality tool, the repository it is cloned from, and its revision.
 const TOOLS: [(&str, &str, &str); 2] = [
     (

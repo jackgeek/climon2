@@ -113,9 +113,12 @@ list is `WINDOWS_SUITE` in `xtask/src/quality.rs`.
 **The mutator.** The upstream mutator has two faults on Windows: it runs its
 test command through `cmd.exe`, where the Python path variable is not
 expanded, and it crashes on the first timeout. Building
-[#314](https://github.com/jackgeek/climon2/issues/314) found a third: it
+[#314](https://github.com/jackgeek/climon2/issues/314) found two more. It
 cannot delete a mutant's working copy once the build inside it passes
-Windows's 260-character path limit. All three are fixed in the mutator itself,
+Windows's 260-character path limit. And it writes each mutant in text mode,
+which turns the CRLF line endings of a Windows checkout into CR CR LF, so
+every Rust mutant fails to build and counts as killed; the sentinel below
+caught this on the first CI run. All four are fixed in the mutator itself,
 on the owner's fork [jackgeek/mutator](https://github.com/jackgeek/mutator)
 (branch `windows-runner`), pinned by revision and to be offered upstream.
 xtask also passes the test command with the Python path already expanded, on
