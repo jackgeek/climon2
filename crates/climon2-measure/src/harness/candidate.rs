@@ -192,7 +192,7 @@ impl User {
         let output = bounded(command, CLI)?;
         check(
             &output.status.success(),
-            &format!("run climon2 {args:?}"),
+            &format!("run c2 {args:?}"),
             &output.stderr,
         )?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())

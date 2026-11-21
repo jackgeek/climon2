@@ -284,7 +284,8 @@ packaged controlled-versions test runs this build's client executable from a
 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
-on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m` reach it through the launcher and the current version's CLI, which
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m` reach it through
+the launcher and the current version's CLI, which
 execs its own version's monitor exactly as it execs a version-matched client,
 so the monitor is always the current version. That handoff between executables
 of one release is not frozen. Since #106 it discovers sessions and loads their

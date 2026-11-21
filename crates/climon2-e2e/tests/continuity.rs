@@ -129,11 +129,11 @@ fn hold_without_reading(terminal: &mut Terminal) {
 
 /// An outer controlled bash that fills its host with sentinels, then becomes
 /// `climon2 <climon2>`, so the host is occupied when the client starts.
-fn occupied(package: &Package, bash: &Path, climon2: &str) -> Terminal {
+fn occupied(package: &Package, bash: &Path, arguments: &str) -> Terminal {
     let mut command = package.command(bash);
     command.args(["--noprofile", "--norc", "-c"]);
     command.arg(format!(
-        "for i in 1 2 3; do echo OUTER-SENTINEL-$i; done; PS1='INNER> ' exec climon2 {climon2}"
+        "for i in 1 2 3; do echo OUTER-SENTINEL-$i; done; PS1='INNER> ' exec c2 {arguments}"
     ));
     Terminal::spawn(command, ROWS, COLS).unwrap()
 }
