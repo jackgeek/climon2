@@ -164,7 +164,7 @@ it does elsewhere. It also reads the scenario IDs in
 
 | IDs | Scenarios | Layer |
 | --- | --- | --- |
-| `WIN-01` to `WIN-08` | The Windows-only scenario groups | Contract |
+| `WIN-01` to `WIN-11` | The Windows-only scenario groups | Contract |
 | `WINM-01` to `WINM-16` | The manual checklist items | Host manual |
 
 A manual checklist case passes when `qualification/manual.json` holds a passed

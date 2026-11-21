@@ -144,9 +144,11 @@ One scenario is an exception: "the actual previous release remains live
 across an install" cannot run for the first Windows release, which has no
 predecessor. It is recorded as not applicable until the second.
 
-Two scenarios stay required but wait for decisions not yet made on the
-[Windows support map](https://github.com/jackgeek/climon2/issues/205): the
-refusal of a session attaching to itself, and log privacy.
+The refusal of a session attaching to itself keeps its Unix intent, because
+the daemon sets `CLIMON2_SESSION_ID` for the command on Windows too
+([Windows platform and lifecycle contract](windows-lifecycle.md#self-attach-and-nested-sessions)).
+Log privacy stays required but waits for
+[Define secure creation of Windows log and metadata files](https://github.com/jackgeek/climon2/issues/307).
 
 ### Windows-only scenarios
 
@@ -160,6 +162,14 @@ refusal of a session attaching to itself, and log privacy.
 | `WIN-06` | ConPTY files | With `conpty.dll` or `OpenConsole.exe` missing, `exec` exits 125 |
 | `WIN-07` | Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 |
 | `WIN-08` | Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded |
+| `WIN-09` | Ctrl+Break, Windows Terminal model | A program using the default handler ends with `0xC000013A` and the shell survives; the key-up record that accompanies Ctrl+Break never reaches the session as `0x03` |
+| `WIN-10` | Full-width statuses | `0xC000013A`, `259` and `0xFFFFFFFF` pass unchanged through the launcher, the CLI and the client |
+| `WIN-11` | Long working directory | `exec` from a working directory over 260 characters exits 126 |
+
+`WIN-09` to `WIN-11` follow the
+[Windows platform and lifecycle contract](windows-lifecycle.md). Ctrl+Break
+has no VS Code model scenario: that host delivers nothing for it, a documented
+limitation.
 
 ### Monitor and client-library scenarios
 
@@ -175,10 +185,6 @@ inside its sessions run under `pwsh`; the shell subset above does not apply.
 
 A scenario that cannot pass on Windows needs an explicit, documented decision,
 as the exceptions above have.
-
-Ctrl+Break has no scenario yet. Its design is still open in
-[Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
-and its scenarios follow that decision.
 
 ## Manual checklist
 
@@ -225,5 +231,11 @@ evidence records:
 16. Resizing the window re-renders the monitor, and exiting the monitor leaves
     both sessions running.
 
-Signing out or shutting down with a detached session is added as a further
-item only if the lifecycle contract requires it.
+Signing out and shutting down are not checklist items: sessions end with
+them and no status is promised.
+
+**Observation, not an item.** In Windows Terminal with the Store build of
+`pwsh` as the session's shell, start a hidden program
+(`Start-Process -WindowStyle Hidden`), kill the session, and record whether the
+hidden program survived. The contract accepts that it can; the record is
+evidence, not a gate.
