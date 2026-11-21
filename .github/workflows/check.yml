@@ -30,6 +30,11 @@ permissions:
 # macOS test jobs run only while the repository variable CLIMON2_MACOS_TESTS is
 # "on" (Settings > Secrets and variables > Actions > Variables). Off, checks run
 # on Linux and Windows, and macOS only builds its release artifact.
+#
+# The Windows Test job runs unless the repository variable
+# CLIMON2_WINDOWS_TESTS is "off" (docs/windows-quality.md). Off, it still runs
+# for release tags and for changes that `cargo xtask windows-changed` says
+# touch Windows-only code; the neutral job's Windows leg always runs.
 
 # A newer push to the same pull request supersedes its in-progress checks.
 # Main pushes and release calls get a group of their own and are never cancelled.
@@ -98,6 +103,47 @@ jobs:
       - name: Test Unix launcher
         if: runner.os == 'Linux'
         run: cargo test --locked -p climon2-launcher
+  windows-scope:
+    name: Windows scope
+    runs-on: ubuntu-24.04
+    outputs:
+      test: ${{ steps.scope.outputs.test }}
+    env:
+      SWITCH: ${{ vars.CLIMON2_WINDOWS_TESTS }}
+      REF_TYPE: ${{ github.ref_type }}
+      BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.SWITCH == 'off' && env.REF_TYPE != 'tag'
+        with:
+          fetch-depth: 0
+      - id: scope
+        run: |
+          if [[ "$SWITCH" != off || "$REF_TYPE" == tag \
+            || -z "$BASE" || "$BASE" == 0000000000000000000000000000000000000000 ]]; then
+            echo test=true >> "$GITHUB_OUTPUT"
+          else
+            echo "test=$(cargo xtask windows-changed "$BASE")" >> "$GITHUB_OUTPUT"
+          fi
+  windows-test:
+    name: Windows test / windows-2025
+    needs: windows-scope
+    if: needs.windows-scope.outputs.test == 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-2025-test
+      # Every workspace test that builds on Windows so far: the other crates
+      # and climon2-platform's Unix seams stop at compile_error! until their
+      # Windows arms exist.
+      - name: Test the neutral crates
+        run: cargo test --locked -p climon2-core -p climon2-vt
+      - name: Test the platform seams that build on Windows
+        run: cargo test --locked -p climon2-platform --lib --test home_windows
   quality:
     name: macOS-only CRAP and mutation
     # A draft feature/* -> main integration PR re-qualifies every macOS change
