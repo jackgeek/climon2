@@ -176,7 +176,7 @@ fn packages_share_one_version_and_are_not_publishable() {
 fn shipped_targets_have_the_agreed_names_and_libraries() {
     let metadata = metadata();
     for (name, binary) in [
-        ("climon2-launcher", "climon2"),
+        ("climon2-launcher", "c2"),
         ("climon2-cli", "climon2-cli"),
         ("climon2-daemon", "climon2-daemon"),
         ("climon2-client", "climon2-client"),

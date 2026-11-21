@@ -30,17 +30,17 @@ fn only_c0_del_and_c1_are_percent_encoded_per_utf8_byte() {
 
 #[test]
 fn the_default_title_joins_the_application_argv_with_single_spaces() {
-    assert_eq!(default_title(OsStr::new("bash"), &[]), "climon2 exec bash");
+    assert_eq!(default_title(OsStr::new("bash"), &[]), "c2 exec bash");
     assert_eq!(
         default_title(OsStr::new("vim"), &[OsString::from("notes.txt")]),
-        "climon2 exec vim notes.txt"
+        "c2 exec vim notes.txt"
     );
     assert_eq!(
         default_title(
             OsStr::new("my tool"),
             &["a b", "", "日本"].map(OsString::from)
         ),
-        "climon2 exec my tool a b  日本"
+        "c2 exec my tool a b  日本"
     );
     #[cfg(unix)]
     {
@@ -50,7 +50,7 @@ fn the_default_title_joins_the_application_argv_with_single_spaces() {
                 OsStr::from_bytes(b"x\xff"),
                 &[OsStr::from_bytes(b"\xfe!").to_owned()]
             ),
-            "climon2 exec x\u{fffd} \u{fffd}!"
+            "c2 exec x\u{fffd} \u{fffd}!"
         );
     }
 }

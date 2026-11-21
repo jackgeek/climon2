@@ -16,11 +16,11 @@ fn encode_char(character: char) -> String {
     text.bytes().map(|byte| format!("%{byte:02X}")).collect()
 }
 
-/// `climon2 exec <command> <args...>`, converting non-UTF-8 lossily.
+/// `c2 exec <command> <args...>`, converting non-UTF-8 lossily.
 pub fn default_title(command: &OsStr, args: &[OsString]) -> String {
     std::iter::once(command)
         .chain(args.iter().map(OsString::as_os_str))
-        .fold(String::from("climon2 exec"), |mut title, word| {
+        .fold(String::from("c2 exec"), |mut title, word| {
             title.push(' ');
             title.push_str(&word.to_string_lossy());
             title

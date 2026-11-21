@@ -6,7 +6,7 @@ fn vt() -> Vt {
         Geometry::for_host(80, 24).unwrap(),
         VtConfig {
             max_history_rows: 100,
-            default_title: "climon2 exec bash".into(),
+            default_title: "c2 exec bash".into(),
         },
     )
 }
@@ -322,13 +322,13 @@ fn title_stack_and_reset_return_to_earlier_and_default_titles() {
     assert_eq!(feed(&mut vt, b"\x1b[23t").live, b"\x1b]2;one\x1b\\");
     assert_eq!(
         feed(&mut vt, b"\x1bc").live,
-        b"\x1bc\x1b]2;climon2 exec bash\x1b\\"
+        b"\x1bc\x1b]2;c2 exec bash\x1b\\"
     );
     assert_eq!(feed(&mut vt, b"\x1bc").live, b"\x1bc");
     feed(&mut vt, b"\x1b[22t\x1b]2;three\x07");
     assert_eq!(
         feed(&mut vt, b"\x1b[23t").live,
-        b"\x1b]2;climon2 exec bash\x1b\\"
+        b"\x1b]2;c2 exec bash\x1b\\"
     );
 }
 

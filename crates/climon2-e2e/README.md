@@ -132,7 +132,7 @@ scenario, step by step from the threads the contract names: create, submit,
 run, drain, observe, release, snapshot, shutdown and finish, each instance on
 its own owner thread. Requests live in caller memory the host scrambles and
 unmaps as soon as `submit` returns. `passive.rs` registers with real session
-daemons started through the packaged CLI (`climon2 exec` of the generic
+daemons started through the packaged CLI (`c2 exec` of the generic
 fixture, held at points by its `await-file` action) and reads their hello
 `state` to show that a passive connection never acquires control. The Fault
 cases use the host's clearly labelled fake daemon peer, an adversarial
@@ -158,7 +158,7 @@ acknowledge the turn that read it, so each status change happens at an
 exact, hand-computed time. Release archives have no hooks, so those cases
 return early in archive mode. The passive suites leave `status-v1` out of
 their Opens, because a real daemon reports status on its own clock.
-`status.rs` also watches ordinary `climon2 attach` clients acknowledge
+`status.rs` also watches ordinary `c2 attach` clients acknowledge
 attention (#102): the host runs in a thread beside the test's terminals,
 its `await_file` step waits for a file the test creates once a client has
 attached or taken control, and its `touch` step tells the test when to act.
@@ -338,7 +338,7 @@ before it.
 | Scenario | Named test |
 |---|---|
 | STA-07 Library (idle at the daemon's start in every Initial metadata, running at the first sample, needs_attention episode 1 ten seconds later; a fresh instance's Initial metadata keeps that episode and time; the final status only with Command final, completed, no Status after it), CTL-03 Library status case (the same status reaches a passive registration, an attachment revoked by takeover and a background controller) and STA-08 Library (viewing false from a background controller before Ready) | `installed_library_relays_status_to_every_role_and_keeps_its_identity_across_instances` (`status.rs`) |
-| Derived client-executable scenario (#102), STA-08 ordinary-attach case against a real daemon: pending attention stays pending while the session's own ready client only shows it; an explicit `climon2 attach` acknowledges it once ready (same episode); new agent work requests episode 2, which the viewing attached client does not acknowledge; the first client's take-control key acknowledges it once ready | `ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready` (`status.rs`) |
+| Derived client-executable scenario (#102), STA-08 ordinary-attach case against a real daemon: pending attention stays pending while the session's own ready client only shows it; an explicit `c2 attach` acknowledges it once ready (same episode); new agent work requests episode 2, which the viewing attached client does not acknowledge; the first client's take-control key acknowledges it once ready | `ordinary_attach_and_takeover_acknowledge_pending_attention_once_ready` (`status.rs`) |
 | STA-08 Library: viewing true and Acknowledge `not_ready` before Ready, viewing false accepted during restoration; `not_viewing` until viewing true; viewing changed then unchanged; explicit no-change Acknowledge; Status acknowledged (same episode and time) before the changed success, then no change; viewing false leaves the status; `not_controller` after takeover; a new period starts not viewing; accepted Input clears acknowledged attention, its Status first. COM-03 Library: `stale_generation` locally | `installed_library_sets_viewing_and_acknowledges_attention_through_a_real_daemon` (`status.rs`) |
 | COM-03 Library and Fault (viewing and acknowledgement cases): malformed requests `invalid_argument`, queued requests `cancelled` by shutdown; STA-08 Fault: `unsupported_capability` without `status-v1` and `stale_generation`, none sent | `installed_library_rejects_viewing_and_acknowledgement_it_cannot_send` (`status_faults.rs`) |
 | STA-08 Library and Fault and COM-03 Library and Fault: wire bodies sent once; viewing and acknowledgement results mapped, no-change explicit, Status before a changed acknowledgement; daemon rejections (`stale_period`, `stale_restoration`, `not_ready`, `not_viewing`) kept; contradicting or mismatched results `invalid_record`; held answers `timeout` (indeterminate), closed connections no fabricated Response, nothing replayed | `installed_library_maps_viewing_and_acknowledgement_answers_without_replay` (`status_faults.rs`) |
@@ -402,8 +402,7 @@ before it.
 
 ### Monitor (#74, spec #73)
 
-`tests/monitor.rs` drives the installed `c2 monitor`/`m` (and the `climon2`
-spellings) on macOS and Linux, from outer shells that title the host and record
+`tests/monitor.rs` drives the installed `c2 monitor`/`m` on macOS and Linux, from outer shells that title the host and record
 termios around it. Each case checks the documented baseline, exact termios,
 the untouched title, no OSC output and ordinary shell input afterwards. Cases
 that depend on how keystrokes or pastes are read stop the monitor (SIGSTOP):
@@ -417,7 +416,7 @@ earlier run would, so they open on the empty state.
 
 | Scenario | Named packaged test (`tests/monitor.rs`) |
 |---|---|
-| ENT-01 `c2 monitor`, `c2 m`, `climon2 monitor` and `climon2 m` open the same installed monitor through the launcher: top row, empty state, exact host modes, prefix+x exits 0 with the prefix read alone | `installed_monitor_and_m_open_the_same_monitor` |
+| ENT-01 `c2 monitor` and `c2 m` open the same installed monitor through the launcher: top row, empty state, exact host modes, prefix+x exits 0 with the prefix read alone | `installed_monitor_and_m_open_the_same_monitor` |
 | INP-01 configured prefix hint and exit 0, null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits (SIGTERM then gives 143) | `installed_monitor_hints_and_exits_with_the_configured_prefix` |
 | INP-01 null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` |
 | CFG-01 unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings: one diagnostic, 125, no terminal change | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` |
@@ -459,7 +458,7 @@ earlier run would, so they open on the empty state.
 | INP-04 (Fault) revocation, a new restoration and a too-small host in the middle of a paste, and revocation with a prefix pending, discard the rest and the prefix; after the restoration (once ready) and the too-small host (at once) the application gets the end marker (owner decision on #111) | `a_target_change_discards_the_rest_of_a_paste_and_a_pending_prefix` |
 | INP-04 (Fault: disconnect) the selected session's daemon killed with a prefix pending discards the prefix; the next key is no exit and reaches no other session | `a_disconnect_discards_a_pending_prefix` |
 | REC-01 (Fault: transport loss), REC-02 (Fault), COM-03, COM-05, DSC-05 (#116) a fake daemon's lost connection keeps its history read-only under exactly `Reconnecting...` while the retry is scheduled and running; the reconnect shows the placeholder and the new client was sent nothing but its Leave | `a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect` |
-| REC-02, REC-01, HDL-01, COM-06, DSC-05 (#116) a killed daemon's history read-only under `Reconnecting...`, then `Session no longer exists` with retries stopped, the wheel scrolling it; `climon2 kill` leaves a final row selectable read-only with no content, never retried; discovery continues | `killed_and_ended_sessions_stay_read_only_and_are_never_retried` |
+| REC-02, REC-01, HDL-01, COM-06, DSC-05 (#116) a killed daemon's history read-only under `Reconnecting...`, then `Session no longer exists` with retries stopped, the wheel scrolling it; `c2 kill` leaves a final row selectable read-only with no content, never retried; discovery continues | `killed_and_ended_sessions_stay_read_only_and_are_never_retried` |
 | REC-01 (Fault: missing library, repaired installation, permanent rejection, backoff with jitter and cap), LIB-02, DSC-05 (Fault) (#116) | `failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good` |
 | REC-01 (Fault: contained panic), LIB-05 (#116; hooked only) | `a_contained_panic_is_retried_on_its_own_row` |
 | LIM-03 (Monitor, Fault: rejected updates), LIM-01 (Monitor: the model's share of the client budget), REC-01, REC-02 (#119; owner decisions: passive retry, the budget split): at the largest session's mandatory client budget a fake session's model refuses more combining marks than its 16,966,087-byte share holds; the session becomes Unavailable with its accepted lines read-only under `Reconnecting...` and the model's error in the top row, is retried passively to the placeholder, and another session's client goes on | `a_session_over_its_memory_limit_becomes_unavailable_read_only_and_is_retried` |
@@ -495,15 +494,14 @@ Monitor-layer evidence through the packaged CLI on macOS and Linux, in
 `tests/headless.rs` unless noted. The Contract-layer cases are mapped in the
 daemon README. Scripted runs have stdin from `/dev/null` and pipes for
 output, so no terminal is involved; a CLI still running at its deadline is
-killed and reaped and its test fails. Scripted creation uses `c2`; the TTY
-case and every kill use `climon2`, the same installed launcher. Every
+killed and reaped and its test fails. Every run goes through `c2`, the installed launcher. Every
 headless session command ends itself after two minutes, so even a test
 killed before cleaning up cannot leave a session running forever.
 
 | Scenario | Named packaged test |
 |---|---|
 | Confirmed scenario: from a script with no terminal, exactly the full lowercase GUID and a newline, status 0 only once the session is listed `detached` with no client, 80x24 start; HDL-01 command completion with zero clients | `installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x24` |
-| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(climon2 exec --headless …)`; HDL-01 existing `climon2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
+| Confirmed scenario: a terminal on stdin sets the initial size, with stdout captured as in `id=$(c2 exec --headless …)`; HDL-01 existing `c2 kill` ends a headless session | `installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it` |
 | HDL-01 failed creation: 127, 126 and 125 with exec's diagnostics, nothing on stdout, nothing left | `installed_headless_creation_failures_keep_exec_statuses_and_diagnostics` |
 | HDL-01 failed creation and CFG-01 (exec case): an invalid `monitor` section, a wrong type or an out-of-range limit, refused with 125 before any session side effect: nothing on stdout, only the general log written, nothing left | `installed_headless_exec_rejects_an_invalid_monitor_section_before_any_session_side_effect` |
 | HDL-01 creation with an unwritable stdout (owner decision of 2026-11-13): status 0, nothing on stderr, the session keeps running, listed `detached`, until its command completes | `installed_headless_exec_that_cannot_print_the_guid_leaves_the_session_running` |

@@ -45,13 +45,13 @@ fn climon2_with(
     cols: u16,
     options: Options,
 ) -> Terminal {
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.args(args);
     Terminal::spawn_with(command, rows, cols, options).unwrap()
 }
 
 fn exec_bash(package: &Package, bash: &Path) -> Terminal {
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.arg("exec");
     command.arg(bash);
     command.args(["--noprofile", "--norc", "-i"]);
@@ -236,7 +236,7 @@ fn installed_session_after_vim_keeps_outer_shell_input_below_restored_output() {
     terminal.wait_for_input_ready(TIMEOUT).unwrap();
     terminal
         .send(format!(
-            "printf 'OUTER-HISTORY\\n'; PS1='INNER> ' climon2 exec {} --noprofile --norc -i; printf 'OUTER-%s\\n' RETURN\n",
+            "printf 'OUTER-HISTORY\\n'; PS1='INNER> ' c2 exec {} --noprofile --norc -i; printf 'OUTER-%s\\n' RETURN\n",
             quote(&bash)
         ))
         .unwrap();
@@ -517,7 +517,7 @@ fn installed_self_attach_is_refused_without_disturbing_the_session() {
     let mut terminal = exec_bash(&package, &bash);
     prove_readiness(&mut terminal, "first");
     terminal
-        .send("climon2 attach \"$CLIMON2_SESSION_ID\"; echo SELF-STATUS=$?\n")
+        .send("c2 attach \"$CLIMON2_SESSION_ID\"; echo SELF-STATUS=$?\n")
         .unwrap();
     terminal.wait_for_text("SELF-STATUS=125", TIMEOUT).unwrap();
     assert!(terminal.screen().contains("climon2: error:"));
@@ -542,7 +542,7 @@ fn installed_invalid_config_is_refused_before_a_session_exists() {
     };
     let package = Package::new();
     configure(&package, r#"{"client": {"take_control_key": "Ctrl+["}}"#);
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.arg("exec");
     command.arg(&bash);
     command.args(["-c", "echo SHOULD-NOT-RUN"]);
@@ -693,7 +693,7 @@ fn installed_session_answers_queries_without_the_host() {
         replies: false,
         ..Options::default()
     };
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.arg("exec");
     command.arg(&bash);
     command.args(["--noprofile", "--norc", "-i"]);
@@ -757,7 +757,7 @@ fn installed_titles_are_encoded_and_links_are_plain_text() {
     };
     let package = Package::new();
     let mut first = exec_bash(&package, &bash);
-    let default = format!("climon2 exec {} --noprofile --norc -i", bash.display());
+    let default = format!("c2 exec {} --noprofile --norc -i", bash.display());
     assert_eq!(first.title().as_deref(), Some(default.as_str()));
     prove_readiness(&mut first, "first");
     first
@@ -870,7 +870,7 @@ fn installed_client_releases_the_host_on_every_ending() {
     let package = Package::new();
     let home = package.isolation.home().to_owned();
     let tui = script(&package, &bash, "tui.sh", &[ACKNOWLEDGER, TUI].concat());
-    let exec = |base: &Path| format!("climon2 exec {} {}", quote(&tui), quote(base));
+    let exec = |base: &Path| format!("c2 exec {} {}", quote(&tui), quote(base));
     let ready = |terminal: &mut Terminal| {
         terminal.wait_for_text("TUI-READY", TIMEOUT).unwrap();
         terminal.wait_for_input_ready(TIMEOUT).unwrap();
@@ -1106,7 +1106,7 @@ fn installed_large_restoration_is_complete_and_ordered() {
         history: 100_000,
         ..Options::default()
     };
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.args(["attach", &id]);
     let mut second = Terminal::spawn_with(command, ROWS, 80, options).unwrap();
     fs::write(package.isolation.home().join("live"), "").unwrap();

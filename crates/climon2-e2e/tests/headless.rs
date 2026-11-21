@@ -137,8 +137,7 @@ fn installed_headless_exec_from_a_script_prints_only_the_guid_and_starts_at_80x2
 }
 
 /// Confirmed scenario (headless TTY size) and HDL-01 (Monitor layer), Kill case:
-/// as in the README's `id=$(c2 exec --headless …)`, here spelled
-/// `climon2 exec --headless`, stdin is a terminal and stdout is not. The
+/// as in the README's `id=$(c2 exec --headless …)`, stdin is a terminal and stdout is not. The
 /// session starts at the stdin terminal's size, the GUID and its newline are
 /// the only output, and existing CLI kill ends the headless session.
 #[test]
@@ -147,7 +146,7 @@ fn installed_headless_exec_from_a_terminal_starts_at_its_size_and_kill_ends_it()
     let mut command = package.command("/bin/bash");
     command.args([
         "-c",
-        r#"climon2 exec --headless /bin/bash -c "$1" > "$HOME/id""#,
+        r#"c2 exec --headless /bin/bash -c "$1" > "$HOME/id""#,
         "headless",
         &size_then_hold(),
     ]);

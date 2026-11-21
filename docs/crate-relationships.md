@@ -43,7 +43,7 @@ flowchart TB
 
 | Crate | Purpose |
 | --- | --- |
-| `climon2-launcher` | The `climon2` executable that `c2` links to. It reads the install home's `current` version and hands off to that version's `climon2-cli`. |
+| `climon2-launcher` | The `c2` executable, the command users type. It reads the install home's `current` version and hands off to that version's `climon2-cli`. |
 | `climon2-cli` | The `climon2-cli` executable behind every `c2` command: `exec`, `attach`, `kill`, `list` and `monitor`. It orchestrates startup and talks to other executables only through their contracts. |
 | `climon2-client` | The version-matched, byte-transparent terminal [client](../GLOSSARY.md#sessions) that connects a terminal to one session daemon ([ADR 0001](adr/0001-version-matched-client-and-frozen-hello.md)), and the client library the monitor loads for each session. |
 | `climon2-daemon` | The session daemon: it owns one session's PTY and output pump, so clients never own terminal handles. |

@@ -530,10 +530,10 @@ fn await_host(path: &Path) {
     }
 }
 
-/// An ordinary `climon2 attach` client of session `id` at the session's own
+/// An ordinary `c2 attach` client of session `id` at the session's own
 /// 120x30, so attaching never resizes the session.
 fn ordinary_attach(package: &Package, id: &str) -> Terminal {
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.args(["attach", id]);
     Terminal::spawn(command, 30, 120).unwrap()
 }
@@ -542,7 +542,7 @@ fn ordinary_attach(package: &Package, id: &str) -> Terminal {
 /// acknowledgement, #102), STA-08 ordinary-attach case against a real
 /// daemon, watched by a passive library instance: pending attention
 /// (episode 1) stays pending while the session's own ready client merely
-/// shows it; an explicit `climon2 attach` moves it to acknowledged, same
+/// shows it; an explicit `c2 attach` moves it to acknowledged, same
 /// episode, once that client is ready; new agent work then requests
 /// attention again (episode 2), which the attached client, viewing, does
 /// not acknowledge; the first client's take-control key (a takeover) then

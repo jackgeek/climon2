@@ -257,7 +257,7 @@ jobs:
           cp target/dist/* "$assets/"
           HOME="$home" TMPDIR="$downloads" CLIMON2_RELEASE_BASE_URL="file://$releases" \
             /bin/bash target/dist/install.sh
-          "$home/.local/share/climon2/climon2" --version
+          "$home/.local/share/climon2/c2" --version
       - name: Obtain the actual previous release when one exists
         env:
           GH_TOKEN: ${{ github.token }}

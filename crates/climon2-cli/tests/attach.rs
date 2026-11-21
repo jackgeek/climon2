@@ -116,7 +116,7 @@ fn current(metadata: &SessionMetadata) -> Frame {
     advertise_revision1(&reply(metadata), state, &Advertisement::new([], limits)).unwrap()
 }
 
-/// Runs `climon2 attach` in a terminal and returns its status and screen.
+/// Runs `c2 attach` in a terminal and returns its status and screen.
 fn attach_in_terminal(
     isolation: &Isolation,
     cli: &Path,
@@ -213,7 +213,7 @@ fn attach_needs_a_terminal() {
         .unwrap();
     assert_eq!(output.status.code(), Some(125));
     let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("climon2 attach needs a terminal"), "{error}");
+    assert!(error.contains("c2 attach needs a terminal"), "{error}");
     drop(session);
     isolation.assert_clean();
 }
@@ -243,7 +243,7 @@ fn a_session_of_an_uninstalled_version_names_that_version() {
     isolation.assert_clean();
 }
 
-/// `climon2 kill` without a terminal: (status, stdout, stderr).
+/// `c2 kill` without a terminal: (status, stdout, stderr).
 fn kill(isolation: &Isolation, cli: &Path, selector: &str) -> (i32, String, String) {
     let output = std::process::Command::new(cli)
         .env_clear()

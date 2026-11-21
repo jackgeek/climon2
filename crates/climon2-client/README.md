@@ -126,7 +126,7 @@ a take-control key is configured, `Press <key> to take control`. It is redrawn
 on resize. That key takes control; observer input is never sent. The escape
 prefix (default Ctrl+]) followed by `d` requests an explicit detach (Leave)
 from either role; after a confirmed Leave of the attachment the client prints
-`climon2: detached from session <id>; reattach with: climon2 attach <id>` on the
+`climon2: detached from session <id>; reattach with: c2 attach <id>` on the
 restored terminal and returns 0. Bracketed paste spanning a role change is
 discarded through its closing marker, never replayed or read as keys.
 
@@ -666,7 +666,7 @@ writes by hand from the wire reference:
 | COM-01 Fault, executable case: a daemon of this release without daemon wire revision 1 is refused before any request | `kill_needs_daemon_wire_revision_1_and_never_sends_a_request_without_it` |
 | COM-01 Fault (Kill parity), executable case: SIGTERM while waiting is status 143 at once, silently | `a_signal_while_waiting_for_confirmation_is_the_signal_status` |
 
-Against real daemons, `climon2 kill` through the CLI and the packaged
+Against real daemons, `c2 kill` through the CLI and the packaged
 launcher is unchanged: `kill_terminates_a_detached_session_silently_after_cleanup`,
 `kill_while_attached_gives_the_client_the_signal_status` and
 `an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper`

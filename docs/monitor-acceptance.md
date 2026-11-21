@@ -36,7 +36,7 @@ viewing and acknowledgement
 ([#95](https://github.com/jackgeek/climon2/issues/95)), and Command final and
 Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
 which the monitor loads (#106); the client executable loads its own release's
-library for `climon2 kill`
+library for `c2 kill`
 ([#100](https://github.com/jackgeek/climon2/issues/100)), the LIB-01 and LIB-02
 executable cases, and for ordinary attach
 ([#101](https://github.com/jackgeek/climon2/issues/101)), the COM-01 Monitor
@@ -124,7 +124,7 @@ and [selection lifetime](monitor-lifecycle.md#monitor-and-selection-lifetime).
 
 | ID | Setup and action | Required observable result | Layers |
 |---|---|---|---|
-| ENT-01 | Start `c2 monitor`, `c2 m`, `climon2 monitor` and `climon2 m` from an installed release with equivalent settings and sessions. | All open the same real monitor behavior; the launcher/install route is exercised, not a renderer fixture. | Monitor |
+| ENT-01 | Start `c2 monitor` and `c2 m` from an installed release with equivalent settings and sessions. | All open the same real monitor behavior; the launcher/install route is exercised, not a renderer fixture. | Monitor |
 | DSC-01 | Start with sessions having distinct creation times, effective statuses, change times and tied values; delay passive metadata. | Starts are bounded newest-created-first with ascending full [session ID](../GLOSSARY.md#protocol-and-plugin-concepts) ties. Initial selection is the first eligible status/time row after bounded collection, not newest-created or first-connected; uncertainty is explicit. | Contract, Monitor |
 | DSC-02 | Initially stall newer sessions or one release, then let work progress. | Older sessions/other releases get fair first-start progress; selector and exit remain responsive. Every live session is scheduled, never silently capped or omitted. | Monitor, Fault |
 | DSC-03 | Start empty, add sessions continuously while the selector/placeholder/live display is active, and request discovery during a pass. | Immediate initial discovery; subsequent pass starts one second after completion, without overlap. New sessions get passive clients automatically; starting/retained clients are reused, and selection does not move. | Contract, Monitor |

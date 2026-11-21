@@ -52,7 +52,7 @@ fn install_release(package: &Package, version: &str, daemon: &Path, library: &Pa
     let staged = package.isolation.home().join(format!("release {version}"));
     let folder = staged.join(version);
     fs::create_dir_all(&folder).unwrap();
-    copy_executable(&installed.join("climon2"), &staged.join("climon2"));
+    copy_executable(&installed.join("c2"), &staged.join("c2"));
     for name in climon2_install::version_files() {
         let source = match name.as_str() {
             LIBRARY => library.to_owned(),

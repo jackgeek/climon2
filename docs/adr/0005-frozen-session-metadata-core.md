@@ -1,6 +1,6 @@
 # Frozen session metadata core
 
-In the current implementation, apart from the [hello handshake](../../GLOSSARY.md#sessions), [session metadata](../../GLOSSARY.md#sessions) is the only data read across climon2 versions (ADR 0001). Any version of `climon2 list` must read every version's metadata to show, probe and clean up [sessions](../../GLOSSARY.md#sessions), and the CLI uses it to find the version-matched [client](../../GLOSSARY.md#sessions). So the location and all eleven fields are frozen forever: their names, [JSON](../protocol/TERMS.md#json) types and meanings. The format may only grow. Readers ignore unknown fields and accept any `format_version` of 1 or higher. The version number only tells a reader which of the later, optional fields to expect.
+In the current implementation, apart from the [hello handshake](../../GLOSSARY.md#sessions), [session metadata](../../GLOSSARY.md#sessions) is the only data read across climon2 versions (ADR 0001). Any version of `c2 list` must read every version's metadata to show, probe and clean up [sessions](../../GLOSSARY.md#sessions), and the CLI uses it to find the version-matched [client](../../GLOSSARY.md#sessions). So the location and all eleven fields are frozen forever: their names, [JSON](../protocol/TERMS.md#json) types and meanings. The format may only grow. Readers ignore unknown fields and accept any `format_version` of 1 or higher. The version number only tells a reader which of the later, optional fields to expect.
 
 ## Frozen layout
 

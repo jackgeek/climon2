@@ -158,9 +158,9 @@ impl User {
         ]
     }
 
-    /// The installed `climon2` with `args`, for a terminal.
+    /// The installed `c2` with `args`, for a terminal.
     pub fn terminal_command(&self, args: &[&str]) -> CommandBuilder {
-        let mut command = CommandBuilder::new(self.executables.join("climon2"));
+        let mut command = CommandBuilder::new(self.executables.join("c2"));
         command.env_clear();
         command.cwd(self.home());
         for (name, value) in self.environment() {
@@ -170,9 +170,9 @@ impl User {
         command
     }
 
-    /// The installed `climon2` with `args`, as a script runs it.
+    /// The installed `c2` with `args`, as a script runs it.
     fn script(&self, args: &[&OsStr]) -> Command {
-        let mut command = Command::new(self.executables.join("climon2"));
+        let mut command = Command::new(self.executables.join("c2"));
         command
             .args(args)
             .env_clear()
@@ -184,7 +184,7 @@ impl User {
         command
     }
 
-    /// The installed `climon2` with `args`, as a script runs it; its
+    /// The installed `c2` with `args`, as a script runs it; its
     /// standard output once it exits successfully within its bound.
     pub fn cli(&self, args: &[&OsStr]) -> io::Result<String> {
         let mut command = self.script(args);
@@ -241,9 +241,9 @@ impl User {
         })
     }
 
-    /// Ends every session it started, by `climon2 kill`, and any daemon
+    /// Ends every session it started, by `c2 kill`, and any daemon
     /// that outlives that.
-    /// Every `climon2 kill` runs at once: each waits out the session's
+    /// Every `c2 kill` runs at once: each waits out the session's
     /// hang-up grace.
     pub fn end(&self, sessions: &[Session]) {
         let kills: Vec<_> = sessions

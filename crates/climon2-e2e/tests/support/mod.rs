@@ -50,7 +50,7 @@ impl Installed {
             assert_eq!(version, VERSION, "archive and workspace versions differ");
             run_installer(&payload, &installed.home());
         } else {
-            let binary = bin_path("climon2");
+            let binary = bin_path("c2");
             let payload = Payload::from_siblings(binary.parent().unwrap(), VERSION).unwrap();
             install(&payload, &installed.home()).unwrap();
         }
@@ -182,7 +182,7 @@ impl Package {
     }
 
     pub fn list(&self) -> Vec<Value> {
-        self.list_with_program("climon2")
+        self.list_with_program("c2")
     }
 
     pub fn list_with_version(&self, version: &str) -> Vec<Value> {
@@ -283,7 +283,7 @@ impl Drop for Package {
                 nix::sys::signal::Signal::SIGKILL,
             );
         }
-        let mut command = self.command("climon2");
+        let mut command = self.command("c2");
         command.arg("list");
         if let Ok(mut terminal) = Terminal::spawn(command, 30, 120) {
             let _ = terminal.wait_exit(TIMEOUT);
@@ -465,18 +465,18 @@ pub fn detach(terminal: &mut Terminal, id: &str) {
     );
     terminal
         .wait_for_bytes(
-            format!("climon2: detached from session {id}; reattach with: climon2 attach {id}")
+            format!("climon2: detached from session {id}; reattach with: c2 attach {id}")
                 .as_bytes(),
             TIMEOUT,
         )
         .unwrap();
 }
 
-/// `climon2 kill <id>` from a script: silent and status 0, which it returns
+/// `c2 kill <id>` from a script: silent and status 0, which it returns
 /// only once the session has ended and is cleaned up.
 #[allow(dead_code)]
 pub fn kill_session(package: &Package, id: &str) {
-    let output = scripted(package, "climon2", &["kill", id]);
+    let output = scripted(package, "c2", &["kill", id]);
     assert_eq!(
         (
             output.status.code(),
@@ -513,7 +513,7 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
     version.parse::<climon2_core::VersionName>().unwrap();
     let expected = [
         format!("{root}/install"),
-        format!("{root}/climon2"),
+        format!("{root}/c2"),
         format!("{root}/{version}/climon2-cli"),
         format!("{root}/{version}/climon2-daemon"),
         format!("{root}/{version}/climon2-client"),

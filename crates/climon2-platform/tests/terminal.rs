@@ -161,10 +161,7 @@ fn owned_terminal_fixture() {
             if accepted {
                 result.unwrap();
             } else {
-                assert_eq!(
-                    result.unwrap_err().to_string(),
-                    "climon2 exec needs a terminal"
-                );
+                assert_eq!(result.unwrap_err().to_string(), "c2 exec needs a terminal");
             }
         }
         _ => unreachable!(),
