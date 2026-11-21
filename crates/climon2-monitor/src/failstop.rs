@@ -71,8 +71,8 @@ pub(crate) fn stop(error: &io::Error, log: &Path) -> ! {
     exit()
 }
 
+/// The monitor's own output is flushed and its general log unbuffered, so
+/// halting loses nothing.
 fn exit() -> ! {
-    // SAFETY: `_exit` only ends the process; the monitor's own output is
-    // flushed and its general log unbuffered.
-    unsafe { libc::_exit(CLIMON2_ERROR as i32) }
+    climon2_platform::halt::halt(CLIMON2_ERROR as i32)
 }

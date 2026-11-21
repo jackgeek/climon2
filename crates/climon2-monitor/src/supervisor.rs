@@ -67,7 +67,11 @@ use climon2_core::{
     metadata::SessionMetadata,
     native,
 };
-use climon2_platform::library::{Failure, Functions};
+use climon2_platform::{
+    descriptors,
+    library::{Failure, Functions},
+    notification,
+};
 use owner::StartupData;
 use queue::{Condition, Entry, Lane, Queue};
 use std::{
@@ -1165,7 +1169,7 @@ impl State {
         let admission = &self.context.admission;
         Capacity {
             bytes: admission.total_bytes.saturating_sub(self.context.outside),
-            descriptors: descriptor_limit().saturating_sub(admission.descriptor_headroom.into()),
+            descriptors: descriptors::limit().saturating_sub(admission.descriptor_headroom.into()),
         }
     }
 
@@ -1496,19 +1500,13 @@ impl State {
     /// congested, then drains each of those; a congested one is failed once
     /// its congestion outlasts `deadlines.delivery_stall_ms` (#119).
     fn poll(&mut self) {
-        let mut table: Vec<_> = self
+        let descriptors: Vec<_> = self
             .instances
             .iter()
             .filter(|(id, _)| !self.throttled(id))
             .filter_map(|(_, instance)| instance.phase.live()?.descriptor)
-            .map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                // Output only.
-                revents: Default::default(),
-            })
             .collect();
-        wait(&mut table);
+        notification::wait(&descriptors, TICK_MILLISECONDS);
         let live: Vec<_> = self
             .instances
             .iter()
@@ -1943,38 +1941,9 @@ fn waiting(condition: Option<Condition>) -> ClientEvent {
     }
 }
 
-/// The operating system's soft limit on this process's descriptors, read
-/// afresh so that a raised limit admits more. A limit that cannot be read
-/// reads as none left, so nothing more is admitted.
-fn descriptor_limit() -> u64 {
-    let mut limit = libc::rlimit {
-        rlim_cur: u64::MIN,
-        rlim_max: u64::MIN,
-    };
-    // SAFETY: getrlimit writes only `limit`.
-    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
-    limit.rlim_cur
-}
-
 /// A thread stack of `bytes`, saturating.
 fn stack(bytes: u64) -> usize {
     usize::try_from(bytes).unwrap_or(usize::MAX)
-}
-
-/// Waits one tick for any of `table`'s descriptors, or simply one tick.
-fn wait(table: &mut [libc::pollfd]) {
-    if table.is_empty() {
-        thread::sleep(Duration::from_millis(TICK_MILLISECONDS as u64));
-        return;
-    }
-    // SAFETY: poll reads and updates exactly `table`'s entries.
-    unsafe {
-        libc::poll(
-            table.as_mut_ptr(),
-            table.len() as libc::nfds_t,
-            TICK_MILLISECONDS,
-        )
-    };
 }
 
 #[cfg(test)]

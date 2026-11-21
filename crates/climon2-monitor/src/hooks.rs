@@ -15,13 +15,13 @@ pub(crate) fn fail(point: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// The `poll` fault gives the kernel no descriptor table to wait on, so the
-/// wait for host input itself fails.
-pub(crate) fn poll_table(table: *mut libc::pollfd) -> *mut libc::pollfd {
+/// The `poll` fault fails the wait for host input as the kernel fails a
+/// wait given no descriptor table: `EFAULT`, 14 on Linux and macOS.
+pub(crate) fn fail_wait() -> io::Result<()> {
     if selected("poll") {
-        return std::ptr::null_mut();
+        return Err(io::Error::from_raw_os_error(14));
     }
-    table
+    Ok(())
 }
 
 /// The monitor's identifiers starting where `CLIMON2_MONITOR_FIRST_GENERATION`
