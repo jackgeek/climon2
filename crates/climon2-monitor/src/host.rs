@@ -1,12 +1,16 @@
 //! The host terminal while the monitor owns it, through the platform terminal
 //! seam: termios and signals there, the monitor's own modes here.
 use climon2_core::protocol::TerminalSize;
-use climon2_platform::terminal::{self, RawModeGuard, Signals};
+use climon2_platform::{
+    terminal::{self, RawModeGuard, Signals},
+    waiting::{self, Interest, Watch},
+};
 use climon2_vt::Presentation;
 use std::{
     fs::File,
     io::{self, Read, Write},
-    os::fd::AsRawFd,
+    os::fd::AsFd,
+    time::Duration,
 };
 
 /// The monitor's own alternate screen, saving the shell's cursor, then
@@ -16,7 +20,7 @@ const ENTER: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x
 /// Leaves the alternate screen, restoring the shell's cursor.
 const LEAVE: &[u8] = b"\x1b[?1049l";
 /// How long one wait for host input lasts before signals are checked again.
-const TICK_MILLISECONDS: i32 = 20;
+const TICK: Duration = Duration::from_millis(20);
 const READ_BYTES: usize = 4096;
 
 /// Why the monitor leaves through its clean path.
@@ -121,18 +125,14 @@ impl Host {
     /// Waits one tick for input. A wait that a signal interrupts finds none,
     /// and the caller checks signals before waiting again.
     fn readable(&self) -> io::Result<bool> {
-        let mut descriptor = libc::pollfd {
-            fd: self.input.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: Default::default(),
-        };
-        let table: *mut libc::pollfd = &mut descriptor;
+        let mut watches = [Watch::new(self.input.as_fd(), Interest::Read)];
         #[cfg(feature = "test-hooks")]
-        let table = crate::hooks::poll_table(table);
-        // poll reads and updates at most the one descriptor at `table`.
-        match unsafe { libc::poll(table, 1, TICK_MILLISECONDS) } {
-            -1 => interrupted(io::Error::last_os_error()),
-            _ => Ok(descriptor.revents != 0),
+        if let Err(error) = crate::hooks::wait_failure() {
+            return interrupted(error);
+        }
+        match waiting::wait(&mut watches, TICK) {
+            Err(error) => interrupted(error),
+            Ok(_) => Ok(watches[0].ready()),
         }
     }
 
@@ -163,10 +163,10 @@ fn interrupted(error: io::Error) -> io::Result<bool> {
 /// EIO while it is still hanging the terminal up, so a read failing with EIO
 /// is the end of host input too. Any other failure stays as it is.
 fn end_on_eio(error: io::Error) -> io::Result<usize> {
-    match error.raw_os_error() {
-        Some(libc::EIO) => Ok(0),
-        _ => Err(error),
+    if terminal::hung_up(&error) {
+        return Ok(0);
     }
+    Err(error)
 }
 
 /// The monitor owns the host output: nothing else writes to stdout.

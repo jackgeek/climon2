@@ -1018,7 +1018,8 @@ fn assert_diagnosed_after_release(terminal: &mut Terminal, diagnostic: &str) {
 /// monitor at once instead of spinning: it leaves its alternate screen and
 /// restores the baseline and exact termios, then prints one diagnostic, and
 /// exits with the climon2 error code. Only hook-enabled debug siblings inject
-/// it, by giving the kernel no descriptor table to poll (EFAULT).
+/// it, by failing the wait as the kernel fails one given no descriptor table
+/// (EFAULT).
 #[test]
 fn debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic() {
     if env::var_os("CLIMON2_E2E_ARCHIVE").is_some() {
