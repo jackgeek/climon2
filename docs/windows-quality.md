@@ -131,7 +131,8 @@ Windows behaviour. Each is an ordinary test in the Test job:
 - the error codes for connecting to a missing socket path and a stale one, and
   for deleting a socket whose listener is alive;
 - the runtime directory's access control denying a second, non-administrator
-  account, which the job creates;
+  account, which the job creates; the same account is also denied opening a
+  session log, a metadata file and the `logs` folder;
 - the Authenticode signatures of the bundled `conpty.dll` and
   `OpenConsole.exe`;
 - binding the runtime directory on the runner's real `%LOCALAPPDATA%` volume.
