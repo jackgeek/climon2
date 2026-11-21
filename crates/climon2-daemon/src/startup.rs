@@ -1,10 +1,11 @@
 use crate::args::Options;
 use climon2_core::metadata::{DisplayCommand, SessionMetadata};
-use climon2_platform::{logging, private_file, process, runtime};
+use climon2_platform::{logging, process, runtime};
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     io::{self, Write},
     num::NonZeroU32,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
 };
 
@@ -93,9 +94,14 @@ impl Resources {
         self.listener.take().expect("session listener is present")
     }
     fn create_metadata_file(&mut self) -> io::Result<std::fs::File> {
-        let file = private_file::create_new(&self.temporary)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&self.temporary)?;
         self.temporary_owned = true;
-        private_file::restrict(&file)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         Ok(file)
     }
 }

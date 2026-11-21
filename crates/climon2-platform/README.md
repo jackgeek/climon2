@@ -107,15 +107,11 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
   unregistered on drop; no terminal operations run in signal handlers.
 
-## Private files
+## Nonblocking files
 
 - `nonblocking::set(&File)` makes a file nonblocking for good; the daemon
   uses it on its duplicate of the PTY master. `Nonblocking` instead restores
   the flags when dropped.
-- `private_file::create_new(&Path)` creates a file for writing with mode 0600
-  and `O_NOFOLLOW`, failing if anything is already there;
-  `restrict(&File)` sets mode 0600 whatever the umask kept. The daemon
-  publishes session metadata through them.
 
 ## Client libraries
 

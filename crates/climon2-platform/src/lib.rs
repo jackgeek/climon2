@@ -7,7 +7,6 @@ pub mod logging;
 pub mod nonblocking;
 pub mod peer;
 pub mod presentation;
-pub mod private_file;
 pub mod process;
 pub mod pty;
 pub mod read_end;
