@@ -69,7 +69,7 @@ Attach discovers live sessions and resolves an exact ID or unique prefix (1 to
 32 hex digits; none or several matches is 125). It then requires the daemon's
 `attach` and `client-startup-v1` capabilities, refuses self-attachment
 (`cannot attach to the current session`) and non-TTY use
-(`climon2 attach needs a terminal`), validates only the `client` configuration,
+(`c2 attach needs a terminal`), validates only the `client` configuration,
 and replaces the CLI with the version-matched client carrying an `attach`
 envelope, overwriting any inherited one.
 
@@ -143,8 +143,7 @@ its scenario table is in that crate's README.
 The monitor acceptance-matrix cases proven here are listed under
 [Specification mapping](#specification-mapping).
 
-The `monitor`/`m` hand-off is proven through the installed launcher, as `c2`
-and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
+The `monitor`/`m` hand-off is proven through the installed launcher, `c2`, by `climon2-e2e` `tests/monitor.rs`:
 `installed_monitor_and_m_open_the_same_monitor` (ENT-01),
 `installed_monitor_arguments_are_a_usage_error` (derived argument refusal) and
 `missing_installed_monitor_fails_naming_its_version`.

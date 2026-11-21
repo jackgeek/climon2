@@ -5,11 +5,11 @@ use std::str::FromStr;
 /// A session's lifetime policy: whether it is an ordinary or a headless session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifetime {
-    /// `climon2 exec`: the leave policy ends the session when nothing attaches
+    /// `c2 exec`: the leave policy ends the session when nothing attaches
     /// within five seconds of readiness, or when its last attachment is lost
     /// without a detach.
     Ordinary,
-    /// `climon2 exec --headless`: the session survives with zero clients until
+    /// `c2 exec --headless`: the session survives with zero clients until
     /// its command completes or it is killed.
     Headless,
 }

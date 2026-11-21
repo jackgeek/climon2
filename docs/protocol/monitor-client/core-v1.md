@@ -14,8 +14,8 @@ measurements, counters, limits and deadlines
 the bootstrap and description before create by the shared loader
 ([#84](https://github.com/jackgeek/climon2/issues/84)).** The
 shipped [client library](../../../GLOSSARY.md#sessions)
-(`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux)
-returns revision 1's description and rejects other revisions as specified
+(`libclimon2_client.dylib` on macOS, `libclimon2_client.so` on Linux, and,
+agreed but not implemented, `climon2_client.dll` on Windows) returns revision 1's description and rejects other revisions as specified
 below. Its requirements are provisional bounded values
 until [#121](https://github.com/jackgeek/climon2/issues/121) records qualified
 ones. All eleven [function-table](../TERMS.md#function-table) calls follow
@@ -56,7 +56,9 @@ Read the [overview](../README.md), [domain glossary](../../../GLOSSARY.md),
 ## Representation and compatibility
 
 Revision 1 targets the supported platform C calling conventions (macOS arm64
-and x86_64, and x86-64 GNU/Linux), with 64-bit pointers, natural alignment and
+and x86_64, x86-64 GNU/Linux, and x86-64 Windows MSVC under the Microsoft x64
+convention, agreed but not implemented on
+[#216](https://github.com/jackgeek/climon2/issues/216)), with 64-bit pointers, natural alignment and
 no packing. All calls use the platform C calling convention. No Rust layouts,
 C enums, `bool`, `size_t`, variadic calls, callbacks or unwinding cross this
 interface.
@@ -122,7 +124,7 @@ lengths cannot make invalid native addresses or wrong-library handles safe.
 | `cm1_tokens` | Counted `cm1_bytes` array of nonempty case-sensitive tokens. Unique; required/optional lists disjoint. |
 | `cm1_guid` | 16 [GUID](../TERMS.md#guid) bytes in canonical textual order: `00112233-4455-6677-8899-aabbccddeeff` becomes `00 11 22 ... ff`, without host-endian UUID field swapping. |
 | `cm1_utc` | Exactly 24 [ASCII](../TERMS.md#ascii) bytes, valid [UTC](../TERMS.md#utc) `YYYY-MM-DDTHH:MM:SS.mmmZ`, real calendar date and seconds 00..59. No trailing NUL. Preserve daemon-stored effective-change time, not receipt time. |
-| `cm1_path` | `encoding=CM1_NATIVE_UNIX`; absolute, nonempty length-delimited native Unix bytes starting `/`, without NUL. Invalid UTF-8 is preserved. Other encodings reject. |
+| `cm1_path` | On Unix, `encoding=CM1_NATIVE_UNIX`; absolute, nonempty length-delimited native Unix bytes starting `/`, without NUL. Invalid UTF-8 is preserved. On Windows (agreed, not implemented), `encoding=CM1_NATIVE_WINDOWS`; absolute drive-letter or UNC path as nonempty UTF-16LE code units, so an even byte length, without NUL and without a required `\\?\` prefix. Unpaired surrogates are preserved. Each platform rejects every other encoding. |
 | `cm1_geometry` | Positive `uint32_t` columns/rows, not pixels. Supported sizing/clamping remains with the terminal/operational contracts. |
 | `cm1_authority` | Nonzero generation, period and restoration ID. Never substitute one identity for another. |
 | `cm1_optional_text` / `cm1_optional_path` / `cm1_optional_command` | `present` is 0/1. Absent value is inactive and ignored; present value follows its own constraints. A present empty text is valid. |
@@ -249,7 +251,15 @@ Release resources count once and remain until exit.
 Each platform's library reports that platform's qualified requirements. On
 Linux the [notification descriptor](../TERMS.md#pollable-notification-descriptor) is one `eventfd`, created close-on-exec and
 nonblocking; it stays readable until the library clears it and counts once in
-`instance_descriptors`.
+`instance_descriptors`. On Windows (agreed, not implemented,
+[#216](https://github.com/jackgeek/climon2/issues/216)) it is one unnamed,
+non-inheritable manual-reset event per instance. The library sets it while
+there is work or closure to observe and resets it when drained, so it is
+level-triggered like the `eventfd`, and it counts once in
+`instance_descriptors`. Its `HANDLE` travels in the same `int32_t` output:
+64-bit Windows kernel handles have only 32 significant bits, and the caller
+sign-extends the value back to a `HANDLE` ([ADR 0008](../../adr/0008-windows-notification-handle-in-int32.md)). The caller waits on it, never sets,
+resets or closes it.
 
 `snapshot` supplies bounded nonblocking current/peak instance and shared-release
 allocation, queue-byte measurements, record/delivery/operation/worker/descriptor

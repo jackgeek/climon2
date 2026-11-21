@@ -41,7 +41,7 @@ impl Layout {
         ));
         fs::create_dir_all(&root).unwrap();
         write_executable(|| {
-            fs::copy(env!("CARGO_BIN_EXE_climon2"), root.join("climon2")).unwrap();
+            fs::copy(env!("CARGO_BIN_EXE_c2"), root.join("c2")).unwrap();
         });
         Self(root)
     }
@@ -57,7 +57,7 @@ impl Layout {
     }
 
     fn launch(&self) -> Command {
-        let mut command = Command::new(self.0.join("climon2"));
+        let mut command = Command::new(self.0.join("c2"));
         command.env_clear().env("HOME", &self.0);
         preserve_instrumentation(&mut command);
         command
@@ -182,7 +182,7 @@ fn symlinked_launcher_uses_own_canonical_home_and_exec_preserves_signal() {
     fs::write(layout.0.join("current"), "0.0.0-a-0.1+000.build-x").unwrap();
     let elsewhere = layout.0.join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
-    symlink(layout.0.join("climon2"), elsewhere.join("linked")).unwrap();
+    symlink(layout.0.join("c2"), elsewhere.join("linked")).unwrap();
     let mut command = Command::new(elsewhere.join("linked"));
     command.env_clear();
     preserve_instrumentation(&mut command);

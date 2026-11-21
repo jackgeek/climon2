@@ -165,7 +165,7 @@ it does elsewhere. It also reads the scenario IDs in
 | IDs | Scenarios | Layer |
 | --- | --- | --- |
 | `WIN-01` to `WIN-08` | The Windows-only scenario groups | Contract |
-| `WINM-01` to `WINM-12` | The manual checklist items | Host manual |
+| `WINM-01` to `WINM-16` | The manual checklist items | Host manual |
 
 A manual checklist case passes when `qualification/manual.json` holds a passed
 record for both Windows Terminal and VS Code (`WINM-12` needs VS Code only). A

@@ -1,4 +1,4 @@
-//! `climon2 kill`: the target daemon owns shutdown; this only dispatches and waits.
+//! `c2 kill`: the target daemon owns shutdown; this only dispatches and waits.
 use crate::{Error, attach, list};
 use climon2_core::{SessionId, selector::Selector, startup_envelope::StartupEnvelope};
 use std::{

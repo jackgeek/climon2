@@ -492,7 +492,7 @@ fn await_peer(instance: &Instance, step: &Value) -> Value {
     json!(peer.await_frames(count))
 }
 
-/// The session's hello `state`, as `climon2 list` reads it.
+/// The session's hello `state`, as `c2 list` reads it.
 fn hello_state(socket: &Path) -> Value {
     let Ok(mut stream) = UnixStream::connect(socket) else {
         return json!({ "error": "connect" });

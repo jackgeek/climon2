@@ -95,8 +95,9 @@ characters can share a cell. Byte or character offsets are not cell offsets.
 ## Dynamic loader
 
 The operating-system component that maps a shared library into a running
-process and connects its symbols: [glibc](#glibc)'s on Linux, dyld on macOS.
-`dlopen` asks it to load a library.
+process and connects its symbols: [glibc](#glibc)'s on Linux, dyld on macOS,
+the Windows loader on Windows. `dlopen` asks it to load a library on Unix,
+`LoadLibraryExW` on Windows.
 
 ## Counter
 
@@ -250,6 +251,11 @@ decoder contract.
 
 The content carried by a message or operation, distinct from its routing and
 correlation metadata.
+
+## PE
+
+Portable Executable: the binary format of Windows executables and DLLs. Its
+header records the target machine.
 
 ## Pollable notification descriptor
 

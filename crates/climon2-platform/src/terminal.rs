@@ -24,7 +24,7 @@ mod unix {
         if unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 } {
             return Ok(());
         }
-        Err(io::Error::other("climon2 exec needs a terminal"))
+        Err(io::Error::other("c2 exec needs a terminal"))
     }
 
     /// An owned duplicate; closing it never closes the process's stdin.

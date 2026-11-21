@@ -11,7 +11,7 @@ use alacritty_terminal::{
 use climon2_vt::{Geometry, Presentation, Vt, VtConfig};
 use std::time::Instant;
 
-pub const TITLE: &str = "climon2 exec app";
+pub const TITLE: &str = "c2 exec app";
 
 pub fn vt(cols: u16, rows: u16, max_history_rows: u32) -> Vt {
     Vt::new(

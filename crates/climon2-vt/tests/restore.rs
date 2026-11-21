@@ -41,7 +41,7 @@ fn a_normal_only_restoration_is_lead_history_scroll_off_screen_then_suffix() {
         MODES,
         DIRECT_MODES,
         "\x1b[3;2H\x1b[0m",
-        "\x1b]2;climon2 exec app\x1b\\",
+        "\x1b]2;c2 exec app\x1b\\",
     ]
     .concat();
     assert_eq!(text(&restored(&mut vt)), expected);
@@ -491,9 +491,7 @@ fn derived_restoration_keeps_the_prologue_modes_and_skips_pending_wrap() {
     feed(&mut modal, b"\x1b[4h\x1b[?6h\x1b[3;3H");
     let prefix = text(&restore(&mut modal, &mut Presentation::new(11, 3)));
     assert!(
-        prefix.ends_with(&format!(
-            "\x1b[3;3H\x1b[0m{MODES}\x1b]2;climon2 exec app\x1b\\"
-        )),
+        prefix.ends_with(&format!("\x1b[3;3H\x1b[0m{MODES}\x1b]2;c2 exec app\x1b\\")),
         "{prefix:?}"
     );
     let mut wrapped = vt(10, 3, 10);
@@ -577,7 +575,7 @@ fn origin_mode_reestablishes_a_pending_wrap_after_the_modes() {
     feed(&mut vt, b"\x1b[?6h0123456789");
     let prefix = text(&restored(&mut vt));
     assert!(
-        prefix.ends_with("\x1b[?7h\x1b[?6h\x1b[1;10H\x1b[0m9\x1b[0m\x1b]2;climon2 exec app\x1b\\"),
+        prefix.ends_with("\x1b[?7h\x1b[?6h\x1b[1;10H\x1b[0m9\x1b[0m\x1b]2;c2 exec app\x1b\\"),
         "{prefix:?}"
     );
 }
@@ -615,7 +613,7 @@ fn a_canonical_restoration_is_the_session_at_its_geometry_for_a_fresh_terminal()
         MODES,
         DIRECT_MODES,
         "\x1b[4;2H\x1b[0m",
-        "\x1b]2;climon2 exec app\x1b\\",
+        "\x1b]2;c2 exec app\x1b\\",
     ]
     .concat();
     let mut vt = vt(10, 4, 10);

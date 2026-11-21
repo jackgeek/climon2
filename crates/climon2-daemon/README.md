@@ -122,7 +122,7 @@ ending between frames just closes. Frames read before the end are still
 served, so a peer may send Leave and half-close.
 
 A monitor Open registers a **passive monitor connection**. It is not an
-attachment: the leave policy and the hello `state` (so `climon2 list`'s
+attachment: the leave policy and the hello `state` (so `c2 list`'s
 STATE and CLIENTS) never count it, and registering never acquires control,
 though the registration may inherit it (see below).
 Open selects the requested families this daemon supports (required ones must

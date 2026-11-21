@@ -29,7 +29,7 @@ fn assert_installed(destination: &Path) {
         version
     );
     for path in [
-        destination.join("climon2"),
+        destination.join("c2"),
         destination.join(version).join("climon2-cli"),
         destination.join(version).join("climon2-daemon"),
         destination.join(version).join("climon2-client"),
@@ -43,7 +43,7 @@ fn assert_installed(destination: &Path) {
                 .any(|window| window == b"CLIMON2_TEST_HOOKS_ENABLED")
         );
     }
-    let output = Command::new(destination.join("climon2"))
+    let output = Command::new(destination.join("c2"))
         .arg("--version")
         .output()
         .unwrap();

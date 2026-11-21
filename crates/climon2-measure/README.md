@@ -48,11 +48,11 @@ geometries 80x24, 200x60 and 500x200; 1, 10 and 100 sessions, except that at
 measured capacity (owner, 2026-11-15, #166); one release and ten mixed
 releases; eight scenarios. Each case runs:
 
-1. one `climon2 monitor` at the default limits;
+1. one `c2 monitor` at the default limits;
 2. if the defaults admit fewer sessions than an exact population offers, the
    monitor again with the disclosed sufficient configuration
    `{"memory":{"total_bytes":2147483648}}` (the record keeps both);
-3. the owner's baseline: one `climon2 attach` per session, each in its own
+3. the owner's baseline: one `c2 attach` per session, each in its own
    terminal of the same geometry.
 
 Sessions run this package's `workload` command: titled `s001`..., reporting

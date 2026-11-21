@@ -18,7 +18,7 @@ use std::{
 };
 use support::{Package, TIMEOUT, library::INSTANCE_DESCRIPTORS, passive::*};
 
-/// A session daemon of the installed release: `climon2 exec` of the generic
+/// A session daemon of the installed release: `c2 exec` of the generic
 /// fixture, which sets the title `first`, prints `TITLE-SET`, waits for
 /// `go`, then in one write empties the title, sets `café`, resets the
 /// terminal (unset) and sets `last` through OSC 0, prints `BURST-DONE`, and
@@ -35,7 +35,7 @@ struct Session {
 impl Session {
     fn start(package: &Package, root: &Path) -> Self {
         let (go, end) = (root.join("go"), root.join("end"));
-        let mut command = package.command("climon2");
+        let mut command = package.command("c2");
         command.args(["exec", "climon2-fixture", "print", "\x1b]2;first\x07"]);
         command.args(["print", "TITLE-SET", "await-file"]);
         command.arg(&go);

@@ -2,6 +2,10 @@ use climon2_core::{VersionName, layout::client_library_name};
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The launcher's file name, in a release archive and an executable home:
+/// the one command users type (#303).
+pub const LAUNCHER: &str = "c2";
+
 /// The executables a release places in its version folder.
 const COMPANIONS: [&str; 4] = [
     "climon2-cli",
@@ -52,16 +56,16 @@ impl Payload {
         Self::from_directory(directory, env!("CARGO_PKG_VERSION"))
     }
 
-    /// Read the release archive's `climon2` and `<version>/` files.
+    /// Read the release archive's `c2` and `<version>/` files.
     pub fn from_directory(directory: &Path, version: &str) -> io::Result<Self> {
-        Self::from_paths(version, directory.join("climon2"), |name| {
+        Self::from_paths(version, directory.join(LAUNCHER), |name| {
             directory.join(version).join(name)
         })
     }
 
     /// Build a test/coverage layout from Cargo output siblings, without rebuilding.
     pub fn from_siblings(directory: &Path, version: &str) -> io::Result<Self> {
-        Self::from_paths(version, directory.join("climon2"), |name| {
+        Self::from_paths(version, directory.join(LAUNCHER), |name| {
             cargo_output(directory, name)
         })
     }

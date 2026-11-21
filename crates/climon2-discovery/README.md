@@ -2,7 +2,7 @@
 
 One [discovery pass](../../GLOSSARY.md#sessions) over a climon2 home. This is
 the CLI's own session discovery, moved into a shipped library (#77, planned in
-[#59](https://github.com/jackgeek/climon2/issues/59)) so that `climon2 list`,
+[#59](https://github.com/jackgeek/climon2/issues/59)) so that `c2 list`,
 `attach` and `kill`, and later the monitor, share one implementation. It depends
 only on `climon2-core` and `climon2-platform` (ADR 0004) and, like the platform
 seams, supports macOS and x86-64 GNU/Linux; it has no OS-specific code of its

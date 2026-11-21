@@ -35,10 +35,9 @@ c2 m
 
 Help is `c2 --help`; `-h` belongs to `exec`.
 
-`c2` is the short command for climon2. The installer creates `c2 -> climon2`;
-the original `climon2` command remains supported without warnings. Both names
-run the same current version. Product names, version output, diagnostic prefixes,
-configuration/data paths and environment variables remain unchanged.
+`c2` is the only command name; there is no `climon2` command. The product is
+still climon2: version output, the `climon2: error:` diagnostic prefix,
+configuration and data paths and environment variables keep that name.
 
 The command keeps its arguments, working directory and environment, except that
 it always sees `TERM=xterm-256color` and `COLORTERM=truecolor`. Its exit status
@@ -91,7 +90,7 @@ command exits or it is killed with `c2 kill`. `c2 list` shows it as
 
 **Detach** with the escape prefix, Ctrl+], then `d`. The session keeps running
 with no idle timeout, and the client exits 0 after printing
-`climon2: detached from session <id>; reattach with: climon2 attach <id>` to
+`climon2: detached from session <id>; reattach with: c2 attach <id>` to
 stderr. Ctrl+] Ctrl+] sends one Ctrl+] to the command; Ctrl+] followed by any
 other key sends both. A lone Ctrl+] waits for the next key, without a timeout.
 Every other key, including Ctrl+C and Ctrl+D, goes to the command. No binding
@@ -531,7 +530,7 @@ not supported for interactive sessions. `install.sh` still runs under
 - **Not restored on attach:** scroll region, tab stops, character sets, palette
   changes, keyboard-protocol modes and hyperlinks. Your terminal's own title is
   not restored on exit; it keeps the session's title (default
-  `climon2 exec <command> <args...>`).
+  `c2 exec <command> <args...>`).
 - **Saved cursor on the alternate screen.** A restoration taken while an
   application is on the alternate screen sets the normal screen's saved cursor
   to its current cursor. They usually match, but can differ after a resize while
@@ -593,10 +592,7 @@ export PATH="$HOME/.local/share/climon2:$PATH"
 
 The installer prints a matching hint for custom destinations and never modifies
 shell startup files. Upgrades preserve existing version folders and live sessions.
-Fresh installs and upgrades add `c2` in the same executable home, with no PATH
-change needed for existing users. An unrelated file or symlink named `c2` there
-blocks installation before publication; resolve the reported conflict and retry.
-An existing correct relative link is accepted on repeated installs.
+Every install replaces `c2`, the launcher, in the executable home.
 There is no `sudo` or Homebrew installation step.
 
 For macOS browser downloads, verify `SHA256SUMS`, extract the archive, then remove

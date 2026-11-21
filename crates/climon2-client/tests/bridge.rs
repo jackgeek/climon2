@@ -401,7 +401,7 @@ fn status_flags(file: &File) -> i32 {
 }
 
 /// A new read-only open-file description of the same terminal, with every
-/// file-status flag clear, as `climon2 attach < /dev/tty` gives on macOS.
+/// file-status flag clear, as `c2 attach < /dev/tty` gives on macOS.
 /// Opens the terminal again for `access` alone (O_RDONLY or O_WRONLY).
 fn one_way(master: &File, terminal: &File, access: i32) -> File {
     #[cfg(target_os = "macos")]
@@ -1233,7 +1233,7 @@ fn a_confirmed_leave_detaches_with_the_notice() {
     assert_eq!(bytes, b"release");
     assert_eq!(
         error,
-        format!("climon2: detached from session {ID}; reattach with: climon2 attach {ID}\n")
+        format!("climon2: detached from session {ID}; reattach with: c2 attach {ID}\n")
     );
 }
 

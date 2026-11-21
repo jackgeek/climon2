@@ -227,7 +227,7 @@ fn exit_code(result: bridge::BridgeExit, metadata: &SessionMetadata) -> u32 {
         bridge::BridgeExit::Status(code) => code,
         bridge::BridgeExit::Detached => {
             eprintln!(
-                "climon2: detached from session {}; reattach with: climon2 attach {}",
+                "climon2: detached from session {}; reattach with: c2 attach {}",
                 metadata.session_id, metadata.session_id
             );
             0

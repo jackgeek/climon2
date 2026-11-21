@@ -85,7 +85,9 @@ explicit availability errors, not evidence that a session ended.
 Load the absolute path `<executable home>/<session version>/<library file>`
 from the [install layout](../../GLOSSARY.md#installation). The library file is
 `libclimon2_client.dylib` on macOS and `libclimon2_client.so` on x86-64
-GNU/Linux; the version folder, not the file name, carries the release. Never
+GNU/Linux, and on x86-64 Windows will be `climon2_client.dll` (agreed, not
+implemented: [#216](https://github.com/jackgeek/climon2/issues/216)); the
+version folder, not the file name, carries the release. Never
 substitute `current`, another installed release, or a library found through a
 search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
 filename beside itself and verifies its own exact release: its executable home
@@ -155,6 +157,60 @@ Installed libraries are trusted native code. Initializers execute before
 identity validation; compatibility checks do not sandbox a malicious artifact.
 A native crash during loading can terminate the whole monitor.
 
+### Windows (agreed, not implemented)
+
+These rules were decided on
+[#216](https://github.com/jackgeek/climon2/issues/216); nothing here exists
+yet.
+
+Open the library with `LoadLibraryExW(path, NULL,
+LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)`, the flags
+the daemon uses for `conpty.dll`. A full-path load opens only that file, but
+Windows still finds the library's own imports by bare name, matching DLLs
+already loaded in the process first. Each release's library is therefore one
+self-contained file: it exports only `climon2_client_get_interface`, links
+the C runtime statically, and imports only Windows system DLLs. `cargo xtask
+dist` checks every one of these rules, and fails if a shipped file imports
+`vcruntime140*.dll` or `msvcp140*.dll`. The static C runtime gives each
+loaded release its own C runtime state, which is safe because no allocation
+crosses the interface.
+
+Windows has its own ways to substitute a different file for a full path:
+`.local` redirection and DLL redirection. After loading, and before anything
+else, the loader asks `GetModuleFileNameW` for the loaded module's path. When
+it is not the requested path, the loader refuses the substitute with an
+explicit error and keeps its handle loaded, as on macOS. A Windows CI test
+loads two releases' libraries, both named `climon2_client.dll`, into one
+process and requires two distinct modules. If Windows were to reuse the first,
+the fallback is a version in the file name.
+
+Each instance's [notification descriptor](TERMS.md#pollable-notification-descriptor)
+is an event handle on Windows
+([native revision 1](monitor-client/core-v1.md#startup-limits-and-resources)).
+The monitor waits on up to 64 of them at a time with `WaitForMultipleObjects`,
+the most one Windows wait accepts. It still drains every live instance on
+each tick of its wait, so an instance beyond the first 64 is served no later
+than the next tick.
+
+Classify Windows load failures from the loader's own results, never from
+message text. A failed load whose file is absent afterwards is a missing
+library. `ERROR_BAD_EXE_FORMAT`, or a [PE](TERMS.md#pe) machine other than
+x86-64 (`0x8664`), is an incompatible architecture. Any other load failure is
+a missing dependency, reported with the system message only for diagnosis. A
+`GetProcAddress` failure for `climon2_client_get_interface` is a missing
+symbol. The bootstrap rules above apply unchanged.
+
+DLL redirection, `.local` files, `AppInit_DLLs` and Image File Execution
+Options are the user's or administrator's own configuration. The monitor
+neither clears them nor refuses to run because they are set, apart from the
+path check above.
+
+A same-version reinstall that changes files is refused while any `.exe` in
+that version folder runs, but a monitor that has only loaded the folder's
+library is not detected. The installer renames the folder aside and the
+monitor keeps running on the library it loaded. This happens only in
+development, where one version number is rebuilt, and is accepted.
+
 ## Loading and instance lifetime
 
 Perform loading and validation away from the rendering/input thread. Share one
@@ -167,7 +223,9 @@ because a load cannot be cancelled: `deadlines.load_ms` is diagnostic only. A
 load still running past it is logged and shown on the rows waiting for it as
 `library loading slowly`, and is never aborted (owner decision on
 [#120](https://github.com/jackgeek/climon2/issues/120), implemented there).
-On glibc that lock (its TLS lock) is also taken by every new thread, so while
+On Windows the loader lock serializes loads in the same way (agreed, not
+implemented). On glibc that lock (its TLS lock) is also taken by every new
+thread, so while
 a load is stalled no new client or discovery probe can start, even for a
 release already loaded; clients already running continue. Whether the
 monitor should keep threads ready for that is an open question on #120.
