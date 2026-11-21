@@ -258,7 +258,7 @@ there is work or closure to observe and resets it when drained, so it is
 level-triggered like the `eventfd`, and it counts once in
 `instance_descriptors`. Its `HANDLE` travels in the same `int32_t` output:
 64-bit Windows kernel handles have only 32 significant bits, and the caller
-sign-extends the value back to a `HANDLE`. The caller waits on it, never sets,
+sign-extends the value back to a `HANDLE` ([ADR 0008](../../adr/0008-windows-notification-handle-in-int32.md)). The caller waits on it, never sets,
 resets or closes it.
 
 `snapshot` supplies bounded nonblocking current/peak instance and shared-release
