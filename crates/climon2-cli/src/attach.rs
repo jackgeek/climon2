@@ -122,5 +122,5 @@ fn reject_self_attach(id: &climon2_core::SessionId) -> Result<(), Error> {
 }
 
 fn require_terminal() -> Result<(), Error> {
-    terminal::require_ttys().map_err(|_| Error::new(125, "climon2 attach needs a terminal"))
+    terminal::require_ttys().map_err(|_| Error::new(125, "c2 attach needs a terminal"))
 }

@@ -2,8 +2,7 @@
 
 The [monitor](../../GLOSSARY.md#sessions) executable, `climon2-monitor`, ships in
 every version folder beside the CLI, client and daemon, on macOS and x86-64
-GNU/Linux. Users reach it as `c2 monitor` or `c2 m` (or the same through
-`climon2`): the launcher runs the current version's CLI, which execs its own
+GNU/Linux. Users reach it as `c2 monitor` or `c2 m`: the launcher runs the current version's CLI, which execs its own
 version's monitor with no arguments or envelope. That handoff between
 executables of one release is not frozen. The library boundary is
 `run() -> Result<u32, Error>`; the thin main prints `climon2: error: …` for an
@@ -23,7 +22,7 @@ scheduling (#120). Every string the monitor shows is in [On-screen strings](#on-
 
 ## Startup, before the host terminal changes
 
-1. stdin and stdout must be TTYs (`climon2 monitor needs a terminal`).
+1. stdin and stdout must be TTYs (`c2 monitor needs a terminal`).
 2. The climon2 home is resolved, created and canonicalized exactly as the CLI
    does. The monitor then opens its own general log,
    `logs/general/monitor-<stamp>-<pid>.log` with header `role=monitor`, named
@@ -670,7 +669,7 @@ exists, and exits 125 before raw mode, the alternate screen or any OSC output.
   `Terminating` or `Removing` in its status column, in its place, until it
   goes. Other sessions stay usable throughout.
 - **Kill** (`supervisor.rs`). Terminate and remove submits one Kill,
-  requiring no family as `climon2 kill`'s does, through the session's open
+  requiring no family as `c2 kill`'s does, through the session's open
   client, or, when it has none (a client that failed, is starting, is
   waiting for a retry or never started), through a Kill-only instance: no
   Open, its Kill as request 2, never retried, and its row learns nothing
@@ -1095,7 +1094,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 
 | Scenario | Named test |
 |---|---|
-| ENT-01 (Monitor): `c2 monitor`, `c2 m`, `climon2 monitor` and `climon2 m` open the same installed monitor; top row, empty state, exact host modes; prefix+x exits 0 with the host released, the prefix read alone | `installed_monitor_and_m_open_the_same_monitor` (e2e) |
+| ENT-01 (Monitor): `c2 monitor` and `c2 m` open the same installed monitor; top row, empty state, exact host modes; prefix+x exits 0 with the host released, the prefix read alone | `installed_monitor_and_m_open_the_same_monitor` (e2e) |
 | INP-01 (Monitor): configured prefix hint and exit; null take-control key accepted; once read, Ctrl+C and the default prefix+x are not exits | `installed_monitor_hints_and_exits_with_the_configured_prefix` (e2e) |
 | INP-01 (Monitor): null escape prefix and invalid keys refused before terminal changes | `installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys` (e2e) |
 | CFG-01 (Monitor): unreadable and malformed JSONC, null, wrong type, duplicate, overflow, out-of-range and inconsistent settings each refused with one diagnostic and 125 before terminal changes | `installed_monitor_refuses_every_invalid_configuration_before_the_terminal_changes` (e2e) |
@@ -1241,7 +1240,7 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | COM-04, EXT-03 (pure input-router supplement): typed bytes reach an application exactly | `typed_bytes_reach_the_application_exactly` (`src/router.rs`) |
 | COM-03, COM-04 (pure supplement): chunks of at most `chunk_bytes`; the first refusal carries every unsent byte and consumes no request ID; a refusal is shown | `input_is_submitted_in_chunks_and_a_refusal_carries_every_unsent_byte` (`src/supervisor.rs`), `refused_input_shows_what_was_not_sent` (`src/terminal.rs`) |
 | REC-01 (Monitor, Fault: transport loss), REC-02 (Monitor, Fault: full history; `Reconnecting...` while scheduled and while running; the placeholder after the reconnect), COM-03 and COM-05 (Monitor: indeterminate work never replayed, a fresh attempt sent nothing old), DSC-05 (Monitor, Fault: loss keeps the selection), Enter on disconnected and unconnected Starting rows (derived) (#116) | `a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect` (e2e, Fault peers) |
-| REC-02 (Monitor: full history, no history), REC-01 (Monitor: a gone daemon and a known outcome stop retry), HDL-01 (Monitor case: `climon2 kill` from another terminal), COM-06 (Monitor), DSC-05 (Monitor: every row final or gone, discovery continues), Enter on final rows (derived), global actions from the read-only screens (#116) | `killed_and_ended_sessions_stay_read_only_and_are_never_retried` (e2e) |
+| REC-02 (Monitor: full history, no history), REC-01 (Monitor: a gone daemon and a known outcome stop retry), HDL-01 (Monitor case: `c2 kill` from another terminal), COM-06 (Monitor), DSC-05 (Monitor: every row final or gone, discovery continues), Enter on final rows (derived), global actions from the read-only screens (#116) | `killed_and_ended_sessions_stay_read_only_and_are_never_retried` (e2e) |
 | REC-01 (Monitor, Fault: missing library, repaired installation, permanently rejected protocol, visible exponential retry with jitter and cap), LIB-02 (Monitor), DSC-05 (Monitor, Fault: every row unavailable) (#116) | `failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good` (e2e, Fault peers) |
 | REC-01 (Monitor, Fault: contained panic), LIB-05 (Monitor: the panicking instance stays on its row) (#116) | `a_contained_panic_is_retried_on_its_own_row` (e2e, hooked only) |
 | REC-01, COM-05 (pure supplement over the fake library): a failure is retried in the next generation only after the old instance is destroyed and its owner joined, with backoff doubling to the cap, from the start again after an open; permanent rejections, invalid configuration, known outcomes and unconfirmed cleanup retry nothing, scarce resources are retried, also a client the monitor stopped itself, and an Open refusal is Unavailable with the refusal; a missing library is loaded again when due, a wrong release never; a session proven gone is never retried, a retry already scheduled dropped; each loader refusal, create refusal and terminal evidence's retry class (#116) | `a_failed_client_is_retried_after_its_cleanup_in_a_fresh_generation`, `rejections_known_outcomes_and_unconfirmed_cleanup_retry_nothing`, `a_missing_library_is_loaded_again_when_its_retry_is_due`, `a_session_proven_gone_is_never_retried`, `a_scheduled_retry_is_dropped_once_its_session_is_gone`, `only_a_refusal_a_later_load_may_not_repeat_is_retried` (`src/supervisor.rs`), `create_refusals_and_terminal_evidence_say_whether_to_retry` (`src/supervisor/client.rs`) |

@@ -7,7 +7,7 @@ use std::{
 
 const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
 pub(crate) const PACKAGES: &[(&str, &str)] = &[
-    ("climon2-launcher", "climon2"),
+    ("climon2-launcher", "c2"),
     ("climon2-cli", "climon2-cli"),
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
@@ -122,7 +122,7 @@ fn test_artifacts(siblings: &Path) -> Vec<(String, PathBuf)> {
 
 /// Every artifact a release build ships: the launcher, then the hooked rest.
 fn shipped_names() -> impl Iterator<Item = String> {
-    iter::once("climon2".to_owned()).chain(hooked_names())
+    iter::once(climon2_install::LAUNCHER.to_owned()).chain(hooked_names())
 }
 
 /// The shipped artifacts whose test builds carry hooks, which is all but the

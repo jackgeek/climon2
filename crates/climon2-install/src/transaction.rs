@@ -42,7 +42,7 @@ impl Stage {
     }
 
     pub(crate) fn launcher(&self) -> PathBuf {
-        self.root.join("climon2")
+        self.root.join(crate::LAUNCHER)
     }
 
     pub(crate) fn current(&self) -> PathBuf {

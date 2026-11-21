@@ -965,7 +965,7 @@ fn prove_killed_profile(staged: &Path, profile: &str) -> io::Result<()> {
 fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<PathBuf> {
     let payload = workspace.join("payload");
     fs::create_dir(&payload)?;
-    fs::copy(build.join("debug/isolation-cli"), payload.join("climon2"))?;
+    fs::copy(build.join("debug/isolation-cli"), payload.join("c2"))?;
     for name in climon2_install::version_files() {
         let path = climon2_install::cargo_output(&payload, &name);
         fs::create_dir_all(path.parent().expect("payload file directory"))?;

@@ -55,7 +55,7 @@ fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
     fs::create_dir_all(payload.join(version))?;
     for (_, binary) in release::PACKAGES {
         let destination = match *binary {
-            "climon2" => payload.join("climon2"),
+            climon2_install::LAUNCHER => payload.join(climon2_install::LAUNCHER),
             "climon2-install" => payload.join("install"),
             _ => payload.join(version).join(binary),
         };

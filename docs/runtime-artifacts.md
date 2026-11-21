@@ -18,7 +18,7 @@ consumption relationship.
 ```mermaid
 flowchart TB
     subgraph runtime["Shipped runtime"]
-        launcher["c2 / climon2<br/>same launcher executable"]
+        launcher["c2<br/>launcher executable"]
         subgraph version["Installed version v; versions coexist"]
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
@@ -51,9 +51,8 @@ flowchart TB
 `v` represents a [session](../GLOSSARY.md#sessions)'s installed version, not necessarily the current
 version selected by the launcher. The CLI starts a new session using its own
 version; [attachment](../GLOSSARY.md#attachment-and-control) and termination use the existing session's version.
-The installed `c2` command is a relative symlink to `climon2` in the same
-executable home. Both names consume the same current-version CLI through the
-unchanged launcher; `climon2` remains supported without deprecation warnings.
+The launcher is installed as `c2`, the only command name (#303); there is no
+`climon2` command.
 The installer is a release-payload executable, not a `c2 install` command.
 Installation relationships are outside this consumption diagram.
 
@@ -71,7 +70,7 @@ exists yet. The decisions are in
 ```mermaid
 flowchart TB
     subgraph winruntime["Planned Windows runtime (x86_64 MSVC)"]
-        wlauncher["c2.exe / climon2.exe"]
+        wlauncher["c2.exe"]
         subgraph wversion["%LOCALAPPDATA%\climon2\&lt;version&gt;"]
             wcli["climon2-cli.exe<br/>described above"]
             wdaemon["climon2-daemon.exe<br/>described above"]
@@ -92,7 +91,7 @@ flowchart TB
 
 | Node | Purpose |
 |---|---|
-| `c2.exe` / `climon2.exe` | The frozen launcher. Windows cannot replace a process, so it starts the CLI and waits for it. `c2.exe` is a hard link or copy. |
+| `c2.exe` | The frozen launcher, the only command name. Windows cannot replace a process, so it starts the CLI and waits for it. |
 | `climon2-cli.exe`, `climon2-daemon.exe` | The same roles as on Unix. |
 | `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
 | `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |
@@ -116,7 +115,7 @@ payload. `cargo xtask measure` runs it on an exact candidate archive: it
 installs the archive with that archive's own installer, starts the measured
 sessions through the installed `climon2` with itself (its `workload` command)
 as their session command, measures the installed monitor against one
-installed `climon2 attach` per session on emulated host terminals, and loads
+installed `c2 attach` per session on emulated host terminals, and loads
 the candidate library through the shared loader only to read its embedded
 requirements. The [measurement workflow](../.github/workflows/measure.yml)
 runs it on release candidates and on manual dispatch.
@@ -285,8 +284,8 @@ packaged controlled-versions test runs this build's client executable from a
 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
-on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m`, or their `climon2`
-spellings, reach it through the launcher and the current version's CLI, which
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m` reach it through
+the launcher and the current version's CLI, which
 execs its own version's monitor exactly as it execs a version-matched client,
 so the monitor is always the current version. That handoff between executables
 of one release is not frozen. Since #106 it discovers sessions and loads their
