@@ -35,6 +35,12 @@ jobs:
         run: |
           if (Test-Path D:\) { ./target/release/winprobe.exe run D:\climon2-probe out/fs-D.jsonl }
           else { 'no D: volume on this runner' | Tee-Object out/fs-D.txt }
+      - name: Probes 1-6 and 9 on ReFS (virtual disk R)
+        if: always()
+        run: |
+          ./scripts/refs.ps1 -Out out/refs-setup.txt
+          if (Test-Path R:\) { ./target/release/winprobe.exe run R:\climon2-probe out/fs-R-refs.jsonl }
+          else { 'no R: volume could be created' | Tee-Object out/fs-R-refs.txt }
       - name: Probe 7 CRT imports
         if: always()
         run: ./scripts/p7.ps1 -Root $PWD -Out out/p7-crt-imports.txt

@@ -79,6 +79,8 @@ mod raw {
 struct Out {
     file: File,
     probe: String,
+    /// When set, renames use only `MoveFileExW` and deletes only `DeleteFileW`.
+    raw_only: bool,
     counter: u32,
     base: PathBuf,
     self_exe: PathBuf,
@@ -130,9 +132,11 @@ impl Out {
 
     /// `std::fs::rename`; on failure also plain `MoveFileExW(REPLACE_EXISTING)`.
     fn ren(&mut self, step: &str, from: &Path, to: &Path) -> bool {
-        let r = fs::rename(from, to);
-        if self.rec(&format!("{step} [std::fs::rename]"), &r) {
-            return true;
+        if !self.raw_only {
+            let r = fs::rename(from, to);
+            if self.rec(&format!("{step} [std::fs::rename]"), &r) {
+                return true;
+            }
         }
         let r = raw::move_replace(from, to);
         self.rec(&format!("{step} [MoveFileExW REPLACE_EXISTING]"), &r)
@@ -140,9 +144,11 @@ impl Out {
 
     /// `std::fs::remove_file`; on failure also plain `DeleteFileW`.
     fn del(&mut self, step: &str, path: &Path) -> bool {
-        let r = fs::remove_file(path);
-        if self.rec(&format!("{step} [std::fs::remove_file]"), &r) {
-            return true;
+        if !self.raw_only {
+            let r = fs::remove_file(path);
+            if self.rec(&format!("{step} [std::fs::remove_file]"), &r) {
+                return true;
+            }
         }
         let r = raw::delete(path);
         self.rec(&format!("{step} [DeleteFileW]"), &r)
@@ -370,7 +376,7 @@ fn list(dir: &Path) -> String {
 }
 
 fn p1(out: &mut Out) {
-    out.probe = "1".into();
+    out.probe = format!("1{}", if out.raw_only { "-raw" } else { "" });
     exe_matrix(out, Layout::Single);
 
     // The full upgrade sequence on one process.
@@ -400,7 +406,7 @@ fn p1(out: &mut Out) {
 }
 
 fn p2(out: &mut Out) {
-    out.probe = "2".into();
+    out.probe = format!("2{}", if out.raw_only { "-raw" } else { "" });
     exe_matrix(out, Layout::HardLink);
 
     for both_running in [false, true] {
@@ -446,14 +452,14 @@ fn p2(out: &mut Out) {
 }
 
 fn p3(out: &mut Out) {
-    out.probe = "3".into();
+    out.probe = format!("3{}", if out.raw_only { "-raw" } else { "" });
     exe_matrix(out, Layout::Copy);
 }
 
 // ------------------------------------------------------ probe 4: folders
 
 fn p4(out: &mut Out) {
-    out.probe = "4".into();
+    out.probe = format!("4{}", if out.raw_only { "-raw" } else { "" });
     for case in ["running-exe", "loaded-dll", "idle-files", "open-file", "process-cwd"] {
         let root = out.fresh("p4");
         let v = root.join("0.1.0");
@@ -796,6 +802,7 @@ fn run(base: &Path, out_path: &Path) {
     let mut out = Out {
         file: File::create(out_path).unwrap(),
         probe: "setup".into(),
+        raw_only: false,
         counter: 0,
         base: base.to_path_buf(),
         v2_exe: bin.join("v2.exe"),
@@ -803,9 +810,21 @@ fn run(base: &Path, out_path: &Path) {
         self_exe,
     };
     out.note("base folder", true, &base.display().to_string());
-    let probes: [(&str, fn(&mut Out)); 7] =
-        [("1", p1), ("2", p2), ("3", p3), ("4", p4), ("5", p5), ("6", p6), ("9", p9)];
-    for (name, f) in probes {
+    let probes: [(&str, fn(&mut Out), bool); 11] = [
+        ("1", p1, false),
+        ("2", p2, false),
+        ("3", p3, false),
+        ("4", p4, false),
+        ("1-raw", p1, true),
+        ("2-raw", p2, true),
+        ("3-raw", p3, true),
+        ("4-raw", p4, true),
+        ("5", p5, false),
+        ("6", p6, false),
+        ("9", p9, false),
+    ];
+    for (name, f, raw_only) in probes {
+        out.raw_only = raw_only;
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut out)));
         if let Err(e) = r {
             let msg = e

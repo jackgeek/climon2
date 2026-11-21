@@ -12,7 +12,7 @@ function Show([string]$Label) {
   "${Label}: expanded=$($k.GetValue('Path'))"
 }
 
-& {
+$r = & {
   "shell=$($PSVersionTable.PSVersion) edition=$($PSVersionTable.PSEdition)"
   "HKCU\Environment value names: $((Get-Item 'HKCU:\Environment').GetValueNames() -join ', ')"
   Show 'before'
@@ -51,4 +51,6 @@ function Show([string]$Label) {
   Show 'restored'
   if ($had) { "restored: identical=$(($key.GetValue('Path', $null, $noExpand) -ceq $orig) -and ($key.GetValueKind('Path') -eq $origKind))" }
   $key.Close()
-} 2>&1 | Tee-Object -FilePath $Out
+} 2>&1
+$r
+$r | Out-File -Encoding utf8 -FilePath $Out
