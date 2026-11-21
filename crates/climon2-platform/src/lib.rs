@@ -8,6 +8,7 @@ pub mod peer;
 pub mod presentation;
 pub mod process;
 pub mod pty;
+pub mod pty_io;
 pub mod runtime;
 mod syscall;
 pub mod terminal;
