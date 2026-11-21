@@ -32,10 +32,18 @@ dispatch or shell-specific logic.
 - `runtime::private_directory(&Path)` creates mode 0700, then checks with
   `symlink_metadata`: real directory, effective UID owner, no group/other bits.
   Existing unsafe directories are refused, never repaired.
+- `runtime::create_private_file(&Path) -> io::Result<File>` creates a new
+  file, mode exactly 0600 whatever the umask, with `create_new` and
+  `O_NOFOLLOW`: never over an existing file or through a symlink. A file it
+  cannot make private is removed again. The daemon publishes session
+  metadata through it (#311).
 - `runtime::bind(&Path)` binds under umask 077. Bind before starting worker
   threads: umask is process-wide; the lock serializes only this helper's calls.
 - `runtime::{SocketListener,SocketStream}` name the Unix transport types
   without exposing libc types in callers' signatures.
+- `connection::nobody_listening(&io::Error)` is true when a connect found the
+  socket missing (ENOENT) or refusing (ECONNREFUSED). Only these can begin to
+  prove a session stale (#311).
 - `peer::accept(&SocketListener)` returns only authenticated streams.
   `peer::{uid,authenticate}` support already accepted streams; authentication
   must happen before hello and callers must drop rejected streams.
@@ -121,6 +129,11 @@ dispatch or shell-specific logic.
   restores them on drop through owned duplicates.
 - `terminal::hung_up(&io::Error)` is true for a read that failed because the
   terminal was lost (EIO). Callers treat it like end of file.
+- `pty::allocation()` serializes PTY pair allocation per user (Darwin's
+  EREDRIVEOPEN). `pty::set_nonblocking(BorrowedFd)` makes a PTY master
+  nonblocking and keeps its other status flags; `pty::output_ended(&io::Error)`
+  is true for a master read that failed because the command's side is gone
+  (EIO), the end of its output (#311).
 
 ## Waiting for readiness
 
@@ -192,7 +205,12 @@ dispatch or shell-specific logic.
 ## Behavioral evidence
 
 `tests/runtime.rs`: `issue18_private_directory_refuses_symlink_file_and_permissive_mode_without_repair`,
-`issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenticated`.
+`issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenticated`,
+`issue311_a_private_file_is_new_owner_only_and_never_a_symlink`.
+
+`tests/connection.rs`: `issue19_socket_connection_waits_for_real_readiness_until_the_deadline`,
+`issue311_only_a_missing_or_refusing_socket_says_nobody_listens`. The unit tests
+in `src/pty.rs` cover `set_nonblocking` and `output_ended` (#311).
 
 `tests/home.rs` (#155) runs each case in a child of the test binary, with
 the environment or path under test:
