@@ -33,9 +33,6 @@ mod link;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "library/linux.rs"]
 mod platform;
-#[cfg(target_os = "macos")]
-#[path = "library/macos.rs"]
-mod platform;
 mod records;
 mod request;
 mod startup;

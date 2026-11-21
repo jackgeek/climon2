@@ -168,7 +168,7 @@ unsafe fn path(path: native::Path) -> Result<PathBuf, Failure> {
 }
 
 fn absolute(bytes: &[u8]) -> bool {
-    bytes.len() < libc::PATH_MAX as usize && bytes[0] == b'/' && !bytes.contains(&0)
+    bytes.len() < climon2_platform::paths::PATH_MAX && bytes[0] == b'/' && !bytes.contains(&0)
 }
 
 /// # Safety

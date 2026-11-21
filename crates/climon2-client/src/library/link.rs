@@ -3,8 +3,12 @@
 //! one at a time, after its length prefix has been admitted, so no frame is
 //! larger than the ceiling it was read under.
 
-use super::{failure::Fault, platform};
+use super::failure::Fault;
 use climon2_core::wire::{FatalCode, Frame, FrameLimit};
+use climon2_platform::{
+    descriptors, quiet_socket,
+    readiness::{self, Handle, Interest, Watch},
+};
 use std::{
     io::{self, Read},
     mem,
@@ -34,10 +38,10 @@ pub(super) const TIMEOUT: Fault =
 /// `otherwise`, unless `error` is the process or the system running out of
 /// descriptors: an exhausted resource, explicit as such (#99).
 pub(super) fn exhausted(error: &io::Error, otherwise: Fault) -> Fault {
-    match error.raw_os_error() {
-        Some(libc::EMFILE | libc::ENFILE) => NO_DESCRIPTOR,
-        _ => otherwise,
+    if descriptors::exhausted(error) {
+        return NO_DESCRIPTOR;
     }
+    otherwise
 }
 
 /// A connection-fatal code the library found in the daemon's traffic.
@@ -61,7 +65,7 @@ impl Link {
             .map_err(|error| exhausted(&error, UNREACHABLE))?;
         climon2_platform::peer::authenticate(&socket).map_err(|_| UNREACHABLE)?;
         socket.set_nonblocking(true).map_err(|_| UNREACHABLE)?;
-        platform::quiet(socket.as_raw_fd()).map_err(|_| UNREACHABLE)?;
+        quiet_socket::prepare(socket.as_raw_fd()).map_err(|_| UNREACHABLE)?;
         Ok(Self {
             socket,
             incoming: Vec::new(),
@@ -80,7 +84,7 @@ impl Link {
     /// Writes what the socket takes now, without waiting, if anything waits.
     pub(super) fn flush(&mut self) -> Result<(), Fault> {
         if self.writing() {
-            let sent = platform::send(self.socket.as_raw_fd(), &self.outgoing);
+            let sent = quiet_socket::send(self.socket.as_raw_fd(), &self.outgoing);
             let written = pending(sent).map_err(|_| BROKEN)?;
             self.outgoing.drain(..written.unwrap_or_default());
         }
@@ -153,45 +157,22 @@ impl Link {
     }
 
     /// Reading, plus writing while bytes wait.
-    fn interest(&self) -> libc::c_short {
-        let write = if self.writing() {
-            libc::POLLOUT
-        } else {
-            libc::c_short::default()
-        };
-        libc::POLLIN | write
+    fn watches(&self) -> [Watch; 2] {
+        let socket = Handle::of_socket(&self.socket);
+        [
+            Watch::new(socket, Interest::Read, true),
+            Watch::new(socket, Interest::Write, self.writing()),
+        ]
     }
 }
 
 /// Waits until `waker` or one of `links`' sockets is ready, or `deadline`
 /// passes. A signal or a spurious wake only makes the caller look again.
 pub(super) fn wait(waker: Option<i32>, links: &[&Link], deadline: Option<Instant>) {
-    let mut descriptors: Vec<_> = waker
-        .map(|waker| pollfd(waker, libc::POLLIN))
-        .into_iter()
-        .collect();
-    descriptors.extend(
-        links
-            .iter()
-            .map(|link| pollfd(link.socket.as_raw_fd(), link.interest())),
-    );
-    let timeout = deadline.map_or(i32::MAX, milliseconds);
-    // SAFETY: the entries are valid for the call's duration.
-    unsafe {
-        libc::poll(
-            descriptors.as_mut_ptr(),
-            descriptors.len() as libc::nfds_t,
-            timeout,
-        )
-    };
-}
-
-fn pollfd(fd: i32, events: libc::c_short) -> libc::pollfd {
-    libc::pollfd {
-        fd,
-        events,
-        revents: libc::c_short::default(),
-    }
+    let waker = waker.map(|waker| Watch::new(Handle::notification(waker), Interest::Read, true));
+    let mut watches: Vec<_> = waker.into_iter().collect();
+    watches.extend(links.iter().flat_map(|link| link.watches()));
+    let _ = readiness::wait_all(&watches, deadline.map_or(i32::MAX, milliseconds));
 }
 
 /// The time left before `deadline`, if any.
