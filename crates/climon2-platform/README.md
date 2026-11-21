@@ -32,10 +32,18 @@ dispatch or shell-specific logic.
 - `runtime::private_directory(&Path)` creates mode 0700, then checks with
   `symlink_metadata`: real directory, effective UID owner, no group/other bits.
   Existing unsafe directories are refused, never repaired.
+- `runtime::create_private_file(&Path) -> io::Result<File>` creates a new
+  file, mode exactly 0600 whatever the umask, with `create_new` and
+  `O_NOFOLLOW`: never over an existing file or through a symlink. A file it
+  cannot make private is removed again. The daemon publishes session
+  metadata through it (#311).
 - `runtime::bind(&Path)` binds under umask 077. Bind before starting worker
   threads: umask is process-wide; the lock serializes only this helper's calls.
 - `runtime::{SocketListener,SocketStream}` name the Unix transport types
   without exposing libc types in callers' signatures.
+- `connection::nobody_listening(&io::Error)` is true when a connect found the
+  socket missing (ENOENT) or refusing (ECONNREFUSED). Only these can begin to
+  prove a session stale (#311).
 - `peer::accept(&SocketListener)` returns only authenticated streams.
   `peer::{uid,authenticate}` support already accepted streams; authentication
   must happen before hello and callers must drop rejected streams.
@@ -115,6 +123,33 @@ dispatch or shell-specific logic.
   which must reread the size and suppress unchanged resizes.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
   unregistered on drop; no terminal operations run in signal handlers.
+- `Nonblocking::new(input, output)` makes both borrowed terminal handles
+  nonblocking for the client bridge. It saves both flags before changing
+  either, because stdin and stdout may share one open-file description, and
+  restores them on drop through owned duplicates.
+- `terminal::hung_up(&io::Error)` is true for a read that failed because the
+  terminal was lost (EIO). Callers treat it like end of file.
+- `pty::allocation()` serializes PTY pair allocation per user (Darwin's
+  EREDRIVEOPEN). `pty::set_nonblocking(BorrowedFd)` makes a PTY master
+  nonblocking and keeps its other status flags; `pty::output_ended(&io::Error)`
+  is true for a master read that failed because the command's side is gone
+  (EIO), the end of its output (#311).
+
+## Waiting for readiness
+
+- `waiting::wait(&mut [Watch], Duration) -> io::Result<usize>` is the one wait
+  every tick loop and deadline uses (#310). It waits until a watched handle is
+  ready or the timeout passes, and returns how many are ready. The timeout is
+  rounded up to whole milliseconds, so a deadline's last fraction is waited
+  rather than spun, and saturates at `i32::MAX` milliseconds. Every failure,
+  EINTR included, is returned; each caller decides whether a signal ends its
+  wait.
+- `Watch::new(BorrowedFd, Interest)` watches one handle for `Read`, `Write` or
+  `ReadWrite`. `Watch::idle()` keeps a slot's place and is never ready. After
+  a wait, `ready()` reports anything (what was wanted, a hang-up or an error)
+  and `readable()` reports readable data only.
+- `connection::wait` and the daemon readiness pipe wait through it;
+  `connection::Interest` is `waiting::Interest`.
 
 ## Client libraries
 
@@ -170,7 +205,12 @@ dispatch or shell-specific logic.
 ## Behavioral evidence
 
 `tests/runtime.rs`: `issue18_private_directory_refuses_symlink_file_and_permissive_mode_without_repair`,
-`issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenticated`.
+`issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenticated`,
+`issue311_a_private_file_is_new_owner_only_and_never_a_symlink`.
+
+`tests/connection.rs`: `issue19_socket_connection_waits_for_real_readiness_until_the_deadline`,
+`issue311_only_a_missing_or_refusing_socket_says_nobody_listens`. The unit tests
+in `src/pty.rs` cover `set_nonblocking` and `output_ended` (#311).
 
 `tests/home.rs` (#155) runs each case in a child of the test binary, with
 the environment or path under test:
@@ -234,6 +274,9 @@ refusal proves nothing called them.
 `tests/terminal.rs`: `issue20_real_pty_raw_mode_restores_on_drop_and_panic_without_screen_sequences`,
 `issue20_real_pty_size_and_zero_fallback`,
 `issue20_signals_coalesce_resize_and_report_exit_signal`.
+
+`tests/waiting.rs` (#310): `issue310_one_wait_reports_each_ready_handle_until_the_timeout`,
+`issue310_a_hung_up_peer_is_ready`, `issue310_idle_slots_wait_out_the_timeout`.
 
 Tests use isolated private directories. Direct socket fixtures use short `/tmp`
 paths so mutation workers and long checkouts do not exceed the socket limit.

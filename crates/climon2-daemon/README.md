@@ -82,9 +82,9 @@ architecture test is claimed.
 The daemon owns the session's virtual terminal (`climon2-vt`, ADR 0007). Every
 loop iteration reads at most 32 KiB from the PTY and feeds it to the VT, whether
 or not any client is attached; a slow or absent client never stops the command's
-output. Between iterations the loop waits up to 2 ms for PTY readability (poll,
-no read). The VT's terminal replies go to the PTY; its filtered live output goes
-to the controller only.
+output. Between iterations the loop waits up to 2 ms for PTY readability (the
+platform waiting seam, no read). The VT's terminal replies go to the PTY; its
+filtered live output goes to the controller only.
 
 Authenticated connections use core's typed protocol messages and connection
 states. Incremental nonblocking decoding enforces an absolute two-second hello
