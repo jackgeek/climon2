@@ -7,11 +7,11 @@ yet; it was agreed in
 [Define Windows host and shell qualification](https://github.com/jackgeek/climon2/issues/213)
 and is the specification the Windows port implements.
 
-It does not cover the monitor or the client library on Windows, which
-[Define Windows monitor library and specification integration](https://github.com/jackgeek/climon2/issues/216)
-decides, nor how results are stored as evidence records, which
-[Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
-decides.
+The monitor and client-library scenarios, and checklist items 13 to 16, were
+added by
+[Define Windows monitor library and specification integration](https://github.com/jackgeek/climon2/issues/216).
+[Windows quality and CI qualification](windows-quality.md) says which CI jobs
+run these scenarios and how their results are stored.
 
 ## Terms
 
@@ -152,24 +152,39 @@ Log privacy stays required but waits for
 
 ### Windows-only scenarios
 
-| Group | Required result |
-| --- | --- |
-| Close, per host model | The client exits 129, the leave policy applies, and a detached session survives and reattaches |
-| Close status, per shell and app | The session reports the status measured for `pwsh`, `powershell`, `cmd.exe`, vim and Edit (`0xC000013A`; vim `0x1`) |
-| Host jobs | The three job shapes under [Host models](#host-models) |
-| Key input, per host model | One key table (arrows, Home and End, function keys, Alt and Ctrl combinations, Ctrl+C as byte `0x03`), sent in that model's encoding, arrives in the session as the expected bytes |
-| Console preflight | `exec` and `attach` refuse a redirected stdin or stdout as they refuse a missing terminal on Unix |
-| ConPTY files | With `conpty.dll` or `OpenConsole.exe` missing, `exec` exits 125 |
-| Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 |
-| Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded |
-| Ctrl+Break, Windows Terminal model | A program using the default handler ends with `0xC000013A` and the shell survives; the key-up record that accompanies Ctrl+Break never reaches the session as `0x03` |
-| Full-width statuses | `0xC000013A`, `259` and `0xFFFFFFFF` pass unchanged through the launcher, the CLI and the client |
-| Long working directory | `exec` from a working directory over 260 characters exits 126 |
+| ID | Group | Required result |
+| --- | --- | --- |
+| `WIN-01` | Close, per host model | The client exits 129, the leave policy applies, and a detached session survives and reattaches |
+| `WIN-02` | Close status, per shell and app | The session reports the status measured for `pwsh`, `powershell`, `cmd.exe`, vim and Edit (`0xC000013A`; vim `0x1`) |
+| `WIN-03` | Host jobs | The three job shapes under [Host models](#host-models) |
+| `WIN-04` | Key input, per host model | One key table (arrows, Home and End, function keys, Alt and Ctrl combinations, Ctrl+C as byte `0x03`), sent in that model's encoding, arrives in the session as the expected bytes |
+| `WIN-05` | Console preflight | `exec` and `attach` refuse a redirected stdin or stdout as they refuse a missing terminal on Unix |
+| `WIN-06` | ConPTY files | With `conpty.dll` or `OpenConsole.exe` missing, `exec` exits 125 |
+| `WIN-07` | Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 |
+| `WIN-08` | Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded |
+| `WIN-09` | Ctrl+Break, Windows Terminal model | A program using the default handler ends with `0xC000013A` and the shell survives; the key-up record that accompanies Ctrl+Break never reaches the session as `0x03` |
+| `WIN-10` | Full-width statuses | `0xC000013A`, `259` and `0xFFFFFFFF` pass unchanged through the launcher, the CLI and the client |
+| `WIN-11` | Long working directory | `exec` from a working directory over 260 characters exits 126 |
 
-These follow the
+`WIN-09` to `WIN-11` follow the
 [Windows platform and lifecycle contract](windows-lifecycle.md). Ctrl+Break
 has no VS Code model scenario: that host delivers nothing for it, a documented
 limitation.
+
+### Monitor and client-library scenarios
+
+Every scenario in the [monitor acceptance matrix](monitor-acceptance.md),
+which covers the client library, the monitor and headless `exec` (about 210
+scenarios in fifteen test files), runs in the Windows Test job. The programs
+inside its sessions run under `pwsh`; the shell subset above does not apply.
+
+| Host model | Scenarios |
+| --- | --- |
+| Windows Terminal model | All of them |
+| VS Code model | The terminal-facing monitor scenarios: rendering, input routing, resize, the selector, toasts, the bell and attention reports |
+
+A scenario that cannot pass on Windows needs an explicit, documented decision,
+as the exceptions above have.
 
 ## Manual checklist
 
@@ -184,7 +199,9 @@ Windows Terminal and VS Code, and the exact candidate archive installed with
 the default profile, the user's PowerShell profile loaded, default host
 settings.
 
-Run every item in Windows Terminal, then in the VS Code integrated terminal:
+Run every item in Windows Terminal, then in the VS Code integrated terminal.
+Item *n* is scenario `WINM-`*n* (`WINM-01` to `WINM-16`) in the release's
+evidence records:
 
 1. Record the Windows build, the host's version and the `pwsh` build. Run the
    job probe, a PowerShell snippet that calls `IsProcessInJob`, and record its
@@ -206,6 +223,13 @@ Run every item in Windows Terminal, then in the VS Code integrated terminal:
     check the exit status.
 12. VS Code only: run `c2 exec` from a task terminal, and run "Reload Window"
     with a session attached; the session survives.
+13. With two sessions running, `c2 monitor` opens and lists both.
+14. The selector switches between them, and typed input reaches only the
+    selected session.
+15. A session that needs attention raises a toast, and the prefix followed by
+    `j` jumps to it.
+16. Resizing the window re-renders the monitor, and exiting the monitor leaves
+    both sessions running.
 
 Signing out and shutting down are not checklist items: sessions end with
 them and no status is promised.

@@ -60,12 +60,15 @@ Installation relationships are outside this consumption diagram.
 
 This diagram shows only what Windows changes in the diagram above: how the
 launcher reaches the CLI, and how the daemon reaches the session command
-through ConPTY, the Windows pseudoconsole. It omits the client, monitor and
-client library, whose Windows loading is undecided
-([#216](https://github.com/jackgeek/climon2/issues/216)). Arrows run from
-consumer to consumed artifact. Every arrow is dashed, because nothing here
-exists yet. The decisions are in
-[ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented).
+through ConPTY, the Windows pseudoconsole, and how the client and the monitor
+load the client library. How the CLI starts the client, monitor and daemon
+executables is left to
+[#212](https://github.com/jackgeek/climon2/issues/212), so those arrows are
+omitted. Arrows run from consumer to consumed artifact. Every arrow is dashed,
+because nothing here exists yet. The decisions are in
+[ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
+and, for the library,
+[#216](https://github.com/jackgeek/climon2/issues/216).
 
 ```mermaid
 flowchart TB
@@ -74,6 +77,9 @@ flowchart TB
         subgraph wversion["%LOCALAPPDATA%\climon2\&lt;version&gt;"]
             wcli["climon2-cli.exe<br/>described above"]
             wdaemon["climon2-daemon.exe<br/>described above"]
+            wclient["climon2-client.exe<br/>described above"]
+            wmonitor["climon2-monitor.exe<br/>described above"]
+            wlibrary[["climon2_client.dll"]]
             conpty[["conpty.dll"]]
             openconsole["OpenConsole.exe"]
         end
@@ -81,6 +87,8 @@ flowchart TB
         inbox(["Inbox conhost.exe"])
 
         wlauncher -.->|"spawns and waits for current version"| wcli
+        wclient -.->|"loads the copy beside itself by exact path"| wlibrary
+        wmonitor -.->|"loads each session version's copy by exact path; never frees it"| wlibrary
         wdaemon -.->|"loads by full path from own folder"| conpty
         conpty -.->|"starts from beside the DLL"| openconsole
         openconsole -.->|"hosts the session pseudoconsole"| wcommand
@@ -92,7 +100,8 @@ flowchart TB
 | Node | Purpose |
 |---|---|
 | `c2.exe` | The frozen launcher, the only command name. Windows cannot replace a process, so it starts the CLI and waits for it. |
-| `climon2-cli.exe`, `climon2-daemon.exe` | The same roles as on Unix. |
+| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. |
+| `climon2_client.dll` | The client library, the Windows build of the Rust cdylib above. It uses the static C runtime, imports only Windows system DLLs and exports only its bootstrap symbol. |
 | `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
 | `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |
 | Session command | The program the session runs. |
