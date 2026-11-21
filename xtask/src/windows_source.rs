@@ -22,14 +22,19 @@ use syn::{
 };
 
 /// Paths outside the registered Windows files whose changes run the Windows
-/// jobs regardless of the switch: the workflows and xtask's quality code.
+/// jobs regardless of the switch: the workflows and xtask's quality code,
+/// including what the Windows gate builds xtask from and its probes' fixtures.
 const WINDOWS_TRIGGERS: &[&str] = &[
     ".github/",
     "tools/",
+    "xtask/Cargo.toml",
     "xtask/src/coverage.rs",
+    "xtask/src/main.rs",
     "xtask/src/mutation_plan.rs",
     "xtask/src/quality.rs",
     "xtask/src/windows_source.rs",
+    "xtask/tests/fixtures/mutation-isolation/",
+    "xtask/tests/fixtures/mutation-sentinel/",
 ];
 
 fn is_registered_windows(path: &Path) -> bool {
@@ -268,6 +273,10 @@ mod tests {
             "xtask/src/coverage.rs",
             "xtask/src/mutation_plan.rs",
             "xtask/src/windows_source.rs",
+            "xtask/src/main.rs",
+            "xtask/Cargo.toml",
+            "xtask/tests/fixtures/mutation-sentinel/src/lib.rs",
+            "xtask/tests/fixtures/mutation-isolation/cli/src/main.rs",
         ] {
             assert!(triggers_windows_jobs(path), "{path}");
         }
