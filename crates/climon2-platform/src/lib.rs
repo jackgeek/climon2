@@ -11,3 +11,4 @@ pub mod pty;
 pub mod runtime;
 mod syscall;
 pub mod terminal;
+pub mod waiting;
