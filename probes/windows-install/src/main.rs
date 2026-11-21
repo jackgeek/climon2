@@ -642,6 +642,11 @@ fn p5(out: &mut Out) {
 fn read_loop(cur: &Path, stop: &Path, res: &Path, ready: &Path) {
     let mut m: BTreeMap<String, u64> = BTreeMap::new();
     let (mut total, mut ok, mut max) = (0u64, 0u64, 0u64);
+    // A burst is a run of consecutive failed reads.
+    let (mut bursts, mut streak, mut max_streak, mut max_burst_us) = (0u64, 0u64, 0u64, 0u128);
+    let mut burst_start = Instant::now();
+    let mut burst_log = String::new();
+    let begin = Instant::now();
     fs::write(ready, "").unwrap();
     while !(total % 64 == 0 && stop.exists()) {
         total += 1;
@@ -651,6 +656,27 @@ fn read_loop(cur: &Path, stop: &Path, res: &Path, ready: &Path) {
             let mut s = String::new();
             f.read_to_string(&mut s).map(|_| s).map_err(|e| ("read", e))
         });
+        let good = matches!(&read, Ok(s) if s.len() > 1 && s.starts_with('v') && s.ends_with('\n'));
+        if good {
+            if streak > 0 {
+                let us = burst_start.elapsed().as_micros();
+                max_burst_us = max_burst_us.max(us);
+                if bursts <= 20 {
+                    burst_log.push_str(&format!(
+                        " [at_ms={} reads={streak} us={us}]",
+                        burst_start.duration_since(begin).as_millis()
+                    ));
+                }
+            }
+            streak = 0;
+        } else {
+            if streak == 0 {
+                bursts += 1;
+                burst_start = Instant::now();
+            }
+            streak += 1;
+            max_streak = max_streak.max(streak);
+        }
         match read {
             Ok(s) => {
                 let v = s
@@ -673,7 +699,10 @@ fn read_loop(cur: &Path, stop: &Path, res: &Path, ready: &Path) {
     }
     let _ = fs::write(
         res,
-        format!("reads={total} ok={ok} failures={} max_version_seen={max} by_kind={m:?}\n", total - ok),
+        format!(
+            "reads={total} ok={ok} failures={} max_version_seen={max} by_kind={m:?} bursts={bursts} longest_burst_reads={max_streak} longest_burst_us={max_burst_us} first_bursts={burst_log}\n",
+            total - ok
+        ),
     );
 }
 
