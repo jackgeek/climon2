@@ -30,8 +30,8 @@ check --full is the full gate, run before a feature branch merges to main with
 CLIMON2_MUTATION_BASE=origin/main: 5 load rounds, then mutation of whole files changed
 since that merge base.
 --mutate-all mutates every shipped file; --print-mutation-plan prints the selection and exits.
-test runs the Windows source-ownership check, fmt, clippy and workspace tests, including
-packaged acceptance, plus ShellCheck.
+test runs the Windows source-ownership check, then fmt, clippy and workspace tests,
+including packaged acceptance, plus ShellCheck.
 windows-changed prints whether the changes since the merge base of <base> and HEAD must run
 the Windows Test and Quality jobs whatever CLIMON2_WINDOWS_TESTS says.
 Before the workspace tests it runs the monitor's build test alone, against its plain binary.
