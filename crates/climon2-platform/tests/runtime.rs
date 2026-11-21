@@ -108,3 +108,17 @@ fn issue311_a_private_file_is_new_owner_only_and_never_a_symlink() {
     assert!(runtime::create_private_file(&link).is_err());
     assert!(!directory.path().join("absent").exists());
 }
+
+/// #312: a new file is created with the umask applied, unlike a private
+/// file, and never over an existing file.
+#[test]
+fn issue312_a_new_file_keeps_the_umask_and_never_replaces_a_file() {
+    let directory = directory();
+    let path = directory.path().join("instance.log");
+    let file = runtime::create_new_file(&path).unwrap();
+    assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
+    assert_eq!(
+        runtime::create_new_file(&path).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+}
