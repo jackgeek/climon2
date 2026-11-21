@@ -653,7 +653,9 @@ On arm64 macOS, install both Rust targets before running workspace tests,
 CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
 architectures. Windows runs neutral contracts only. The agreed
 [Windows host and shell qualification](docs/windows-qualification.md) says what a
-Windows release will have to pass. Shared and Linux-specific
+Windows release will have to pass, and
+[Windows quality and CI qualification](docs/windows-quality.md) says how CI will
+check it. Shared and Linux-specific
 CRAP/mutation run on the dedicated Linux development host, with 8 mutation
 workers. CI does not repeat those quality checks.
 

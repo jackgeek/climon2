@@ -10,9 +10,8 @@ and is the specification the Windows port implements.
 The monitor and client-library scenarios, and checklist items 13 to 16, were
 added by
 [Define Windows monitor library and specification integration](https://github.com/jackgeek/climon2/issues/216).
-This document does not cover how results are stored as evidence records, which
-[Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
-decides.
+[Windows quality and CI qualification](windows-quality.md) says which CI jobs
+run these scenarios and how their results are stored.
 
 ## Terms
 
@@ -151,16 +150,16 @@ refusal of a session attaching to itself, and log privacy.
 
 ### Windows-only scenarios
 
-| Group | Required result |
-| --- | --- |
-| Close, per host model | The client exits 129, the leave policy applies, and a detached session survives and reattaches |
-| Close status, per shell and app | The session reports the status measured for `pwsh`, `powershell`, `cmd.exe`, vim and Edit (`0xC000013A`; vim `0x1`) |
-| Host jobs | The three job shapes under [Host models](#host-models) |
-| Key input, per host model | One key table (arrows, Home and End, function keys, Alt and Ctrl combinations, Ctrl+C as byte `0x03`), sent in that model's encoding, arrives in the session as the expected bytes |
-| Console preflight | `exec` and `attach` refuse a redirected stdin or stdout as they refuse a missing terminal on Unix |
-| ConPTY files | With `conpty.dll` or `OpenConsole.exe` missing, `exec` exits 125 |
-| Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 |
-| Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded |
+| ID | Group | Required result |
+| --- | --- | --- |
+| `WIN-01` | Close, per host model | The client exits 129, the leave policy applies, and a detached session survives and reattaches |
+| `WIN-02` | Close status, per shell and app | The session reports the status measured for `pwsh`, `powershell`, `cmd.exe`, vim and Edit (`0xC000013A`; vim `0x1`) |
+| `WIN-03` | Host jobs | The three job shapes under [Host models](#host-models) |
+| `WIN-04` | Key input, per host model | One key table (arrows, Home and End, function keys, Alt and Ctrl combinations, Ctrl+C as byte `0x03`), sent in that model's encoding, arrives in the session as the expected bytes |
+| `WIN-05` | Console preflight | `exec` and `attach` refuse a redirected stdin or stdout as they refuse a missing terminal on Unix |
+| `WIN-06` | ConPTY files | With `conpty.dll` or `OpenConsole.exe` missing, `exec` exits 125 |
+| `WIN-07` | Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 |
+| `WIN-08` | Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded |
 
 ### Monitor and client-library scenarios
 
@@ -194,7 +193,9 @@ Windows Terminal and VS Code, and the exact candidate archive installed with
 the default profile, the user's PowerShell profile loaded, default host
 settings.
 
-Run every item in Windows Terminal, then in the VS Code integrated terminal:
+Run every item in Windows Terminal, then in the VS Code integrated terminal.
+Item *n* is scenario `WINM-`*n* (`WINM-01` to `WINM-16`) in the release's
+evidence records:
 
 1. Record the Windows build, the host's version and the `pwsh` build. Run the
    job probe, a PowerShell snippet that calls `IsProcessInJob`, and record its
