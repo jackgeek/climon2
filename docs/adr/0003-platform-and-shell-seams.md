@@ -2,9 +2,11 @@
 
 The runtime supports macOS 15+ on Apple Silicon and Intel, and x86_64
 GNU/Linux with an Ubuntu 24.04/glibc 2.39 release baseline. Arch Linux is a
-native development host. Windows (x86_64 MSVC, Windows 11) is specified, not
-implemented; its I/O and transport decisions are under
-[Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented). Each
+native development host. Windows (x86_64 MSVC, Windows 11 build 26100 or
+newer) is specified, not implemented; its I/O and transport decisions are under
+[Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented),
+and its process lifecycle under
+[Windows lifecycle](#windows-lifecycle-agreed-not-implemented). Each
 platform-specific concern is its own module, with platform-neutral function
 signatures and `#[cfg(target_os = …)]` bodies. There are no trait objects or
 runtime platform dispatch. Unsupported targets hit `compile_error!` inside
@@ -29,7 +31,7 @@ More seams may emerge after the first release. Everything else counts as platfor
 
 ## Transport
 
-Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 included (through socket2; the minimum build belongs to the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212)). Named pipes are not used, so session metadata keeps a socket path.
+Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 included (through socket2; build 26100 or newer, per the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212)). Named pipes are not used, so session metadata keeps a socket path.
 
 ## Linux implementation
 
@@ -118,18 +120,37 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   `ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT` with processed input
   off, and `ReadConsoleInputW` supplies key characters and
   `WINDOW_BUFFER_SIZE_EVENT` resizes. Keys VT cannot express, such as
-  Ctrl+Break and Shift+Enter, are a documented limitation. Output enables
+  Shift+Enter, are a documented limitation. Ctrl+Break reaches the session
+  through a console control handler instead
+  ([Windows lifecycle](#windows-lifecycle-agreed-not-implemented)). Output enables
   `ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN` and the
   UTF-8 code page, and writes raw bytes with `WriteFile`, never splitting a
   UTF-8 character across writes (a pure `climon2-core` boundary function, used
   only on Windows). Every exit path restores both console modes and code pages.
 
+## Windows lifecycle (agreed, not implemented)
+
+Decided in [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212) (owner, 2026-11-21), after measurements on a Windows 11 VM. The full contract and its exceptions are in [Windows platform and lifecycle contract](../windows-lifecycle.md).
+
+- **Platform.** Windows 11 build 26100 or newer, documented and not checked at
+  run time. Windows 10 is not supported.
+- **Daemon spawn and detach.** A raw `CreateProcessW` with `DETACHED_PROCESS`
+  and, inside a job, `CREATE_BREAKAWAY_FROM_JOB`. If the daemon is still in a
+  job afterwards, `exec` exits 125; there is no fallback route.
+- **Hanging up.** One job object per session, allowing breakaway and killing
+  on close. Hang-up closes the pseudoconsole, waits the full five seconds, then
+  terminates the job with `0xC000013A`.
+- **Launcher hand-off.** Every Unix `exec` hand-off, including the monitor's,
+  becomes spawn and wait, passing the child's raw `u32` status through.
+- **Exit-status mapping.** Statuses are full-width; there is no
+  128 + signal on Windows.
+- **Process start time.** `GetProcessTimes` creation time in the frozen
+  `daemon_start_time`.
+
 ## Notes for future ports
 
 - **Windows peer check and runtime directory:** superseded by [Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented).
-- **Windows hang-up:** ClosePseudoConsole (which delivers CTRL_CLOSE_EVENT), then 5 s, then TerminateProcess. The daemon calls the bundled `conpty.dll` directly, not portable-pty. Timing belongs to the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212).
-- **Windows launcher:** it can't `exec`, so it spawns the CLI, waits, exits with the child's code, and ignores Ctrl+C. Its contract freezes when Windows first ships (ADR 0002).
-- **Windows exit status:** the Exit frame's `code` must carry a raw `u32` code (for example `0xC000013A`); 128+signal is Unix-only. The post-hello protocol is version-specific (ADR 0001), so widening it later is cheap.
+- **Windows hang-up, launcher and exit status:** superseded by [Windows lifecycle](#windows-lifecycle-agreed-not-implemented). The launcher's contract freezes when Windows first ships (ADR 0002).
 
 ## Shell profiles
 
