@@ -33,7 +33,7 @@ const MUTATION_TIMEOUT_FACTOR: &str = "10";
 const STAGE_TIMEOUTS: &str = "target/mutation-stage-timeouts.json";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
-const SHIPPED: &[&str] = &[
+pub(crate) const SHIPPED: &[&str] = &[
     "crates/climon2-launcher/src",
     "crates/climon2-core/src",
     "crates/climon2-platform/src",
@@ -538,7 +538,7 @@ fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
     source_paths(root, &[sources.stdout])
 }
 
-fn native_source_os(path: &Path) -> Option<&'static str> {
+pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
     match path.to_str() {
         Some("crates/climon2-platform/src/process/linux.rs")
         | Some("crates/climon2-platform/src/peer/linux.rs")
@@ -552,6 +552,7 @@ fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/library/macos.rs")
         | Some("crates/climon2-install/src/platform/macos.rs")
         | Some("crates/climon2-client/src/library/macos.rs") => Some("macos"),
+        Some("crates/climon2-platform/src/home/windows.rs") => Some("windows"),
         _ => None,
     }
 }
@@ -2001,6 +2002,7 @@ No selected line holds a mutation site; nothing to mutate.
                 "crates/climon2-client/src/library/macos.rs",
                 cfg!(target_os = "macos"),
             ),
+            ("crates/climon2-platform/src/home/windows.rs", cfg!(windows)),
         ];
         for (path, _) in sources {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();

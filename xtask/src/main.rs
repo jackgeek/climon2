@@ -15,9 +15,10 @@ mod mutation_plan;
 mod qualify;
 mod quality;
 mod release;
+mod windows_source;
 
 const HELP: &str = "\
-Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...>
+Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|windows-changed <base>|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...>
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
 check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
@@ -29,7 +30,10 @@ check --full is the full gate, run before a feature branch merges to main with
 CLIMON2_MUTATION_BASE=origin/main: 5 load rounds, then mutation of whole files changed
 since that merge base.
 --mutate-all mutates every shipped file; --print-mutation-plan prints the selection and exits.
-test runs fmt, clippy and workspace tests, including packaged acceptance, plus ShellCheck.
+test runs the Windows source-ownership check, fmt, clippy and workspace tests, including
+packaged acceptance, plus ShellCheck.
+windows-changed prints whether the changes since the merge base of <base> and HEAD must run
+the Windows Test and Quality jobs whatever CLIMON2_WINDOWS_TESTS says.
 Before the workspace tests it runs the monitor's build test alone, against its plain binary.
 setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
 mutation-probe checks real-binary worker isolation.
@@ -61,6 +65,8 @@ fn main() -> ExitCode {
         check(options)
     } else if args == ["test"] {
         test()
+    } else if args.len() == 2 && args[0] == "windows-changed" {
+        windows_source::changed(workspace_root(), &args[1].to_string_lossy())
     } else if args == ["setup-quality"] {
         quality::setup(workspace_root())
     } else if args == ["mutation-probe"] {
@@ -160,6 +166,7 @@ fn check(options: CheckOptions) -> io::Result<()> {
 
 fn test() -> io::Result<()> {
     let root = workspace_root();
+    windows_source::check(root)?;
     quality::run(Command::new("shellcheck").arg(root.join("install.sh")))?;
     for args in [
         &["fmt", "--all", "--", "--check"][..],
