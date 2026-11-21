@@ -1,0 +1,24 @@
+shell=7.6.10 edition=Core
+HKCU\Environment value names: Path, TEMP, TMP
+before: kind=ExpandString
+before: raw=%USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;
+before: expanded=C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;
+reg query:  HKEY_CURRENT_USER\Environment     Path    REG_EXPAND_SZ    %USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps; 
+machine Path kind=String
+--- write back with RegistryKey.SetValue(name, value, <original kind>)
+after SetValue: kind=ExpandString
+after SetValue: raw=%USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;%LOCALAPPDATA%\climon2-probe\bin
+after SetValue: expanded=C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;C:\Users\runneradmin\AppData\Local\climon2-probe\bin
+after SetValue: kind preserved=True raw equals what was written=True original is an exact prefix=True
+--- [Environment]::SetEnvironmentVariable('Path', <same unexpanded string>, 'User')
+after SetEnvironmentVariable: kind=String
+after SetEnvironmentVariable: raw=%USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;%LOCALAPPDATA%\climon2-probe\bin
+after SetEnvironmentVariable: expanded=%USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;%LOCALAPPDATA%\climon2-probe\bin
+after SetEnvironmentVariable: kind preserved=False raw equals what was written=True
+--- [Environment]::GetEnvironmentVariable('Path','User') (what a naive read returns)
+GetEnvironmentVariable: %USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;%LOCALAPPDATA%\climon2-probe\bin
+--- restore
+restored: kind=ExpandString
+restored: raw=%USERPROFILE%\.dotnet\tools;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;
+restored: expanded=C:\Users\runneradmin\.dotnet\tools;C:\Users\runneradmin\.cargo\bin;C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps;
+restored: identical=True
