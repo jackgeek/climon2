@@ -151,10 +151,7 @@ fn answered(result: io::Result<Option<HelloExtensions>>, metadata: SessionMetada
 
 /// Only a missing or refusing socket can begin to prove a session stale.
 fn connection_failed(metadata: SessionMetadata, error: io::Error, removal: Removal) -> Outcome {
-    if matches!(
-        error.raw_os_error(),
-        Some(libc::ENOENT | libc::ECONNREFUSED)
-    ) {
+    if connection::nobody_listening(&error) {
         prove_stale_and_clean_up(metadata, removal)
     } else {
         Outcome::Uncertain(metadata, Uncertainty::Unreachable(error))

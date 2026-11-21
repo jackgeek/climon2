@@ -2,6 +2,7 @@ use climon2_core::{
     protocol::{PTY_DRAIN_CAP, PTY_DRAIN_IDLE},
     wire::CommandResult,
 };
+use climon2_platform::pty;
 use std::{io, time::Instant};
 
 /// One PTY output read, classified.
@@ -29,7 +30,7 @@ fn bytes(count: usize) -> Read {
 }
 
 fn failure(error: &io::Error) -> Read {
-    if error.raw_os_error() == Some(libc::EIO) {
+    if pty::output_ended(error) {
         return Read::End;
     }
     if error.kind() == io::ErrorKind::WouldBlock {

@@ -84,8 +84,9 @@ mod unix {
         check_directory(path)
     }
 
-    /// A new file only this user can read and write, never opened through a
-    /// symlink or over an existing file.
+    /// A new file only this user can read and write, whatever the umask,
+    /// never opened through a symlink or over an existing file. A file that
+    /// cannot be made private is removed again.
     pub fn create_private_file(path: &Path) -> io::Result<File> {
         let file = OpenOptions::new()
             .write(true)
@@ -93,7 +94,10 @@ mod unix {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+            let _ = fs::remove_file(path);
+            return Err(error);
+        }
         Ok(file)
     }
 
