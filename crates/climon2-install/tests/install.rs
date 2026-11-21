@@ -64,16 +64,10 @@ fn fresh_install_publishes_complete_version_launcher_and_current() {
             .unwrap();
         assert_eq!(output.status.code(), Some(37));
     }
-    assert_eq!(
-        Command::new(destination.join("climon2"))
-            .status()
+    assert!(
+        fs::symlink_metadata(destination.join("c2"))
             .unwrap()
-            .code(),
-        Some(11)
-    );
-    assert_eq!(
-        fs::read_link(destination.join("c2")).unwrap(),
-        std::path::Path::new("climon2")
+            .is_file()
     );
     assert_eq!(
         Command::new(destination.join("c2"))
@@ -82,11 +76,12 @@ fn fresh_install_publishes_complete_version_launcher_and_current() {
             .code(),
         Some(11)
     );
+    assert!(fs::symlink_metadata(destination.join("climon2")).is_err());
     assert_eq!(
         fs::read(destination.join("1.2.3").join(LIBRARY)).unwrap(),
         fs::read(source.join("1.2.3").join(LIBRARY)).unwrap()
     );
-    assert_eq!(fs::read_dir(destination).unwrap().count(), 4);
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 3);
 }
 
 /// #21.17-19 / #33: identical versions retain their files; differing versions swap.
@@ -101,7 +96,7 @@ fn reinstall_clobbers_only_different_same_version_and_retains_other_versions() {
     let original_inode = fs::metadata(destination.join("1.2.3/climon2-cli"))
         .unwrap()
         .ino();
-    script(&destination.join("climon2"), "exit 99");
+    script(&destination.join("c2"), "exit 99");
     climon2_install::install(&payload, &destination).unwrap();
     assert_eq!(
         fs::metadata(destination.join("1.2.3/climon2-cli"))
@@ -110,7 +105,7 @@ fn reinstall_clobbers_only_different_same_version_and_retains_other_versions() {
         original_inode
     );
     assert_eq!(
-        Command::new(destination.join("climon2"))
+        Command::new(destination.join("c2"))
             .status()
             .unwrap()
             .code(),
@@ -136,7 +131,7 @@ fn reinstall_clobbers_only_different_same_version_and_retains_other_versions() {
         fs::read(destination.join("2.0.0/preserve")).unwrap(),
         b"untouched"
     );
-    assert_eq!(fs::read_dir(destination).unwrap().count(), 5);
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 4);
 }
 
 /// #21.17-18 / #33: a same-version file differing only in mode is not identical, so it swaps.
@@ -289,104 +284,35 @@ fn assert_installer_failure(output: std::process::Output) {
     assert_eq!(diagnostic.lines().count(), 1);
 }
 
-#[cfg(feature = "test-hooks")]
+/// #303: `c2` is the launcher itself. A `c2 -> climon2` symlink from an earlier
+/// development install is replaced by the real launcher; the `climon2` it named
+/// is not migrated.
 #[test]
-fn short_command_failure_does_not_publish_or_switch_current() {
+fn upgrade_replaces_the_old_short_command_symlink_with_the_launcher() {
     let workspace = Workspace::new();
-    let old = workspace.payload("old", "0.0.1", 17);
     let destination = workspace.root.join("installed");
-    climon2_install::install(
-        &climon2_install::Payload::from_directory(&old, "0.0.1").unwrap(),
-        &destination,
-    )
-    .unwrap();
-    fs::remove_file(destination.join("c2")).unwrap();
-    let source = workspace.payload("new", env!("CARGO_PKG_VERSION"), 44);
-    let output = Command::new(source.join("install"))
-        .arg("--dir")
-        .arg(&destination)
-        .isolated()
-        .env("CLIMON2_TEST_INSTALL_FAULT", "fail:short-command")
-        .output()
-        .unwrap();
+    fs::create_dir(&destination).unwrap();
+    script(&destination.join("climon2"), "exit 99");
+    std::os::unix::fs::symlink("climon2", destination.join("c2")).unwrap();
+    let source = workspace.payload("payload", "1.2.3", 37);
+    let payload = climon2_install::Payload::from_directory(&source, "1.2.3").unwrap();
+    climon2_install::install(&payload, &destination).unwrap();
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains(destination.join("c2").to_str().unwrap())
+        fs::symlink_metadata(destination.join("c2"))
+            .unwrap()
+            .is_file()
     );
-    assert_installer_failure(output);
-    assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
-    assert!(!destination.join(env!("CARGO_PKG_VERSION")).exists());
-    assert!(fs::symlink_metadata(destination.join("c2")).is_err());
-    assert!(!destination.join(".climon2-install-stage").exists());
-}
-
-#[test]
-fn conflicting_short_commands_are_preserved_before_any_publication() {
-    for kind in [
-        "file",
-        "directory",
-        "wrong-link",
-        "dangling-link",
-        "absolute-link",
-        "directory-target",
-    ] {
-        let workspace = Workspace::new();
-        let old = workspace.payload("old", "0.0.1", 17);
-        let destination = workspace.root.join("installed");
-        climon2_install::install(
-            &climon2_install::Payload::from_directory(&old, "0.0.1").unwrap(),
-            &destination,
-        )
-        .unwrap();
-        let command = destination.join("c2");
-        fs::remove_file(&command).unwrap();
-        match kind {
-            "file" => script(&command, "exit 99"),
-            "directory" => {
-                fs::create_dir(&command).unwrap();
-                fs::write(command.join("keep"), "untouched").unwrap();
-            }
-            "wrong-link" => {
-                script(&workspace.root.join("other"), "exit 99");
-                std::os::unix::fs::symlink("../other", &command).unwrap();
-            }
-            "dangling-link" => std::os::unix::fs::symlink("missing", &command).unwrap(),
-            "absolute-link" => {
-                std::os::unix::fs::symlink(destination.join("climon2"), &command).unwrap();
-            }
-            "directory-target" => std::os::unix::fs::symlink("climon2/", &command).unwrap(),
-            _ => unreachable!(),
-        }
-        let previous_link = fs::read_link(&command).ok();
-        let source = workspace.payload("new", env!("CARGO_PKG_VERSION"), 44);
-        script(&source.join("climon2"), "exit 22");
-        let output = Command::new(source.join("install"))
-            .arg("--dir")
-            .arg(&destination)
-            .isolated()
-            .output()
-            .unwrap();
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(command.to_str().unwrap()),
-            "{kind}: {output:?}"
-        );
-        assert_installer_failure(output);
-        assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
-        assert!(!destination.join(env!("CARGO_PKG_VERSION")).exists());
-        assert!(!destination.join(".climon2-install-stage").exists());
-        assert_eq!(
-            Command::new(destination.join("climon2"))
-                .status()
-                .unwrap()
-                .code(),
-            Some(11)
-        );
-        assert_eq!(fs::read_link(&command).ok(), previous_link);
-        match kind {
-            "file" => assert_eq!(fs::read(&command).unwrap(), b"#!/bin/sh\nexit 99\n"),
-            "directory" => assert_eq!(fs::read(command.join("keep")).unwrap(), b"untouched"),
-            _ => {}
-        }
-    }
+    assert_eq!(
+        Command::new(destination.join("c2"))
+            .status()
+            .unwrap()
+            .code(),
+        Some(11)
+    );
+    assert_eq!(
+        fs::read(destination.join("climon2")).unwrap(),
+        b"#!/bin/sh\nexit 99\n"
+    );
 }
 
 /// #21.7,18 / #33: interruption never publishes partial versions or advances current early.
@@ -409,7 +335,7 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
             )
             .unwrap();
             let source = workspace.payload("new", env!("CARGO_PKG_VERSION"), 44);
-            script(&source.join("climon2"), "exit 22");
+            script(&source.join("c2"), "exit 22");
             fs::create_dir(destination.join(".unrelated-stage")).unwrap();
             fs::write(destination.join(".unrelated-stage/keep"), "safe").unwrap();
             let output = Command::new(source.join("install"))
@@ -446,7 +372,7 @@ fn interruption_cleans_only_own_staging_and_rerun_recovers() {
                 11
             };
             assert_eq!(
-                Command::new(destination.join("climon2"))
+                Command::new(destination.join("c2"))
                     .status()
                     .unwrap()
                     .code(),
@@ -499,12 +425,12 @@ fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
         .unwrap()
         .parent()
         .unwrap()
-        .join("climon2");
+        .join("c2");
     assert!(
         launcher.is_file(),
         "build sibling launcher with cargo test -p climon2-launcher -p climon2-install"
     );
-    fs::copy(launcher, source.join("climon2")).unwrap();
+    fs::copy(launcher, source.join("c2")).unwrap();
     script(
         &source.join("climon2-cli"),
         "printf '%s\\000' \"$@\"; printf '%s' \"$CHECK\"; exit 42",
@@ -518,24 +444,22 @@ fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
             fs::read(destination.join(version).join(LIBRARY)).unwrap(),
             b"#!/bin/sh\nlibrary 0\n"
         );
-        for command in ["c2", "climon2"] {
-            let output = Command::new(destination.join(command))
-                .args(["exec", "space 雪", "", "--option"])
-                .isolated()
-                .env("HOME", &workspace.root)
-                .env("CHECK", "unchanged")
-                .output()
-                .unwrap();
-            assert_eq!(
-                output.status.code(),
-                Some(if version == "3.2.1" { 42 } else { 43 })
-            );
-            assert_eq!(
-                output.stdout,
-                "exec\0space 雪\0\0--option\0unchanged".as_bytes()
-            );
-            assert!(output.stderr.is_empty());
-        }
+        let output = Command::new(destination.join("c2"))
+            .args(["exec", "space 雪", "", "--option"])
+            .isolated()
+            .env("HOME", &workspace.root)
+            .env("CHECK", "unchanged")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if version == "3.2.1" { 42 } else { 43 })
+        );
+        assert_eq!(
+            output.stdout,
+            "exec\0space 雪\0\0--option\0unchanged".as_bytes()
+        );
+        assert!(output.stderr.is_empty());
         if version == "3.2.1" {
             fs::remove_file(destination.join("c2")).unwrap();
             script(
@@ -549,14 +473,14 @@ fn sibling_payload_runs_real_installed_launcher_with_literal_arguments() {
 /// #33: real publication errors preserve current and remove only this transaction.
 #[test]
 fn publication_failures_do_not_advance_current_and_keep_unrelated_files() {
-    for blocked in ["climon2", "current"] {
+    for blocked in ["c2", "current"] {
         let workspace = Workspace::new();
         let source = workspace.payload("payload", "1.2.3", 31);
         let payload = climon2_install::Payload::from_directory(&source, "1.2.3").unwrap();
         let destination = workspace.root.join("installed");
         fs::create_dir_all(destination.join(blocked)).unwrap();
         fs::write(destination.join(blocked).join("keep"), "untouched").unwrap();
-        if blocked == "climon2" {
+        if blocked == "c2" {
             fs::write(destination.join("current"), "0.0.1\n").unwrap();
         }
         assert!(climon2_install::install(&payload, &destination).is_err());
@@ -569,7 +493,7 @@ fn publication_failures_do_not_advance_current_and_keep_unrelated_files() {
             fs::read_dir(destination.join("1.2.3")).unwrap().count(),
             VERSION_FILES
         );
-        if blocked == "climon2" {
+        if blocked == "c2" {
             assert_eq!(fs::read(destination.join("current")).unwrap(), b"0.0.1\n");
         }
         fs::remove_dir_all(destination.join(blocked)).unwrap();

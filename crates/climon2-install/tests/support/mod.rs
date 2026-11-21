@@ -55,7 +55,7 @@ impl Workspace {
             &root.join(version).join(LIBRARY),
             &format!("library {status}"),
         );
-        script(&root.join("climon2"), "exit 11");
+        script(&root.join("c2"), "exit 11");
         root
     }
 }
