@@ -17,6 +17,7 @@ use climon2_core::{
 use climon2_platform::{
     library::{Functions, Library, Loader},
     logging::library_log_name,
+    readiness::{self, Handle, Interest, Watch},
 };
 use std::{
     io,
@@ -314,10 +315,10 @@ impl Embedded {
         }
     }
 
-    /// The borrowed descriptor that is readable while there is something
+    /// The borrowed notification that is readable while there is something
     /// to drain.
-    pub(crate) fn descriptor(&self) -> i32 {
-        self.notification
+    pub(crate) fn handle(&self) -> Handle {
+        Handle::notification(self.notification)
     }
 
     /// One turn: drains once, visiting a delivery's records before it is
@@ -369,12 +370,11 @@ impl Embedded {
     /// Waits until the instance has something to drain or `milliseconds`
     /// pass.
     pub(crate) fn wait(&self, milliseconds: i32) -> io::Result<()> {
-        let mut descriptor = [libc::pollfd {
-            fd: self.notification,
-            events: libc::POLLIN,
-            revents: Default::default(),
-        }];
-        crate::polling::poll(&mut descriptor, milliseconds)
+        readiness::wait(
+            [Watch::new(self.handle(), Interest::Read, true)],
+            milliseconds,
+        )
+        .map(drop)
     }
 
     /// After the stream's end: releases both handles, lets the owner thread

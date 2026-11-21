@@ -1,17 +1,22 @@
 use crate::{
     attachment::{Attachment, Authority, Command, Confirm, Ending, Event, Held},
-    polling::{Pending, invalid, poll, ready},
+    polling::{Pending, invalid, ready},
 };
 use climon2_core::{
     SessionId,
     keys::{ClientSettings, ControlKey},
     protocol::TerminalSize,
 };
-use climon2_platform::terminal::{self, Signals};
+use climon2_platform::{
+    nonblocking::Nonblocking,
+    read_end,
+    readiness::{self, Handle, Interest, Ready, Watch},
+    terminal::{self, Signals},
+};
 use std::{
     fs::File,
     io::{self, Read},
-    os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
+    os::fd::AsFd,
     time::{Duration, Instant},
 };
 
@@ -224,54 +229,6 @@ fn push_input(actions: &mut Vec<FilterAction>, bytes: &[u8], controlling: bool) 
     }
 }
 
-/// The single owner of the terminal's file-status flags while bridging. Both originals
-/// are captured before either changes, because stdin and stdout may share one open-file
-/// description, and are restored through owned duplicates, so closing the bridge's
-/// descriptors can never skip or misdirect restoration.
-struct Nonblocking {
-    saved: [(OwnedFd, i32); 2],
-}
-
-impl Nonblocking {
-    fn new(input: BorrowedFd<'_>, output: BorrowedFd<'_>) -> io::Result<Self> {
-        let guard = Self {
-            saved: [save(input)?, save(output)?],
-        };
-        guard.apply()?;
-        Ok(guard)
-    }
-
-    fn apply(&self) -> io::Result<()> {
-        for (fd, flags) in &self.saved {
-            set_flags(fd, flags | libc::O_NONBLOCK)?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for Nonblocking {
-    fn drop(&mut self) {
-        for (fd, flags) in self.saved.iter().rev() {
-            let _ = set_flags(fd, *flags);
-        }
-    }
-}
-
-fn save(fd: BorrowedFd<'_>) -> io::Result<(OwnedFd, i32)> {
-    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-    if flags < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((fd.try_clone_to_owned()?, flags))
-}
-
-fn set_flags(fd: &OwnedFd, flags: i32) -> io::Result<()> {
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 /// The most terminal input forwarded per read.
 const INPUT_CHUNK: usize = 32768;
 
@@ -333,7 +290,7 @@ pub fn run(
     settings: ClientSettings,
 ) -> io::Result<BridgeExit> {
     let stdout = File::from(io::stdout().as_fd().try_clone_to_owned()?);
-    let _flags = Nonblocking::new(terminal.as_fd(), stdout.as_fd())?;
+    let _flags = Nonblocking::new(&terminal, &stdout)?;
     let mut bridge = Bridge {
         attachment: opened.attachment,
         terminal,
@@ -427,8 +384,8 @@ impl Bridge {
     fn tick(&mut self) -> io::Result<Option<BridgeExit>> {
         self.resize()?;
         self.send()?;
-        let descriptors = self.poll()?;
-        self.exchange(&descriptors)
+        let ready = self.poll()?;
+        self.exchange(&ready)
     }
 
     /// Offers the waiting commands. A stream that no longer accepts them
@@ -441,21 +398,19 @@ impl Bridge {
         Ok(())
     }
 
-    fn exchange(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
-        self.flush_output(descriptors[2].revents)?;
-        self.dispatch(descriptors)?.map_or_else(
+    fn exchange(&mut self, ready: &[Ready; 3]) -> io::Result<Option<BridgeExit>> {
+        self.flush_output(ready[2])?;
+        self.dispatch(ready)?.map_or_else(
             || {
-                self.ready_after_drain(descriptors);
+                self.ready_after_drain(ready);
                 Ok(None)
             },
             |exit| Ok(Some(exit)),
         )
     }
 
-    fn poll(&self) -> io::Result<[libc::pollfd; 3]> {
-        let mut descriptors = self.descriptors();
-        poll(&mut descriptors, self.poll_timeout())?;
-        Ok(descriptors)
+    fn poll(&self) -> io::Result<[Ready; 3]> {
+        readiness::wait(self.watches(), self.poll_timeout())
     }
 
     /// Rounded up, so the deadline's last fraction of a millisecond is waited, not spun.
@@ -467,18 +422,18 @@ impl Bridge {
 
     /// Once the bridge is ending, nothing more is received or read; it ends
     /// when stdout has drained.
-    fn dispatch(&mut self, descriptors: &[libc::pollfd; 3]) -> io::Result<Option<BridgeExit>> {
+    fn dispatch(&mut self, ready: &[Ready; 3]) -> io::Result<Option<BridgeExit>> {
         if self.ending.is_none() {
             self.receive()?;
         }
         if self.ending.is_some() {
             return self.ended();
         }
-        self.input_ready(descriptors[1].revents)
+        self.input_ready(ready[1])
     }
 
-    fn flush_output(&mut self, events: i16) -> io::Result<()> {
-        if events != 0 {
+    fn flush_output(&mut self, ready: Ready) -> io::Result<()> {
+        if ready.any {
             self.output.flush(&mut self.stdout)?;
         }
         Ok(())
@@ -497,8 +452,8 @@ impl Bridge {
         self.output.backlog() < DRAIN_AHEAD
     }
 
-    fn input_ready(&mut self, events: i16) -> io::Result<Option<BridgeExit>> {
-        if events != 0 && !self.input()? {
+    fn input_ready(&mut self, ready: Ready) -> io::Result<Option<BridgeExit>> {
+        if ready.any && !self.input()? {
             return Ok(Some(BridgeExit::Status(129)));
         }
         Ok(None)
@@ -506,11 +461,15 @@ impl Bridge {
 
     /// The library, terminal input, stdout; each side waits while the other is
     /// backpressured.
-    fn descriptors(&self) -> [libc::pollfd; 3] {
+    fn watches(&self) -> [Watch; 3] {
         [
-            descriptor(self.attachment.descriptor(), libc::POLLIN, self.listening()),
-            descriptor(self.terminal.as_raw_fd(), libc::POLLIN, self.reading()),
-            descriptor(self.stdout.as_raw_fd(), libc::POLLOUT, !self.output.empty()),
+            Watch::new(self.attachment.handle(), Interest::Read, self.listening()),
+            Watch::new(Handle::of(&self.terminal), Interest::Read, self.reading()),
+            Watch::new(
+                Handle::of(&self.stdout),
+                Interest::Write,
+                !self.output.empty(),
+            ),
         ]
     }
 
@@ -703,8 +662,8 @@ impl Bridge {
 
     /// `Ready` waits until typed-ahead keys are drained and the restoration
     /// has been written.
-    fn ready_after_drain(&mut self, descriptors: &[libc::pollfd; 3]) {
-        if reported(descriptors[1].revents, libc::POLLIN) || !self.output.empty() {
+    fn ready_after_drain(&mut self, ready: &[Ready; 3]) {
+        if ready[1].readable || !self.output.empty() {
             return;
         }
         if let Some(authority) = self.restored.take() {
@@ -741,7 +700,7 @@ fn result(ending: Ending, known: Option<u32>) -> io::Result<BridgeExit> {
 
 /// A lost terminal reads as EIO; like EOF it is a silent HUP.
 fn hangup_as_eof(error: io::Error) -> io::Result<usize> {
-    if error.raw_os_error() == Some(libc::EIO) {
+    if read_end::hung_up(&error) {
         return Ok(0);
     }
     Err(error)
@@ -750,19 +709,6 @@ fn hangup_as_eof(error: io::Error) -> io::Result<usize> {
 /// Time left before `deadline`; zero once it has passed.
 fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
-}
-
-fn reported(events: i16, wanted: i16) -> bool {
-    events & wanted != 0
-}
-
-/// An inactive descriptor is -1, which poll ignores. `revents` is output-only.
-fn descriptor(fd: i32, events: i16, active: bool) -> libc::pollfd {
-    libc::pollfd {
-        fd: if active { fd } else { -1 },
-        events,
-        revents: Default::default(),
-    }
 }
 
 #[cfg(test)]

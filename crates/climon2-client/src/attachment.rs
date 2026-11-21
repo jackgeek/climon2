@@ -16,7 +16,7 @@ use climon2_core::{
     native::{self, RecordData},
     protocol::TerminalSize,
 };
-use climon2_platform::terminal::Signals;
+use climon2_platform::{readiness::Handle, terminal::Signals};
 use std::{collections::VecDeque, io, num::NonZeroU32, path::Path, slice};
 
 /// The public ID of the instance's one Open; later requests follow it.
@@ -393,9 +393,9 @@ impl Attachment {
         answered(self.receive()?)
     }
 
-    /// The descriptor that is readable while there is something to receive.
-    pub(crate) fn descriptor(&self) -> i32 {
-        self.instance.descriptor()
+    /// The handle that is readable while there is something to receive.
+    pub(crate) fn handle(&self) -> Handle {
+        self.instance.handle()
     }
 
     /// One delivery's events, none, or the end of the stream.

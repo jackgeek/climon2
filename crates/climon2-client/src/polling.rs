@@ -1,5 +1,5 @@
 //! Nonblocking I/O helpers the bridge, the attachment and kill mode share:
-//! polling, retryable reads and writes, and pending output.
+//! interruption, retryable reads and writes, and pending output.
 
 use climon2_platform::terminal::Signals;
 use std::io::{self, Write};
@@ -29,20 +29,6 @@ fn retryable(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
     )
-}
-
-pub fn poll(descriptors: &mut [libc::pollfd], milliseconds: i32) -> io::Result<()> {
-    let result = unsafe {
-        libc::poll(
-            descriptors.as_mut_ptr(),
-            descriptors.len() as libc::nfds_t,
-            milliseconds,
-        )
-    };
-    if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }
 
 /// Bytes waiting to be written, in order.
