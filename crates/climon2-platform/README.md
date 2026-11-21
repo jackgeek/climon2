@@ -115,6 +115,28 @@ dispatch or shell-specific logic.
   which must reread the size and suppress unchanged resizes.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
   unregistered on drop; no terminal operations run in signal handlers.
+- `Nonblocking::new(input, output)` makes both borrowed terminal handles
+  nonblocking for the client bridge. It saves both flags before changing
+  either, because stdin and stdout may share one open-file description, and
+  restores them on drop through owned duplicates.
+- `terminal::hung_up(&io::Error)` is true for a read that failed because the
+  terminal was lost (EIO). Callers treat it like end of file.
+
+## Waiting for readiness
+
+- `waiting::wait(&mut [Watch], Duration) -> io::Result<usize>` is the one wait
+  every tick loop and deadline uses (#310). It waits until a watched handle is
+  ready or the timeout passes, and returns how many are ready. The timeout is
+  rounded up to whole milliseconds, so a deadline's last fraction is waited
+  rather than spun, and saturates at `i32::MAX` milliseconds. Every failure,
+  EINTR included, is returned; each caller decides whether a signal ends its
+  wait.
+- `Watch::new(BorrowedFd, Interest)` watches one handle for `Read`, `Write` or
+  `ReadWrite`. `Watch::idle()` keeps a slot's place and is never ready. After
+  a wait, `ready()` reports anything (what was wanted, a hang-up or an error)
+  and `readable()` reports readable data only.
+- `connection::wait` and the daemon readiness pipe wait through it;
+  `connection::Interest` is `waiting::Interest`.
 
 ## Client libraries
 
@@ -234,6 +256,9 @@ refusal proves nothing called them.
 `tests/terminal.rs`: `issue20_real_pty_raw_mode_restores_on_drop_and_panic_without_screen_sequences`,
 `issue20_real_pty_size_and_zero_fallback`,
 `issue20_signals_coalesce_resize_and_report_exit_signal`.
+
+`tests/waiting.rs` (#310): `issue310_one_wait_reports_each_ready_handle_until_the_timeout`,
+`issue310_a_hung_up_peer_is_ready`, `issue310_idle_slots_wait_out_the_timeout`.
 
 Tests use isolated private directories. Direct socket fixtures use short `/tmp`
 paths so mutation workers and long checkouts do not exceed the socket limit.
