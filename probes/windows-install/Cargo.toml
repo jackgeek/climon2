@@ -1,0 +1,21 @@
+# Throwaway Windows install probes for issue #215. Not part of the main workspace.
+[package]
+name = "winprobe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+name = "probedll"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "winprobe"
+path = "src/main.rs"
+
+[[bin]]
+name = "v2"
+path = "src/bin/v2.rs"

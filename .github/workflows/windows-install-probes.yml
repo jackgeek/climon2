@@ -1,0 +1,55 @@
+# Throwaway research workflow for issue #215. Runs only on this branch.
+name: windows-install-probes
+
+on:
+  push:
+    branches: [research/windows-install-probes]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: probes/windows-install
+    steps:
+      - uses: actions/checkout@v4
+      - name: Environment
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          ./scripts/env.ps1 -Out out/env.txt
+      - name: Build
+        run: |
+          cargo build --release
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
+          cargo build --release --target-dir target-static
+      - name: Probes 1-6 and 9 on C (LOCALAPPDATA)
+        if: always()
+        run: ./target/release/winprobe.exe run "$env:LOCALAPPDATA\climon2-probe" out/fs-C-localappdata.jsonl
+      - name: Probes 1-6 and 9 on D
+        if: always()
+        run: |
+          if (Test-Path D:\) { ./target/release/winprobe.exe run D:\climon2-probe out/fs-D.jsonl }
+          else { 'no D: volume on this runner' | Tee-Object out/fs-D.txt }
+      - name: Probe 7 CRT imports
+        if: always()
+        run: ./scripts/p7.ps1 -Root $PWD -Out out/p7-crt-imports.txt
+      - name: Probe 8 Mark-of-the-Web
+        if: always()
+        run: ./scripts/p8.ps1 -Exe "$PWD\target\release\v2.exe" -Out out/p8-motw.txt
+      - name: Probe 10 user PATH (pwsh 7)
+        if: always()
+        run: ./scripts/p10.ps1 -Out out/p10-path-pwsh7.txt
+      - name: Probe 10 user PATH (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/p10.ps1 -Out out/p10-path-ps51.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-install-probes
+          path: probes/windows-install/out/
