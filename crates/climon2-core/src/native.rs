@@ -54,6 +54,8 @@ pub const INDETERMINATE: u32 = 4;
 pub const MONITOR: u32 = 1;
 pub const INTERACTIVE: u32 = 2;
 pub const NATIVE_UNIX: u32 = 1;
+/// Windows paths: UTF-16LE code units. Agreed for Windows, not implemented.
+pub const NATIVE_WINDOWS: u32 = 2;
 pub const UNAVAILABLE: u32 = 0;
 pub const UNSET: u32 = 1;
 pub const VALUE: u32 = 2;
