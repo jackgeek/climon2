@@ -1,6 +1,6 @@
 use crate::{args::Options, startup::Failure};
 use climon2_core::{exit::ExitStatus, wire::CommandResult};
-use climon2_platform::{peer, process, pty_io, runtime};
+use climon2_platform::{nonblocking, peer, process, readiness, runtime};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::{
     ffi::OsString,
@@ -58,7 +58,7 @@ impl Pty {
                 .try_clone_to_owned()
                 .map_err(|_| Failure::own("cannot open terminal input"))?,
         ));
-        pty_io::set_nonblocking(master_io)
+        nonblocking::set(master_io)
             .map_err(|_| Failure::own("cannot configure command terminal"))?;
         Ok(pty)
     }
@@ -97,7 +97,7 @@ impl Pty {
     /// Waits at most `timeout` for output (or hangup) without reading it.
     pub fn wait_readable(&self, timeout: std::time::Duration) {
         match &self.master_io {
-            Some(master_io) => pty_io::wait_readable(master_io, timeout),
+            Some(master_io) => wait(master_io, timeout),
             None => std::thread::sleep(timeout),
         }
     }
@@ -291,6 +291,17 @@ impl Drop for Pty {
             let _ = process::wait(self.pid);
         }
     }
+}
+
+/// An interrupted or failed wait only ends early; the next read reports errors.
+fn wait(master_io: &File, timeout: Duration) {
+    let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let watch = readiness::Watch::new(
+        readiness::Handle::of(master_io),
+        readiness::Interest::Read,
+        true,
+    );
+    let _ = readiness::wait([watch], milliseconds);
 }
 
 fn size(value: climon2_core::protocol::TerminalSize) -> PtySize {

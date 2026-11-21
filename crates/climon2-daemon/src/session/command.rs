@@ -29,7 +29,7 @@ fn bytes(count: usize) -> Read {
 }
 
 fn failure(error: &io::Error) -> Read {
-    if climon2_platform::pty_io::is_end_of_output(error) {
+    if climon2_platform::read_end::hung_up(error) {
         return Read::End;
     }
     if error.kind() == io::ErrorKind::WouldBlock {

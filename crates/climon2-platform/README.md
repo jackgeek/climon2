@@ -107,13 +107,11 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
   unregistered on drop; no terminal operations run in signal handlers.
 
-## PTY I/O and private files
+## Private files
 
-- `pty_io::set_nonblocking(&File)` makes the daemon's duplicate of a PTY
-  master nonblocking; `wait_readable(&File, Duration)` waits at most that
-  long for output or hang-up without reading, and a failed or interrupted
-  wait only ends early; `is_end_of_output(&io::Error)` is true for `EIO`,
-  which a master read returns once every slave handle closed.
+- `nonblocking::set(&File)` makes a file nonblocking for good; the daemon
+  uses it on its duplicate of the PTY master. `Nonblocking` instead restores
+  the flags when dropped.
 - `private_file::create_new(&Path)` creates a file for writing with mode 0600
   and `O_NOFOLLOW`, failing if anything is already there;
   `restrict(&File)` sets mode 0600 whatever the umask kept. The daemon
