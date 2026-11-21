@@ -47,10 +47,10 @@ fn issue312_a_waker_never_blocks() {
     assert!(readable(&waker));
 }
 
-/// #312: a quiet socket's send to a closed peer fails with EPIPE instead of
-/// raising SIGPIPE, which would end this test process.
+/// #312: a quiet socket's send to a closed peer fails with EPIPE. (Rust
+/// test binaries ignore SIGPIPE, so this cannot observe the signal itself.)
 #[test]
-fn issue312_a_send_to_a_closed_peer_fails_without_a_signal() {
+fn issue312_a_send_to_a_closed_peer_fails_with_epipe() {
     let (ours, peer) = UnixStream::pair().unwrap();
     connection::quiet(ours.as_fd()).unwrap();
     assert_eq!(connection::send(ours.as_fd(), b"ab").unwrap(), 2);
