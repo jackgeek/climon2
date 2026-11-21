@@ -147,8 +147,12 @@ predecessor. It is recorded as not applicable until the second.
 The refusal of a session attaching to itself keeps its Unix intent, because
 the daemon sets `CLIMON2_SESSION_ID` for the command on Windows too
 ([Windows platform and lifecycle contract](windows-lifecycle.md#self-attach-and-nested-sessions)).
-Log privacy stays required but waits for
-[Define secure creation of Windows log and metadata files](https://github.com/jackgeek/climon2/issues/307).
+Log privacy keeps its Unix intent, driven through `pwsh`: the environment,
+argument and typed-input secrets appear in no log. On Windows it also asserts
+that every log file, metadata file and managed folder the run produced carries
+the private descriptor and is not a reparse point, as
+[ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
+specifies under "Private files and folders". No exception is recorded.
 
 ### Windows-only scenarios
 
