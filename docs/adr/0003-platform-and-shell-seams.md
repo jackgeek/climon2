@@ -101,8 +101,13 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   is 77 bytes plus the profile folder name, within AF_UNIX's 107 usable bytes.
   Over budget, `exec` fails with 125. Core's runtime layout takes the uid as
   optional, so Unix names do not change.
-- **Access control.** The `<hash8>` directory is created with a protected DACL
-  holding one ACE: the current user's SID, full control. Before each use it
+- **Access control.** The `<hash8>` directory is created with the private
+  descriptor (see Private files and folders): its owner is set explicitly to
+  the current user's SID, and its protected DACL holds one ACE, that SID with
+  full control. Setting the owner explicitly is an amendment from
+  [Define secure creation of Windows log and metadata files](https://github.com/jackgeek/climon2/issues/307):
+  an elevated process's new objects are otherwise owned by
+  `BUILTIN\Administrators`, and would then fail the owner check. Before each use it
   must not be a reparse point, its owner must be that SID, and its DACL must be
   exactly that. Otherwise preparation fails with the Unix "unsafe runtime
   directory" error. The socket file inherits the DACL. Windows AF_UNIX has no
@@ -110,6 +115,54 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   weaker than Unix:** `SO_PEERCRED` rejects root, while a Windows
   administrator can bypass the DACL with `SeRestorePrivilege`. That is
   accepted, because an administrator can already read the daemon's memory.
+- **Private files and folders.** Decided in
+  [Define secure creation of Windows log and metadata files](https://github.com/jackgeek/climon2/issues/307)
+  (owner, 2026-11-21), after measurements on a Windows 11 VM. Windows has no
+  `O_NOFOLLOW` and no file modes, so `0700`, `0600` and `O_NOFOLLOW` map as
+  follows. Unix rules do not change.
+  - *Scope.* Every file climon2 creates: all logs, including the client
+    library's log at its caller's path; session metadata and its temporary
+    file; the monitor preference file and its temporary file. Every folder it
+    manages: `logs`, `logs\general`, `logs\<id>` and `sessions`. The climon2
+    home itself is treated as on Unix: created when missing, canonicalised and
+    not checked.
+  - *Private descriptor.* Each managed folder and created file gets an explicit
+    security descriptor at creation: owner set to the process token's user
+    SID, and a protected DACL with one ACE, that SID with full control
+    (inheritable on folders). SYSTEM and Administrators are not listed; an
+    administrator can still bypass the DACL, as accepted above.
+  - *Final component.* Every create goes through one `climon2-platform` helper
+    that calls `CreateFileW` with `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT`
+    and the private descriptor. Plain std `create_new` is never used: it follows
+    a dangling symbolic link and creates the link's target, wherever that is.
+    With the flag, any existing name, including a dangling link, fails. Readers
+    follow links, as on Unix, relying on the private folders. Metadata and the
+    preference file are still published by renaming a temporary file, which
+    replaces a link at the destination rather than writing through it.
+  - *Parent folders.* Check, then use, as on Unix. Before each use a managed
+    folder must not be a reparse point of any tag (symbolic link, junction,
+    mount point, cloud placeholder), must be a directory, must be owned by the
+    user's SID and must hold exactly the private DACL. Folders above `logs` and
+    `sessions` are not checked. Handle-relative creation (`NtCreateFile` with
+    a root directory handle) was rejected: only the user and administrators can
+    write into an owner-only folder, which is the guarantee Unix relies on too.
+  - *Unsafe existing folders.* Refused without repair, with the Unix "unsafe
+    runtime directory" error naming the path and the problem. A folder made by
+    hand, or by an elevated tool, inherits the profile's ACL and is refused
+    until the user deletes it.
+  - *Client library log.* The final-component rule applies at the caller's
+    path; the caller's folder is not checked. A refusal is the existing
+    "log_path cannot be created as a new file" failure.
+  - *Evidence.* Tests in registered `windows.rs` files: a dangling file link
+    at the final name is refused and nothing appears at its target; an
+    existing file is refused; a junction or directory link standing in for
+    `logs` is refused and pruning leaves its target alone; a folder with the
+    inherited descriptor (owned by Administrators on the elevated CI runner)
+    and one with an extra ACE are each refused and left unrepaired; created
+    files and folders carry exactly the private descriptor; the client
+    library refuses a dangling link at its log path. Cross-account denial and
+    the log-privacy scenario are in the Windows quality and qualification
+    documents.
 - **Stale sockets.** The Unix rule applies: a NotFound or ConnectionRefused
   connect plus proven-dead daemon identity permits cleanup. A socket is
   recognised by its reparse tag `IO_REPARSE_TAG_AF_UNIX`, since std reports it

@@ -1,9 +1,12 @@
-# Windows quality and CI qualification (agreed, not implemented)
+# Windows quality and CI qualification (agreed, partly implemented)
 
 This document says how Windows code is checked: which CI jobs run, how
 Windows-only source meets the same quality thresholds as the rest of climon2,
 and what a release needs from Windows before it is published. It is for
-contributors. Nothing here is built yet; it was agreed in
+contributors. So far the Test job (see [Pull request jobs](#pull-request-jobs)), its switch and change trigger, the
+registry's Windows arm and the source check are built
+([#313](https://github.com/jackgeek/climon2/issues/313)); the Test job runs
+only the tests that build on Windows yet. The rest is not built. It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 and is the specification the Windows port implements.
 
@@ -20,7 +23,9 @@ matter most:
   compiled only on Windows.
 - A **registered native file** is a source file listed in xtask's native-source
   registry as belonging to one operating system. Today the registry lists
-  `linux.rs` and `macos.rs` files.
+  `linux.rs` and `macos.rs` files, and one `windows.rs` file:
+  `crates/climon2-platform/src/home/windows.rs`, which names the Windows
+  homes.
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a
@@ -39,10 +44,11 @@ matter most:
 
 ## Where Windows runs
 
-CI is the only environment that qualifies Windows. There is no Windows
-development machine. The owner's Windows 11 virtual machine is used for the
-manual checklist and for measuring facts, and no pull request check depends on
-it.
+CI is the only environment that qualifies Windows. The owner's Windows 11
+virtual machine is used for the manual checklist, for measuring facts, and for
+development sessions on tickets about Windows run-time behaviour. It never
+qualifies a change: the pull request's Windows CI run is the proof, and no
+pull request check depends on the virtual machine.
 
 All Windows jobs run on the GitHub runner `windows-2025`, named exactly, not
 `windows-latest`. Its image changes weekly and cannot be pinned, so every
@@ -131,7 +137,8 @@ Windows behaviour. Each is an ordinary test in the Test job:
 - the error codes for connecting to a missing socket path and a stale one, and
   for deleting a socket whose listener is alive;
 - the runtime directory's access control denying a second, non-administrator
-  account, which the job creates;
+  account, which the job creates; the same account is also denied opening a
+  session log, a metadata file and the `logs` folder;
 - the Authenticode signatures of the bundled `conpty.dll` and
   `OpenConsole.exe`;
 - binding the runtime directory on the runner's real `%LOCALAPPDATA%` volume.

@@ -1,7 +1,9 @@
 # climon2-platform
 
-Shared macOS and Linux seams (ADR 0003). Other targets fail inside each seam; neutral
-contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
+Shared macOS and Linux seams (ADR 0003). Only `home` also builds on Windows so
+far; every other seam is declared for Unix only, and other Unix targets fail
+inside each seam. Neutral contracts remain in `climon2-core`. No runtime
+dispatch or shell-specific logic.
 
 ## Runtime and peers
 
@@ -11,11 +13,18 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   client executable and the monitor share one rule for each:
   `home::named()` is the climon2 home the environment names (`CLIMON2_HOME`,
   else `.climon2` in `HOME`; absolute; nothing touched), `home::canonical()`
-  that home created and canonicalized through `canonical_home`, and
+  that home created and canonicalized through `canonical_home` (Unix only),
+  `home::default_executable_home()` the executable home an installer uses
+  without `--dir` (`.local/share/climon2` in an absolute `HOME`; nothing
+  touched), and
   `home::executable_layout(VersionBinary)` the install layout around the
   running executable's real path. Its outer error is the system failing to
   name the executable; its inner `ContractError`, a path outside any version
-  folder, so a caller can word that refusal itself.
+  folder, so a caller can word that refusal itself. On Windows the
+  registered native file `src/home/windows.rs` (#313) names the variables:
+  the climon2 home is `.climon2` in `USERPROFILE`, still overridden by
+  `CLIMON2_HOME`, and the default executable home is `climon2` in
+  `LOCALAPPDATA`.
 - `RuntimeDirectory::prepare(&canonical_home)` creates/checks the core-derived
   `/tmp/climon2-<euid>-<hash8>` directory. `path()` and
   `socket_path(&SessionId)` expose its paths; the socket limit is 103 bytes.
@@ -169,7 +178,12 @@ the environment or path under test:
 `issue155_the_canonical_climon2_home_is_created_and_resolved`,
 `issue155_an_executable_finds_its_layout_from_its_own_path` (a hard link of
 the test binary in a version folder), and
-`issue155_an_executable_outside_a_version_folder_has_no_layout`.
+`issue155_an_executable_outside_a_version_folder_has_no_layout`, and (#313)
+`issue313_the_environment_names_the_default_executable_home`.
+`tests/home_windows.rs` (#313, Windows only, run by CI's Windows Test job)
+proves the Windows names the same way:
+`issue313_the_profile_names_the_climon2_home_on_windows` and
+`issue313_local_application_data_names_the_default_executable_home_on_windows`.
 
 `tests/process.rs`: `issue26_identity_uses_start_time_and_refuses_zero_or_pid_reuse`,
 `issue19_waitpid_preserves_exit_and_real_signal_status`,

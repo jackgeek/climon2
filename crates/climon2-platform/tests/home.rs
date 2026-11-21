@@ -76,6 +76,32 @@ fn issue155_the_environment_names_the_climon2_home() {
     assert!(!Path::new("/user/.climon2").exists());
 }
 
+/// #313: without `--dir`, an installer's executable home is
+/// `.local/share/climon2` in `HOME`, which must be absolute. `CLIMON2_HOME`
+/// does not move it. Nothing is created.
+#[test]
+fn issue313_the_environment_names_the_default_executable_home() {
+    if as_child(home::default_executable_home) {
+        return;
+    }
+    let test = "issue313_the_environment_names_the_default_executable_home";
+    let named = |user: Option<&str>| {
+        child(
+            &this_binary(),
+            test,
+            user.map(OsStr::new),
+            Some(OsStr::new("/custom home")),
+        )
+    };
+    assert_eq!(named(Some("/user")), r#"Ok("/user/.local/share/climon2")"#);
+    let refused =
+        r#"Err(Custom { kind: InvalidInput, error: "HOME must name an absolute directory" })"#;
+    assert_eq!(named(Some("relative")), refused);
+    assert_eq!(named(Some("")), refused);
+    assert_eq!(named(None), refused);
+    assert!(!Path::new("/user/.local").exists());
+}
+
 /// #155: the canonical climon2 home is created when missing, and is the real
 /// path of the named home: symbolic links in it are resolved.
 #[test]
