@@ -22,4 +22,5 @@ pub mod runtime;
 mod syscall;
 #[cfg(unix)]
 pub mod terminal;
+#[cfg(unix)]
 pub mod waiting;
