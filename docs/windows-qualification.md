@@ -7,9 +7,10 @@ yet; it was agreed in
 [Define Windows host and shell qualification](https://github.com/jackgeek/climon2/issues/213)
 and is the specification the Windows port implements.
 
-It does not cover the monitor or the client library on Windows, which
-[Define Windows monitor library and specification integration](https://github.com/jackgeek/climon2/issues/216)
-decides, nor how results are stored as evidence records, which
+The monitor and client-library scenarios, and checklist items 13 to 16, were
+added by
+[Define Windows monitor library and specification integration](https://github.com/jackgeek/climon2/issues/216).
+This document does not cover how results are stored as evidence records, which
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 decides.
 
@@ -161,6 +162,21 @@ refusal of a session attaching to itself, and log privacy.
 | Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 |
 | Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded |
 
+### Monitor and client-library scenarios
+
+Every scenario in the [monitor acceptance matrix](monitor-acceptance.md),
+which covers the client library, the monitor and headless `exec` (about 210
+scenarios in fifteen test files), runs in the Windows Test job. The programs
+inside its sessions run under `pwsh`; the shell subset above does not apply.
+
+| Host model | Scenarios |
+| --- | --- |
+| Windows Terminal model | All of them |
+| VS Code model | The terminal-facing monitor scenarios: rendering, input routing, resize, the selector, toasts, the bell and attention reports |
+
+A scenario that cannot pass on Windows needs an explicit, documented decision,
+as the exceptions above have.
+
 Ctrl+Break has no scenario yet. Its design is still open in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 and its scenarios follow that decision.
@@ -200,6 +216,13 @@ Run every item in Windows Terminal, then in the VS Code integrated terminal:
     check the exit status.
 12. VS Code only: run `c2 exec` from a task terminal, and run "Reload Window"
     with a session attached; the session survives.
+13. With two sessions running, `c2 monitor` opens and lists both.
+14. The selector switches between them, and typed input reaches only the
+    selected session.
+15. A session that needs attention raises a toast, and the prefix followed by
+    `j` jumps to it.
+16. Resizing the window re-renders the monitor, and exiting the monitor leaves
+    both sessions running.
 
 Signing out or shutting down with a detached session is added as a further
 item only if the lifecycle contract requires it.
