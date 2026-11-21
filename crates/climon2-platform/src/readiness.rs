@@ -26,7 +26,10 @@ pub struct Ready {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
     use super::{Interest, Ready};
-    use crate::syscall::{checked, retry_if_interrupted};
+    use crate::{
+        runtime::SocketStream,
+        syscall::{checked, retry_if_interrupted},
+    };
     use std::{fs::File, io, os::fd::AsRawFd};
 
     /// A borrowed handle a wait can watch; it is never closed through this.
@@ -42,6 +45,10 @@ mod unix {
 
         pub fn of(file: &File) -> Self {
             Self(file.as_raw_fd())
+        }
+
+        pub fn of_socket(socket: &SocketStream) -> Self {
+            Self(socket.as_raw_fd())
         }
     }
 
@@ -76,12 +83,28 @@ mod unix {
         mut watches: [Watch; N],
         milliseconds: i32,
     ) -> io::Result<[Ready; N]> {
-        let descriptors = watches.as_mut_ptr().cast::<libc::pollfd>();
-        // SAFETY: Watch is a transparent pollfd, and the array outlives the call.
-        checked(unsafe { libc::poll(descriptors, N as libc::nfds_t, milliseconds) })
-            .map(drop)
-            .or_else(retry_if_interrupted)?;
+        poll(&mut watches, milliseconds)?;
         Ok(watches.map(|watch| reported(watch.0.revents)))
+    }
+
+    /// [`wait`] for a table whose length is known only at run time; an
+    /// empty table simply waits `milliseconds`.
+    pub fn wait_all(watches: &[Watch], milliseconds: i32) -> io::Result<Vec<Ready>> {
+        let mut watches = watches.to_vec();
+        poll(&mut watches, milliseconds)?;
+        Ok(watches
+            .iter()
+            .map(|watch| reported(watch.0.revents))
+            .collect())
+    }
+
+    fn poll(watches: &mut [Watch], milliseconds: i32) -> io::Result<()> {
+        let descriptors = watches.as_mut_ptr().cast::<libc::pollfd>();
+        let count = watches.len() as libc::nfds_t;
+        // SAFETY: Watch is a transparent pollfd, and the table outlives the call.
+        checked(unsafe { libc::poll(descriptors, count, milliseconds) })
+            .map(drop)
+            .or_else(retry_if_interrupted)
     }
 
     pub(super) fn reported(events: libc::c_short) -> Ready {
@@ -94,11 +117,12 @@ mod unix {
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
-    use super::{Handle, Interest, Ready, Watch, unix::reported, wait};
+    use super::{Handle, Interest, Ready, Watch, unix::reported, wait, wait_all};
     use std::{
         fs::File,
         io::{self, Write},
-        os::fd::OwnedFd,
+        os::{fd::OwnedFd, unix::net::UnixStream},
+        time::{Duration, Instant},
     };
 
     fn pipe() -> (File, File) {
@@ -203,5 +227,50 @@ mod tests {
                 readable: false
             }]
         );
+    }
+
+    const READABLE: Ready = Ready {
+        any: true,
+        readable: true,
+    };
+
+    /// A table of any length reports each watch in its place: a socket and a
+    /// pipe with bytes waiting are readable; an idle pipe and an inactive
+    /// watch report nothing.
+    #[test]
+    fn a_table_of_any_length_reports_each_watch_in_its_place() {
+        let (reader, mut writer) = pipe();
+        let (idle, _idle_writer) = pipe();
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        writer.write_all(b"x").unwrap();
+        peer.write_all(b"x").unwrap();
+        let watches = [
+            Watch::new(Handle::of(&idle), Interest::Read, true),
+            Watch::new(Handle::of_socket(&socket), Interest::Read, true),
+            Watch::new(Handle::of(&reader), Interest::Read, false),
+            Watch::new(Handle::of(&reader), Interest::Read, true),
+        ];
+        let ready = wait_all(&watches, 0).unwrap();
+        assert_eq!(ready, [NOTHING, READABLE, NOTHING, READABLE]);
+    }
+
+    /// An empty table, like the monitor's with no live instance, waits its
+    /// whole timeout.
+    #[test]
+    fn an_empty_table_waits_its_whole_timeout() {
+        let started = Instant::now();
+        assert_eq!(wait_all(&[], 20).unwrap(), []);
+        assert!(started.elapsed() >= Duration::from_millis(20));
+    }
+
+    /// A table the system refuses, here one longer than the descriptors the
+    /// process may hold, is an error.
+    #[test]
+    fn a_refused_table_is_an_error() {
+        let (reader, _writer) = pipe();
+        let over = usize::try_from(crate::descriptors::limit() + 1).unwrap();
+        let watches = vec![Watch::new(Handle::of(&reader), Interest::Read, true); over];
+        let error = wait_all(&watches, 0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }

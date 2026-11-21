@@ -1,14 +1,20 @@
 //! Shared platform seams from ADR 0003.
 pub mod connection;
 pub mod daemon;
+pub mod descriptors;
+pub mod halt;
 pub mod home;
 pub mod library;
 pub mod logging;
 pub mod nonblocking;
+pub mod notification;
+pub mod paths;
 pub mod peer;
 pub mod presentation;
+pub mod private_file;
 pub mod process;
 pub mod pty;
+pub mod quiet_socket;
 pub mod read_end;
 pub mod readiness;
 pub mod runtime;

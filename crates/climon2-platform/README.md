@@ -107,6 +107,30 @@ contracts remain in `climon2-core`. No runtime dispatch or shell-specific logic.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
   unregistered on drop; no terminal operations run in signal handlers.
 
+## Waiting, notifications and descriptors
+
+- `readiness::wait_all(&[Watch], milliseconds)` is `readiness::wait` for a
+  table whose length is known only at run time, such as the client library's
+  links. An empty table waits its whole timeout. `Handle::of_socket` watches a
+  `SocketStream`.
+- `notification::Notifier` is a client library's
+  [pollable notification descriptor](../../docs/protocol/TERMS.md#pollable-notification-descriptor),
+  and also its private waker: an `eventfd` on Linux, the read end of a pipe on
+  macOS (`DESCRIPTORS` counts what one holds). It is readable from `raise`
+  until `clear`. `notification::wait(&[i32], milliseconds)` is the monitor's
+  one wait over every instance's descriptor each tick. It reports nothing,
+  because the monitor drains every live instance after it.
+- `quiet_socket::{prepare, send}` send without `SIGPIPE`: Linux sends with
+  `MSG_NOSIGNAL`; macOS marks the socket `SO_NOSIGPIPE`.
+- `descriptors::limit()` reads the soft descriptor limit afresh (none when it
+  cannot be read); `descriptors::exhausted(&io::Error)` is `EMFILE` or
+  `ENFILE`.
+- `private_file::create(&Path)` creates a new mode-0600 file and refuses
+  anything already at the path, a symbolic link included.
+- `paths::PATH_MAX` bounds a native path, and `halt::halt(code)` ends the
+  process at once without exit handlers or library destructors (the
+  monitor's fail-stop).
+
 ## Client libraries
 
 - `library::Loader::new(ExecutableHome)` loads the client libraries of one
