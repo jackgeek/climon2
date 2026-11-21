@@ -33,3 +33,13 @@ fn poll_outcome(ready: usize) -> io::Result<()> {
         _ => Ok(()),
     }
 }
+
+/// A connect failure that says no daemon listens at the path: the socket is
+/// missing or refuses. Only these can begin to prove a session stale.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn nobody_listening(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::ENOENT | libc::ECONNREFUSED)
+    )
+}

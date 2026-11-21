@@ -21,10 +21,10 @@ pub use macos::SocketFreshness;
 mod unix {
     use climon2_core::{SessionId, layout::RuntimeLayout};
     use std::{
-        fs::{self, DirBuilder},
+        fs::{self, DirBuilder, File, OpenOptions},
         io,
         os::unix::{
-            fs::{DirBuilderExt, FileTypeExt, MetadataExt},
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
             net::{UnixListener, UnixStream},
         },
         path::{Path, PathBuf},
@@ -82,6 +82,19 @@ mod unix {
     pub fn private_directory(path: &Path) -> io::Result<()> {
         create_directory(path)?;
         check_directory(path)
+    }
+
+    /// A new file only this user can read and write, never opened through a
+    /// symlink or over an existing file.
+    pub fn create_private_file(path: &Path) -> io::Result<File> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        Ok(file)
     }
 
     fn create_directory(path: &Path) -> io::Result<()> {
