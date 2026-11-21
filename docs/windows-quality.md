@@ -44,10 +44,11 @@ matter most:
 
 ## Where Windows runs
 
-CI is the only environment that qualifies Windows. There is no Windows
-development machine. The owner's Windows 11 virtual machine is used for the
-manual checklist and for measuring facts, and no pull request check depends on
-it.
+CI is the only environment that qualifies Windows. The owner's Windows 11
+virtual machine is used for the manual checklist, for measuring facts, and for
+development sessions on tickets about Windows run-time behaviour. It never
+qualifies a change: the pull request's Windows CI run is the proof, and no
+pull request check depends on the virtual machine.
 
 All Windows jobs run on the GitHub runner `windows-2025`, named exactly, not
 `windows-latest`. Its image changes weekly and cannot be pinned, so every
