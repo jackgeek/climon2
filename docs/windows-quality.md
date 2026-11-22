@@ -9,8 +9,9 @@ registry's Windows arm and the source check are built
 Quality job with everything [the native-only gate on Windows](#the-native-only-gate-on-windows)
 needs ([#314](https://github.com/jackgeek/climon2/issues/314)), and the
 harness's Windows host, whose own tests the Test job runs
-([#320](https://github.com/jackgeek/climon2/issues/320)). Both jobs run
-only the tests that build on Windows yet. The rest is not built. It was agreed in
+([#320](https://github.com/jackgeek/climon2/issues/320)), and the Dist job
+([#319](https://github.com/jackgeek/climon2/issues/319)). The Test and
+Quality jobs run only the tests that build on Windows yet. The rest is not built. It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 and is the specification the Windows port implements.
 
@@ -94,7 +95,7 @@ number.
 | --- | --- |
 | Test | Every workspace test, including the harness's host-model scenarios |
 | Quality | The native-only gate over registered Windows files |
-| Dist | Builds the release zip |
+| Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks |
 | Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip |
 | Neutral (existing) | Its Windows leg stays: `climon2-core`'s tests on Windows |
 

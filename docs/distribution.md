@@ -16,8 +16,11 @@ Ubuntu baseline or compatibility with every Linux distribution.
 The Linux installer requires a filesystem supporting `renameat2` directory
 exchange. macOS executables retain universal slices and ad-hoc signing.
 
-Windows is not built yet. Its agreed archive, installer and upgrade rules are
-in [Windows packaging and upgrades](windows-distribution.md).
+Windows is not released yet. On an x86_64 Windows host `cargo xtask dist`
+builds its zip archive, but there is no Windows installer and the release
+does not publish the zip. Its archive, how it is built, and the agreed
+installer and upgrade rules are in
+[Windows packaging and upgrades](windows-distribution.md).
 
 `cargo xtask dist` builds only the shipped packages, in a private target
 directory, without test hooks or inherited instrumentation. It checks release
