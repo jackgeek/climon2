@@ -758,10 +758,11 @@ Linux library must also have no soname, RPATH or RUNPATH and need only glibc's
 libraries. `release-check` applies these library checks to the local
 per-package release build too.
 Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
-On an **x86_64 Windows host**, `xtask dist` builds the Windows zip and its
-`SHA256SUMS` instead, with the pinned ConPTY files; it fails if any shipped
-program or library imports the Visual C++ runtime. That zip is not installable
-or published yet; see [Windows packaging and upgrades](docs/windows-distribution.md).
+On an **x86_64 Windows host**, `xtask dist` builds the Windows zip, the
+download script `install.ps1` and their `SHA256SUMS` instead, with the pinned
+ConPTY files; it fails if any shipped program or library imports the Visual
+C++ runtime. The zip's `install.exe` installs it, but it is not published
+yet; see [Windows packaging and upgrades](docs/windows-distribution.md).
 
 `xtask install` builds and verifies the same production payload as `dist`, then
 runs its installer without creating an archive. It has the same host and build

@@ -1,5 +1,9 @@
 # climon2-install
 
+The installer. On macOS and GNU/Linux it ships as `install`, on Windows as
+`install.exe` ([Windows](#windows) below); `src/lib.rs` picks `src/unix.rs` or
+`src/windows.rs` by a `cfg` on that one module declaration.
+
 The macOS and GNU/Linux installer is shipped as `install` beside the launcher `c2` and the release's
 `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}` executables
 and client library (`libclimon2_client.dylib` on macOS, `libclimon2_client.so`
@@ -78,4 +82,50 @@ with the sibling launcher built in the same Cargo target:
 
 ```sh
 cargo test -p climon2-launcher -p climon2-install --features climon2-install/test-hooks
+```
+
+## Windows
+
+`install.exe [--dir <directory>] [--no-modify-path]` installs the release
+beside it into `%LOCALAPPDATA%\climon2` or the `--dir` home, as
+[Windows packaging and upgrades](../../docs/windows-distribution.md) specifies.
+Its code is in two registered Windows files, which the Windows quality gate
+holds to CRAP 5 and zero surviving mutants: `src/windows.rs` (options, the
+lock, staging, the version folder, the launcher and `current`) and
+`src/user_path/windows.rs` (the user `PATH` and its record in the registry).
+The library exports `run`, `LAUNCHER` (`c2.exe`) and `version_files()`, the
+version folder's files, which xtask's Windows dist tests against its zip.
+
+- `install.lock` in the home is created and locked exclusively, failing at
+  once if another installer holds it; it is never renamed or deleted.
+- The version folder is copied into `.climon2-install-stage` and renamed into
+  place. An identical installed folder is kept. A different one is renamed
+  aside, replaced and deleted, unless one of its `.exe` files cannot be
+  opened for writing, which Windows refuses for a running program: then the
+  install fails with 125 and nothing changes.
+- `c2.exe` is replaced unless identical; one Windows will not replace, such as
+  a running one, is kept, with one line on standard output saying so.
+- `current` is written last, by renaming a staged file over it.
+- Unless `--no-modify-path`, the home is appended to the stored
+  `HKCU\Environment\Path` as one literal entry, keeping the value's registry
+  type, and recorded as `PathEntry` under `HKCU\Software\climon2`. A later
+  install into another home removes the recorded entry. An entry that already
+  names the home, after expanding variables and ignoring case and a trailing
+  backslash, counts as present and is not recorded. A change is broadcast
+  with `WM_SETTINGCHANGE`. `--no-modify-path` touches neither value and prints
+  the entry to add by hand.
+
+`tests/windows.rs` runs this test binary itself as `install.exe`, after
+redirecting `HKEY_CURRENT_USER` to a registry key of its own with
+`RegOverridePredefKey`, so no test, and no mutant under test, can change the
+real user `PATH`. Each install also gets its own `LOCALAPPDATA` and working
+directory. `tests/archive_windows.rs` is the Windows Archive job's: it tests
+the zip named by `CLIMON2_E2E_ARCHIVE` (its `install.exe`, and `install.ps1`
+under both PowerShells) and passes without running when that is unset. Its
+tests that change the real user `PATH` also need
+`CLIMON2_E2E_REAL_USER_PATH=1`, which only the Archive job's throwaway runner
+sets.
+
+```powershell
+cargo test -p climon2-install
 ```
