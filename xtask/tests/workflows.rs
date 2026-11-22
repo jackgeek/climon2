@@ -10,7 +10,10 @@ fn workflow(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../.github/workflows")
         .join(name);
-    fs::read_to_string(path).expect("read workflow")
+    // A Windows checkout may turn each line ending into CRLF.
+    fs::read_to_string(path)
+        .expect("read workflow")
+        .replace("\r\n", "\n")
 }
 
 /// The top-level `on:` block's trigger names.
