@@ -83,6 +83,10 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: ./.github/actions/controlled-bash
+      # A cancelled or failed gate leaves its mutation workers' copies behind,
+      # and with clean: false they would fill the machine's disk.
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify changed host source
@@ -116,6 +120,10 @@ jobs:
           clean: false
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      # A cancelled or failed gate leaves its mutation workers' copies behind,
+      # and with clean: false they would fill the machine's disk.
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify only Windows-exclusive source
@@ -145,6 +153,10 @@ jobs:
       - name: Install universal payload targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: ./.github/actions/controlled-bash
+      # A cancelled or failed gate leaves its mutation workers' copies behind,
+      # and with clean: false they would fill the machine's disk.
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify only macOS-exclusive source
