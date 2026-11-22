@@ -163,13 +163,17 @@ jobs:
           path: target/conpty
           key: conpty-${{ hashFiles('pins/conpty.txt') }}
       - name: Test the platform seams that build on Windows
-        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test cross_account_windows --test presentation_windows --test connection_windows --test runtime_windows --test process_windows --test pty_windows
+        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test cross_account_windows --test presentation_windows --test connection_windows --test runtime_windows --test process_windows --test pty_windows --test notifier_windows --test native_path_windows
       - name: Test the harness's Windows host
         run: cargo test --locked -p climon2-test-term
       # Also builds the daemon binary, which the CLI's exec tests start.
       - name: Test the daemon binary's Windows answers
         run: cargo test --locked -p climon2-daemon --test windows
-      - name: Test the launcher, the CLI's Windows answers and headless exec
+      # Also builds the client binary and its library, which the CLI's kill
+      # tests start.
+      - name: Test the client library on Windows
+        run: cargo test --locked -p climon2-client --test library_windows
+      - name: Test the launcher, the CLI's Windows answers, headless exec and kill
         run: cargo test --locked -p climon2-launcher -p climon2-cli
   windows-quality:
     name: Windows-only CRAP and mutation / windows-2025

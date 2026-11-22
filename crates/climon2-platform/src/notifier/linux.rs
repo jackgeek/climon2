@@ -1,5 +1,7 @@
 //! Linux's notifier: one `eventfd`.
 
+pub use super::unix::{Waker, wait_raised};
+
 use std::{
     io,
     os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},

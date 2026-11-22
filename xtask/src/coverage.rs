@@ -49,8 +49,14 @@ fn continuous_profile(environment: &mut [(String, String)]) -> io::Result<String
     Ok(value.clone())
 }
 
+/// The coverage build's RUSTFLAGS, which replace the configured ones: on
+/// Windows they keep the static C runtime every Windows build links
+/// (`.cargo/config.toml`).
 fn aligned_sections() -> String {
-    if cfg!(any(target_os = "linux", windows)) {
+    if cfg!(windows) {
+        return "-Cllvm-args=-runtime-counter-relocation -Ctarget-feature=+crt-static".to_owned();
+    }
+    if cfg!(target_os = "linux") {
         return "-Cllvm-args=-runtime-counter-relocation".to_owned();
     }
     SECTIONS

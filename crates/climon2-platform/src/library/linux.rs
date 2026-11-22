@@ -7,6 +7,9 @@ use std::{
     io::Read,
 };
 
+/// dlopen, shared by both Unix platforms.
+pub(super) use super::unix::bootstrap;
+
 /// What a loadable client library is here.
 pub(super) const ARCHITECTURE: &str = "an x86-64 ELF library";
 

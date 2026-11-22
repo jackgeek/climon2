@@ -99,9 +99,9 @@ flowchart TB
     fixtures --> core
     fixtures --> platform
     fixtures -.->|"dev"| test_term
-    platform -.->|"dev"| fixtures
+    platform -.->|"dev, Unix"| fixtures
     platform -.->|"dev, Windows"| test_term
-    client -.->|"dev"| fixtures
+    client -.->|"dev, Unix"| fixtures
     xtask --> core
     xtask --> install
     xtask --> platform
@@ -203,6 +203,14 @@ whose discovery now builds there; every other subcommand fails until its
 Windows seams exist. Its list tests drive the CLI in the harness's Windows
 host. The launcher still has no dependencies on Windows: it declares the few
 Windows calls it makes itself.
+
+**Current (#318):** `climon2-client` builds on Windows, with its edges to
+`core` and `platform` and its `dev` edge to `climon2-test-term`: its library
+is `climon2_client.dll`, and its executable runs kill mode there. Its `dev`
+edge to `climon2-fixtures`, whose stand-ins are Unix programs, is Unix-only,
+as `platform`'s already was. The Windows loader, notifier and native path
+encoding are bodies inside `climon2-platform`'s seams, not another crate or
+edge.
 
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so

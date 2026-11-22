@@ -9,7 +9,10 @@ use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
 };
 use windows_sys::Win32::{
-    Foundation::{ERROR_INVALID_PARAMETER, FALSE, FILETIME, WAIT_OBJECT_0},
+    Foundation::{
+        ERROR_INVALID_PARAMETER, ERROR_TOO_MANY_OPEN_FILES, FALSE, FILETIME, WAIT_OBJECT_0,
+    },
+    Networking::WinSock::WSAEMFILE,
     System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
         WaitForSingleObject,
@@ -92,4 +95,11 @@ fn epoch_micros(time: FILETIME) -> io::Result<u64> {
         .checked_sub(UNIX_EPOCH_INTERVALS)
         .map(|since_epoch| since_epoch / 10)
         .ok_or_else(|| io::Error::other("process created before the Unix epoch"))
+}
+
+/// The process ran out of sockets (Winsock's `WSAEMFILE`) or of file
+/// handles (`ERROR_TOO_MANY_OPEN_FILES`).
+pub fn out_of_descriptors(error: &io::Error) -> bool {
+    const TOO_MANY_OPEN_FILES: i32 = ERROR_TOO_MANY_OPEN_FILES as i32;
+    matches!(error.raw_os_error(), Some(WSAEMFILE | TOO_MANY_OPEN_FILES))
 }

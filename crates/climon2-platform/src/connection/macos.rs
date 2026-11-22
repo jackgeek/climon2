@@ -1,14 +1,12 @@
 //! macOS's signal-free socket sends.
 
-use std::{
-    io,
-    os::fd::{AsRawFd, BorrowedFd},
-};
+use crate::runtime::SocketStream;
+use std::{io, os::fd::AsRawFd};
 
 /// Makes a closed peer fail a send with `EPIPE` instead of raising
 /// `SIGPIPE` in the embedder's process, whose signal handling the library
 /// never changes.
-pub fn quiet(socket: BorrowedFd<'_>) -> io::Result<()> {
+pub fn quiet(socket: &SocketStream) -> io::Result<()> {
     let on: libc::c_int = 1;
     // SAFETY: the option value covers its length.
     status(unsafe {
@@ -31,7 +29,7 @@ fn status(result: libc::c_int) -> io::Result<()> {
 }
 
 /// Sends what the socket takes now; `quiet` made it never raise `SIGPIPE`.
-pub fn send(socket: BorrowedFd<'_>, bytes: &[u8]) -> io::Result<usize> {
+pub fn send(socket: &SocketStream, bytes: &[u8]) -> io::Result<usize> {
     // SAFETY: the buffer covers its length.
     let sent = unsafe { libc::send(socket.as_raw_fd(), bytes.as_ptr().cast(), bytes.len(), 0) };
     usize::try_from(sent).map_err(|_| io::Error::last_os_error())

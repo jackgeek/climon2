@@ -30,7 +30,7 @@ or rejected. Without one, a directly started client reads and validates the
 `client` section of `config.jsonc` and attaches.
 
 Both operations go through this release's own
-[client library](#client-library-libclimon2_clientdylib-libclimon2_clientso)
+[client library](#client-library-libclimon2_clientdylib-libclimon2_clientso-climon2_clientdll)
 over daemon wire revision 1, the only protocol session daemons speak after
 hello since the version-private one was retired (#104): ordinary
 attach since #101 (`src/attachment.rs`, `src/bridge.rs`) and kill since #100
@@ -190,12 +190,15 @@ alternate screen blindly, so alternate-screen and other unknown state (for
 example the title) cannot be restored without a daemon response. On expiry
 pending output is discarded and the reset gets one non-blocking attempt.
 
-## Client library (`libclimon2_client.dylib`, `libclimon2_client.so`)
+## Client library (`libclimon2_client.dylib`, `libclimon2_client.so`, `climon2_client.dll`)
 
 This package's library target is also a cdylib (`crate-type = ["lib",
 "cdylib"]`), so every release ships the client library in its version folder,
 published atomically by the installer: `libclimon2_client.dylib` (universal
-arm64/x86_64) on macOS and `libclimon2_client.so` on x86-64 GNU/Linux. The
+arm64/x86_64) on macOS and `libclimon2_client.so` on x86-64 GNU/Linux. On
+x86-64 Windows the same cdylib builds as `climon2_client.dll` (#318), linking
+the C runtime statically as every Windows build does (`.cargo/config.toml`),
+so it imports only Windows system DLLs. The
 file name comes from `climon2_core::layout::client_library_name`. It is an
 artifact, not another crate. It exports only the frozen
 `climon2_client_get_interface` bootstrap of
@@ -620,6 +623,20 @@ private target directory and checks.
 LIB-06 Library is not covered yet: without the fault hook this release starts
 no worker that could stall. Open
 ([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
+
+### Windows (#318)
+
+The library and the executable build on Windows. Kill mode runs there as on
+Unix, so `c2 kill` ends a headless session; ordinary attach fails with status
+125 (`src/windows.rs`) until the client has its console rules (#321), and
+Unix attach lives in `src/unix.rs`. The library's notification descriptor is
+a manual-reset event (ADR 0008), its paths cross as `CM1_NATIVE_WINDOWS`, and
+its waker is a loopback UDP socket, all through `climon2-platform`'s seams.
+`tests/library_windows.rs` checks the built library's exports and imports and
+loads it, and altered copies of it, through the shared loader: by exact path,
+never freed, two same-named copies as two modules, its dependencies found only
+beside it or in System32, and each failure classified. `climon2-cli`'s
+`tests/exec_windows.rs` proves `c2 kill` end to end and the attach refusal.
 
 ## Behavioral evidence
 

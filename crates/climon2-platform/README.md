@@ -2,9 +2,9 @@
 
 Shared macOS, Linux and Windows seams (ADR 0003). `home`, `private`,
 `logging`, `runtime`, `connection`, `waiting`, `process` (identity only),
-`presentation`, `peer`, `daemon`, `pty` and `terminal` (a daemon's signals
-only) build on Windows so far (see [Windows](#windows)); `library` and
-`notifier` are declared for Unix only. Neutral contracts remain in `climon2-core`. No runtime
+`presentation`, `peer`, `daemon`, `pty`, `terminal` (signals only),
+`library`, `notifier` and `native_path` build on Windows so far (see
+[Windows](#windows)). Neutral contracts remain in `climon2-core`. No runtime
 dispatch or shell-specific logic.
 
 ## Runtime and peers
@@ -73,11 +73,12 @@ dispatch or shell-specific logic.
   `NotFound` and `ConnectionRefused` kinds; on Windows a missing path and a
   stale socket both refuse with `WSAECONNREFUSED`. Only these can begin to
   prove a session stale (#311).
-- `connection::send(BorrowedFd, &[u8])` sends what a socket takes now and
+- `connection::send(&SocketStream, &[u8])` sends what a socket takes now and
   never raises `SIGPIPE` in the client library's embedder: Linux sends with
-  `MSG_NOSIGNAL`, and macOS needs `connection::quiet(BorrowedFd)` once per
-  socket to set `SO_NOSIGPIPE` (a no-op on Linux). Native files
-  `src/connection/{linux,macos}.rs` (#312).
+  `MSG_NOSIGNAL`, and macOS needs `connection::quiet(&SocketStream)` once per
+  socket to set `SO_NOSIGPIPE` (a no-op on Linux and Windows, which has no
+  `SIGPIPE`). Native files `src/connection/{linux,macos,windows}.rs` (#312,
+  #318).
 - `peer::accept(&SocketListener)` returns only authenticated streams.
   `peer::{uid,authenticate}` support already accepted streams; authentication
   must happen before hello and callers must drop rejected streams.
@@ -198,7 +199,16 @@ dispatch or shell-specific logic.
   Linux uses one nonblocking `eventfd`, macOS a close-on-exec pipe
   (`DESCRIPTORS` counts 1 and 2). `descriptor()` is the raw descriptor the C
   ABI hands out; `as_fd()` is the one a wait watches. Native files
-  `src/notifier/{linux,macos}.rs` (#312).
+  `src/notifier/{linux,macos}.rs` (#312). `notifier::Waker` is the waker's
+  type (one more `Notifier` on Unix) and `Waker::watch()` its slot in a wait;
+  `notifier::wait_raised(i32, Duration)` waits on a notification descriptor
+  the library handed out.
+- `native_path::NativePath::new(&Path).native()` is a path as it crosses the
+  native interface (`cm1_path`), and `native_path::parse(encoding, bytes)`
+  reads one back: native Unix bytes as `CM1_NATIVE_UNIX`, refusing NUL,
+  relative paths and `PATH_MAX` bytes or more; on Windows UTF-16LE code units
+  as `CM1_NATIVE_WINDOWS` (`src/native_path/windows.rs`, #318). Each refuses
+  the other encoding, and `native_path::RULE` words the refusal.
 - `library::Loader::new(ExecutableHome)` loads the client libraries of one
   climon2 executable home. `climon2_core::layout::ExecutableHome` is absolute
   and canonical by construction and owns each library's path,
@@ -242,9 +252,9 @@ dispatch or shell-specific logic.
   admitted limits.
 - `Library` exists only validated: `requirements()`, `functions()` (a
   `Functions` table whose eleven entries cannot be absent) and `bootstrap()`
-  for observers of the C ABI itself. The monitor (#106) and the client
-  executable (#100) will load through it; today the Library-layer host and
-  xtask's release checks do. Environment variables such as `LD_PRELOAD`,
+  for observers of the C ABI itself. The monitor (#106), the client
+  executable (#100), the Library-layer host and xtask's release checks load
+  through it. Environment variables such as `LD_PRELOAD`,
   `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` are neither cleared nor
   a reason to refuse.
 
@@ -318,9 +328,34 @@ For the session daemon and headless `exec` (#317; docs/windows-lifecycle.md,
 - `src/logging/windows.rs`: `capture_stderr` makes a pipe the standard error
   handle and copies it into the log until dropped.
 
+For the client library and `c2 kill` (#318; library embedding, "Windows"):
+
+- `src/library/windows.rs`: the loader opens the library with
+  `LoadLibraryExW` and `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+  LOAD_LIBRARY_SEARCH_SYSTEM32`, never frees it, and refuses it as a
+  `SubstitutedImage` when `GetModuleFileNameW` names another file. A failed
+  load is a `MissingLibrary` when the file cannot be opened, an
+  `IncompatibleArchitecture` for `ERROR_BAD_EXE_FORMAT` or a PE machine other
+  than x86-64, and otherwise a `MissingDependency`; no bootstrap export is a
+  `MissingSymbol`.
+- `src/notifier/windows.rs`: the notification descriptor is an unnamed,
+  non-inheritable manual-reset event whose handle travels in the `int32_t`
+  output (ADR 0008); the waker is a loopback UDP socket connected to itself,
+  the only kind of handle that can wake the instance's `WSAPoll`.
+- `src/connection/windows.rs`: sends with no setup.
+- `src/native_path/windows.rs`: `CM1_NATIVE_WINDOWS` paths, at most 32767
+  code units, with unpaired surrogates kept.
+- `src/process/windows.rs` adds `out_of_descriptors` (`WSAEMFILE` or
+  `ERROR_TOO_MANY_OPEN_FILES`), and `src/terminal/windows.rs` the client's
+  `Signals`, which never report a signal.
+
 `tests/pty_windows.rs` proves the PTY seam against the pinned ConPTY that
 `climon2-test-term` fetches and verifies; headless `exec`'s tests in
-`climon2-cli` prove the daemon's start.
+`climon2-cli` prove the daemon's start. `tests/notifier_windows.rs`,
+`tests/native_path_windows.rs` and the new cases in `tests/connection_windows.rs`
+and `tests/process_windows.rs` prove the client library's seams;
+`climon2-client`'s `tests/library_windows.rs` proves the loader against the
+built library and altered copies of it.
 
 ## Behavioral evidence
 

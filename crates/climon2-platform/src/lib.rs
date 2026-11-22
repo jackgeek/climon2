@@ -2,10 +2,9 @@
 pub mod connection;
 pub mod daemon;
 pub mod home;
-#[cfg(unix)]
 pub mod library;
 pub mod logging;
-#[cfg(unix)]
+pub mod native_path;
 pub mod notifier;
 pub mod peer;
 pub mod presentation;

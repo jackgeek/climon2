@@ -18,15 +18,18 @@
 //! description, whatever has happened to the file since. Such a refusal is
 //! "not recoverable" only in that a caller must not rely on a retry; the
 //! loader does not remember it.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("client library loading requires macOS or Linux");
-
 #[cfg(target_os = "linux")]
 #[path = "library/linux.rs"]
 mod platform;
 #[cfg(target_os = "macos")]
 #[path = "library/macos.rs"]
 mod platform;
+/// Windows opens the library itself: `LoadLibraryExW` by exact path.
+#[cfg(windows)]
+#[path = "library/windows.rs"]
+mod platform;
+
+use platform::bootstrap;
 
 use climon2_core::{
     VersionName,
@@ -38,11 +41,8 @@ use climon2_core::{
 };
 use std::{
     collections::BTreeMap,
-    ffi::{CStr, CString, c_void},
     fmt,
-    fs::File,
     ops::Range,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     ptr::NonNull,
     sync::{Mutex, PoisonError},
@@ -60,8 +60,9 @@ pub enum Failure {
     MissingDependency,
     /// The file is not a library for this process's architecture.
     IncompatibleArchitecture,
-    /// macOS: dyld loaded another file of the same name, found through
-    /// `DYLD_LIBRARY_PATH`, instead of the one requested.
+    /// The loader loaded another file than the one requested: on macOS one
+    /// of the same name found through `DYLD_LIBRARY_PATH`, on Windows one
+    /// found through DLL redirection.
     SubstitutedImage,
     /// The library does not export `climon2_client_get_interface`.
     MissingSymbol,
@@ -214,69 +215,6 @@ impl Loader {
 fn open(path: &Path, release: &VersionName) -> Result<Library, Refusal> {
     let bootstrap = bootstrap(path)?;
     validate(bootstrap, describe(bootstrap)?, release)
-}
-
-/// The bootstrap of the library at `path`, opened with eager and local
-/// symbol resolution and never closed.
-fn bootstrap(path: &Path) -> Result<Bootstrap, Refusal> {
-    let name = CString::new(path.as_os_str().as_bytes()).expect("a path without NUL");
-    // SAFETY: a NUL-terminated path; the handle is deliberately never closed.
-    let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-    if handle.is_null() {
-        return Err(unloadable(path, dlerror()));
-    }
-    // SAFETY: a live handle and a NUL-terminated symbol name.
-    let symbol = unsafe { libc::dlsym(handle, native::BOOTSTRAP.as_ptr()) };
-    if let Some(loaded) = platform::loaded_instead(symbol, &name) {
-        return Err((
-            Failure::SubstitutedImage,
-            format!("the dynamic loader loaded {loaded} instead, found through a search path"),
-        ));
-    }
-    if symbol.is_null() {
-        return Err((
-            Failure::MissingSymbol,
-            format!("it does not export {}", native::BOOTSTRAP.to_string_lossy()),
-        ));
-    }
-    // SAFETY: the frozen bootstrap symbol has the `Bootstrap` signature.
-    Ok(unsafe { std::mem::transmute::<*mut c_void, Bootstrap>(symbol) })
-}
-
-/// The dynamic loader's message about its last failure, for diagnosis only.
-fn dlerror() -> String {
-    // SAFETY: dlerror returns null or a NUL-terminated message it owns.
-    let message = unsafe { libc::dlerror() };
-    if message.is_null() {
-        return String::new();
-    }
-    // SAFETY: the message is nonnull and NUL-terminated.
-    unsafe { CStr::from_ptr(message) }
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Why the dynamic loader could not load `path`, decided by the loader's own
-/// checks of the file it was given; the dynamic loader's `message` is only
-/// quoted.
-fn unloadable(path: &Path, message: String) -> Refusal {
-    match File::open(path) {
-        Err(error) => (
-            Failure::MissingLibrary,
-            format!("it cannot be opened: {error}"),
-        ),
-        Ok(file) if platform::runs_here(&file) => (
-            Failure::MissingDependency,
-            format!("the dynamic loader cannot load it or a library it needs: {message}"),
-        ),
-        Ok(_) => (
-            Failure::IncompatibleArchitecture,
-            format!(
-                "it is not {}; the dynamic loader said: {message}",
-                platform::ARCHITECTURE
-            ),
-        ),
-    }
 }
 
 /// The library `bootstrap` and its `description` make, if that describes
@@ -477,4 +415,79 @@ fn functions(table: &Interface) -> Result<Functions, Refusal> {
         notification,
         snapshot,
     })
+}
+
+#[cfg(unix)]
+mod unix {
+    use super::{Failure, Refusal, platform};
+    use climon2_core::native::{self, Bootstrap};
+    use std::{
+        ffi::{CStr, CString, c_void},
+        fs::File,
+        os::unix::ffi::OsStrExt,
+        path::Path,
+    };
+
+    /// The bootstrap of the library at `path`, opened with eager and local
+    /// symbol resolution and never closed.
+    pub(super) fn bootstrap(path: &Path) -> Result<Bootstrap, Refusal> {
+        let name = CString::new(path.as_os_str().as_bytes()).expect("a path without NUL");
+        // SAFETY: a NUL-terminated path; the handle is deliberately never closed.
+        let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        if handle.is_null() {
+            return Err(unloadable(path, dlerror()));
+        }
+        // SAFETY: a live handle and a NUL-terminated symbol name.
+        let symbol = unsafe { libc::dlsym(handle, native::BOOTSTRAP.as_ptr()) };
+        if let Some(loaded) = platform::loaded_instead(symbol, &name) {
+            return Err((
+                Failure::SubstitutedImage,
+                format!("the dynamic loader loaded {loaded} instead, found through a search path"),
+            ));
+        }
+        if symbol.is_null() {
+            return Err((
+                Failure::MissingSymbol,
+                format!("it does not export {}", native::BOOTSTRAP.to_string_lossy()),
+            ));
+        }
+        // SAFETY: the frozen bootstrap symbol has the `Bootstrap` signature.
+        Ok(unsafe { std::mem::transmute::<*mut c_void, Bootstrap>(symbol) })
+    }
+
+    /// The dynamic loader's message about its last failure, for diagnosis only.
+    fn dlerror() -> String {
+        // SAFETY: dlerror returns null or a NUL-terminated message it owns.
+        let message = unsafe { libc::dlerror() };
+        if message.is_null() {
+            return String::new();
+        }
+        // SAFETY: the message is nonnull and NUL-terminated.
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Why the dynamic loader could not load `path`, decided by the loader's own
+    /// checks of the file it was given; the dynamic loader's `message` is only
+    /// quoted.
+    fn unloadable(path: &Path, message: String) -> Refusal {
+        match File::open(path) {
+            Err(error) => (
+                Failure::MissingLibrary,
+                format!("it cannot be opened: {error}"),
+            ),
+            Ok(file) if platform::runs_here(&file) => (
+                Failure::MissingDependency,
+                format!("the dynamic loader cannot load it or a library it needs: {message}"),
+            ),
+            Ok(_) => (
+                Failure::IncompatibleArchitecture,
+                format!(
+                    "it is not {}; the dynamic loader said: {message}",
+                    platform::ARCHITECTURE
+                ),
+            ),
+        }
+    }
 }
