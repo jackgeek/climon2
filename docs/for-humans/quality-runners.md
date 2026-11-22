@@ -194,4 +194,8 @@ each worker's Cargo 2 build jobs and 2 test threads. The gate measures its
 stage timeouts under the same limit. The gate's own first build and test
 run are not limited.
 
+Each worker also has its own target folder. On Windows, one with debug info
+nears 8.4 GB, and 6 of them filled the VM's disk. So every gate builds its
+workers without debug info, which halves that.
+
 Change the values in `quality.yml` to resize either.
