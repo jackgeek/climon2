@@ -6,7 +6,6 @@ pub mod daemon;
 pub mod home;
 #[cfg(unix)]
 pub mod library;
-#[cfg(unix)]
 pub mod logging;
 #[cfg(unix)]
 pub mod notifier;

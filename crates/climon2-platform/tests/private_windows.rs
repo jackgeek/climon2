@@ -3,13 +3,14 @@
 //! name, and a managed folder that is a link, or whose owner or access is not
 //! exactly the user's, is refused and left as it was.
 #![cfg(windows)]
-use climon2_platform::private;
+use climon2_platform::{logging, private};
 use std::{
     ffi::OsStr,
     fs, io,
     os::windows::fs::{symlink_dir, symlink_file},
     path::Path,
     process::Command,
+    time::{Duration, SystemTime},
 };
 
 #[test]
@@ -146,6 +147,54 @@ fn a_junction_or_directory_link_standing_in_for_a_folder_is_refused() {
         let error = private::private_directory(&folder).unwrap_err();
 
         assert_unsafe(&error, &folder, "not a plain directory");
+    }
+}
+
+#[test]
+fn a_general_log_is_a_private_file_in_private_folders() {
+    let home = tempfile::tempdir().unwrap();
+
+    let log = logging::LogFile::general(home.path()).unwrap();
+
+    let user = user_sid();
+    let folder = format!("O:{user}D:P(A;OICI;FA;;;{user})");
+    assert_eq!(descriptor(&home.path().join("logs")), folder);
+    assert_eq!(
+        descriptor(&home.path().join("logs").join("general")),
+        folder
+    );
+    assert_eq!(
+        descriptor(log.path()),
+        format!("O:{user}D:P(A;;FA;;;{user})")
+    );
+}
+
+#[test]
+fn a_junction_or_directory_link_standing_in_for_logs_is_refused_and_pruning_leaves_its_target_alone()
+ {
+    let elsewhere = tempfile::tempdir().unwrap();
+    let general = elsewhere.path().join("general");
+    fs::create_dir(&general).unwrap();
+    let old = general.join("20000101T000000Z-1.log");
+    fs::write(&old, "kept").unwrap();
+    let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800);
+    fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    for link in [junction as fn(&Path, &Path), directory_link] {
+        let home = tempfile::tempdir().unwrap();
+        let logs = home.path().join("logs");
+        link(elsewhere.path(), &logs);
+
+        let error = logging::LogFile::general(home.path()).err().unwrap();
+        logging::prune(home.path(), SystemTime::now());
+
+        assert_unsafe(&error, &logs, "not a plain directory");
+        assert_eq!(fs::read_to_string(&old).unwrap(), "kept");
+        assert_eq!(fs::read_dir(&general).unwrap().count(), 1);
     }
 }
 
