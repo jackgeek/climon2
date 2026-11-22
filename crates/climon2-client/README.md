@@ -290,9 +290,9 @@ signal handlers or standard streams.
   ends the stream with no retry.
 - `notification` returns the same borrowed descriptor every time: on Linux one
   `eventfd` (close-on-exec, nonblocking), on macOS the read end of a
-  close-on-exec pipe (`src/library/macos.rs`, two descriptors). It is readable
-  while a record or terminal evidence is ready, and `drain` clears it when
-  neither is. `destroy` closes it. Each instance also holds a private waker of
+  close-on-exec pipe (two descriptors), both from climon2-platform's
+  `notifier` seam. It is readable while a record or terminal evidence is
+  ready, and `drain` clears it when neither is. `destroy` closes it. Each instance also holds a private waker of
   the same kind, which `submit`, `shutdown` and `release_delivery` raise for
   the owner thread.
 - `drain` returns one delivery, empty, or terminal evidence once earlier

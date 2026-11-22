@@ -84,16 +84,25 @@ mod unix {
         check_directory(path)
     }
 
-    /// A new file only this user can read and write, whatever the umask,
-    /// never opened through a symlink or over an existing file. A file that
-    /// cannot be made private is removed again.
-    pub fn create_private_file(path: &Path) -> io::Result<File> {
-        let file = OpenOptions::new()
+    /// The longest path, in bytes with its NUL, the system accepts.
+    pub const PATH_MAX: usize = libc::PATH_MAX as usize;
+
+    /// A new file only this user can read and write once the umask is
+    /// applied, never opened through a symlink or over an existing file:
+    /// every file climon2 creates is created here.
+    pub fn create_new_file(path: &Path) -> io::Result<File> {
+        OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?;
+            .open(path)
+    }
+
+    /// As [`create_new_file`], made exactly owner-only whatever the umask.
+    /// A file that cannot be made private is removed again.
+    pub fn create_private_file(path: &Path) -> io::Result<File> {
+        let file = create_new_file(path)?;
         if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
             let _ = fs::remove_file(path);
             return Err(error);

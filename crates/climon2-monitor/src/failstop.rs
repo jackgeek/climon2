@@ -7,6 +7,7 @@
 //! no client code still running is torn down under it, and nothing claims a
 //! join or detach that did not happen.
 use climon2_core::exit::CLIMON2_ERROR;
+use climon2_platform::process;
 use std::{
     io::{self, Write},
     path::Path,
@@ -71,8 +72,7 @@ pub(crate) fn stop(error: &io::Error, log: &Path) -> ! {
     exit()
 }
 
+/// The monitor's own output is flushed and its general log unbuffered.
 fn exit() -> ! {
-    // SAFETY: `_exit` only ends the process; the monitor's own output is
-    // flushed and its general log unbuffered.
-    unsafe { libc::_exit(CLIMON2_ERROR as i32) }
+    process::exit_immediately(CLIMON2_ERROR as i32)
 }
