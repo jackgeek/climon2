@@ -1,6 +1,6 @@
 //! Terminal ownership, file-status flags, hang-up and deferred signal
-//! handling (#20). Windows has only what a detached daemon needs so far
-//! (#317); its console handling arrives with interactive `exec` (#321).
+//! handling (#20), and the terminal a client bridges. On Windows the terminal
+//! is the console, with its own raw mode, threads and control events (#321).
 pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -12,13 +12,14 @@ mod native;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
+    use crate::waiting::{Interest, Watch};
     use climon2_core::protocol::TerminalSize;
     use signal_hook::{SigId, consts::signal::*};
     use std::{
         fs::File,
-        io,
+        io::{self, Read, Write},
         mem::MaybeUninit,
-        os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
+        os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
         sync::{
             Arc, Mutex, Once,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -255,5 +256,62 @@ mod unix {
     /// like EOF, is a hang-up.
     pub fn hung_up(error: &io::Error) -> bool {
         error.raw_os_error() == Some(libc::EIO)
+    }
+
+    /// The terminal while a client bridges it: input read and output written
+    /// without blocking, each with the wait slot that is ready when it can
+    /// make progress. Reading 0 bytes means the terminal hung up.
+    pub struct Bridged {
+        input: File,
+        /// An owned duplicate of stdout: the same open-file description, so
+        /// the same flags.
+        output: File,
+        _flags: Nonblocking,
+    }
+
+    impl Bridged {
+        pub fn new(input: File) -> io::Result<Self> {
+            let output = File::from(io::stdout().as_fd().try_clone_to_owned()?);
+            let flags = Nonblocking::new(input.as_fd(), output.as_fd())?;
+            Ok(Self {
+                input,
+                output,
+                _flags: flags,
+            })
+        }
+
+        pub fn watch_input(&self) -> Watch<'_> {
+            Watch::new(self.input.as_fd(), Interest::Read)
+        }
+
+        pub fn watch_output(&self) -> Watch<'_> {
+            Watch::new(self.output.as_fd(), Interest::Write)
+        }
+
+        pub fn size(&self) -> io::Result<TerminalSize> {
+            size(&self.input)
+        }
+    }
+
+    impl Read for Bridged {
+        /// A lost terminal reads as a hang-up error; like EOF it is a silent HUP.
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            self.input.read(bytes).or_else(|error| {
+                if hung_up(&error) {
+                    return Ok(0);
+                }
+                Err(error)
+            })
+        }
+    }
+
+    impl Write for Bridged {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.output.write(bytes)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.output.flush()
+        }
     }
 }
