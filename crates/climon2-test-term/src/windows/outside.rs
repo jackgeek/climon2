@@ -1,12 +1,15 @@
 //! Running a program outside the test's job. cargo puts every test in a job
 //! that refuses breakaway, so a `c2 exec` started from a test could never
 //! leave it and would always exit 125 (docs/windows-lifecycle.md, "Starting
-//! the daemon"). The harness starts the program as a child of the nearest
-//! ancestor in no job instead, through `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`,
-//! optionally in jobs of the harness's own shapes, outer job first. The program
-//! is detached: that ancestor may have no console to share (on CI it has
-//! none, and a console program started there fails to initialise), and
-//! its standard streams are files.
+//! the daemon"). The harness starts the program instead as a child of an
+//! ancestor above the outermost cargo, through
+//! `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, optionally in jobs of the
+//! harness's own shapes, outer job first. The ancestor runs as the test's
+//! user: the nearest one in no job, else the process that started cargo.
+//! On the CI runner every process from `Runner.Listener` down is in the
+//! runner's job, so there it is the step's shell, in that job. The program
+//! is detached, since that process may have no console to share, and its
+//! standard streams are files.
 //!
 //! This is test code: it must pass its own tests in the Windows Test job and
 //! is outside CRAP and mutation (docs/windows-quality.md).
@@ -113,7 +116,7 @@ impl Outside {
                     .map(|job| job.expect("a job shape with a job"))
             })
             .collect::<io::Result<_>>()?;
-        let parent = unjobbed_ancestor()?;
+        let parent = cargo_starter()?;
         let scratch = tempfile::tempdir()?;
         let (stdout, stderr) = (scratch.path().join("out"), scratch.path().join("err"));
         let process = {
@@ -222,30 +225,44 @@ fn finish(process: &OwnedHandle, timeout: Duration) -> io::Result<u32> {
     }
 }
 
-/// The nearest ancestor of this process that runs as this process's user
-/// and is in no job, opened to be a parent. Without one, the error lists
-/// every ancestor.
-fn unjobbed_ancestor() -> io::Result<OwnedHandle> {
+/// The parent to start a program under, running as this test's user: the
+/// nearest ancestor above the outermost cargo that is in no job, else the
+/// process that started that cargo, though it is in a job, as the CI
+/// runner's step shell is. Without either, the error lists every ancestor.
+fn cargo_starter() -> io::Result<OwnedHandle> {
     let processes = processes()?;
     let ours = user(current_process()).ok_or_else(io::Error::last_os_error)?;
+    let mut ancestors = Vec::new();
     let mut pid = std::process::id();
-    let mut seen = Vec::new();
-    while let Some((parent, name)) = processes.get(&pid) {
-        let (process, in_job, user) = inspect(*parent);
-        let same_user = user.as_ref() == Some(&ours);
-        seen.push(format!(
-            "{parent} {name} in_job={in_job:?} same_user={same_user}"
-        ));
-        if let (Some(process), Some(false), true) = (process, in_job, same_user) {
-            return Ok(process);
-        }
+    while let Some((parent, _)) = processes.get(&pid) {
+        let name = processes.get(parent).map_or("?", |(_, name)| name.as_str());
+        ancestors.push((*parent, name));
         pid = *parent;
     }
-    Err(io::Error::other(format!(
-        "no ancestor of this test runs as its user outside a job, so nothing can be \
-         started outside cargo's: {}",
-        seen.join("; ")
-    )))
+    let outermost_cargo = ancestors
+        .iter()
+        .rposition(|(_, name)| name.eq_ignore_ascii_case("cargo.exe"));
+    let starter = outermost_cargo.map_or(0, |cargo| cargo + 1);
+    let mut seen = Vec::new();
+    let mut fallback = None;
+    for (index, (candidate, name)) in ancestors.iter().enumerate().skip(starter) {
+        let (process, in_job, user) = inspect(*candidate);
+        let same_user = user.as_ref() == Some(&ours);
+        seen.push(format!(
+            "{candidate} {name} in_job={in_job:?} same_user={same_user}"
+        ));
+        match (process, in_job, same_user) {
+            (Some(process), Some(false), true) => return Ok(process),
+            (Some(process), _, true) if index == starter => fallback = Some(process),
+            _ => {}
+        }
+    }
+    fallback.ok_or_else(|| {
+        io::Error::other(format!(
+            "the process that started cargo cannot start a program as this test's user: {}",
+            seen.join("; ")
+        ))
+    })
 }
 
 fn current_process() -> HANDLE {

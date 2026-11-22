@@ -97,11 +97,14 @@ too.
 
 cargo runs every test inside a job of its own that refuses breakaway, so a
 `c2 exec` started from a test would always exit 125. The harness therefore
-also runs a program outside the test's job: it starts it as a child of the
-nearest ancestor process that is in no job, optionally inside jobs of the
+also runs a program outside the test's job: it starts it as a child of an
+ancestor process above cargo that runs as the same user, the nearest one in
+no job or else the process that started cargo, optionally inside jobs of the
 shapes above, outer job first
 ([#317](https://github.com/jackgeek/climon2/issues/317)). Headless `exec`'s
-tests use it for every job shape.
+tests use it for every job shape. On the `windows-2025` runner every process
+from `Runner.Listener` down, the step's shell included, is in a job of the
+runner's own, so there the program starts in that job.
 
 ## Shell profiles
 
