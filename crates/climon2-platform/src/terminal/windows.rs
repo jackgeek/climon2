@@ -363,7 +363,11 @@ impl Bridged {
 
     /// Queues `chunk`; a full queue is `WouldBlock`.
     fn queue(&self, chunk: Vec<u8>) -> io::Result<()> {
-        self.room.set(false);
+        // Cleared before the send, so the output thread's next taking sets it
+        // again. Spelled `bool::default()`, false: leaving it set would only
+        // make the waiter spin until the thread takes a chunk, an equivalent
+        // mutant.
+        self.room.set(bool::default());
         self.screen
             .try_send(chunk)
             .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
@@ -374,7 +378,10 @@ impl Bridged {
     /// Takes the next chunk of input; `None` when there is none yet, and an
     /// empty chunk once the console hung up.
     fn receive(&mut self) -> Option<Vec<u8>> {
-        self.typed.set(false);
+        // Cleared before the look, so the input thread's next send sets it
+        // again. Spelled `bool::default()`, false: leaving it set would only
+        // make the waiter spin, an equivalent mutant.
+        self.typed.set(bool::default());
         match self.keys.try_recv() {
             Ok(chunk) => {
                 // More may wait behind it.
@@ -451,18 +458,24 @@ struct Reader {
 }
 
 impl Reader {
-    /// Reads until told to stop, the console fails or nothing receives; then
-    /// a hang-up is what there is to read.
+    /// Reads until told to stop or nothing receives. A console that fails is
+    /// a hang-up, which the bridge reads as 0 bytes once this thread ends.
     fn run(self) {
         let mut decoder = Keys::default();
-        while !self.stop.load(Ordering::SeqCst) && self.step(&mut decoder).is_ok() {}
-        self.typed.set(true);
+        while !self.stop.load(Ordering::SeqCst) {
+            let Ok(records) = self.records() else {
+                self.typed.set(true);
+                return;
+            };
+            if self.forward(&records, &mut decoder).is_err() {
+                return;
+            }
+        }
     }
 
-    fn step(&self, decoder: &mut Keys) -> Result<(), ()> {
-        let records = self.records().map_err(drop)?;
-        RESIZED.fetch_or(resized(&records), Ordering::SeqCst);
-        let bytes = decoder.feed(&records);
+    fn forward(&self, records: &[INPUT_RECORD], decoder: &mut Keys) -> Result<(), ()> {
+        RESIZED.fetch_or(resized(records), Ordering::SeqCst);
+        let bytes = decoder.feed(records);
         if !bytes.is_empty() {
             self.keys.send(bytes).map_err(drop)?;
             self.typed.set(true);

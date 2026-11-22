@@ -250,6 +250,7 @@ mod tests {
 
         assert_eq!(ready, 0);
         assert!(started.elapsed() >= timeout, "{:?}", started.elapsed());
+        assert!(!watches[0].ready() && !watches[0].readable());
     }
 
     /// A socket with something to accept is ready and readable; an idle

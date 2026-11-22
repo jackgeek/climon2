@@ -180,6 +180,9 @@ fn keys(report: &Path) -> i32 {
     let _raw = RawModeGuard::new(&input).unwrap();
     let mut console = Bridged::new(input).unwrap();
     say_ready(report);
+    // Input waits in several chunks before the first read, so each must be
+    // signalled.
+    thread::sleep(Duration::from_secs(1));
     let mut typed = Vec::new();
     while !typed.ends_with(b".") {
         let read = read_ready(&mut console);
@@ -190,10 +193,12 @@ fn keys(report: &Path) -> i32 {
     0
 }
 
-/// One read, after waiting for input; nothing means a hang-up.
+/// One read, once the input's wait slot is ready; nothing means a hang-up.
+/// Input that waits unsignalled fails.
 fn read_ready(console: &mut Bridged) -> Vec<u8> {
     loop {
-        waiting::wait(&mut [console.watch_input()], Duration::from_secs(1)).unwrap();
+        let ready = waiting::wait(&mut [console.watch_input()], TIMEOUT).unwrap();
+        assert_eq!(ready, 1, "input was never signalled");
         let mut bytes = [0u8; 64];
         match console.read(&mut bytes) {
             Ok(count) => return bytes[..count].to_vec(),
@@ -238,10 +243,12 @@ fn output(report: &Path) -> i32 {
     0
 }
 
-/// Writes all of `bytes`, waiting for room when the output is full.
+/// Writes all of `bytes`, each time once the output's wait slot is ready.
+/// Room that is never signalled fails.
 fn write_all(console: &mut Bridged, mut bytes: &[u8]) {
     while !bytes.is_empty() {
-        waiting::wait(&mut [console.watch_output()], Duration::from_secs(1)).unwrap();
+        let ready = waiting::wait(&mut [console.watch_output()], TIMEOUT).unwrap();
+        assert_eq!(ready, 1, "room was never signalled");
         match console.write(bytes) {
             Ok(count) => bytes = &bytes[count..],
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
@@ -376,12 +383,16 @@ fn a_panic_in_raw_mode_restores_the_console() {
 fn only_key_down_characters_arrive_as_utf8() {
     let (mut terminal, report) = hosted("keys");
     report.wait_ready(&terminal);
+    // More records than one read takes.
+    let many = "x".repeat(150);
+    terminal.send(&many).unwrap();
     terminal.type_text("aB").unwrap();
     terminal.press(Key::Char('c'), Modifiers::CTRL).unwrap();
     terminal.press(Key::Enter, Modifiers::NONE).unwrap();
     terminal.send("é😀".as_bytes()).unwrap();
     terminal.type_text(".").unwrap();
-    let mut expected = b"aB\x03\r".to_vec();
+    let mut expected = many.into_bytes();
+    expected.extend(b"aB\x03\r");
     expected.extend("é😀.".as_bytes());
     assert_eq!(report.read(&terminal), format!("{expected:?}"));
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
