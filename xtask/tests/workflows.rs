@@ -196,6 +196,27 @@ fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
     );
 }
 
+/// #321: the Windows Test job runs the smoke test against the zip the Dist
+/// job built, so it waits for that job and names its zip to the tests.
+#[test]
+fn the_windows_test_job_runs_the_smoke_test_on_the_dist_zip() {
+    let check = workflow("check.yml");
+    let test = job(&check, "windows-test");
+    assert!(
+        test.contains(&"    needs: [windows-scope, windows-dist]"),
+        "{test:#?}"
+    );
+    assert!(
+        test.contains(&"          name: release-dist-windows-x86_64-msvc"),
+        "{test:#?}"
+    );
+    assert!(
+        test.iter()
+            .any(|line| line.contains("CLIMON2_E2E_ARCHIVE=") && line.contains(".zip")),
+        "{test:#?}"
+    );
+}
+
 /// #329: the Windows Archive job tests the exact zip the Windows Dist job
 /// built, when the Windows scope says the Windows jobs run. Its tests may
 /// change the real user PATH, which only that throwaway runner allows.

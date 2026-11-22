@@ -132,9 +132,11 @@ jobs:
           else
             echo "test=$(cargo xtask windows-changed "$BASE")" >> "$GITHUB_OUTPUT"
           fi
+  # The smoke test runs against the zip the Dist job built, so this job waits
+  # for it (docs/for-humans/windows/quality.md, "Pull request jobs").
   windows-test:
     name: Windows test / windows-2025
-    needs: windows-scope
+    needs: [windows-scope, windows-dist]
     if: needs.windows-scope.outputs.test == 'true'
     runs-on: windows-2025
     steps:
@@ -170,18 +172,27 @@ jobs:
           path: target/conpty
           key: conpty-${{ hashFiles('pins/conpty.txt') }}
       - name: Test the platform seams that build on Windows
-        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test cross_account_windows --test presentation_windows --test connection_windows --test runtime_windows --test process_windows --test pty_windows --test notifier_windows --test native_path_windows
+        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test cross_account_windows --test presentation_windows --test connection_windows --test runtime_windows --test process_windows --test pty_windows --test notifier_windows --test native_path_windows --test terminal_windows --test handoff_windows
       - name: Test the harness's Windows host
         run: cargo test --locked -p climon2-test-term
       # Also builds the daemon binary, which the CLI's exec tests start.
       - name: Test the daemon binary's Windows answers
         run: cargo test --locked -p climon2-daemon --test windows
-      # Also builds the client binary and its library, which the CLI's kill
-      # tests start.
+      # Also builds the client binary and its library, which the CLI's attach,
+      # kill and smoke tests start.
       - name: Test the client library on Windows
         run: cargo test --locked -p climon2-client --test library_windows
-      - name: Test the launcher, the CLI's Windows answers, headless exec and kill
-        run: cargo test --locked -p climon2-launcher -p climon2-cli
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist-windows-x86_64-msvc
+          path: target/dist-artifact
+      # The smoke test (packaged_windows.rs) installs the product from the zip.
+      - name: Test the launcher, the CLI's Windows answers, exec, attach, kill and the smoke test
+        shell: bash
+        run: |
+          CLIMON2_E2E_ARCHIVE="$(cygpath -aw "$(ls target/dist-artifact/*.zip)")"
+          export CLIMON2_E2E_ARCHIVE
+          cargo test --locked -p climon2-launcher -p climon2-cli
       # Without CLIMON2_E2E_ARCHIVE the archive tests pass without running;
       # the Windows Archive job runs them.
       - name: Test the installer

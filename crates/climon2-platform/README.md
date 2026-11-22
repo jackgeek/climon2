@@ -2,8 +2,8 @@
 
 Shared macOS, Linux and Windows seams (ADR 0003). `home`, `private`,
 `logging`, `runtime`, `connection`, `waiting`, `process` (identity only),
-`presentation`, `peer`, `daemon`, `pty`, `terminal` (signals only),
-`library`, `notifier` and `native_path` build on Windows so far (see
+`presentation`, `peer`, `daemon`, `pty`, `terminal`, `library`, `notifier`
+and `native_path` build on Windows, and `handoff` exists only there (see
 [Windows](#windows)). Neutral contracts remain in `climon2-core`. No runtime
 dispatch or shell-specific logic.
 
@@ -169,6 +169,11 @@ dispatch or shell-specific logic.
   restores them on drop through owned duplicates.
 - `terminal::hung_up(&io::Error)` is true for a read that failed because the
   terminal was lost (EIO). Callers treat it like end of file.
+- `terminal::Bridged::new(input)` is the terminal a client bridges (#321):
+  stdin and an owned duplicate of stdout under `Nonblocking`, read and written
+  through `Read` and `Write`, with `watch_input()` and `watch_output()` as
+  their wait slots and `size()`. A read that fails with `hung_up` reads 0
+  bytes, the hang-up.
 - `pty::allocation()` serializes PTY pair allocation per user (Darwin's
   EREDRIVEOPEN). `pty::set_nonblocking(BorrowedFd)` makes a PTY master
   nonblocking and keeps its other status flags; `pty::output_ended(&io::Error)`
@@ -278,12 +283,13 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   missing path and a reparse point tagged `IO_REPARSE_TAG_AF_UNIX` (std
   reports a socket as a regular file), and refuses anything else, links and
   junctions included.
-- `src/waiting/windows.rs`: `Watch` and `wait` over `WSAPoll`, which waits on
-  sockets only. `Watch::new(BorrowedSocket, Interest)` and, on every
-  platform, `Watch::stream(&SocketStream, Interest)`. `WSAPoll` can return up
-  to a clock tick early with nothing ready, so `wait` calls it again until
-  the timeout has passed. There is no `Watch::idle()` yet: `WSAPoll` reports
-  an ignored entry as invalid and fails when every entry is ignored.
+- `src/waiting/windows.rs`: `Watch` and `wait`. `Watch::new(BorrowedSocket,
+  Interest)` and, on every platform, `Watch::stream(&SocketStream, Interest)`
+  watch sockets with `WSAPoll`; `Watch::event(BorrowedHandle)` watches a
+  manual-reset event with `WaitForMultipleObjects` (#321); one wait watches
+  sockets or events, never both. `Watch::idle()` keeps a slot that is never
+  ready, as on Unix. A Windows wait can return up to a clock tick early with
+  nothing ready, so `wait` waits again until the timeout has passed.
 - `src/process/windows.rs`: `start_time`, `is_same_process` and
   `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
   time in epoch microseconds. Only "no such process"
@@ -324,8 +330,7 @@ For the session daemon and headless `exec` (#317; docs/for-humans/windows/lifecy
   AF_UNIX has no peer credentials, and the private runtime directory keeps
   other users out.
 - `src/terminal/windows.rs`: a detached daemon's `Signals`, which never
-  report a termination signal; console access fails as unsupported until
-  #321.
+  report a termination signal.
 - `src/logging/windows.rs`: `capture_stderr` makes a pipe the standard error
   handle and copies it into the log until dropped.
 
@@ -347,8 +352,7 @@ For the client library and `c2 kill` (#318; library embedding, "Windows"):
 - `src/native_path/windows.rs`: `CM1_NATIVE_WINDOWS` paths, at most 32767
   code units, with unpaired surrogates kept.
 - `src/process/windows.rs` adds `out_of_descriptors` (`WSAEMFILE` or
-  `ERROR_TOO_MANY_OPEN_FILES`), and `src/terminal/windows.rs` the client's
-  `Signals`, which never report a signal.
+  `ERROR_TOO_MANY_OPEN_FILES`).
 
 `tests/pty_windows.rs` proves the PTY seam against the pinned ConPTY that
 `climon2-test-term` fetches and verifies; headless `exec`'s tests in
@@ -357,6 +361,40 @@ For the client library and `c2 kill` (#318; library embedding, "Windows"):
 and `tests/process_windows.rs` prove the client library's seams;
 `climon2-client`'s `tests/library_windows.rs` proves the loader against the
 built library and altered copies of it.
+
+For interactive `exec` and `attach` (#321; docs/for-humans/windows/lifecycle.md,
+"Hand-offs" and "Client console"):
+
+- `src/terminal/windows.rs`: `require_ttys` needs console handles for stdin
+  and stdout; `input` duplicates the console input; `size` is the console
+  window's. `RawModeGuard` clears processed, line and echo input and quick
+  edit, sets VT input, window input and the extended flags, adds VT
+  processing and no automatic newline to output, and sets both code pages to
+  UTF-8; its drop, or the panic hook, restores all four. `Bridged` reads
+  console input on one thread and writes output on another, each through a
+  bounded channel and each signalling an event that `watch_input` and
+  `watch_output` return. Only key-down characters become input, as UTF-8; a
+  window-size record sets the resize `Signals::take_resize` reports; output
+  is cut only between whole characters (`climon2_core::utf8`) and drained
+  when the bridge ends. The client's `Signals` take Ctrl+C as signal 2 and
+  close, logoff and shutdown as signal 1, whose handler holds the process
+  until the client has exited 129; Ctrl+Break does nothing yet (#326).
+- `src/handoff/windows.rs`: `replace` starts a child, waits for it and exits
+  with its raw status, as the launcher hands off to the CLI;
+  `wait_through_console_events` is its handler routine alone: Ctrl+C and
+  Ctrl+Break are the child's, and a close waits three seconds, then exits
+  129.
+- `src/daemon/windows.rs` adds `stop`, which ends a ready daemon and, with it,
+  its session job.
+- `src/notifier/windows.rs` adds `Notifier::watch` and `watch_raised`, the
+  wait slots of a notifier's event and of a notification descriptor.
+
+`tests/terminal_windows.rs` and `tests/handoff_windows.rs` host this crate's
+test binary in the pinned ConPTY under the harness's Windows Terminal model:
+the modes, code pages and their restoration after a drop and after a panic;
+key-down-only UTF-8 input; resize; whole characters and drained output; the
+console preflight; Ctrl+C, Ctrl+Break and close; and the hand-off's statuses,
+console events and close wait.
 
 ## Behavioral evidence
 

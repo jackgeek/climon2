@@ -13,7 +13,7 @@ mod native;
 #[path = "notifier/windows.rs"]
 mod native;
 
-pub use native::{Notifier, Waker, wait_raised};
+pub use native::{Notifier, Waker, wait_raised, watch_raised};
 
 #[cfg(unix)]
 mod unix {
@@ -34,6 +34,21 @@ mod unix {
         pub fn watch(&self) -> Watch<'_> {
             Watch::new(self.as_fd(), Interest::Read)
         }
+    }
+
+    /// The slot of a wait that is ready while the notification descriptor
+    /// `descriptor` is readable.
+    ///
+    /// # Safety
+    ///
+    /// `descriptor` is a notification descriptor that stays open while the
+    /// slot is used.
+    pub unsafe fn watch_raised<'a>(descriptor: i32) -> Watch<'a> {
+        // SAFETY: guaranteed by the caller.
+        Watch::new(
+            unsafe { BorrowedFd::borrow_raw(descriptor) },
+            Interest::Read,
+        )
     }
 
     /// Waits until the notification descriptor `descriptor` is readable or

@@ -1,18 +1,11 @@
 //! Version-matched, byte-transparent terminal client (ADR 0001).
 
-#[cfg(unix)]
 mod attachment;
-#[cfg(unix)]
 mod bridge;
 mod embedded;
 mod kill;
 mod library;
-#[cfg(unix)]
-#[path = "unix.rs"]
-mod native;
-#[cfg(windows)]
-#[path = "windows.rs"]
-mod native;
+mod ordinary;
 mod polling;
 
 use climon2_core::{
@@ -125,7 +118,7 @@ fn supervised(
 ) -> io::Result<u32> {
     std::panic::set_hook(Box::new(|_| tracing::error!("client panic")));
     std::panic::catch_unwind(|| match operation {
-        StartupEnvelope::Attach(settings) => native::attach(metadata, session, settings),
+        StartupEnvelope::Attach(settings) => ordinary::attach(metadata, session, settings),
         StartupEnvelope::Kill => kill(metadata, session),
     })
     .unwrap_or_else(|_| Err(io::Error::other("client panicked")))

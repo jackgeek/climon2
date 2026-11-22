@@ -16,11 +16,8 @@ use climon2_core::{
     native::{self, RecordData},
     protocol::TerminalSize,
 };
-use climon2_platform::terminal::Signals;
-use std::{
-    collections::VecDeque, io, num::NonZeroU32, os::fd::BorrowedFd, path::Path, slice,
-    time::Duration,
-};
+use climon2_platform::{notifier, terminal::Signals, waiting::Watch};
+use std::{collections::VecDeque, io, num::NonZeroU32, path::Path, slice, time::Duration};
 
 /// The public ID of the instance's one Open; later requests follow it.
 const OPEN: u64 = 1;
@@ -396,11 +393,11 @@ impl Attachment {
         answered(self.receive()?)
     }
 
-    /// The descriptor that is readable while there is something to receive.
-    pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
+    /// The slot of a wait that is ready while there is something to receive.
+    pub(crate) fn watch(&self) -> Watch<'_> {
         // SAFETY: the library keeps the notification descriptor open while
         // the instance's communication handle lives, as long as `self`.
-        unsafe { BorrowedFd::borrow_raw(self.instance.notification()) }
+        unsafe { notifier::watch_raised(self.instance.notification()) }
     }
 
     /// One delivery's events, none, or the end of the stream.

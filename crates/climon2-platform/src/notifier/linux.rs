@@ -1,6 +1,6 @@
 //! Linux's notifier: one `eventfd`.
 
-pub use super::unix::{Waker, wait_raised};
+pub use super::unix::{Waker, wait_raised, watch_raised};
 
 use std::{
     io,

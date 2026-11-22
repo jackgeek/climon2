@@ -4,6 +4,7 @@
 //! instance's sockets, and only a socket can, so it is a loopback UDP socket
 //! connected to itself: it accepts only its own datagrams.
 use crate::waiting::{Interest, Watch};
+use std::os::windows::io::{AsHandle, BorrowedHandle, RawHandle};
 use std::{
     io,
     net::{Ipv4Addr, UdpSocket},
@@ -41,6 +42,11 @@ impl Notifier {
         self.0.as_raw_handle() as isize as i32
     }
 
+    /// The slot of a wait that is ready while the event is signalled.
+    pub fn watch(&self) -> Watch<'_> {
+        Watch::event(self.0.as_handle())
+    }
+
     /// Signals the event, or clears it.
     pub fn set(&self, readable: bool) {
         // SAFETY (both): an event handle this notifier owns. Neither call
@@ -51,6 +57,18 @@ impl Notifier {
             unsafe { ResetEvent(self.0.as_raw_handle()) };
         }
     }
+}
+
+/// The slot of a wait that is ready while the notification descriptor
+/// `descriptor` is signalled.
+///
+/// # Safety
+///
+/// `descriptor` is a notification descriptor that stays open while the
+/// slot is used.
+pub unsafe fn watch_raised<'a>(descriptor: i32) -> Watch<'a> {
+    // SAFETY: guaranteed by the caller: an open event handle.
+    Watch::event(unsafe { BorrowedHandle::borrow_raw(descriptor as isize as RawHandle) })
 }
 
 /// Waits until the notification descriptor `descriptor` is signalled or

@@ -8,13 +8,12 @@ use climon2_core::{
     protocol::TerminalSize,
 };
 use climon2_platform::{
-    terminal::{self, Signals},
-    waiting::{Interest, Watch},
+    terminal::{Bridged, Signals},
+    waiting::Watch,
 };
 use std::{
     fs::File,
     io::{self, Read},
-    os::fd::{AsFd, BorrowedFd},
     time::{Duration, Instant},
 };
 
@@ -239,9 +238,8 @@ const DRAIN_AHEAD: usize = 65_536;
 
 struct Bridge {
     attachment: Attachment,
-    terminal: File,
-    /// An owned duplicate of stdout: the same open-file description, so the same flags.
-    stdout: File,
+    /// The terminal: its input, and stdout.
+    terminal: Bridged,
     signals: Signals,
     filter: InputFilter,
     takeover: Option<ControlKey>,
@@ -289,12 +287,9 @@ pub fn run(
     id: &SessionId,
     settings: ClientSettings,
 ) -> io::Result<BridgeExit> {
-    let stdout = File::from(io::stdout().as_fd().try_clone_to_owned()?);
-    let _flags = terminal::Nonblocking::new(terminal.as_fd(), stdout.as_fd())?;
     let mut bridge = Bridge {
         attachment: opened.attachment,
-        terminal,
-        stdout,
+        terminal: Bridged::new(terminal)?,
         signals,
         filter: InputFilter::new(settings),
         takeover: settings.take_control_key(),
@@ -351,7 +346,7 @@ impl Bridge {
     /// Stops writing pending output and makes one non-blocking attempt at the farewell.
     fn abandon(&mut self, reset: bool) {
         self.output = Pending::new(self.farewell(reset));
-        let _ = self.output.flush(&mut self.stdout);
+        let _ = self.output.flush(&mut self.terminal);
     }
 
     /// The conservative reset when no daemon response restored the terminal, then
@@ -440,7 +435,7 @@ impl Bridge {
 
     fn flush_output(&mut self, ready: bool) -> io::Result<()> {
         if ready {
-            self.output.flush(&mut self.stdout)?;
+            self.output.flush(&mut self.terminal)?;
         }
         Ok(())
     }
@@ -469,13 +464,9 @@ impl Bridge {
     /// backpressured.
     fn watches(&self) -> [Watch<'_>; 3] {
         [
-            watch(
-                self.attachment.descriptor(),
-                Interest::Read,
-                self.listening(),
-            ),
-            watch(self.terminal.as_fd(), Interest::Read, self.reading()),
-            watch(self.stdout.as_fd(), Interest::Write, !self.output.empty()),
+            watch(self.attachment.watch(), self.listening()),
+            watch(self.terminal.watch_input(), self.reading()),
+            watch(self.terminal.watch_output(), !self.output.empty()),
         ]
     }
 
@@ -502,7 +493,7 @@ impl Bridge {
 
     fn observe_resize(&mut self) -> io::Result<()> {
         if self.signals.take_resize() {
-            let size = terminal::size(&self.terminal)?;
+            let size = self.terminal.size()?;
             self.resized(size);
         }
         Ok(())
@@ -618,7 +609,7 @@ impl Bridge {
         }
     }
 
-    /// An empty read is the terminal hanging up (EOF, or EIO via `hangup_as_eof`).
+    /// An empty read is the terminal hanging up.
     /// Keys typed while restoring are drained and dropped.
     fn forward(&mut self, read: &[u8]) -> bool {
         if read.is_empty() {
@@ -690,7 +681,7 @@ impl Bridge {
     }
 
     fn read_terminal(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
-        ready(self.terminal.read(bytes).or_else(hangup_as_eof))
+        ready(self.terminal.read(bytes))
     }
 }
 
@@ -702,14 +693,6 @@ fn result(ending: Ending, known: Option<u32>) -> io::Result<BridgeExit> {
         (_, Some(status)) => Ok(BridgeExit::Status(status)),
         (ending, None) => Err(ending.error()),
     }
-}
-
-/// A lost terminal reads as a hang-up error; like EOF it is a silent HUP.
-fn hangup_as_eof(error: io::Error) -> io::Result<usize> {
-    if terminal::hung_up(&error) {
-        return Ok(0);
-    }
-    Err(error)
 }
 
 /// Time left before `deadline`; zero once it has passed.
@@ -727,12 +710,8 @@ struct Reported {
 }
 
 /// An inactive slot is idle, which the wait ignores.
-fn watch(handle: BorrowedFd<'_>, interest: Interest, active: bool) -> Watch<'_> {
-    if active {
-        Watch::new(handle, interest)
-    } else {
-        Watch::idle()
-    }
+fn watch(watch: Watch<'_>, active: bool) -> Watch<'_> {
+    if active { watch } else { Watch::idle() }
 }
 
 #[cfg(test)]

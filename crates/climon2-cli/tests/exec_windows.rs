@@ -9,13 +9,19 @@
 //! the session job ends with `0xC000013A`, and kill exits 0 once the session
 //! is cleaned up.
 //!
+//! #321: without console handles, `exec`, `attach` and the client refuse to
+//! run; Ctrl+C during `kill` interrupts its client, whose status kill exits
+//! with; and an ordinary `exec` that cannot start its client stops its
+//! daemon. The packaged smoke test is in `packaged_windows.rs`.
+//!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).
 #![cfg(windows)]
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Finished, JobShape, Outside};
+use climon2_test_term::{ConPty, Finished, JobShape, Key, Modifiers, Outside, Terminal};
+use portable_pty::CommandBuilder;
 use std::{
     fs,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -484,31 +490,112 @@ fn kill_hangs_up_waits_the_full_grace_ends_the_job_and_exits_0_once_cleaned_up()
     assert!(home.list(&install).contains("No climon2 sessions running."));
 }
 
-/// Until the client has its console rules (#321), the session's own client,
-/// started directly, refuses to attach before any connection.
+/// #321: `exec`, `attach` and the session's own client refuse to run without
+/// console handles, before starting anything or connecting.
 #[test]
-fn the_client_refuses_to_attach_on_windows_yet() {
+fn exec_attach_and_the_client_need_a_console() {
     let (install, home) = (Install::new(&[]), Home::new());
     let id = session_id(&home.exec(&install, HELD));
+    let run = |program: &std::path::Path, arguments: &[&str]| {
+        Command::new(program)
+            .args(arguments)
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.0.path().join("local"))
+            .env_remove("CLIMON2_CLIENT_STARTUP")
+            .output()
+            .unwrap()
+    };
     let metadata = home.home().join("sessions").join(format!("{id}.pty"));
-    let attached = Command::new(install.version().join("climon2-client.exe"))
-        .arg("attach")
-        .arg("--metadata")
-        .arg(&metadata)
-        .env("CLIMON2_HOME", home.home())
-        .env_remove("CLIMON2_CLIENT_STARTUP")
-        .output()
-        .unwrap();
-    assert_eq!(attached.status.code(), Some(125), "{attached:?}");
-    let stderr = String::from_utf8_lossy(&attached.stderr);
-    assert!(
-        stderr.starts_with("climon2: error: attach is not supported on Windows yet"),
-        "{stderr}"
-    );
-    assert!(
-        home.list(&install).contains(&id),
-        "attach ended the session"
+    let refusals = [
+        (
+            run(&install.cli(), &["exec", "cmd"]),
+            "climon2: error: c2 exec needs a terminal",
+        ),
+        (
+            run(&install.cli(), &["attach", &id[..8]]),
+            "climon2: error: c2 attach needs a terminal",
+        ),
+        (
+            run(
+                &install.version().join("climon2-client.exe"),
+                &["attach", "--metadata", metadata.to_str().unwrap()],
+            ),
+            "climon2: error: c2 exec needs a terminal",
+        ),
+    ];
+    for (output, refusal) in refusals {
+        assert_eq!(output.status.code(), Some(125), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.starts_with(refusal), "{stderr}");
+    }
+    let [session] = home.sessions().try_into().unwrap();
+    assert_eq!(
+        session.session_id.as_str(),
+        id,
+        "a refusal started a session"
     );
     fs::write(home.work().join("release"), b"").unwrap();
     home.wait_until_ended(&install);
+}
+
+/// The CLI in a pseudoconsole of its own, with this home, in its working
+/// directory.
+fn hosted_cli(install: &Install, home: &Home, arguments: &[&str]) -> Terminal {
+    let mut command = CommandBuilder::new(install.cli());
+    command.args(arguments);
+    command.env("CLIMON2_HOME", home.home());
+    command.env("LOCALAPPDATA", home.0.path().join("local"));
+    command.cwd(home.work());
+    Terminal::spawn(command, 24, 100).unwrap()
+}
+
+/// #321: `kill` waits for its client as the other hand-offs do: Ctrl+C
+/// interrupts the client, which exits 130 as SIGINT does on Unix, and the CLI
+/// survives it to exit with the client's status.
+#[test]
+fn ctrl_c_during_kill_interrupts_the_client_and_kill_exits_with_its_status() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    let id = session_id(&home.exec(&install, HELD));
+    let mut killing = hosted_cli(&install, &home, &["kill", &id[..8]]);
+    // The hang-up's grace lasts five seconds, so the kill is still waiting.
+    std::thread::sleep(Duration::from_secs(2));
+    killing.press(Key::Char('c'), Modifiers::CTRL).unwrap();
+    assert_eq!(
+        killing.wait_exit(Duration::from_secs(20)).unwrap(),
+        130,
+        "{}",
+        killing.screen()
+    );
+    home.wait_until_ended(&install);
+}
+
+/// #321: an ordinary `exec` whose session's client cannot be started stops
+/// the daemon it started, and with it the session's command.
+#[test]
+fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
+    if climon2_test_term::rerun_outside(
+        "an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon",
+        Duration::from_secs(120),
+    ) {
+        return;
+    }
+    let (install, home) = (Install::new(&["climon2-client.exe"]), Home::new());
+    let arguments: Vec<&str> = ["exec", "--"].iter().chain(HELD).copied().collect();
+    let mut execing = hosted_cli(&install, &home, &arguments);
+    assert_eq!(
+        execing.wait_exit(Duration::from_secs(30)).unwrap(),
+        125,
+        "{}",
+        execing.screen()
+    );
+    assert!(
+        execing
+            .screen()
+            .replace('\n', "")
+            .contains("needs climon2 0.1.0, which is not installed"),
+        "{}",
+        execing.screen()
+    );
+    assert!(home.sessions().is_empty());
+    assert!(install.daemon_stopped());
 }

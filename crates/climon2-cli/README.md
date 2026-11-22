@@ -15,14 +15,19 @@ replaces it with the CLI's own version's `climon2-monitor`. Usage errors
 (including a malformed session selector) are 2; climon2 failures are 125; daemon
 startup preserves 126/127.
 
-On Windows the CLI so far answers help, version and usage errors (#315) and
-runs `list` (#316), `exec --headless` (#317) and `kill` (#318) through the
-same general-log dispatch as Unix. Every other subcommand, ordinary `exec`
-included, fails with 125 from `src/windows.rs`, before touching the home,
-until its Windows seams exist; the others are behind `src/unix.rs`, which
-also holds `exec`'s Unix-only hand-off pieces (exec of the client, stopping
-a daemon). `src/client.rs` holds what `attach` and `kill` share: selecting
-one live session and the session version's client command.
+On Windows the CLI answers help, version and usage errors (#315) and runs
+`list` (#316), `exec` (#317, #321), `attach` (#321) and `kill` (#318, #321)
+through the same general-log dispatch as Unix; `monitor` fails with 125 from
+`src/windows.rs`, before touching the home, until the monitor builds there
+(#327). Windows cannot replace a process, so where Unix execs the client
+(`src/unix.rs`) the Windows CLI starts it and waits, by the launcher's rules,
+through `climon2-platform`'s `handoff` seam: Ctrl+C and Ctrl+Break are the
+client's, a close waits three seconds for the client and then exits 129, and
+the CLI exits with the client's raw status. `kill` keeps the same console
+rules while it waits. An ordinary `exec` that cannot start its client ends
+the daemon it started (`daemon::stop`), as Unix stops it with signals.
+`src/client.rs` holds what `attach` and `kill` share: selecting one live
+session and the session version's client command.
 `tests/list_windows.rs` proves `list` with no sessions, the reclaim of a
 stale session whose daemon has exited, the sessions it keeps, and a live
 session listed to the width of a pinned-ConPTY console.
@@ -35,10 +40,19 @@ cannot leave is 125 with no daemon left; a command that cannot start is
 126. With the client executable and its library in the version folder too,
 `kill` of a headless session exits 0 once the session is cleaned up, after
 the pseudoconsole closed, the full five-second grace passed and the session
-job ended a hidden-console child with `0xC000013A`; the session's client,
-started directly, refuses ordinary attach. It needs the daemon binary built
-first (`cargo test -p climon2-daemon --test windows`), and the client binary
-and library (`cargo test -p climon2-client --test library_windows`).
+job ended a hidden-console child with `0xC000013A`. Without console handles,
+`exec`, `attach` and the session's client refuse to run; Ctrl+C during `kill`
+interrupts its client, and kill exits 130 with it; an ordinary `exec` whose
+client is missing exits 125 and stops its daemon. It needs the daemon binary
+built first (`cargo test -p climon2-daemon --test windows`), and the client
+binary and library (`cargo test -p climon2-client --test library_windows`).
+`tests/packaged_windows.rs` is the Windows smoke test
+(docs/for-humans/windows/qualification.md): in the harness's Windows Terminal model,
+`pwsh` runs `c2 exec pwsh`, a command, a detach, `c2 list` and `c2 attach`,
+which restores the session's screen, and `exit 7` reaches the outer shell. It
+installs the zip `CLIMON2_E2E_ARCHIVE` names, as the Windows Test job does, or
+else this build's binaries in the same layout, which also needs the launcher
+(`cargo test -p climon2-launcher`).
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the

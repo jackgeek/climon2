@@ -65,10 +65,11 @@ the client and the monitor load the client library. How the CLI starts the
 client and the monitor is omitted. Arrows run from consumer to
 consumed artifact. Solid arrows exist: the launcher reaching the CLI
 ([#315](https://github.com/jackgeek/climon2/issues/315)), the CLI starting
-the daemon, which hosts a headless session's command in the bundled ConPTY
+the daemon, which hosts the session's command in the bundled ConPTY
 ([#317](https://github.com/jackgeek/climon2/issues/317)), and the client loading
 the library beside it to end a session for `c2 kill`
-([#318](https://github.com/jackgeek/climon2/issues/318)). Every dashed arrow is
+([#318](https://github.com/jackgeek/climon2/issues/318)) and to attach for
+`c2 exec` and `c2 attach` ([#321](https://github.com/jackgeek/climon2/issues/321)). Every dashed arrow is
 planned. How each process starts is in the
 [Windows platform and lifecycle contract](../windows/lifecycle.md). The decisions are in
 [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
@@ -93,7 +94,7 @@ flowchart TB
 
         wlauncher -->|"spawns and waits for current version; current"| wcli
         wcli -->|"starts detached, outside every job; reads readiness"| wdaemon
-        wclient -->|"kill: loads the copy beside itself by exact path; current"| wlibrary
+        wclient -->|"loads the copy beside itself by exact path; current"| wlibrary
         wmonitor -.->|"loads each session version's copy by exact path; never frees it"| wlibrary
         wdaemon -->|"loads by full path from own folder"| conpty
         conpty -->|"starts from beside the DLL"| openconsole
@@ -106,7 +107,7 @@ flowchart TB
 | Node | Purpose |
 |---|---|
 | `c2.exe` | The frozen launcher, the only command name. Windows cannot replace a process, so it starts the CLI and waits for it. |
-| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. So far `climon2-cli.exe` runs `list`, `exec --headless`, whose daemon hosts the session, and `kill`, which starts the session version's `climon2-client.exe` and waits for it; every other subcommand fails with 125. The client runs only its kill mode so far. |
+| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. `climon2-cli.exe` runs `list`, `exec`, `attach` and `kill`; for `exec` without `--headless`, `attach` and `kill` it starts the session version's `climon2-client.exe` and waits for it. `monitor` fails with 125 until the monitor builds on Windows. |
 | `climon2_client.dll` | The client library, the Windows build of the Rust cdylib above. It links the C runtime statically, as every Windows build does, imports only Windows system DLLs and exports only its bootstrap symbol. The loader never frees it and refuses it when Windows loaded another file for its path. |
 | `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
 | `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |

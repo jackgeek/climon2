@@ -1,4 +1,4 @@
-//! Ordinary attach on Unix: the terminal, the attachment and the raw bridge.
+//! Ordinary attach: the terminal, the attachment and the raw bridge.
 use crate::{attachment, bridge, embedded};
 use climon2_core::{keys::ClientSettings, metadata::SessionMetadata};
 use climon2_platform::{home, terminal};

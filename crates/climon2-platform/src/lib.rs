@@ -1,6 +1,9 @@
 //! Shared platform seams from ADR 0003.
 pub mod connection;
 pub mod daemon;
+#[cfg(windows)]
+#[path = "handoff/windows.rs"]
+pub mod handoff;
 pub mod home;
 pub mod library;
 pub mod logging;

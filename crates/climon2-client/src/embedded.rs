@@ -222,10 +222,6 @@ pub(crate) enum Admission {
 }
 
 /// What one drain found.
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "only Unix attach uses it yet (#321)")
-)]
 pub(crate) enum Drained {
     Delivered,
     Empty,
@@ -234,10 +230,6 @@ pub(crate) enum Drained {
 
 /// The end of an instance's stream: whether a Leave detached its
 /// attachment, and the failure that ended it, if one did.
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "only Unix attach uses it yet (#321)")
-)]
 pub(crate) struct Ended {
     pub(crate) detached: bool,
     pub(crate) failure: Option<NativeError>,
@@ -318,10 +310,6 @@ impl Embedded {
     /// The notification descriptor, raised while there is something to
     /// drain. The library keeps it open while the communication handle
     /// lives, which is until `finish` takes self.
-    #[cfg_attr(
-        not(unix),
-        expect(dead_code, reason = "only Unix attach uses it yet (#321)")
-    )]
     pub(crate) fn notification(&self) -> i32 {
         self.notification
     }

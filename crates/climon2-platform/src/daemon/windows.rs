@@ -23,14 +23,15 @@ use std::{
     time::Instant,
 };
 use windows_sys::Win32::{
-    Foundation::{HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, TRUE},
+    Foundation::{FALSE, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, TRUE},
     System::{
         JobObjects::IsProcessInJob,
         Threading::{
             CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
             CreateProcessW, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
-            INFINITE, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, WaitForSingleObject,
+            INFINITE, OpenProcess, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
+            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, ResumeThread, STARTF_USESTDHANDLES,
+            STARTUPINFOEXW, TerminateProcess, WaitForSingleObject,
         },
     },
 };
@@ -246,12 +247,29 @@ impl PendingDaemon {
 
     fn abort(&mut self) {
         if let Some(process) = self.process.take() {
-            // The handle is open with PROCESS_TERMINATE and SYNCHRONIZE.
-            unsafe {
-                TerminateProcess(process.as_raw_handle(), ABORTED);
-                WaitForSingleObject(process.as_raw_handle(), INFINITE);
-            }
+            end(&process);
         }
+    }
+}
+
+/// Ends a daemon and waits until it has ended. Its session job closes with it,
+/// which ends the command.
+fn end(process: &OwnedHandle) {
+    // The handle is open with PROCESS_TERMINATE and SYNCHRONIZE.
+    unsafe {
+        TerminateProcess(process.as_raw_handle(), ABORTED);
+        WaitForSingleObject(process.as_raw_handle(), INFINITE);
+    }
+}
+
+/// Ends the ready daemon `pid` that this process started, when the session
+/// must not outlive it; a daemon already gone is left alone.
+pub fn stop(pid: u32) {
+    // Opening by PID has no preconditions.
+    let process = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, FALSE, pid) };
+    if !process.is_null() {
+        // A new handle nothing else owns.
+        end(&unsafe { OwnedHandle::from_raw_handle(process) });
     }
 }
 

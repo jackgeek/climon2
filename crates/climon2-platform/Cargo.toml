@@ -25,9 +25,10 @@ tempfile = "3.27.0"
 [target.'cfg(unix)'.dev-dependencies]
 climon2-fixtures = { path = "../climon2-fixtures" }
 
-# The pinned ConPTY the Windows PTY tests host their commands in.
+# The pinned ConPTY the Windows PTY and console tests host their programs in.
 [target.'cfg(windows)'.dev-dependencies]
 climon2-test-term = { path = "../climon2-test-term" }
+portable-pty = { version = "0.9.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 time = { workspace = true, features = ["local-offset"] }

@@ -230,6 +230,13 @@ as `platform`'s already was. The Windows loader, notifier and native path
 encoding are bodies inside `climon2-platform`'s seams, not another crate or
 edge.
 
+**Current (#321):** the edges are unchanged. On Windows the CLI also runs
+`exec` and `attach`, and the client attaches; its console handling, the
+Windows wait and the CLI's spawn-and-wait hand-off are bodies inside
+`climon2-platform`'s seams. The CLI's Windows smoke test drives the packaged
+product in the harness's Windows host through its existing `dev` edge to
+`climon2-test-term`.
+
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so
 `xtask` gains no edge). It consumes `core` for session metadata,

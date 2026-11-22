@@ -57,6 +57,34 @@ macro_rules! outside_relay {
     };
 }
 
+/// Set in a test run again by [`rerun_outside`].
+const RERUN: &str = "CLIMON2_TEST_OUTSIDE";
+
+/// Runs the test `name` of this test binary again outside every job, through
+/// the relay, which the binary must declare with
+/// [`outside_relay!`](crate::outside_relay), and fails unless it passes.
+/// True when it ran there, so the caller returns; false in that second run,
+/// where the caller runs the test's body. A daemon `c2 exec` starts from
+/// the body can then leave every job, as it does under a real host.
+pub fn rerun_outside(name: &str, timeout: Duration) -> bool {
+    if std::env::var_os(RERUN).is_some() {
+        return false;
+    }
+    let finished = Outside::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(RERUN, "1")
+        .run(timeout)
+        .expect("run the test outside every job");
+    println!("{}", finished.stdout);
+    eprintln!("{}", finished.stderr);
+    assert!(
+        finished.status == 0 && finished.stdout.contains("1 passed"),
+        "{name} failed outside every job with status {:#x}",
+        finished.status
+    );
+    true
+}
+
 /// What a program run outside the test's job left: its full exit status and
 /// what it wrote.
 #[derive(Debug)]

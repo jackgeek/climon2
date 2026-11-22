@@ -648,19 +648,26 @@ LIB-06 Library is not covered: without the fault hook this release starts
 no worker that could stall, since an instance's connection runs on its owner
 thread inside `run`.
 
-### Windows (#318)
+### Windows (#318, #321)
 
-The library and the executable build on Windows. Kill mode runs there as on
-Unix, so `c2 kill` ends a headless session; ordinary attach fails with status
-125 (`src/windows.rs`) until the client has its console rules (#321), and
-Unix attach lives in `src/unix.rs`. The library's notification descriptor is
-a manual-reset event (ADR 0008), its paths cross as `CM1_NATIVE_WINDOWS`, and
-its waker is a loopback UDP socket, all through `climon2-platform`'s seams.
-`tests/library_windows.rs` checks the built library's exports and imports and
-loads it, and altered copies of it, through the shared loader: by exact path,
-never freed, two same-named copies as two modules, its dependencies found only
-beside it or in System32, and each failure classified. `climon2-cli`'s
-`tests/exec_windows.rs` proves `c2 kill` end to end and the attach refusal.
+The library and the executable build on Windows, and both modes run there as
+on Unix: kill mode (#318) and ordinary attach (#321), whose flow is shared in
+`src/ordinary.rs`. The bridge calls no OS function: it bridges the terminal
+seam's `Bridged` and watches the attachment through the notifier seam, so on
+Windows it waits on the library's notification event and on the events of
+the console's input and output threads. The console rules (raw modes, UTF-8
+code pages, key-down records only, resize from window-size records, and
+restoration on every exit path) are `climon2-platform`'s. Close, logoff and
+shutdown end the client with 129, and a Ctrl+C event with 130. The library's
+notification descriptor is a manual-reset event (ADR 0008), its paths cross as
+`CM1_NATIVE_WINDOWS`, and its waker is a loopback UDP socket, all through
+`climon2-platform`'s seams. `tests/library_windows.rs` checks the built
+library's exports and imports and loads it, and altered copies of it, through
+the shared loader: by exact path, never freed, two same-named copies as two
+modules, its dependencies found only beside it or in System32, and each
+failure classified. `climon2-cli`'s `tests/exec_windows.rs` proves `c2 kill`
+end to end and the console preflight, and its `tests/packaged_windows.rs`
+attaches, detaches and reattaches in the smoke test.
 
 On Windows the executable and the library both write their debug symbols to
 `climon2_client.pdb`, which Cargo reports as an output filename collision.
