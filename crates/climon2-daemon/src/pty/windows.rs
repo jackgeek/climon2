@@ -26,10 +26,8 @@ impl Pty {
             .map_err(|_| Failure::own("the bundled ConPTY is missing or cannot be loaded"))?;
         let opened = pty::open(conpty, options.size.rows, options.size.cols)
             .map_err(|_| Failure::own("cannot create the command's pseudoconsole"))?;
-        let launch = command::launch(&options.command, &options.arguments, &options.cwd)
-            .map_err(|refusal| Failure::launch(launch_status(refusal)))?;
         let hosted = opened
-            .start(&launch, &options.cwd, &environment(options))
+            .start(&resolved(options)?, &options.cwd, &environment(options))
             .map_err(|error| {
                 tracing::error!(%error, "the command cannot start");
                 Failure::launch(126)
@@ -102,6 +100,13 @@ impl Pty {
     pub fn observe_jobs(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+/// The command as `CreateProcessW` is to start it, found through the
+/// session's `PATH` and `PATHEXT`.
+fn resolved(options: &Options) -> Result<command::Launch, Failure> {
+    command::launch(&options.command, &options.arguments, &options.cwd)
+        .map_err(|refusal| Failure::launch(launch_status(refusal)))
 }
 
 /// 127 for a command not found, as on Unix. The CLI refuses a batch argument
