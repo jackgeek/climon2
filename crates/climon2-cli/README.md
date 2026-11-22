@@ -15,6 +15,10 @@ replaces it with the CLI's own version's `climon2-monitor`. Usage errors
 (including a malformed session selector) are 2; climon2 failures are 125; daemon
 startup preserves 126/127.
 
+On Windows the CLI so far answers only help, version and usage errors (#315).
+Every subcommand fails with 125 from `src/windows.rs` until its Windows seams
+exist; the subcommands themselves are behind `src/unix.rs`.
+
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the
 whole `config.jsonc`, its `monitor` section included, then, unless headless,

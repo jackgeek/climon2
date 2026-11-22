@@ -68,7 +68,7 @@ fn preflight(lifetime: Lifetime) -> io::Result<ExecutableLayout> {
     if lifetime == Lifetime::Ordinary {
         terminal::require_ttys()?;
     }
-    crate::executable_layout()
+    crate::native::executable_layout()
 }
 
 fn new_session_id() -> io::Result<SessionId> {

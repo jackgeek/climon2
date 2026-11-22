@@ -1,10 +1,42 @@
-#[cfg(not(unix))]
-compile_error!("climon2 launcher currently supports Unix only");
-
+//! ADR 0002's frozen hand-off: find the current version's CLI beside this
+//! launcher and hand the invocation to it. How it is handed over, and how
+//! `current` is read, is each platform's own.
 use std::io;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+/// Unix replaces the launcher with the CLI, so the CLI's status or signal is
+/// the launcher's.
+#[cfg(unix)]
+mod native {
+    use std::io;
+    use std::os::unix::process::CommandExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// The CLI's file name in a version folder.
+    pub(super) const CLI: &str = "climon2-cli";
+
+    pub(super) fn read_current(path: &Path) -> io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+
+    pub(super) fn hand_off(path: PathBuf) -> io::Error {
+        let mut args = std::env::args_os();
+        let mut command = Command::new(&path);
+        if let Some(arg0) = args.next() {
+            command.arg0(arg0);
+        }
+        let error = command.args(args).exec();
+        io::Error::new(
+            error.kind(),
+            format!("cannot execute climon2-cli at {path:?}: {error}"),
+        )
+    }
+}
+
+#[cfg(windows)]
+#[path = "handoff/windows.rs"]
+mod native;
 
 pub fn run() -> std::process::ExitCode {
     let error = handoff();
@@ -14,7 +46,7 @@ pub fn run() -> std::process::ExitCode {
 
 fn handoff() -> io::Error {
     match companion() {
-        Ok(path) => exec(path),
+        Ok(path) => native::hand_off(path),
         Err(error) => error,
     }
 }
@@ -23,7 +55,7 @@ fn companion() -> io::Result<PathBuf> {
     let home = launcher_home()?;
     let contents = read_current(&home)?;
     let version = parse_current(&contents).ok_or_else(|| invalid("invalid current version"))?;
-    Ok(home.join(version).join("climon2-cli"))
+    Ok(home.join(version).join(native::CLI))
 }
 
 fn launcher_home() -> io::Result<PathBuf> {
@@ -35,21 +67,8 @@ fn launcher_home() -> io::Result<PathBuf> {
 }
 
 fn read_current(home: &Path) -> io::Result<String> {
-    std::fs::read_to_string(home.join("current"))
+    native::read_current(&home.join("current"))
         .map_err(|error| io::Error::new(error.kind(), format!("cannot read current: {error}")))
-}
-
-fn exec(path: PathBuf) -> io::Error {
-    let mut args = std::env::args_os();
-    let mut command = Command::new(&path);
-    if let Some(arg0) = args.next() {
-        command.arg0(arg0);
-    }
-    let error = command.args(args).exec();
-    io::Error::new(
-        error.kind(),
-        format!("cannot execute climon2-cli at {path:?}: {error}"),
-    )
 }
 
 fn invalid(message: &str) -> io::Error {
