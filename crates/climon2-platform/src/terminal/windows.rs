@@ -459,11 +459,14 @@ struct Reader {
 
 impl Reader {
     /// Reads until told to stop or nothing receives. A console that fails is
-    /// a hang-up, which the bridge reads as 0 bytes once this thread ends.
+    /// a hang-up, which the bridge reads as 0 bytes.
     fn run(self) {
         let mut decoder = Keys::default();
         while !self.stop.load(Ordering::SeqCst) {
             let Ok(records) = self.records() else {
+                // Closed before the signal, so the read it wakes sees the
+                // hang-up rather than an empty queue.
+                drop(self.keys);
                 self.typed.set(true);
                 return;
             };
@@ -656,6 +659,21 @@ mod tests {
         RESIZED.store(true, Ordering::SeqCst);
         assert!(Signals.take_resize());
         assert!(!Signals.take_resize());
+    }
+
+    #[test]
+    fn a_failing_console_wakes_the_waiter_and_reads_as_a_hang_up() {
+        // A file is no console: it is always signalled, and reading console
+        // input from it fails.
+        let path =
+            std::env::temp_dir().join(format!("climon2-not-a-console-{}", std::process::id()));
+        let file = File::create(&path).expect("a file");
+        let mut bridged = Bridged::new(file).expect("a bridge");
+        let woken = waiting::wait(&mut [bridged.watch_input()], Duration::from_secs(10));
+        assert_eq!(woken.expect("a wait"), 1);
+        assert_eq!(bridged.read(&mut [0u8; 8]).expect("a read"), 0);
+        drop(bridged);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
