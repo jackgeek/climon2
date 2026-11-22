@@ -25,17 +25,22 @@ use portable_pty::CommandBuilder;
 use std::{
     fs,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
 use windows_sys::Win32::{
-    Foundation::{FILETIME, WAIT_OBJECT_0},
+    Foundation::{FILETIME, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
     System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
         JobObjects::IsProcessInJob,
         Threading::{
             GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+            WaitForSingleObject,
         },
     },
 };
@@ -289,6 +294,17 @@ impl Drop for Held {
     }
 }
 
+/// Ends every process still running from the install's folder, such as a
+/// daemon whose session's metadata a failed test never saw written, and the
+/// CLI still waiting on it.
+impl Drop for Install {
+    fn drop(&mut self) {
+        for pid in processes_under(self.0.path()) {
+            terminate(pid);
+        }
+    }
+}
+
 impl Drop for Home {
     fn drop(&mut self) {
         for session in self.sessions() {
@@ -311,6 +327,50 @@ fn terminate(pid: u32) {
         // The handle is open with PROCESS_TERMINATE.
         unsafe { TerminateProcess(process.as_raw_handle(), 1) };
     }
+}
+
+/// The running processes whose executable is in `folder`.
+fn processes_under(folder: &Path) -> Vec<u32> {
+    let folder = comparable(&format!("{}\\", folder.display()));
+    // Taking a snapshot has no preconditions.
+    let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if raw == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+    // A new handle nothing else owns.
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap(),
+        ..PROCESSENTRY32W::default()
+    };
+    let mut pids = Vec::new();
+    // The snapshot is open and `entry` names its own size.
+    let mut more = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    while more {
+        if image(entry.th32ProcessID).is_some_and(|path| path.starts_with(&folder)) {
+            pids.push(entry.th32ProcessID);
+        }
+        // As for the first entry.
+        more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    }
+    pids
+}
+
+/// The path of process `pid`'s executable, if it can be read.
+fn image(pid: u32) -> Option<String> {
+    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    let mut buffer = vec![0u16; 32_768];
+    let mut length = u32::try_from(buffer.len()).unwrap();
+    // The handle is open with query access; `length` is the buffer's size.
+    let read = unsafe {
+        QueryFullProcessImageNameW(process.as_raw_handle(), 0, buffer.as_mut_ptr(), &mut length)
+    };
+    (read != 0).then(|| comparable(&String::from_utf16_lossy(&buffer[..length as usize])))
+}
+
+/// A path as compared above: without the `\\?\` prefix, in lower case.
+fn comparable(path: &str) -> String {
+    path.trim_start_matches(r"\\?\").to_lowercase()
 }
 
 fn in_any_job(pid: u32) -> bool {
@@ -360,6 +420,18 @@ fn a_headless_session_runs_detached_until_its_command_exits_with_its_full_status
         "{log}"
     );
     assert!(home.sessions().is_empty());
+}
+
+/// The tests' own clean-up: an install, once dropped, leaves nothing it
+/// started running, even a daemon its home no longer knows about.
+#[test]
+fn dropping_an_install_ends_every_process_still_running_from_it() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    session_id(&home.exec(&install, HELD));
+    let [session] = home.sessions().try_into().unwrap();
+    let daemon = Held::open(session.daemon_pid);
+    drop(install);
+    assert!(daemon.exit_code(Duration::from_secs(10)).is_some());
 }
 
 #[test]
