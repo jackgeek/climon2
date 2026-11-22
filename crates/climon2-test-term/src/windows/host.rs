@@ -44,6 +44,12 @@ pub enum HostModel {
     /// process leaves.
     #[default]
     WindowsTerminal,
+    /// The VS Code integrated terminal: creation flags `0`, keys always as
+    /// plain VT sequences, and close by waiting 250 ms, closing the
+    /// pseudoconsole and then ending the shell with
+    /// `TerminateProcess(shell, 1)` (#327, for the terminal-facing monitor
+    /// scenarios; the rest of its qualification is #325's).
+    VsCode,
 }
 
 impl HostModel {
@@ -52,6 +58,7 @@ impl HostModel {
         match self {
             // PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES, Windows Terminal's default.
             Self::WindowsTerminal => 0x08,
+            Self::VsCode => 0,
         }
     }
 
@@ -60,7 +67,7 @@ impl HostModel {
     fn encode(self, key: Key, modifiers: Modifiers, win32: bool, cursor: bool) -> Vec<u8> {
         match self {
             Self::WindowsTerminal if win32 => keys::win32(key, modifiers),
-            Self::WindowsTerminal => keys::vt(key, modifiers, cursor),
+            Self::WindowsTerminal | Self::VsCode => keys::vt(key, modifiers, cursor),
         }
     }
 }
@@ -217,11 +224,20 @@ impl Terminal {
 
     /// Closes the terminal as the host model closes its tab: for Windows
     /// Terminal, by closing the pseudoconsole, which sends every process on it
-    /// `CTRL_CLOSE_EVENT`. Closing twice does nothing more.
+    /// `CTRL_CLOSE_EVENT`; for VS Code, by waiting 250 ms, closing the
+    /// pseudoconsole and then ending the shell with status 1. Closing twice
+    /// does nothing more.
     pub fn close(&mut self) {
         if let Some(console) = self.console.take() {
             match self.settings.model {
                 HostModel::WindowsTerminal => drop(console),
+                HostModel::VsCode => {
+                    thread::sleep(Duration::from_millis(250));
+                    drop(console);
+                    // The process handle is open; ending an exited process
+                    // fails harmlessly.
+                    unsafe { TerminateProcess(raw(&self.process), 1) };
+                }
             }
         }
     }

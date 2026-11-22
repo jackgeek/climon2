@@ -182,12 +182,18 @@ jobs:
       # kill and smoke tests start.
       - name: Test the client library on Windows
         run: cargo test --locked -p climon2-client --test library_windows
+      # Also builds the monitor binary, which the CLI's monitor tests start.
+      - name: Test the monitor on Windows
+        run: cargo test --locked -p climon2-monitor
+      # Native revision 1 under the Microsoft x64 convention.
+      - name: Check native interface declarations and examples with MSVC
+        run: python -I docs/for-humans/protocol/monitor-client/check.py NativeDeclarations.test_msvc_declarations_and_examples
       - uses: actions/download-artifact@v4
         with:
           name: release-dist-windows-x86_64-msvc
           path: target/dist-artifact
       # The smoke test (packaged_windows.rs) installs the product from the zip.
-      - name: Test the launcher, the CLI's Windows answers, exec, attach, kill and the smoke test
+      - name: Test the launcher, the CLI's Windows answers, exec, attach, kill, the monitor and the smoke test
         shell: bash
         run: |
           CLIMON2_E2E_ARCHIVE="$(cygpath -aw "$(ls target/dist-artifact/*.zip)")"
