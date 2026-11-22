@@ -152,6 +152,8 @@ jobs:
           key: conpty-${{ hashFiles('pins/conpty.txt') }}
       - name: Test the harness's Windows host
         run: cargo test --locked -p climon2-test-term
+      - name: Test the launcher and the CLI's Windows answers
+        run: cargo test --locked -p climon2-launcher -p climon2-cli
   windows-quality:
     name: Windows-only CRAP and mutation / windows-2025
     needs: windows-scope

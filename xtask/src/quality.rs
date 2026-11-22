@@ -75,6 +75,7 @@ const WINDOWS_SUITE: &[&[&str]] = &[
         "--test",
         "private_windows",
     ],
+    &["-p", "climon2-launcher", "-p", "climon2-cli"],
 ];
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -624,7 +625,9 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/connection/macos.rs")
         | Some("crates/climon2-install/src/platform/macos.rs") => Some("macos"),
         Some("crates/climon2-platform/src/home/windows.rs")
-        | Some("crates/climon2-platform/src/private/windows.rs") => Some("windows"),
+        | Some("crates/climon2-platform/src/private/windows.rs")
+        | Some("crates/climon2-launcher/src/handoff/windows.rs")
+        | Some("crates/climon2-cli/src/windows.rs") => Some("windows"),
         _ => None,
     }
 }
@@ -2271,6 +2274,11 @@ No selected line holds a mutation site; nothing to mutate.
                 "crates/climon2-platform/src/private/windows.rs",
                 cfg!(windows),
             ),
+            (
+                "crates/climon2-launcher/src/handoff/windows.rs",
+                cfg!(windows),
+            ),
+            ("crates/climon2-cli/src/windows.rs", cfg!(windows)),
         ];
         for (path, _) in sources {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();

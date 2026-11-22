@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use climon2_cli::list::{LiveSession, discover, json, table};
 use climon2_core::{SessionId, hello::HelloExtensions, metadata::SessionMetadata};
 use climon2_platform::{logging, process, runtime};

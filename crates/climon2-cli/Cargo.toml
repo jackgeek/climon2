@@ -10,7 +10,6 @@ test-hooks = []
 
 [dependencies]
 climon2-core = { path = "../climon2-core" }
-climon2-discovery = { path = "../climon2-discovery" }
 climon2-platform = { path = "../climon2-platform" }
 tracing = "0.1.44"
 uuid = { workspace = true, features = ["v4"] }
@@ -18,12 +17,20 @@ serde_json.workspace = true
 time = { workspace = true, features = ["formatting", "parsing", "local-offset"] }
 unicode-width = "0.2.3"
 
+# On Windows the CLI answers only help, version and usage errors so far
+# (#315): its subcommands need discovery, whose seams are Unix-only.
+[target.'cfg(unix)'.dependencies]
+climon2-discovery = { path = "../climon2-discovery" }
+
 [dev-dependencies]
 libc = "0.2.191"
 tempfile = "3.27.0"
 filetime = "0.2.27"
-climon2-test-term = { path = "../climon2-test-term" }
 portable-pty = { version = "0.9.0", default-features = false }
+
+# The real-terminal harness does not build on Windows yet.
+[target.'cfg(unix)'.dev-dependencies]
+climon2-test-term = { path = "../climon2-test-term" }
 
 [lints]
 workspace = true

@@ -1,8 +1,9 @@
-# Windows packaging and upgrades (agreed, not implemented)
+# Windows packaging and upgrades (agreed, partly implemented)
 
 This document says what a Windows release of climon2 contains, how it is
 installed, and what an upgrade may and may not touch. It is for contributors.
-Nothing here is built yet; it was agreed in
+Only the launcher's retry of [`current`](#current) is built so far
+([#315](https://github.com/jackgeek/climon2/issues/315)); it was agreed in
 [Define Windows packaging and upgrade contract](https://github.com/jackgeek/climon2/issues/215)
 and is the specification the Windows port implements. The macOS and Linux
 equivalent, which is built, is [Release distribution](distribution.md).
