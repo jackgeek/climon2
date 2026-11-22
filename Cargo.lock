@@ -157,6 +157,7 @@ dependencies = [
  "tracing",
  "unicode-width",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -296,6 +297,7 @@ version = "0.1.0"
 dependencies = [
  "climon2-core",
  "climon2-fixtures",
+ "climon2-test-term",
  "filetime",
  "libc",
  "serde_json",
