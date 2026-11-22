@@ -1,0 +1,82 @@
+name: Probe flaky toast Idle (#356, not for merge)
+
+on:
+  push:
+    branches: [probe/flaky-toast-idle]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: probe-archive
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang libclang-dev shellcheck vim less jq
+          rustup target add x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/controlled-bash
+      - name: Build the release archive
+        run: cargo xtask dist
+      - name: Locate the archive
+        run: |
+          version="$(sed -n 's/^VERSION='"'"'\([^'"'"']*\)'"'"'$/\1/p' install.sh)"
+          archive="$PWD/target/dist/climon2-$version-linux-x86_64-gnu.tar.gz"
+          test -f "$archive"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - name: Build test harnesses
+        run: |
+          cargo test --locked --workspace --no-run --message-format=json \
+            | jq -r 'select(.reason=="compiler-artifact" and .target.name=="monitor" and .profile.test) | .executable' \
+            > monitor-path
+          cat monitor-path
+      - name: Done's status sequence, 10 runs each, archive and hooked
+        working-directory: crates/climon2-e2e
+        run: |
+          monitor="$(cat ../../monitor-path)"
+          mkdir -p probes
+          for test in probe_done_sequence_old probe_done_sequence_fixed; do
+            seq 1 10 | xargs -P 4 -I{} bash -c "CLIMON2_E2E_ARCHIVE='$ARCHIVE' '$monitor' --exact $test --nocapture > probes/archive-$test-{}.log 2>&1 || echo 'FAIL archive $test {}'"
+            seq 1 10 | xargs -P 4 -I{} bash -c "'$monitor' --exact $test --nocapture > probes/hooked-$test-{}.log 2>&1 || echo 'FAIL hooked $test {}'"
+          done
+          grep -h '^PROBE' probes/*.log | sort | uniq -c
+          grep -h '^TIMING' probes/*.log | sort
+          ! grep -l 'test result: FAILED' probes/*.log
+      - name: Old and fixed tests repeated in archive mode, eight at a time
+        if: always()
+        working-directory: crates/climon2-e2e
+        run: |
+          monitor="$(cat ../../monitor-path)"
+          mkdir -p runs
+          run() {
+            "$monitor" --exact "$1" > "runs/$1-$2.log" 2>&1 && echo "pass $1" || { echo "FAIL $1 $2"; grep -A3 panicked "runs/$1-$2.log"; }
+          }
+          export -f run
+          export monitor CLIMON2_E2E_ARCHIVE="$ARCHIVE"
+          { seq 1 40 | sed 's/^/probe_old_toast_test /'
+            seq 1 200 | sed 's/^/notifications_toast_once_per_episode_and_progress_never_does /'
+          } | xargs -P 8 -L 1 bash -c 'run "$0" "$1"' > results.txt
+          grep -A3 FAIL results.txt || true
+          for test in probe_old_toast_test notifications_toast_once_per_episode_and_progress_never_does; do
+            echo "$test: passes $(grep -c "^pass $test$" results.txt), failures $(grep -c "^FAIL $test " results.txt)"
+          done
+          ! grep -q '^FAIL notifications_toast' results.txt
+      - name: Fixed test repeated with hooked daemons, eight at a time
+        if: always()
+        working-directory: crates/climon2-e2e
+        run: |
+          monitor="$(cat ../../monitor-path)"
+          mkdir -p hooked
+          seq 1 40 | xargs -P 8 -I{} bash -c "'$monitor' --exact notifications_toast_once_per_episode_and_progress_never_does > hooked/{}.log 2>&1 && echo pass || echo FAIL {}" > hooked.txt
+          echo "passes: $(grep -c '^pass$' hooked.txt), failures: $(grep -c '^FAIL' hooked.txt)"
+          ! grep -q '^FAIL' hooked.txt

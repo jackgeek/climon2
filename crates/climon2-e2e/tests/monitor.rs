@@ -9793,3 +9793,129 @@ fn a_native_abort_in_a_client_library_ends_the_whole_monitor() {
     drop(fake);
     package.assert_clean();
 }
+
+/// PROBE (#356, not for merge): the test as it was on main.
+#[test]
+fn probe_old_toast_test() {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, &watched("Alpha"), "finish");
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    headless(&package, &watched("Beta"), "finish");
+    glance(&mut terminal, RUNNING, "Beta");
+
+    emitted(
+        &package,
+        "Beta",
+        b"\x1b]9;4;1;50\x1b\\\x1b]99;i=1:d=0;part\x1b\\",
+    );
+    retitle(&package, "Beta", "Beta 2");
+    glance(&mut terminal, RUNNING, "Beta 2");
+    assert_eq!(bells(&terminal), 0);
+    no_toast(&terminal);
+
+    emit(&package, "Beta", b"\x1b]9;Build finished\x07");
+    toast_shown(&terminal, &toast(36, "Beta 2", Some(JUMP_HINT)));
+    rang(&mut terminal, 1);
+    terminal.resize(25, 80).unwrap();
+    let narrow = toast(32, "Beta 2", Some("Ctrl+] then j: jump to atte…"));
+    toast_shown(&terminal, &narrow);
+    terminal.resize(ROWS, COLS).unwrap();
+    emitted(
+        &package,
+        "Beta",
+        b"\x1b]777;notify;Again;Still\x1b\\\x1b]99;;Hello\x1b\\",
+    );
+    retitle(&package, "Beta", "Beta 3");
+    glance(&mut terminal, ATTENTION, "Beta 3");
+    terminal.send("\x1dj").unwrap();
+    ready_at(&mut terminal, "Beta 3", ACKNOWLEDGED, "29 120");
+    no_toast(&terminal);
+    assert_eq!(bells(&terminal), 1);
+
+    headless(&package, &stepped("Done", &["exit 3"]), "finish");
+    glance(&mut terminal, STATUS, "Done");
+    terminal.send("\x1dsDone\r").unwrap();
+    top_row_is(&mut terminal, &controlled("Done", STATUS));
+    step(&package, "Done", 1);
+    let ended = session_top_row(
+        usize::from(COLS),
+        "Done",
+        &["Failed (exit 3)", "Ended", SESSIONS_HINT],
+    );
+    top_row_is(&mut terminal, &ended);
+    glance(&mut terminal, "Failed (exit 3)", "Done");
+    assert_eq!(bells(&terminal), 1);
+    no_toast(&terminal);
+
+    terminal.send("\x1dsAlpha\r").unwrap();
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    emit(&package, "Beta", b"\x1b]777;notify;Done;All good\x1b\\");
+    toast_shown(&terminal, &toast(36, "Beta 3", Some(JUMP_HINT)));
+    rang(&mut terminal, 2);
+    terminal.send("\x1dx").unwrap();
+    assert_released(&package, &mut terminal, 0);
+    assert_eq!(bells(&terminal), 2);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// PROBE (#356, not for merge): the status slot of Done's top row, read
+/// from whole frames for 14 s after `c2 exec` returned, as a sequence of
+/// distinct statuses with the milliseconds each was first seen. The
+/// monitor selects and acquires Done, its only session, on its own.
+fn probe_done_sequence(kind: &str, script: &str) {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    headless(&package, script, "finish");
+    let started = Instant::now();
+    let mut seen: Vec<(String, u128)> = Vec::new();
+    while started.elapsed() < Duration::from_secs(14) {
+        let before = terminal.received_total();
+        let ended = frame_ended(&terminal.received_tail(256));
+        let screen = terminal.screen();
+        if ended && terminal.received_total() == before {
+            let top = screen.lines().next().unwrap_or_default().to_owned();
+            if top.starts_with("Done ") {
+                let status = top
+                    .split(" | ")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                if seen.last().is_none_or(|(last, _)| *last != status) {
+                    seen.push((status, started.elapsed().as_millis()));
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let names: Vec<_> = seen.iter().map(|(status, _)| status.as_str()).collect();
+    let timed: Vec<_> = seen
+        .iter()
+        .map(|(status, at)| format!("{status}@{at}ms"))
+        .collect();
+    println!("PROBE archive={} {kind}: {}", archive(), names.join(" > "));
+    println!("TIMING archive={} {kind}: {}", archive(), timed.join(" > "));
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    step(&package, "Done", 1);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// PROBE (#356): Done as it was on main.
+#[test]
+fn probe_done_sequence_old() {
+    probe_done_sequence("old", &stepped("Done", &["exit 3"]));
+}
+
+/// PROBE (#356): Done as the fix starts it.
+#[test]
+fn probe_done_sequence_fixed() {
+    probe_done_sequence("fixed", &working(&stepped("Done", &["exit 3"])));
+}
