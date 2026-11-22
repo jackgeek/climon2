@@ -331,6 +331,8 @@ fn terminate(pid: u32) {
 
 /// The running processes whose executable is in `folder`.
 fn processes_under(folder: &Path) -> Vec<u32> {
+    // Canonical, so a short (8.3) temporary folder matches the long image path.
+    let folder = fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
     let folder = comparable(&format!("{}\\", folder.display()));
     // Taking a snapshot has no preconditions.
     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
