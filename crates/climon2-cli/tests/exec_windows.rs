@@ -51,7 +51,9 @@ impl Install {
         let cli = PathBuf::from(env!("CARGO_BIN_EXE_climon2-cli"));
         let daemon = cli.with_file_name("climon2-daemon.exe");
         let client = cli.with_file_name("climon2-client.exe");
-        let library = cli.with_file_name("climon2_client.dll");
+        // `cargo test` leaves the cdylib in deps; only `cargo build` copies
+        // it beside the binaries.
+        let library = cli.with_file_name("deps").join("climon2_client.dll");
         for (built, package) in [
             (&daemon, "climon2-daemon"),
             (&client, "climon2-client"),
