@@ -53,6 +53,12 @@ which restores the session's screen, and `exit 7` reaches the outer shell. It
 installs the zip `CLIMON2_E2E_ARCHIVE` names, as the Windows Test job does, or
 else this build's binaries in the same layout, which also needs the launcher
 (`cargo test -p climon2-launcher`).
+`tests/host_models_windows.rs` (#325) installs the product the same way and
+drives it under both host models: the key table and the host's focus reports
+reach a session as the bytes a terminal sends, ConPTY's start-up negotiation
+never reaches the host, a resize reaches the session, `exec` and `attach`
+refuse a redirected stdin or stdout, and under the VS Code model closing the
+host, `c2 kill`, detach and reattach behave as under Windows Terminal.
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the
