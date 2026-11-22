@@ -92,14 +92,29 @@ Install the test prerequisites the Linux CI job uses:
 sudo pacman -S --needed base-devel git rustup python clang shellcheck vim less
 ```
 
-`/bin/bash` must be GNU bash 5, which it is on Arch. The Linux gate always
-uses 8 workers.
+`/bin/bash` must be GNU bash 5, which it is on Arch. The workflow runs the
+Linux gate with 6 workers (`CLIMON2_MUTATION_WORKERS`); see
+[Sharing the PC](#sharing-the-pc).
 
 ### Windows VM
 
-Install Python 3.13, Git for Windows (the jobs run in its bash) and the
-Visual Studio Build Tools with the C++ workload. Make the runner account a
-local administrator.
+Install Python 3.13, Git for Windows (the jobs run in its bash), the Visual
+Studio Build Tools with the C++ workload, and PowerShell 7 at
+`C:\Program Files\PowerShell\7`. The tests use that PowerShell 7 and
+refuse the Microsoft Store copy. Make the runner account a local
+administrator.
+
+If an installer cannot run, two copies work instead. The runner on the
+owner's VM uses both:
+
+- **Python:** a copy of another Python 3.13 installation's folder, such as
+  `C:\c2runner\python313`.
+- **PowerShell 7:** the release's `win-x64` zip unpacked into
+  `C:\Program Files\PowerShell\7`, once its SHA-256 matches the release's.
+
+Give the runner its own Rust as well. Set `RUSTUP_HOME` and `CARGO_HOME` to
+folders of its own, and put their `bin` folder first on the `PATH` in its
+`.env`. Otherwise it would use the toolchain of whoever installed rustup.
 
 Create, once, the second, non-administrator account the cross-account test
 logs on as. In an elevated PowerShell:
@@ -114,7 +129,6 @@ Then the runner's `.env`:
 
 ```text
 CLIMON2_QUALITY_PYTHON=C:\Program Files\Python313\python.exe
-CLIMON2_NATIVE_MUTATION_WORKERS=4
 CLIMON2_TEST_CONPTY_CACHE=C:\c2runner\conpty
 CLIMON2_SECOND_ACCOUNT=c2second
 CLIMON2_SECOND_ACCOUNT_PASSWORD=<its password>
@@ -126,8 +140,9 @@ Use the Python path the installer reports.
 
 Install the Xcode Command Line Tools (`xcode-select --install`), then
 [Homebrew](https://brew.sh), and through it `python@3.13`, `shellcheck` and
-`bash`. The job selects Homebrew's bash 5, never `/bin/bash` 3.2. In the
-runner's `.env`:
+`bash`. The job uses the bash 5 in `/opt/homebrew/bin` or `/usr/local/bin`,
+never `/bin/bash` 3.2, and asks Homebrew only when neither is bash 5. The
+runner account need not own Homebrew. In the runner's `.env`:
 
 ```text
 CLIMON2_NATIVE_MUTATION_WORKERS=4
@@ -139,8 +154,9 @@ Options), or a job waits until it wakes.
 ## Sharing the PC
 
 The Linux gate and the Windows gate run on the same PC, the Windows one
-inside the VM, and they run at the same time. Size the VM and the worker caps
-so that both fit in the PC's memory without swapping. Each mutation worker
-builds the workspace on its own. On the VM (16 cores, 16 GB) 16 workers did
-not fit, and 2 ran beside other builds. Start the VM at 4 and raise it while
-the PC has memory to spare.
+inside the VM, and they run at the same time. So the workflow runs each of
+them with 6 mutation workers, set in `quality.yml`, to keep the PC from being
+overloaded. This was the owner's decision on 2026-11-22. Each worker builds
+and tests the workspace on its own, and Cargo inside a worker can still use
+every core it sees, so 6 workers is a cap on concurrent mutants, not on
+cores. Change the two values in `quality.yml` to resize them.
