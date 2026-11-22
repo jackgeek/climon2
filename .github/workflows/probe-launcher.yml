@@ -1,0 +1,49 @@
+name: Probe launcher mutation (not for merge)
+
+on:
+  push:
+    branches: [probe/launcher-mutation-coverage]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install the pinned quality tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --disable-pip-version-check -r tools/quality-requirements.txt \
+            "git+https://github.com/unclebob/crapper.git@6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d" \
+            "git+https://github.com/jackgeek/mutator.git@7dc09821d8ab5d077a90fbc4e9ad8c3613a9ea49"
+      - name: Mutate the launcher, as the gate's workers do, with main's and this branch's tests
+        run: |
+          python="$RUNNER_TEMP/venv/bin/python"
+          # The gate's own test command and seeded workers, with the suite
+          # narrowed to the launcher's tests so each mutant runs in seconds.
+          export CLIMON2_MUTATION_SUITE='[["-p","climon2-launcher","--test","launcher"]]'
+          mutate() {
+            rm -rf target/mutation-tests .metrics/mutate
+            "$python" tools/test-mutation.py "$PWD" cargo 10 target/stage.json crates/climon2-launcher/src/handoff.rs
+            "$python" -m mutator --test-command "\"$python\" tools/test-mutation.py" --timeout-factor 10 \
+              --no-coverage --mutate-all --max-workers 4 crates/climon2-launcher/src/handoff.rs > "mutation-$1.txt" 2> "mutation-$1.err"
+            echo "$1: mutator exit $?"
+            grep -E '^(KILLED|SURVIVED|TIMEOUT|UNCOVERED)' "mutation-$1.txt" | awk '{print $1}' | sort | uniq -c
+          }
+          tests=crates/climon2-launcher/tests/launcher.rs
+          cp "$tests" "$RUNNER_TEMP/launcher.rs"
+          git show origin/main:"$tests" > "$tests"
+          mutate main-tests || true
+          cp "$RUNNER_TEMP/launcher.rs" "$tests"
+          mutate branch-tests || true
+          for label in main-tests branch-tests; do
+            echo "::group::$label site log"; cat "mutation-$label.txt"; echo "::endgroup::"
+            echo "::group::$label stderr (tail)"; tail -60 "mutation-$label.err"; echo "::endgroup::"
+          done
