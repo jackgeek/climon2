@@ -11,11 +11,11 @@ use climon2_core::{
     startup_envelope::StartupEnvelope,
 };
 use climon2_platform::terminal;
-use std::{ffi::OsStr, io, os::unix::process::CommandExt, path::Path, process::Command};
+use std::{ffi::OsStr, io, path::Path, process::Command};
 
-/// Returns only on failure: success replaces this process with the client.
+/// Returns only on failure: success hands this process over to the client.
 pub fn run(home: &Path, selector: Selector) -> Result<u32, Error> {
-    Err(Error::from(prepare(home, &selector)?.exec()))
+    Err(crate::native::exec_client(prepare(home, &selector)?))
 }
 
 fn prepare(home: &Path, selector: &Selector) -> Result<Command, Error> {

@@ -1,35 +1,41 @@
-//! The CLI on Windows so far: help, version and usage errors are answered
-//! before this and need no home (#315); `list` runs as on Unix (#316), and so
-//! do `exec --headless` (#317) and `kill` (#318). Every other subcommand
-//! fails as the CLI's own error, without touching the home, until its
-//! Windows seams exist.
+//! The CLI on Windows: help, version and usage errors are answered before
+//! this and need no home (#315); `list` (#316), `exec` (#317, #321),
+//! `attach` (#321) and `kill` (#318, #321) run as on Unix, except that each
+//! hand-off to a client is spawn and wait (docs/windows-lifecycle.md,
+//! "Hand-offs"). The monitor fails as the CLI's own error, without touching
+//! the home, until its Windows seams exist (#327).
 use crate::{Error, Handoff, Work};
-use climon2_core::lifetime::Lifetime;
+use climon2_platform::{daemon, handoff};
 use std::process::Command;
 
 pub(crate) fn logged_run(work: Work) -> Result<u32, Error> {
     match work {
         Work::List { json } => crate::logged(|home, _, _| crate::list(home, json)),
-        Work::Exec(Lifetime::Headless, command) => crate::logged(|home, general, filter| {
-            crate::exec::run(home, Lifetime::Headless, command, general, filter)
+        Work::Exec(lifetime, command) => crate::logged(|home, general, filter| {
+            crate::exec::run(home, lifetime, command, general, filter)
         }),
-        Work::Handoff(Handoff::Kill(selector)) => {
-            crate::logged(|home, _, _| crate::kill::run(home, &selector))
+        Work::Handoff(Handoff::Attach(selector)) => {
+            crate::logged(|home, _, _| crate::attach::run(home, selector))
         }
-        Work::Exec(..) | Work::Handoff(Handoff::Attach(_) | Handoff::Monitor) => Err(unsupported()),
+        Work::Handoff(Handoff::Kill(selector)) => crate::logged(|home, _, _| {
+            // Kill waits for its client as exec and attach do.
+            handoff::wait_through_console_events()?;
+            crate::kill::run(home, &selector)
+        }),
+        Work::Handoff(Handoff::Monitor) => Err(Error::new(
+            125,
+            "this command is not supported on Windows yet",
+        )),
     }
 }
 
-fn unsupported() -> Error {
-    Error::new(125, "this command is not supported on Windows yet")
+/// Runs the client, waits for it and exits with its status; returns only
+/// when it cannot.
+pub(crate) fn exec_client(client: Command) -> Error {
+    Error::from(handoff::replace(client))
 }
 
-/// Ordinary `exec` and `attach` hand off to a client, and both are refused
-/// above.
-pub(crate) fn exec_client(_client: Command) -> Error {
-    unsupported()
+/// Ends a daemon this CLI started whose session must not outlive it.
+pub(crate) fn stop_daemon(pid: u32) {
+    daemon::stop(pid);
 }
-
-/// Only an ordinary `exec` keeps a daemon it may have to stop, and it is
-/// refused above; a headless session outlives the CLI at once.
-pub(crate) fn stop_daemon(_pid: u32) {}

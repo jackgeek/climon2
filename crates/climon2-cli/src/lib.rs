@@ -1,6 +1,5 @@
 //! Interactive startup orchestration; binaries communicate only through contracts.
 
-#[cfg(unix)]
 mod attach;
 mod client;
 mod exec;
@@ -54,10 +53,6 @@ enum Work {
 
 /// Subcommands that another executable of a version folder carries out: the
 /// client attaches or kills, and the monitor monitors.
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "attach and the monitor do not run on Windows yet")
-)]
 enum Handoff {
     Attach(Selector),
     Kill(Selector),
