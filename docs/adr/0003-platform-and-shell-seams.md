@@ -106,8 +106,9 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   the current user's SID, and its protected DACL holds one ACE, that SID with
   full control. Setting the owner explicitly is an amendment from
   [Define secure creation of Windows log and metadata files](https://github.com/jackgeek/climon2/issues/307):
-  an elevated process's new objects are otherwise owned by
-  `BUILTIN\Administrators`, and would then fail the owner check. Before each use it
+  an administrator's full token makes `BUILTIN\Administrators` the owner of
+  anything it creates without naming an owner, and the folder would then fail
+  the owner check (see *Why the owner is explicit* below). Before each use it
   must not be a reparse point, its owner must be that SID, and its DACL must be
   exactly that. Otherwise preparation fails with the Unix "unsafe runtime
   directory" error. The socket file inherits the DACL. Windows AF_UNIX has no
@@ -131,6 +132,22 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
     SID, and a protected DACL with one ACE, that SID with full control
     (inheritable on folders). SYSTEM and Administrators are not listed; an
     administrator can still bypass the DACL, as accepted above.
+  - *Why the owner is explicit.* A new file or folder is owned by the SID its
+    descriptor names or, when it names none, by the creating token's default
+    owner. Inheritance never supplies the owner. Measured on 2026-11-22 with
+    [the owner probe](https://github.com/jackgeek/climon2/blob/0feb0122cb217396b715ea15c849ee2be6d61d12/probes/elevated-owner/probe.ps1)
+    ([CI run](https://github.com/jackgeek/climon2/actions/runs/45003024593)):
+    every administrator token at high integrity defaults to
+    `BUILTIN\Administrators`. That covers the elevated half of a UAC split
+    token, any administrator while UAC is off (as on the owner's Windows 11
+    VM), and the built-in Administrator (RID 500) that the `windows-2022` and
+    `windows-2025` runners use, whose token UAC does not filter. Only a
+    filtered, medium-integrity token defaults to its user. A descriptor that
+    carries a DACL but no owner still gets `BUILTIN\Administrators`. Setting
+    `nodefaultadminowner` ("System objects: Default owner for objects created
+    by members of the Administrators group") to 0 or 1 without a reboot
+    changed no fresh logon's default owner. With the owner named in the
+    descriptor, every token tested got its user's SID.
   - *Final component.* Every create goes through one `climon2-platform` helper
     that calls `CreateFileW` with `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT`
     and the private descriptor. Plain std `create_new` is never used: it follows

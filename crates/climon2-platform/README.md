@@ -50,8 +50,9 @@ dispatch or shell-specific logic.
 - On Windows the registered native file `src/private/windows.rs` (#339) gives
   the same three functions their bodies. Every file and folder gets the
   private descriptor when it is created: owner the process token's user SID
-  (set explicitly, since an elevated process's objects are otherwise owned by
-  Administrators) and a protected DACL with one ACE, that SID with full
+  (set explicitly, since an administrator's full token otherwise makes
+  `BUILTIN\Administrators` the owner; see ADR 0003, "Why the owner is
+  explicit") and a protected DACL with one ACE, that SID with full
   control, inheritable on folders. `create_new_file` calls `CreateFileW` with
   `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT`, so any existing name,
   including a dangling link, is refused and nothing is created at a link's
