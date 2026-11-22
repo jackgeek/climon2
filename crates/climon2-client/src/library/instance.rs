@@ -32,7 +32,7 @@ use climon2_core::{
     keys::{ClientSettings, ControlKey},
     native,
 };
-use climon2_platform::{notifier::Notifier, process, runtime};
+use climon2_platform::{notifier::Notifier, private, process};
 use std::{
     collections::VecDeque,
     io, mem,
@@ -459,7 +459,7 @@ fn log(diagnostics: Diagnostics) -> Result<(Dispatch, u32), Failure> {
     let Some(path) = diagnostics.log else {
         return Ok((Dispatch::none(), 0));
     };
-    let file = runtime::create_new_file(&path).map_err(log_failure)?;
+    let file = private::create_new_file(&path).map_err(log_failure)?;
     Ok((dispatch(CappedWriter::new(file), diagnostics.filter), 1))
 }
 

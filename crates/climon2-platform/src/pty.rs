@@ -31,7 +31,7 @@ mod unix {
 
     fn lock_path() -> io::Result<PathBuf> {
         let directory = PathBuf::from(format!("/tmp/climon2-{}-pty", crate::peer::effective_uid()));
-        crate::runtime::private_directory(&directory)?;
+        crate::private::private_directory(&directory)?;
         Ok(directory.join("allocation.lock"))
     }
 

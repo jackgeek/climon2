@@ -23,3 +23,12 @@ tempfile = "3.27.0"
 # The fixtures are Unix programs; only the home tests run on Windows so far.
 [target.'cfg(unix)'.dev-dependencies]
 climon2-fixtures = { path = "../climon2-fixtures" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
