@@ -1,9 +1,12 @@
 //! PID identity, exact wait status and terminal-session leave policy.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("process identity, hangup and exit seams require macOS or Linux");
+pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::*;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "process/windows.rs"]
+mod native;
 
 #[cfg(target_os = "linux")]
 #[path = "process/linux.rs"]

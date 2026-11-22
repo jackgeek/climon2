@@ -143,7 +143,7 @@ jobs:
       - name: Test the neutral crates
         run: cargo test --locked -p climon2-core -p climon2-vt
       - name: Test the platform seams that build on Windows
-        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows
+        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test process_windows
       # The harness fetches the pinned ConPTY package itself and verifies it
       # against pins/conpty.txt; the cache only saves the download.
       - uses: actions/cache@v4

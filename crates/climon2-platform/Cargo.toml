@@ -18,6 +18,7 @@ workspace = true
 
 [dev-dependencies]
 filetime = "0.2.29"
+serde_json.workspace = true
 tempfile = "3.27.0"
 
 # The fixtures are Unix programs; only the home tests run on Windows so far.

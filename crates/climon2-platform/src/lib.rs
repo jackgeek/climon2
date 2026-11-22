@@ -14,7 +14,6 @@ pub mod peer;
 #[cfg(unix)]
 pub mod presentation;
 pub mod private;
-#[cfg(unix)]
 pub mod process;
 #[cfg(unix)]
 pub mod pty;
