@@ -6047,6 +6047,57 @@ fn a_disconnect_discards_a_pending_prefix() {
     package.assert_clean();
 }
 
+/// PROBE (#350, not for merge): forces the losing interleaving by waiting
+/// until Gone's failed retry has made its row Unavailable before the
+/// selector opens, then waits for Other's row the old way (`old`) or the new
+/// way.
+fn probe_unavailable_before_the_selector(old: bool) {
+    let package = Package::new();
+    without_introduction(&package);
+    let mut terminal = outer(&package, "c2 monitor");
+    opened(&mut terminal);
+    let gone = headless(&package, &watched("Gone"), "finish");
+    ready_at(&mut terminal, "Gone", RUNNING, "29 120");
+    headless(&package, &watched("Other"), "finish");
+    let monitor = monitor_process(&package).0;
+    read_alone(&mut terminal, monitor, b"\x1d");
+    kill(Pid::from_raw(daemon_of(&package, &gone)), Signal::SIGKILL).unwrap();
+    whole_frame_shows(&terminal, "the lost connection", |screen| {
+        let top = screen.lines().next().unwrap_or_default();
+        top.starts_with("Gone") && top.contains("Disconnected")
+    });
+    read_alone(&mut terminal, monitor, b"x");
+    whole_frame_shows(&terminal, "Gone unavailable", |screen| {
+        let top = screen.lines().next().unwrap_or_default();
+        top.starts_with("Gone") && top.contains("| Unavailable ")
+    });
+    terminal.send("\x1ds").unwrap();
+    if old {
+        shows_row(&mut terminal, &format!("║{RUNNING:<12} Other"));
+    } else {
+        listed_with(&terminal, RUNNING, "Other");
+    }
+    enter_on(&mut terminal, "Other");
+    ready_at(&mut terminal, "Other", RUNNING, "29 120");
+    terminal.send("y").unwrap();
+    received_by(&package, "Other", b"y");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    assert_eq!(package.list().len(), 1);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+#[test]
+fn probe_old_wait_with_gone_unavailable() {
+    probe_unavailable_before_the_selector(true);
+}
+
+#[test]
+fn probe_new_wait_with_gone_unavailable() {
+    probe_unavailable_before_the_selector(false);
+}
+
 /// Over a lost session's retained history, while a passive retry is
 /// scheduled or running (#116).
 const RECONNECTING: &str = "Reconnecting...";
