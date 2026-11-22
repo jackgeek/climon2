@@ -3,10 +3,13 @@
 This document says what a Windows release of climon2 contains, how it is
 installed, and what an upgrade may and may not touch. It is for contributors.
 So far the launcher's retry of [`current`](#current)
-([#315](https://github.com/jackgeek/climon2/issues/315)) and
+([#315](https://github.com/jackgeek/climon2/issues/315)),
 [the archive](#the-archive) with its Dist job
-([#319](https://github.com/jackgeek/climon2/issues/319)) are built, but
-not `install.exe`, `install.ps1` or publishing. It was agreed in
+([#319](https://github.com/jackgeek/climon2/issues/319)), and
+[`install.exe`](#the-installer) and [`install.ps1`](#the-download-script)
+with the Archive job that tests them
+([#329](https://github.com/jackgeek/climon2/issues/329)) are built, but not
+publishing. It was agreed in
 [Define Windows packaging and upgrade contract](https://github.com/jackgeek/climon2/issues/215)
 and is the specification the Windows port implements. The macOS and Linux
 equivalent, which is built, is [Release distribution](distribution.md).
@@ -78,14 +81,13 @@ README.md
   published beside the zip. The release's one `SHA256SUMS` lists both.
 - Debug symbol files (`.pdb`) are not shipped.
 - There are no test fixtures in the archive.
-- `install.exe` and `install.ps1` are not built yet
-  ([#329](https://github.com/jackgeek/climon2/issues/329)), so today's zip
-  holds every other file, and `SHA256SUMS` lists only the zip.
 
 ### How it is built
 
-`cargo xtask dist` builds the archive and `SHA256SUMS` into `target\dist` on
-an x86_64 Windows host. The Windows Dist job runs it on `windows-2025` on
+`cargo xtask dist` builds the archive, `install.ps1` and `SHA256SUMS` into
+`target\dist` on an x86_64 Windows host. It writes the release's version into
+the one `$Version = '…'` line of the checked-in
+[`install.ps1`](../../../install.ps1), as the Unix dist stamps `install.sh`. The Windows Dist job runs it on `windows-2025` on
 every run of the checks, even when the Windows test switch is off
 ([Windows quality](quality.md#the-switch)), and keeps the result as a
 workflow artifact. Publishing it with a release is
@@ -144,9 +146,19 @@ To pass options, run the script as a script block:
   Windows 11 includes, and PowerShell 7. CI runs it under both.
 - It downloads the zip, verifies its SHA-256, expands it into a temporary
   folder, runs `install.exe` and removes the folder.
-- It never calls `exit`, which under `iex` would close the user's window.
+- It never calls `exit`, which under `iex` would close the user's window. A
+  failure is a PowerShell error whose message starts
+  `climon2-install.ps1: error:`, as the Unix script's do.
 - Piping to `iex` works under the default execution policy, which blocks a
   saved `.ps1` file.
+- Everything runs inside one script block, so `iex` leaves no variable or
+  preference behind in the user's session.
+- It hashes and expands the zip with .NET rather than `Get-FileHash` and
+  `Expand-Archive`. Those come from script modules that Windows PowerShell
+  started from PowerShell 7 cannot load, because it inherits PowerShell 7's
+  module path.
+- `CLIMON2_RELEASE_BASE_URL` replaces the release download URL, as it does for
+  `install.sh`; the tests use it to serve a release locally.
 
 A manual install verifies the zip against `SHA256SUMS`, expands it and runs
 `install.exe`. Both routes behave the same from there, because everything
@@ -155,10 +167,12 @@ below is done by `install.exe`, not by the script.
 ### The installer
 
 `install.exe [--dir <directory>] [--no-modify-path]` installs into
-`%LOCALAPPDATA%\climon2` unless `--dir` names another executable home. As on
-the other platforms, an error prints one `climon2: error: …` line and exits
-with 125. Session data stays in the climon2 home, which the installer never
-touches.
+`%LOCALAPPDATA%\climon2` unless `--dir` names another executable home. Each
+option may be given once, in either order. A relative `--dir` is taken from
+the working directory, and the entry written to `PATH` is the absolute path.
+As on the other platforms, an error prints one `climon2: error: …` line and
+exits with 125. Session data stays in the climon2 home, which the installer
+never touches.
 
 ### PATH
 
@@ -166,9 +180,12 @@ By default the installer adds the executable home to the user's `PATH`. This
 needs no administrator rights.
 
 - It reads the stored value of `HKCU\Environment\Path` without expanding
-  variables, and writes it back as the same registry type. It then tells
-  running programs that the environment changed. Terminals that are already
-  open do not see the change.
+  variables, and writes it back as the same registry type. A user with no
+  `Path` value of their own gets one of the type Windows uses for it,
+  `REG_EXPAND_SZ`. A value that is not a string is left unchanged and the
+  install fails. After a change it tells running programs that the
+  environment changed, and prints one line saying it added the entry.
+  Terminals that are already open do not see the change.
 - The executable home is appended at the end, as a literal path, so `c2` never
   takes precedence over another tool.
 - The installer records the exact entry it wrote, under `HKCU\Software\climon2`.
@@ -178,7 +195,9 @@ needs no administrator rights.
   trailing backslash. An entry the user added by hand that already matches
   counts as present, and is not recorded as the installer's.
 - `--no-modify-path` leaves `PATH` and the record untouched. It neither adds
-  an entry nor removes an earlier one, and prints the line to add by hand.
+  an entry nor removes an earlier one, and prints the entry to add by hand.
+- The edit happens after the files are installed, while the installer still
+  holds its lock, so two installers never edit `PATH` at once.
 
 ## Upgrading
 
@@ -226,9 +245,9 @@ Every launcher can run every version, so replacing `c2.exe` is best effort:
 - If the installed `c2.exe` is identical to the new one, it is left alone.
 - Otherwise the installer renames the new launcher over it. This succeeds when
   no `c2` command is running.
-- If it fails because `c2.exe` is running, the old launcher is kept. The
-  install still succeeds, and prints one line saying the launcher was in use
-  and was kept.
+- If Windows refuses, as it does while a `c2` command is running, the old
+  launcher is kept. The install still succeeds, and prints one line saying the
+  launcher was in use and was kept, with Windows' reason.
 
 A changed launcher therefore arrives with the first install made while no `c2`
 command is running. No running launcher is renamed aside, and the user is
@@ -240,6 +259,20 @@ The last step writes the new `current` to a temporary file and renames it over
 the old one. On Windows a reader can briefly find the file missing during that
 rename, so the Windows launcher retries reading `current` for up to one second
 before failing. This is part of the frozen launcher contract.
+
+## Tests
+
+The installer's own tests (`crates/climon2-install/tests/windows.rs`) run the
+test program itself as `install.exe`, with `HKEY_CURRENT_USER` redirected to
+a registry key of the test's own, so neither they nor the
+[mutation tests](quality.md) can change the real user `PATH`. The
+Windows Archive job ([Windows quality](quality.md#pull-request-jobs))
+runs `crates/climon2-install/tests/archive_windows.rs` on the zip the Dist
+job built: the archive's `install.exe`, and `install.ps1` under Windows
+PowerShell 5.1 and PowerShell 7, served from a local web server, both as
+`irm | iex` and as a script block with `-Dir` and `-NoModifyPath`. The
+archive tests that change the real user `PATH` run only on that throwaway
+runner, and put it back afterwards.
 
 ## Signing
 

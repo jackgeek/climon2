@@ -195,3 +195,27 @@ fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
         "{dist:#?}"
     );
 }
+
+/// #329: the Windows Archive job tests the exact zip the Windows Dist job
+/// built, when the Windows scope says the Windows jobs run. Its tests may
+/// change the real user PATH, which only that throwaway runner allows.
+#[test]
+fn the_windows_archive_job_tests_the_windows_dist_jobs_zip() {
+    let check = workflow("check.yml");
+    let archive = job(&check, "windows-archive");
+    for line in [
+        "    runs-on: windows-2025",
+        "    needs: [windows-scope, windows-dist]",
+        "    if: needs.windows-scope.outputs.test == 'true'",
+        "          name: release-dist-windows-x86_64-msvc",
+        "          CLIMON2_E2E_REAL_USER_PATH: \"1\"",
+        "          cargo test --locked -p climon2-install --test archive_windows",
+    ] {
+        assert!(archive.contains(&line), "{line}: {archive:#?}");
+    }
+    let dist = job(&check, "windows-dist");
+    assert!(
+        dist.contains(&"          path: target/dist/*"),
+        "the zip, install.ps1 and SHA256SUMS: {dist:#?}"
+    );
+}

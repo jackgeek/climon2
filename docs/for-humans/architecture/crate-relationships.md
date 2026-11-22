@@ -47,7 +47,7 @@ flowchart TB
 | `climon2-cli` | The `climon2-cli` executable behind every `c2` command: `exec`, `attach`, `kill`, `list` and `monitor`. It orchestrates startup and talks to other executables only through their contracts. |
 | `climon2-client` | The version-matched, byte-transparent terminal [client](../../../GLOSSARY.md#sessions) that connects a terminal to one session daemon ([ADR 0001](../../adr/0001-version-matched-client-and-frozen-hello.md)), and the client library the monitor loads for each session. |
 | `climon2-daemon` | The session daemon: it owns one session's PTY and output pump, so clients never own terminal handles. |
-| `climon2-install` | Atomic installation of a release payload into a climon2 executable home. |
+| `climon2-install` | The installer: it places a release into a climon2 executable home, atomically on macOS and Linux; on Windows it also adds that home to the user's `PATH`. |
 | `climon2-platform` | The shared platform seams of [ADR 0003](../../adr/0003-platform-and-shell-seams.md): connections, processes, PTYs, terminals, the runtime directory and logging. |
 | `climon2-core` | Platform-neutral session contracts, such as identity, configuration, the hello, metadata and exit status. It parses and applies policy, never performs platform I/O. |
 | `climon2-vt` | The virtual terminal of the session daemon and of the monitor's per-session models: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
@@ -105,6 +105,7 @@ flowchart TB
     client -.->|"dev, Unix"| fixtures
     xtask --> core
     xtask -->|"Unix"| install
+    xtask -.->|"dev, Windows"| install
     xtask -->|"Windows"| test_term
     xtask --> platform
     xtask -.->|"dev, Unix"| fixtures
@@ -204,6 +205,14 @@ code reads the pin. On Windows that edge brings no product crates, because
 the harness builds there with `core` alone. From #314 until #319, `xtask`
 built on Windows without any workspace crate, for the source check and the
 Windows [quality gate](../windows/quality.md) only.
+
+**Current (#329):** `climon2-install` builds on Windows, still consuming only
+`core`; its Windows installer is a body of its own in the crate, not another
+crate or edge. `xtask` gains a Windows-only `dev` edge to `install`: the
+Windows dist's tests check that the zip's version folder holds exactly the
+files the installer installs, so the two lists cannot drift apart. Its normal
+edge to `install` stays Unix-only, because only the Unix release checks and
+installs link the installer; Windows `cargo xtask dist` builds it with Cargo.
 
 **Current (#316):** `climon2-cli`'s edge to `discovery` and its `dev` edge to
 `climon2-test-term` hold on every platform; until #316 they were Unix-only.
