@@ -3,7 +3,10 @@
 //! leave it and would always exit 125 (docs/windows-lifecycle.md, "Starting
 //! the daemon"). The harness starts the program as a child of the nearest
 //! ancestor in no job instead, through `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`,
-//! optionally in jobs of the harness's own shapes, outer job first.
+//! optionally in jobs of the harness's own shapes, outer job first. The program
+//! is detached: that ancestor may have no console to share (on CI it has
+//! none, and a console program started there fails to initialise), and
+//! its standard streams are files.
 //!
 //! This is test code: it must pass its own tests in the Windows Test job and
 //! is outside CRAP and mutation (docs/windows-quality.md).
@@ -30,10 +33,10 @@ use windows_sys::Win32::{
         },
         JobObjects::IsProcessInJob,
         Threading::{
-            CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-            EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess,
-            InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+            CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS,
+            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
+            GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+            OpenProcess, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
             PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, PROCESS_CREATE_PROCESS, PROCESS_DUP_HANDLE,
             PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESTDHANDLES,
             STARTUPINFOEXW, TerminateProcess, WaitForSingleObject,
@@ -176,7 +179,7 @@ impl Outside {
                 ptr::null(),
                 ptr::null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS,
                 environment.as_ptr().cast(),
                 directory.as_ptr(),
                 &startup.StartupInfo,
