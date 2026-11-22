@@ -22,10 +22,14 @@ use syn::{
 };
 
 /// Paths outside the registered Windows files whose changes run the Windows
-/// jobs regardless of the switch: the workflows and xtask's quality code,
-/// including what the Windows gate builds xtask from and its probes' fixtures.
+/// jobs regardless of the switch: the harness's Windows host and its tests,
+/// the pinned downloads, the workflows and xtask's quality code, including
+/// what the Windows gate builds xtask from and its probes' fixtures.
 const WINDOWS_TRIGGERS: &[&str] = &[
     ".github/",
+    "crates/climon2-test-term/src/windows",
+    "crates/climon2-test-term/tests/windows_host.rs",
+    "pins/",
     "tools/",
     "xtask/Cargo.toml",
     "xtask/src/coverage.rs",
@@ -266,6 +270,10 @@ mod tests {
     fn windows_files_workflows_and_quality_code_trigger_the_windows_jobs() {
         for path in [
             "crates/climon2-platform/src/home/windows.rs",
+            "crates/climon2-test-term/src/windows.rs",
+            "crates/climon2-test-term/src/windows/host.rs",
+            "crates/climon2-test-term/tests/windows_host.rs",
+            "pins/conpty.txt",
             ".github/workflows/check.yml",
             ".github/actions/controlled-bash/action.yml",
             "tools/test-mutation.py",
@@ -283,6 +291,8 @@ mod tests {
         for path in [
             "crates/climon2-platform/src/home.rs",
             "crates/climon2-other/src/windows.rs",
+            "crates/climon2-test-term/src/terminal.rs",
+            "crates/climon2-test-term/tests/received.rs",
             "crates/climon2-platform/src/runtime/linux.rs",
             "xtask/src/dist.rs",
             "README.md",
