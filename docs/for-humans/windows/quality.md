@@ -148,6 +148,9 @@ on when it is `on`. Release qualification and tags run it whatever that
 variable says. Turning it back on for good is part of
 [#330](https://github.com/jackgeek/climon2/issues/330).
 
+Once the owner's Windows machine runs the gate as a self-hosted runner, a
+push runs it there instead; see [Quality runners](../quality-runners.md).
+
 ### Running the gate locally
 
 The VM needs Python 3.11 or later and

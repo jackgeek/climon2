@@ -33,6 +33,7 @@ line saying how much of it is implemented, and links the issue that settled it.
 | Document or folder | Purpose |
 |---|---|
 | [distribution.md](distribution.md) | Supported platforms, release archives and how a release is built. |
+| [quality-runners.md](quality-runners.md) | How the CRAP and mutation gates run on the owner's own machines, and how to set them up. |
 | [behaviour/](behaviour/README.md) | Specifications of what sessions and the monitor do. |
 | [protocol/](protocol/README.md) | The interfaces between climon2's programs, for plugin and client authors. |
 | [architecture/](architecture/README.md) | Diagrams of climon2's executables, libraries and crates. |
