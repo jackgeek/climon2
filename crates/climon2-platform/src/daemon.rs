@@ -7,17 +7,18 @@ pub use unix::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
+    use crate::waiting::{self, Interest, Watch};
     use climon2_core::protocol::STARTUP_TIMEOUT;
     use std::{
         fs::File,
         io::{self, Read, Write},
         os::{
-            fd::{AsRawFd, FromRawFd, OwnedFd},
+            fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
             unix::process::CommandExt,
         },
         path::Path,
         process::{Child, Command, Stdio},
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     const MAX_MESSAGE: usize = 4096;
@@ -227,29 +228,23 @@ mod unix {
     }
 
     fn readable(reader: &File, deadline: Instant) -> io::Result<()> {
-        let mut fd = libc::pollfd {
-            fd: reader.as_raw_fd(),
-            events: libc::POLLIN,
-            // Output-only.
-            revents: Default::default(),
-        };
-        while !poll_once(&mut fd, remaining_millis(deadline)?)? {}
+        let mut watches = [Watch::new(reader.as_fd(), Interest::Read)];
+        while !poll_once(&mut watches, remaining(deadline)?)? {}
         Ok(())
     }
 
-    fn remaining_millis(deadline: Instant) -> io::Result<i32> {
-        let remaining = deadline
+    /// The wait rounds this up, so the deadline's last fraction of a
+    /// millisecond is waited, not spun.
+    fn remaining(deadline: Instant) -> io::Result<Duration> {
+        deadline
             .checked_duration_since(Instant::now())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "daemon readiness timed out"))?;
-        // Rounded up, so the deadline's last fraction of a millisecond is waited, not spun.
-        i32::try_from(remaining.as_micros().div_ceil(1000)).map_err(io::Error::other)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "daemon readiness timed out"))
     }
 
-    fn poll_once(fd: &mut libc::pollfd, milliseconds: i32) -> io::Result<bool> {
-        if unsafe { libc::poll(fd, 1, milliseconds) } >= 0 {
-            return Ok(fd.revents != 0);
+    fn poll_once(watches: &mut [Watch<'_>; 1], timeout: Duration) -> io::Result<bool> {
+        match waiting::wait(watches, timeout) {
+            Ok(_) => Ok(watches[0].ready()),
+            Err(error) => crate::syscall::retry_if_interrupted(error).map(|()| false),
         }
-        crate::syscall::retry_if_interrupted(io::Error::last_os_error())?;
-        Ok(false)
     }
 }
