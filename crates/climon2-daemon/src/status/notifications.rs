@@ -1,6 +1,6 @@
 //! Notification sources, parsed once from the OSC strings the session's
 //! virtual terminal observed, after the agreed
-//! [source normalization](../../../../docs/protocol/daemon-client/core-v1.md#source-normalization):
+//! [source normalization](../../../../docs/for-humans/protocol/daemon-client/README.md#source-normalization):
 //! [OSC 9](https://iterm2.com/documentation-escape-codes.html) text, the
 //! [OSC 777](https://codeberg.org/dnkl/foot/src/branch/master/doc/foot-ctlseqs.7.scd)
 //! `notify` subset and

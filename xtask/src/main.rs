@@ -1,5 +1,5 @@
 // Off Unix only the source check, the native-only gate and dist are built
-// (docs/windows-quality.md), so the release tooling they share goes unused.
+// (docs/for-humans/windows/quality.md), so the release tooling they share goes unused.
 #![cfg_attr(not(unix), allow(dead_code))]
 use std::{
     env,

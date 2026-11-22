@@ -5,12 +5,12 @@ infallible adapter around unchanged `alacritty_terminal` 0.26.0, and the
 allocation-bounded `Model` a monitor keeps for each session, with the
 read-only views it paints from. No I/O, no `cfg(target_os)`, and no Alacritty
 type in the public API. Only `climon2-daemon` and `climon2-monitor` may depend
-on it (ADR 0004); the monitor uses it today only for the documented
-normal-shell baseline in its release and, at startup, for `Model::mandatory`
-at `Geometry::LARGEST`, to check that its limits hold one session's model
-(#167).
+on it (ADR 0004). The monitor keeps a `Model` for each session it shows
+(#108), uses `Presentation` for the documented normal-shell baseline in its
+release and, at startup, `Model::mandatory` at `Geometry::LARGEST`, to check
+that its limits hold one session's model (#167).
 
-The [#63 terminal contract](../../docs/protocol/terminal-integration.md) has
+The [#63 terminal contract](../../docs/for-humans/protocol/terminal-integration.md) has
 the monitor paint each session with Ratatui from
 [read-only views](#read-only-views) of its model (#83). They are Rust types,
 not a native cross-release cell schema; the monitor paints its selected
@@ -181,7 +181,7 @@ place.
   history whole; `Model::discard()` abandons it. A new effective geometry
   arrives this way: the owner decided that a monitor-mode geometry change is
   always followed by a restoration at that geometry (ADR 0007), a wire
-  amendment that #89 makes.
+  amendment that #89 made.
 - `Model::footprint()` is the allocation capacity charged against `bytes`, the
   engine's allocation plus `Model::RESERVE` and growth charges;
   `Model::screen()` and `Model::history()` are text views of the current model,

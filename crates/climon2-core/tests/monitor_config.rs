@@ -1,7 +1,7 @@
 //! Spec #73 Configuration model: the monitor's one startup snapshot of
 //! `config.jsonc` (CFG-01 and INP-01, Contract layer), the `monitor` section
 //! `exec` validates too, and the README that documents it (CFG-01 Docs).
-//! Every expectation is written here from docs/monitor-operational-limits.md,
+//! Every expectation is written here from docs/for-humans/behaviour/monitor/operational-limits.md,
 //! never taken from the code under test.
 use climon2_core::{
     config::{
@@ -823,7 +823,7 @@ fn cfg01_quanta_and_retry_delays_are_ordered() {
 }
 
 /// One 500x200 session's mandatory allocation, as documented in
-/// docs/monitor-operational-limits.md: the monitor's one shared parser, and
+/// docs/for-humans/behaviour/monitor/operational-limits.md: the monitor's one shared parser, and
 /// the session's current model and the first history chunk, which holds its
 /// recent page (#166).
 const LARGEST: MandatoryAllocation = MandatoryAllocation {

@@ -1711,9 +1711,9 @@ fn installed_library_reports_worker_completion_apart_from_terminal_evidence() {
 }
 
 /// LIB-06 Fault (the `stall-cleanup` hook; LIB-06 Library needs a real
-/// worker, which Open, #93, brings): a worker whose cleanup stalls is
-/// reported as incomplete,
-/// never complete: `run` returns `CM1_TIMEOUT` once `cleanup_ms` passes,
+/// worker, and none starts without the hook, since Open, #93, runs an
+/// instance's connection on its owner thread inside `run`): a worker whose
+/// cleanup stalls is reported as incomplete, never complete: `run` returns `CM1_TIMEOUT` once `cleanup_ms` passes,
 /// with the stalled worker still counted, while terminal evidence was
 /// published regardless. Handles can be released, but the instance can never
 /// be destroyed; the host never claims the worker joined, and ends with it

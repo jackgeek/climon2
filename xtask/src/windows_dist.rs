@@ -1,5 +1,5 @@
 //! `cargo xtask dist` on Windows: the release zip
-//! (docs/windows-distribution.md, "The archive").
+//! (docs/for-humans/windows/distribution.md, "The archive").
 //!
 //! It builds the shipped packages for x86_64 MSVC, takes `conpty.dll` and
 //! `OpenConsole.exe` from the pinned package the harness also uses, lays the
@@ -278,7 +278,7 @@ fn system_tool(name: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// docs/windows-distribution.md, "The archive", with `install.exe` and
+    /// docs/for-humans/windows/distribution.md, "The archive", with `install.exe` and
     /// the monitor still to come (#329, #327).
     #[test]
     fn the_archive_holds_the_agreed_files_and_no_debug_symbols() {

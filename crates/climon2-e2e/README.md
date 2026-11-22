@@ -53,11 +53,11 @@ release's logs contain no DEBUG or TRACE records.
 
 On Linux use `climon2-0.1.0-linux-x86_64-gnu.tar.gz` instead. Archive payload
 validation requires the host platform's suffix; a Darwin archive cannot stand
-in for Linux runtime qualification. See [distribution](../../docs/distribution.md).
+in for Linux runtime qualification. See [distribution](../../docs/for-humans/distribution.md).
 
 Internal-only fault injections (including the CLI's `CLIMON2_CLI_HOLD`, the
 daemon's `pty-write` and `pty-write-partial`, and the monitor's
-`CLIMON2_MONITOR_FAULT=draw` and `poll`) and the explicitly synthetic client-invocation
+`CLIMON2_MONITOR_FAULT=draw`, `poll`, `discovery` and `release`) and the explicitly synthetic client-invocation
 fixture are debug-sibling scenarios, not applicable to an unmodified no-hooks
 archive. All black-box terminal, lifecycle, missing-client, privacy, logging and
 raw-socket cases run against the archive. A removed client is restored by
@@ -261,8 +261,9 @@ sessions in `tests/headless.rs`.
 | LIB-06 Fault (`stall-cleanup` hook): stalled worker cleanup incomplete, never complete or destroyed | `installed_library_reports_stalled_worker_cleanup_as_incomplete_and_never_destroys` |
 
 LIB-06 Library is not covered yet: without the fault hook this release starts
-no worker that could stall. Open
-([#93](https://github.com/jackgeek/climon2/issues/93)) brings the first.
+no worker that could stall. Even Open
+([#93](https://github.com/jackgeek/climon2/issues/93)) runs its connection on
+the owner thread.
 
 ### Library layer: passive monitor connections (`tests/passive*.rs`, #93)
 
@@ -318,6 +319,7 @@ before it.
 | COM-03 Library and Fault, backpressure: a Display waiting for `event_bytes` room stops `operation_ms`; `delivery_stall_ms` fails the connection `delivery_stalled`, retry passive, the held-back Ready unanswered | `installed_library_fails_a_stalled_delivery_without_timing_out_its_commands` (`control_faults.rs`) |
 | COM-03 Library and Fault: once waiting records are queued no stall deadline remains, and a Ready times out at `operation_ms` | `installed_library_times_commands_out_again_once_waiting_records_are_queued` (`control_faults.rs`) |
 | LIB-04 Fault, control and screen records: each charged its header twice and only a Display's bytes beside it; Control revoked (`session_ending`) delivered with its reserved field zero | `installed_library_charges_presentation_records_only_the_display_bytes_they_own` (`control_faults.rs`) |
+| REC-01 Fault (#289, a final outcome outlives the connection): a Command final the daemon sent before closing, behind a Display waiting for event room, survives a Focus that cannot be written to the closed connection; once drained it is delivered once and the close is a clean stop, retry none | `installed_library_keeps_a_final_the_daemon_sent_before_a_write_failed` (`control_faults.rs`) |
 
 ### Library layer: termination (`tests/termination*.rs`, #96)
 
@@ -384,6 +386,7 @@ before it.
 |---|---|
 | 6.1.1 detach, list `detached`, reattach on an occupied host, prior host content kept, termios restored | `installed_session_detaches_and_reattaches_on_an_occupied_host` |
 | 6.1.2 alternate-screen restoration, quitting reveals normal content | `installed_alternate_screen_is_reattached_and_quitting_shows_normal_content` |
+| #145 after real Vim quits in a nested session that then ends, the outer shell's input stays below the restored output | `installed_session_after_vim_keeps_outer_shell_input_below_restored_output` |
 | 6.1.3 shared session, one controller, take-control, controller size drives the PTY | `installed_clients_share_a_session_with_exactly_one_controller` |
 | 6.1.4 client SIGKILL uses the daemon leave policy | `killed_installed_client_uses_daemon_leave_policy_and_leaves_nothing` (`tests/packaged.rs`) |
 | 6.1.5 kill of detached and attached sessions | `installed_kill_ends_detached_and_attached_sessions` |
@@ -450,7 +453,7 @@ earlier run would, so they open on the empty state.
 | Spec #73 exit (owner decisions on #109 and #118) a stuck session's unanswered key, read with prefix+x, holds exit no longer than the operation deadline inside the shutdown deadline; EXT-02 and EXT-04 its connection failing during shutdown, no Leave confirmed, exits 125 naming the session | `a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline` |
 | EXT-01, EXT-03 (orderly exit), EXT-04 (#118) prefix+x leaves a passive and a controlling client on one path, each kind of evidence logged alone; 0, host restored and root-cleared, nothing printed | `exit_leaves_every_client_and_records_each_kind_of_evidence_alone` |
 | EXT-02, LIB-06 (#118) an unanswered Leave stalls past the deadline; `Exiting: waiting for 1 session`; repeated prefix+x and signals restart nothing and reach no shell; restored and cleared, then a 125 fail-stop naming what is unconfirmed | `a_stalled_leave_fail_stops_at_the_deadline_however_often_exit_is_repeated` |
-| EXT-02, LIB-06 Fault (#118; hooked) unconfirmed worker cleanup and destroy, a discovery pass that never ends: 125 fail-stop naming them; a host release that never ends: 125 after `final_host_ms`, never restored | `unconfirmed_worker_cleanup_fail_stops_without_claiming_it`, `debug_hook_stalled_discovery_fail_stops_at_the_deadline`, `debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance` |
+| EXT-02, LIB-06 Fault, EXT-03 Fault (#118; hooked) unconfirmed worker cleanup and destroy, a discovery pass that never ends: 125 fail-stop naming them; a host release that never ends: 125 after `final_host_ms`, never restored | `unconfirmed_worker_cleanup_fail_stops_without_claiming_it`, `debug_hook_stalled_discovery_fail_stops_at_the_deadline`, `debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance` |
 | LIB-06 Fault (#118; hooked library `abort:receive`) a native abort ends the whole disposable monitor, 134 | `a_native_abort_in_a_client_library_ends_the_whole_monitor` |
 | COM-03 (queue full), COM-04 (chunks) a refusal is shown with the bytes not sent; only accepted input arrives | `a_full_input_queue_is_shown_and_only_accepted_input_arrives` |
 | INP-03, COM-04 (paste) pastes reach the selected session exactly, with application markers only while it has bracketed paste on; a pending prefix as one literal before it, none after; markers split across reads | `pastes_reach_the_selected_session_exactly_with_markers_only_when_it_asks` |
@@ -479,7 +482,7 @@ earlier run would, so they open on the empty state.
 | DEL-01, DEL-02 (Fault, #117) a held Kill sent once, a repeated Delete opening nothing, other sessions usable; a refused Kill keeps its row with why | `a_held_kill_is_sent_once_and_a_refused_one_keeps_its_row_with_why` |
 | DEL-02 (Fault, #117) a lost Kill never resent, the passive client learning the outcome, the row kept until the held Leave is answered, a fallback never sent Acquire, no rediscovery of a still-answering daemon | `a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup` |
 | DEL-01, DEL-02 (Fault, #117) a session ending while asked offers Remove for the same session through a reorder; no Kill; removal after its held Leave | `a_session_ending_while_asked_is_only_removed_after_its_cleanup` |
-| DEL-01 (Fault, #117) a dialog whose never-connected row discovery drops closes, retargeting nothing | `a_dialog_whose_row_is_dropped_closes_without_retargeting` |
+| DEL-01 (Fault, #117) a dialog whose never-connected row discovery drops closes, retargeting nothing; EXT-02 (Monitor, Fault, #118) that row's client, still waiting for its Open at prefix+x, fail-stops at the deadline with 125 naming it | `a_dialog_whose_row_is_dropped_closes_without_retargeting` |
 
 Not packaged, with lower-boundary evidence: resize before `Ready` (no hook
 holds a packaged client between Control granted and `Ready`; daemon
@@ -538,7 +541,7 @@ remain in those crates' READMEs and test doc comments. In particular:
   checks the fixture's final screen was not reset.
 
 **Allowed ownership review rule (#27.4/#27.7c):** preserve the daemon's single
-`Session::pump_output` → `Pty::read_output` call graph; no cloned PTY readers,
+`Session::read_pty` → `Pty::read_output` call graph; no cloned PTY readers,
 master transfer, descriptor passing, or second output pump. A textual search
 would not prove ownership, so no vacuous architecture test is claimed.
 

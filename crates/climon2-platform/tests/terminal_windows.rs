@@ -1,4 +1,4 @@
-//! #321: the client's console on Windows (docs/windows-lifecycle.md,
+//! #321: the client's console on Windows (docs/for-humans/windows/lifecycle.md,
 //! "Client console"), at the terminal seam. Each test hosts this test binary
 //! as a console program in a pseudoconsole of the pinned ConPTY, under the
 //! harness's Windows Terminal model, and the program plays one role: it uses

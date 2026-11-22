@@ -1,0 +1,98 @@
+# Acquire — `0x33`
+
+**Status: agreed and implemented** for [attachments](../../../../GLOSSARY.md#attachment-and-control) ([#87](https://github.com/jackgeek/climon2/issues/87)) and [passive monitor connections](../../../../GLOSSARY.md#attachment-and-control) ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+The [client library](../../../../GLOSSARY.md#sessions) sends it ([#94](https://github.com/jackgeek/climon2/issues/94)); the [client executable](../../../../GLOSSARY.md#sessions)'s ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)) and the
+[monitor](../../../../GLOSSARY.md#sessions) ([#108](https://github.com/jackgeek/climon2/issues/108), [#110](https://github.com/jackgeek/climon2/issues/110)) use it.
+The [client](../../../../GLOSSARY.md#sessions) explicitly requests
+[control](../../../../GLOSSARY.md#attachment-and-control) from the
+[session daemon](../../../../GLOSSARY.md#sessions) after Open.
+See the [overview](../README.md), [glossary](../../../../GLOSSARY.md),
+[terms](../TERMS.md), and inherited [wire rules](README.md).
+
+## Body
+
+One [JSON](../TERMS.md#json) [frame](../TERMS.md#frame) with the sole required
+field `request_id: Counter`:
+
+```json
+{"request_id":"4"}
+```
+
+## Acceptance, order and failures
+
+Core support is required. Acquisition converts a passive
+[monitor](../../../../GLOSSARY.md#sessions) to an ordinary
+[attachment](../../../../GLOSSARY.md#attachment-and-control), if not already one.
+Last accepted takeover wins.
+[Grant](event-control-granted.md) and
+[restoration](../../../../GLOSSARY.md#restoration-and-presentation) precede a changed success
+[Response](response.md):
+`{"kind":"acquired","changed":<bool>,"period":<Counter>,"restoration_id":<Counter>}`.
+Already controlling means `changed:false`, retaining authority with no new
+grant/restoration. No implicit geometry change or
+[attention](../../../../GLOSSARY.md#status-and-attention) acknowledgement is
+included. Acceptance is not
+[readiness](../../../../GLOSSARY.md#protocol-and-plugin-concepts).
+
+Discovery, menu browsing and passive reconnect do not originate Acquire.
+The monitor sends Acquire only for Enter on a connected row, the take-control
+key, the attention jump (prefix+j) to a session it does not control, and its
+initial selection
+([#108](https://github.com/jackgeek/climon2/issues/108), [#110](https://github.com/jackgeek/climon2/issues/110), [#114](https://github.com/jackgeek/climon2/issues/114), [#266](https://github.com/jackgeek/climon2/issues/266)).
+See [succession](README.md#membership-and-succession) for
+[promotion](../../../../GLOSSARY.md#attachment-and-control) without
+selection, input, resize or acknowledgement.
+Invalid state, terminating session and resource/I/O failures use
+[explicit errors](README.md#errors-and-bounded-delivery).
+No optional fields/defaults or unknown members; malformed records/bad IDs are
+fatal. Numeric bounds belong to #69.
+Related: [Acknowledge](request-acknowledge.md), [Ready](request-ready.md).
+
+## Implemented behavior
+
+On an interactive attachment the
+[session daemon](../../../../GLOSSARY.md#sessions) serves Acquire. A
+non-controlling attachment takes control at once. The previous
+[controller](../../../../GLOSSARY.md#attachment-and-control) first
+receives the [release](../../../../GLOSSARY.md#restoration-and-presentation) of its
+[presentation](../../../../GLOSSARY.md#restoration-and-presentation), then a
+[revocation](../../../../GLOSSARY.md#attachment-and-control):
+[Control revoked](event-control-revoked.md) with reason `takeover`.
+The requester receives [Control granted](event-control-granted.md) with
+reason `acquire` and the [Restoration begin](event-restoration-begin.md) of
+its first restoration, then the success with `changed:true` and that
+[control period](../../../../GLOSSARY.md#attachment-and-control) and
+[restoration ID](../../../../GLOSSARY.md#protocol-and-plugin-concepts). The restoration's
+[Display](event-display.md) chunks and
+[Restoration complete](event-restoration-complete.md) follow the success, as
+the connection drains. The controller's own Acquire is an explicit no-op:
+`changed:false` with its current period and restoration ID, and nothing
+else. During committed termination Acquire is `session_terminating`.
+Otherwise, once the session has issued its last control period or
+restoration ID, an Acquire that would take control, which needs a new one
+of each, is `resource_limit` without effects, while the controller's own
+stays the no-op above
+([#90](https://github.com/jackgeek/climon2/issues/90)).
+
+On a [passive monitor connection](../../../../GLOSSARY.md#attachment-and-control)
+Acquire converts the registration into an
+attachment, which takes control at once in the same way, even of a
+[detached](../../../../GLOSSARY.md#sessions) or starting session: any previous
+controller first receives its release and Control revoked (`takeover`), then
+the requester receives Control granted with reason `acquire` and the
+Restoration begin of its first restoration, then the success with
+`changed:true`. The grant keeps the session's current geometry, whoever sized
+it last, and nothing is sent to the command: acquiring never resizes the
+session or types into it. From then on the connection is an attachment,
+which the hello `state` counts. It stays one, in the background, when
+another client takes control from it; its Acquire then takes control back,
+and its Leave is an accepted detach. Its restorations and Display have
+[canonical presentation](../../../../GLOSSARY.md#restoration-and-presentation),
+as [Restoration begin](event-restoration-begin.md#implemented-behavior)
+describes. During committed termination a registration's Acquire is
+`session_terminating` too, and the registration stays.
+
+Before any Open, or on a standalone
+[Kill](request-kill.md#implemented-behavior)'s connection, there is nothing
+to convert, so Acquire is `invalid_state`, like [Leave](request-leave.md)
+there. A rejection never ends the stream.

@@ -1,6 +1,6 @@
 //! Detached daemon startup with a bounded inherited readiness pipe: on Unix
 //! by exec, on Windows by one `CreateProcessW` (#317,
-//! docs/windows-lifecycle.md, "Starting the daemon"). The readiness reply is
+//! docs/for-humans/windows/lifecycle.md, "Starting the daemon"). The readiness reply is
 //! the same bytes on both.
 use std::{
     fs::File,

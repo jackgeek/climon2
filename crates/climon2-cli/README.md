@@ -47,7 +47,7 @@ client is missing exits 125 and stops its daemon. It needs the daemon binary
 built first (`cargo test -p climon2-daemon --test windows`), and the client
 binary and library (`cargo test -p climon2-client --test library_windows`).
 `tests/packaged_windows.rs` is the Windows smoke test
-(docs/windows-qualification.md): in the harness's Windows Terminal model,
+(docs/for-humans/windows/qualification.md): in the harness's Windows Terminal model,
 `pwsh` runs `c2 exec pwsh`, a command, a detach, `c2 list` and `c2 attach`,
 which restores the session's screen, and `exit 7` reaches the outer shell. It
 installs the zip `CLIMON2_E2E_ARCHIVE` names, as the Windows Test job does, or

@@ -1,5 +1,5 @@
 //! The client's console on Windows (#321; ADR 0003, "Client console";
-//! docs/windows-lifecycle.md, "Client console").
+//! docs/for-humans/windows/lifecycle.md, "Client console").
 //!
 //! `exec` and `attach` need console handles for stdin and stdout. Raw mode
 //! turns off processed, line and echo input and quick edit, turns on VT

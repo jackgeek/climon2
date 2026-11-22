@@ -1,4 +1,4 @@
-//! Starting the daemon on Windows (#317; docs/windows-lifecycle.md,
+//! Starting the daemon on Windows (#317; docs/for-humans/windows/lifecycle.md,
 //! "Starting the daemon").
 //!
 //! One `CreateProcessW`: detached, breaking away when this process is in a

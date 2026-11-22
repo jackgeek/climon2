@@ -1,4 +1,4 @@
-//! Windows-only source (docs/windows-quality.md): where it may live, and
+//! Windows-only source (docs/for-humans/windows/quality.md): where it may live, and
 //! which changes must run the Windows jobs whatever `CLIMON2_WINDOWS_TESTS`
 //! says.
 //!

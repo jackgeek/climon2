@@ -17,5 +17,5 @@ On Windows the contract has two additions, fixed before the first Windows releas
 ## Consequences
 
 - On macOS and Linux the launcher `exec`s into the CLI, so no session holds it open, and the installer always replaces it atomically (temp then rename).
-- On Windows the launcher stays running and locks its file, so replacement is best effort. The installer skips an identical launcher, replaces a different one when no launcher is running, and otherwise keeps the old one and still succeeds. A changed launcher arrives with the first install made while none is running. [Windows packaging and upgrades](../windows-distribution.md) has the detail.
+- On Windows the launcher stays running and locks its file, so replacement is best effort. The installer skips an identical launcher, replaces a different one when no launcher is running, and otherwise keeps the old one and still succeeds. A changed launcher arrives with the first install made while none is running. [Windows packaging and upgrades](../for-humans/windows/distribution.md) has the detail.
 - New launcher behaviour belongs in the CLI, never in the launcher.

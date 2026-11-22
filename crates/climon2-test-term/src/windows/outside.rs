@@ -1,6 +1,6 @@
 //! Running a program outside the test's job. cargo puts every test in a job
 //! that refuses breakaway, so a `c2 exec` started from a test could never
-//! leave it and would always exit 125 (docs/windows-lifecycle.md, "Starting
+//! leave it and would always exit 125 (docs/for-humans/windows/lifecycle.md, "Starting
 //! the daemon"). On the `windows-2025` runner the runner itself, from
 //! `Runner.Listener` down, is in another job that refuses breakaway too, so
 //! no process the test can reach as a parent is outside every job.
@@ -16,7 +16,7 @@
 //! exit status beside them.
 //!
 //! This is test code: it must pass its own tests in the Windows Test job and
-//! is outside CRAP and mutation (docs/windows-quality.md).
+//! is outside CRAP and mutation (docs/for-humans/windows/quality.md).
 
 use super::{conpty::wide, host::command_line, job::JobShape};
 use std::{

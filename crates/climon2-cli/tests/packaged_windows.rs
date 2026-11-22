@@ -1,4 +1,4 @@
-//! #321: the Windows smoke test (docs/windows-qualification.md, "Existing
+//! #321: the Windows smoke test (docs/for-humans/windows/qualification.md, "Existing
 //! scenarios"): the packaged product under the harness's Windows Terminal
 //! model. From `pwsh`, `c2 exec pwsh` runs a command, detaches, `c2 list`
 //! shows the session, `c2 attach` restores its screen, and `exit 7` in the

@@ -1,5 +1,5 @@
 //! #321: the CLI's spawn-and-wait hand-off on Windows, by the launcher's
-//! rules (docs/windows-lifecycle.md, "Hand-offs"). Each test hosts this test
+//! rules (docs/for-humans/windows/lifecycle.md, "Hand-offs"). Each test hosts this test
 //! binary in a pseudoconsole of the pinned ConPTY as the waiter, which hands
 //! off to the same binary as its child; the child plays one role.
 #![cfg(windows)]

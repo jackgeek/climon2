@@ -1,0 +1,36 @@
+name: Docs
+
+# Checks the human-read document tree on every change that could affect it:
+# no orphans, a README with an audience and a complete table in every folder,
+# valid declarations, and only the links the family-tree rule allows. The
+# Checks workflow skips documentation-only changes, so this runs on its own.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "docs/for-humans/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "docs/for-humans/**"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.event.pull_request.number) || format('docs-run-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  tree:
+    name: Human-read document tree
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the tree check
+        run: python3 -I docs/for-humans/test_check.py
+      - name: Check the document tree
+        run: python3 -I docs/for-humans/check.py

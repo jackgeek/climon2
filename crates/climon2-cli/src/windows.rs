@@ -1,7 +1,7 @@
 //! The CLI on Windows: help, version and usage errors are answered before
 //! this and need no home (#315); `list` (#316), `exec` (#317, #321),
 //! `attach` (#321) and `kill` (#318, #321) run as on Unix, except that each
-//! hand-off to a client is spawn and wait (docs/windows-lifecycle.md,
+//! hand-off to a client is spawn and wait (docs/for-humans/windows/lifecycle.md,
 //! "Hand-offs"). The monitor fails as the CLI's own error, without touching
 //! the home, until its Windows seams exist (#327).
 use crate::{Error, Handoff, Work};

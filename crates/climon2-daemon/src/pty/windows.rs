@@ -1,5 +1,5 @@
 //! The daemon's command terminal on Windows (#317; ADR 0003, "Windows I/O and
-//! transport"; docs/windows-lifecycle.md, "Starting the command").
+//! transport"; docs/for-humans/windows/lifecycle.md, "Starting the command").
 //!
 //! The command runs in a pseudoconsole of the bundled ConPTY loaded from the
 //! daemon's own folder, inside the session job; the platform seam does the

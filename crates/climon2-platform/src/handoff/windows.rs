@@ -1,4 +1,4 @@
-//! The CLI's hand-offs on Windows (#321; docs/windows-lifecycle.md,
+//! The CLI's hand-offs on Windows (#321; docs/for-humans/windows/lifecycle.md,
 //! "Hand-offs"), by the launcher's rules. Windows cannot replace a running
 //! process, so the CLI starts the client, waits for it and exits with its raw
 //! 32-bit status. While it waits it shares the client's console: Ctrl+C and
