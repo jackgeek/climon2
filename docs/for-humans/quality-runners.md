@@ -75,9 +75,10 @@ Every machine needs the same base:
    ```
 
 4. **A service.** Install the runner as a service so it starts at boot:
-   `sudo ./svc.sh install c2runner` and `sudo ./svc.sh start` on Linux and
-   macOS. On Windows, answer yes to "run as service" during `config.cmd` and
-   give it the runner account.
+   `sudo ./svc.sh install c2runner` and `sudo ./svc.sh start` on Linux. On
+   Windows, answer yes to "run as service" during `config.cmd` and give it the
+   runner account. macOS needs a different service, described under
+   [MacBook](#macbook).
 5. **Its environment.** Put machine-specific settings in the `.env` file in
    the runner's folder, one `NAME=value` per line, then restart the service.
 
@@ -142,14 +143,42 @@ Install the Xcode Command Line Tools (`xcode-select --install`), then
 [Homebrew](https://brew.sh), and through it `python@3.13`, `shellcheck` and
 `bash`. The job uses the bash 5 in `/opt/homebrew/bin` or `/usr/local/bin`,
 never `/bin/bash` 3.2, and asks Homebrew only when neither is bash 5. The
-runner account need not own Homebrew. In the runner's `.env`:
+runner account need not own Homebrew. Homebrew installs Python as
+`python3.13` only, so `python3` on the path is still Apple's 3.9, which is
+too old; the `.env` names the right one. In the runner's `.env`:
 
 ```text
 CLIMON2_NATIVE_MUTATION_WORKERS=4
+CLIMON2_QUALITY_PYTHON=/usr/local/bin/python3.13
 ```
 
+The runner also reads its path from `.path` in its folder. Make that one line
+that puts the runner account's `~/.cargo/bin` and `/usr/local/bin` first:
+
+```text
+/Users/c2runner/.cargo/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+```
+
+Do not use `svc.sh` on macOS. It installs a launch agent, which runs only
+while its account is logged in, and a runner account never logs in. Install
+a launch daemon instead, which starts at boot and runs as the runner account:
+
+```sh
+cd /Users/c2runner/actions-runner
+label=actions.runner.jackgeek-climon2.<machine>
+sudo cp bin/runsvc.sh runsvc.sh && sudo chown c2runner:staff runsvc.sh
+sudo -u c2runner mkdir -p /Users/c2runner/Library/Logs/$label
+sed -e "s|{{SvcName}}|$label|g" -e "s|{{RunnerRoot}}|$PWD|g" \
+    -e "s|{{User}}|c2runner|g" -e "s|{{UserHome}}|/Users/c2runner|g" \
+    bin/actions.runner.plist.template | sudo tee /Library/LaunchDaemons/$label.plist >/dev/null
+sudo launchctl bootstrap system /Library/LaunchDaemons/$label.plist
+```
+
+To restart it after changing `.env`, run
+`sudo launchctl kickstart -k system/$label`.
+
 Stop the Mac sleeping while it is plugged in (System Settings > Battery >
-Options), or a job waits until it wakes.
+Options, or `sudo pmset -c sleep 0`), or a job waits until it wakes.
 
 ## Sharing the PC
 
@@ -164,5 +193,9 @@ gates. So `CLIMON2_MUTATION_WORKER_JOBS`, also set in `quality.yml`, gives
 each worker's Cargo 2 build jobs and 2 test threads. The gate measures its
 stage timeouts under the same limit. The gate's own first build and test
 run are not limited.
+
+Each worker also has its own target folder. On Windows, one with debug info
+nears 8.4 GB, and 6 of them filled the VM's disk. So every gate builds its
+workers without debug info, which halves that.
 
 Change the values in `quality.yml` to resize either.
