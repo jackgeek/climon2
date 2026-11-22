@@ -176,6 +176,16 @@ impl Home {
         fs::read_to_string(self.home().join("logs").join(id).join("daemon.log")).unwrap()
     }
 
+    /// Waits until a client of session `id` has created its library
+    /// instance, as its log says.
+    fn wait_for_client_instance(&self, id: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !self.session_logs(id).contains("client instance created") {
+            assert!(Instant::now() < deadline, "{}", self.session_logs(id));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Every log of session `id`, for a failure message.
     fn session_logs(&self, id: &str) -> String {
         let Ok(entries) = fs::read_dir(self.home().join("logs").join(id)) else {
@@ -561,8 +571,11 @@ fn ctrl_c_during_kill_interrupts_the_client_and_kill_exits_with_its_status() {
     let (install, home) = (Install::new(&[]), Home::new());
     let id = session_id(&home.exec(&install, HELD));
     let mut killing = hosted_cli(&install, &home, &["kill", &id[..8]]);
-    // The hang-up's grace lasts five seconds, so the kill is still waiting.
-    std::thread::sleep(Duration::from_secs(2));
+    // The client submits the Kill as soon as its library instance exists. A
+    // second later the kill is still waiting out the hang-up's five-second
+    // grace, however long the CLI and the client took to start.
+    home.wait_for_client_instance(&id);
+    std::thread::sleep(Duration::from_secs(1));
     killing.press(Key::Char('c'), Modifiers::CTRL).unwrap();
     assert_eq!(
         killing.wait_exit(Duration::from_secs(20)).unwrap(),

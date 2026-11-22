@@ -191,8 +191,12 @@ Each worker builds and tests the workspace on its own. Without a limit,
 each worker's Cargo would use every core, and timing tests failed on both
 gates. So `CLIMON2_MUTATION_WORKER_JOBS`, also set in `quality.yml`, gives
 each worker's Cargo 2 build jobs and 2 test threads. The gate measures its
-stage timeouts under the same limit. The gate's own first build and test
-run are not limited.
+stage timeouts under the same limit.
+
+The rest of the gate, such as its own coverage build and test run, gets 8
+build jobs and 8 test threads (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`).
+Without that limit, one gate's baseline test run used every thread its
+machine has, and the other gate's timing tests failed while it ran.
 
 Each worker also has its own target folder. On Windows, one with debug info
 nears 8.4 GB, and 6 of them filled the VM's disk. So every gate builds its
