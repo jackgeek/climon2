@@ -26,12 +26,14 @@ use windows_sys::Win32::{
     Foundation::{
         DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, WAIT_OBJECT_0,
     },
+    Security::{GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser},
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
             TH32CS_SNAPPROCESS,
         },
         JobObjects::IsProcessInJob,
+        Threading::OpenProcessToken,
         Threading::{
             CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
@@ -220,23 +222,40 @@ fn finish(process: &OwnedHandle, timeout: Duration) -> io::Result<u32> {
     }
 }
 
-/// The nearest ancestor of this process that is in no job, opened to be a
-/// parent.
+/// The nearest ancestor of this process that runs as this process's user
+/// and is in no job, opened to be a parent. Without one, the error lists
+/// every ancestor.
 fn unjobbed_ancestor() -> io::Result<OwnedHandle> {
-    let parents = parent_pids()?;
+    let processes = processes()?;
+    let ours = user(current_process()).ok_or_else(io::Error::last_os_error)?;
     let mut pid = std::process::id();
-    while let Some(&parent) = parents.get(&pid) {
-        if let Some(process) = open_unjobbed(parent) {
+    let mut seen = Vec::new();
+    while let Some((parent, name)) = processes.get(&pid) {
+        let (process, in_job, user) = inspect(*parent);
+        let same_user = user.as_ref() == Some(&ours);
+        seen.push(format!(
+            "{parent} {name} in_job={in_job:?} same_user={same_user}"
+        ));
+        if let (Some(process), Some(false), true) = (process, in_job, same_user) {
             return Ok(process);
         }
-        pid = parent;
+        pid = *parent;
     }
-    Err(io::Error::other(
-        "no ancestor of this test is outside a job, so nothing can be started outside cargo's",
-    ))
+    Err(io::Error::other(format!(
+        "no ancestor of this test runs as its user outside a job, so nothing can be \
+         started outside cargo's: {}",
+        seen.join("; ")
+    )))
 }
 
-fn open_unjobbed(pid: u32) -> Option<OwnedHandle> {
+fn current_process() -> HANDLE {
+    // The pseudo-handle needs no closing.
+    unsafe { GetCurrentProcess() }
+}
+
+/// The process `pid` opened to be a parent, whether it is in a job, and its
+/// user's SID.
+fn inspect(pid: u32) -> (Option<OwnedHandle>, Option<bool>, Option<Vec<u8>>) {
     // Opening by PID has no preconditions.
     let raw = unsafe {
         OpenProcess(
@@ -246,18 +265,61 @@ fn open_unjobbed(pid: u32) -> Option<OwnedHandle> {
         )
     };
     if raw.is_null() {
-        return None;
+        return (None, None, None);
     }
     // A new handle nothing else owns.
     let process = unsafe { OwnedHandle::from_raw_handle(raw) };
     let mut in_job = 1;
     // The handle is open; the call writes one BOOL.
     let asked = unsafe { IsProcessInJob(raw, ptr::null_mut(), &mut in_job) };
-    (asked != 0 && in_job == 0).then_some(process)
+    let user = user(raw);
+    (Some(process), (asked != 0).then_some(in_job != 0), user)
 }
 
-/// Every process's parent PID.
-fn parent_pids() -> io::Result<HashMap<u32, u32>> {
+/// The SID of the user `process` runs as.
+fn user(process: HANDLE) -> Option<Vec<u8>> {
+    let mut token = ptr::null_mut();
+    // The process handle is open with PROCESS_QUERY_LIMITED_INFORMATION.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    // A new handle nothing else owns.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut size = 0;
+    // Asks for the size only.
+    unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            ptr::null_mut(),
+            0,
+            &mut size,
+        )
+    };
+    let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+    // The buffer holds `size` bytes, aligned for TOKEN_USER.
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            size,
+            &mut size,
+        )
+    } == 0
+    {
+        return None;
+    }
+    // The buffer now starts with a TOKEN_USER whose SID points into it.
+    unsafe {
+        let sid = (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid;
+        let length = GetLengthSid(sid) as usize;
+        Some(std::slice::from_raw_parts(sid.cast::<u8>(), length).to_vec())
+    }
+}
+
+/// Every process's parent PID and executable name.
+fn processes() -> io::Result<HashMap<u32, (u32, String)>> {
     // A snapshot of every process.
     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if raw as isize == -1 {
@@ -273,7 +335,9 @@ fn parent_pids() -> io::Result<HashMap<u32, u32>> {
     // The snapshot is open and `entry` has its size set.
     let mut more = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } != 0;
     while more {
-        parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        let name = String::from_utf16_lossy(&entry.szExeFile);
+        let name = name.trim_end_matches(char::from(0)).to_owned();
+        parents.insert(entry.th32ProcessID, (entry.th32ParentProcessID, name));
         // As above.
         more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } != 0;
     }
