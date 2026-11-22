@@ -17,10 +17,6 @@ pub fn interrupted(signals: &Signals) -> io::Result<()> {
         .map_or(Ok(()), |_| Err(io::ErrorKind::Interrupted.into()))
 }
 
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "only Unix attach uses it yet (#321)")
-)]
 pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -43,10 +39,6 @@ fn retryable(error: &io::Error) -> bool {
 
 /// Waits through the platform seam. A signal only ends the wait early: the
 /// caller checks signals before waiting again.
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "only Unix attach uses it yet (#321)")
-)]
 pub fn wait(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<()> {
     uninterrupted(waiting::wait(watches, timeout))
 }
@@ -66,10 +58,6 @@ pub struct Pending {
     position: usize,
 }
 
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "only Unix attach uses it yet (#321)")
-)]
 impl Pending {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self { bytes, position: 0 }
