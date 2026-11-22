@@ -191,7 +191,8 @@ fn user_sid() -> io::Result<String> {
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
     // A TOKEN_USER and the largest SID fit, aligned for the structure.
     let mut buffer = [0u64; 16];
-    let mut length = 0;
+    // Written by the call; its starting value is never read.
+    let mut length = 0u32;
     // The buffer is writable for its whole stated size.
     check(unsafe {
         GetTokenInformation(
