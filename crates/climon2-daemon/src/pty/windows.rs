@@ -75,9 +75,9 @@ impl Pty {
 
     /// Ends what is left in the session job; the leader's status as it stands.
     pub fn end_hangup(&mut self) -> io::Result<CommandResult> {
-        let result = self.hosted.end().map(exited)?;
-        self.status = Some(result.clone());
-        Ok(result)
+        let result = self.hosted.end().map(exited);
+        self.status = result.as_ref().ok().cloned().or(self.status.take());
+        result
     }
 
     /// The daemon loop failed, so the command session gets its grace here.

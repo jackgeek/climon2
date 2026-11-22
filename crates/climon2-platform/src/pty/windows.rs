@@ -164,8 +164,7 @@ pub struct Opened {
 /// pseudoconsole, `rows` by `cols`.
 pub fn open(conpty: ConPty, rows: u16, cols: u16) -> io::Result<Opened> {
     let job = session_job()?;
-    let (console_input, input) = io::pipe()?;
-    let (output, console_output) = io::pipe()?;
+    let ((console_input, input), (output, console_output)) = pipes()?;
     let mut handle = isize::default();
     // Both pipe ends are open; the pseudoconsole keeps its own copies, so
     // ours close when this returns. The call writes one HPCON.
@@ -187,6 +186,13 @@ pub fn open(conpty: ConPty, rows: u16, cols: u16) -> io::Result<Opened> {
         input,
         output,
     })
+}
+
+/// The pseudoconsole's input pipe, then its output pipe.
+type Pipes = ((PipeReader, PipeWriter), (PipeReader, PipeWriter));
+
+fn pipes() -> io::Result<Pipes> {
+    Ok((io::pipe()?, io::pipe()?))
 }
 
 fn session_job() -> io::Result<OwnedHandle> {
@@ -456,17 +462,19 @@ fn exit_code(process: &OwnedHandle) -> io::Result<u32> {
 /// ended the output, until that or until nothing receives.
 fn pump_output(source: &PipeReader, chunks: &SyncSender<io::Result<Vec<u8>>>) {
     let mut buffer = vec![u8::default(); CHUNK];
-    let error = loop {
-        match read(source, &mut buffer) {
-            Ok(count) => {
-                if chunks.send(Ok(buffer[..count].to_vec())).is_err() {
-                    return;
-                }
-            }
-            Err(error) => break error,
-        }
-    };
-    let _ = chunks.send(Err(error));
+    while forward(
+        read(source, &mut buffer).map(|count| buffer[..count].to_vec()),
+        chunks,
+    )
+    .is_some()
+    {}
+}
+
+/// Sends `chunk`; `None` once nothing receives or the chunk was the error
+/// that ended the output.
+fn forward(chunk: io::Result<Vec<u8>>, chunks: &SyncSender<io::Result<Vec<u8>>>) -> Option<()> {
+    let more = chunk.is_ok();
+    chunks.send(chunk).ok().filter(|()| more)
 }
 
 /// Reads with `ReadFile` itself: std reports a broken pipe as end of file.

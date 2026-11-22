@@ -63,16 +63,7 @@ pub fn spawn(
     mut command: Command,
     configure: impl FnOnce(&mut Command, u32),
 ) -> io::Result<PendingDaemon> {
-    let (reader, writer) = io::pipe()?;
-    let writer = OwnedHandle::from(writer);
-    // The write end is open; only the handle list passes it on.
-    check(unsafe {
-        SetHandleInformation(
-            writer.as_raw_handle(),
-            HANDLE_FLAG_INHERIT,
-            HANDLE_FLAG_INHERIT,
-        )
-    })?;
+    let (reader, writer) = readiness_pipe()?;
     configure(&mut command, writer.as_raw_handle() as usize as u32);
     let in_job = in_job(current())?;
     let started = Instant::now();
@@ -85,8 +76,22 @@ pub fn spawn(
         reader: Some(reader),
         started,
     };
-    daemon.resume(&thread)?;
-    Ok(daemon)
+    daemon.resume(&thread).map(|()| daemon)
+}
+
+/// The readiness pipe, whose write end alone is inheritable.
+fn readiness_pipe() -> io::Result<(PipeReader, OwnedHandle)> {
+    let (reader, writer) = io::pipe()?;
+    let writer = OwnedHandle::from(writer);
+    // The write end is open; only the handle list passes it on.
+    check(unsafe {
+        SetHandleInformation(
+            writer.as_raw_handle(),
+            HANDLE_FLAG_INHERIT,
+            HANDLE_FLAG_INHERIT,
+        )
+    })?;
+    Ok((reader, writer))
 }
 
 fn current() -> RawHandle {
