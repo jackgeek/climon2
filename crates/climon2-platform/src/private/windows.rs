@@ -94,17 +94,32 @@ fn already_exists(error: io::Error) -> io::Result<()> {
 }
 
 fn check_directory(path: &Path) -> io::Result<()> {
-    // The name itself, never a link's target, so both checks read one object.
-    let folder = OpenOptions::new()
+    let folder = open_itself(path)?;
+    require_plain_directory(&folder, path)?;
+    require_private(&folder, path)
+}
+
+/// The name itself, never a link's target, so both checks read one object.
+fn open_itself(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
         .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?;
+        .open(path)
+}
+
+/// A directory that is not a reparse point of any tag.
+fn require_plain_directory(folder: &File, path: &Path) -> io::Result<()> {
     let kind = folder.metadata()?.file_attributes()
         & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT);
     if kind != FILE_ATTRIBUTE_DIRECTORY {
         return Err(unsafe_directory(path, "not a plain directory"));
     }
-    if owner_and_dacl(&folder)? != private_sddl(FOLDER)? {
+    Ok(())
+}
+
+/// Owned by the user's SID and holding exactly the private DACL.
+fn require_private(folder: &File, path: &Path) -> io::Result<()> {
+    if owner_and_dacl(folder)? != private_sddl(FOLDER)? {
         return Err(unsafe_directory(
             path,
             "not exactly the private owner and DACL",
