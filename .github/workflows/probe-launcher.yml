@@ -29,13 +29,28 @@ jobs:
           # The gate's own test command and seeded workers, with the suite
           # narrowed to the launcher's tests so each mutant runs in seconds.
           export CLIMON2_MUTATION_SUITE='[["-p","climon2-launcher","--test","launcher"]]'
+          mkdir -p "$RUNNER_TEMP/logs"
+          # Each test command's output, with the worker and its mutant, to show why
+          # a mutant was killed or survived.
+          cat > "$RUNNER_TEMP/logged.sh" <<EOF
+          log="$RUNNER_TEMP/logs/\$(date +%s%N).log"
+          { pwd; diff -u "$PWD/crates/climon2-launcher/src/handoff.rs" crates/climon2-launcher/src/handoff.rs; } > "\$log" 2>&1
+          "$python" tools/test-mutation.py >> "\$log" 2>&1
+          status=\$?
+          echo "status \$status" >> "\$log"
+          exit \$status
+          EOF
           mutate() {
+            rm -rf "$RUNNER_TEMP/logs"; mkdir -p "$RUNNER_TEMP/logs"
             rm -rf target/mutation-tests .metrics/mutate
             "$python" tools/test-mutation.py "$PWD" cargo 10 target/stage.json crates/climon2-launcher/src/handoff.rs
-            "$python" -m mutator --test-command "\"$python\" tools/test-mutation.py" --timeout-factor 10 \
+            "$python" -m mutator --test-command "bash \"$RUNNER_TEMP/logged.sh\"" --timeout-factor 10 \
               --no-coverage --mutate-all --max-workers 4 crates/climon2-launcher/src/handoff.rs > "mutation-$1.txt" 2> "mutation-$1.err"
             echo "$1: mutator exit $?"
             grep -E '^(KILLED|SURVIVED|TIMEOUT|UNCOVERED)' "mutation-$1.txt" | awk '{print $1}' | sort | uniq -c
+            echo "::group::$1: every test command's log"
+            for log in "$RUNNER_TEMP"/logs/*.log; do echo "===== $log"; cat "$log"; done
+            echo "::endgroup::"
           }
           tests=crates/climon2-launcher/tests/launcher.rs
           cp "$tests" "$RUNNER_TEMP/launcher.rs"
