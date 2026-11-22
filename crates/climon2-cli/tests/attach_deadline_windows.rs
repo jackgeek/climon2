@@ -19,6 +19,7 @@ use std::{
     fs,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
+    process::Command,
     time::{Duration, Instant, SystemTime},
 };
 use windows_sys::Win32::{
@@ -73,7 +74,24 @@ impl Install {
             );
             fs::copy(&from, install.version().join(from.file_name().unwrap())).unwrap();
         }
+        install.launch_once();
         install
+    }
+
+    /// Starts the copied CLI and daemon once, each answering at once, so
+    /// their first launch from this folder (Windows checks a new executable
+    /// before it first runs, slowly under load) is not inside the scenario's
+    /// five-second start-up limit.
+    fn launch_once(&self) {
+        for (program, argument) in [
+            ("climon2-cli.exe", "--version"),
+            ("climon2-daemon.exe", "--session-id"),
+        ] {
+            Command::new(self.version().join(program))
+                .arg(argument)
+                .output()
+                .unwrap();
+        }
     }
 
     fn version(&self) -> PathBuf {
