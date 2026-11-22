@@ -64,14 +64,16 @@ impl<'a> Watch<'a> {
 }
 
 /// Waits until a watched socket is ready or `timeout` passes, and returns how
-/// many are ready. `WSAPoll` can return up to a clock tick early with nothing
-/// ready, so it is called again until the timeout has truly passed.
+/// many are ready. `WSAPoll` waits whole milliseconds and can return up to a
+/// clock tick early with nothing ready, so it is called again, with what is
+/// left, until the timeout has truly passed; the last fraction of a
+/// millisecond is polled rather than slept.
 pub fn wait(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<usize> {
     let deadline = Instant::now().checked_add(timeout);
     loop {
-        let ready = poll(watches, remaining(deadline))?;
-        if ready != 0 || remaining(deadline).is_zero() {
-            return Ok(ready);
+        match poll(watches, remaining(deadline))? {
+            0 if !remaining(deadline).is_zero() => {}
+            ready => return Ok(ready),
         }
     }
 }
@@ -83,9 +85,9 @@ fn remaining(deadline: Option<Instant>) -> Duration {
     })
 }
 
-/// One `WSAPoll`, its timeout rounded up to whole milliseconds and saturating.
+/// One `WSAPoll`, its timeout cut to whole milliseconds and saturating.
 fn poll(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<usize> {
-    let milliseconds = i32::try_from(timeout.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
+    let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
     // SAFETY: a Watch is exactly a WSAPOLLFD, and WSAPoll reads and updates
     // exactly `watches`' entries for the call's duration.
     let ready = unsafe {
@@ -123,5 +125,22 @@ mod tests {
         let error = wait(&mut watches, Duration::from_secs(5)).unwrap_err();
 
         assert_eq!(error.raw_os_error(), Some(WSAENOTSOCK));
+    }
+
+    /// `WSAPoll` waits whole milliseconds, so a timeout with a fraction is
+    /// waited out by polling again until it has passed.
+    #[test]
+    fn a_timeout_with_a_fraction_of_a_millisecond_is_waited_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("quiet.sock");
+        let listener = crate::runtime::bind(&path).unwrap();
+        let timeout = Duration::from_micros(2_700);
+
+        let started = Instant::now();
+        let mut watches = [Watch::new(listener.as_socket(), Interest::Read)];
+        let ready = wait(&mut watches, timeout).unwrap();
+
+        assert_eq!(ready, 0);
+        assert!(started.elapsed() >= timeout, "{:?}", started.elapsed());
     }
 }
