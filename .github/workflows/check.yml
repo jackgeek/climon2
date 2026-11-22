@@ -144,6 +144,8 @@ jobs:
         run: cargo test --locked -p climon2-core -p climon2-vt
       - name: Test the platform seams that build on Windows
         run: cargo test --locked -p climon2-platform --lib --test home_windows
+      - name: Test the launcher and the CLI's Windows answers
+        run: cargo test --locked -p climon2-launcher -p climon2-cli
   windows-quality:
     name: Windows-only CRAP and mutation / windows-2025
     needs: windows-scope
