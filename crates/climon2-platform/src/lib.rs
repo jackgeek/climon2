@@ -9,6 +9,8 @@ pub mod library;
 #[cfg(unix)]
 pub mod logging;
 #[cfg(unix)]
+pub mod notifier;
+#[cfg(unix)]
 pub mod peer;
 #[cfg(unix)]
 pub mod presentation;

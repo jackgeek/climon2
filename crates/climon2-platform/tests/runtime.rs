@@ -90,3 +90,35 @@ fn issue18_private_directory_refuses_existing_root_owned_directory_without_repai
         )
     );
 }
+
+/// #311: session metadata is published through a file only its user can
+/// use, created fresh and never through a symlink.
+#[test]
+fn issue311_a_private_file_is_new_owner_only_and_never_a_symlink() {
+    let directory = directory();
+    let path = directory.path().join("metadata.publishing");
+    let file = runtime::create_private_file(&path).unwrap();
+    assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        runtime::create_private_file(&path).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    let link = directory.path().join("link");
+    std::os::unix::fs::symlink(directory.path().join("absent"), &link).unwrap();
+    assert!(runtime::create_private_file(&link).is_err());
+    assert!(!directory.path().join("absent").exists());
+}
+
+/// #312: a new file is created with the umask applied, unlike a private
+/// file, and never over an existing file.
+#[test]
+fn issue312_a_new_file_keeps_the_umask_and_never_replaces_a_file() {
+    let directory = directory();
+    let path = directory.path().join("instance.log");
+    let file = runtime::create_new_file(&path).unwrap();
+    assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
+    assert_eq!(
+        runtime::create_new_file(&path).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+}

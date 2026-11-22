@@ -1,9 +1,10 @@
-# Windows host and shell qualification (agreed, not implemented)
+# Windows host and shell qualification (agreed, partly implemented)
 
 This document says what must be shown before a Windows release of climon2 can
 be published: which terminals and shells are tested, which scenarios run, and
-what a person checks by hand. It is for contributors. Nothing here is built
-yet; it was agreed in
+what a person checks by hand. It is for contributors. Only parts of the test
+harness are built so far, and the sections that describe them say which. It
+was agreed in
 [Define Windows host and shell qualification](https://github.com/jackgeek/climon2/issues/213)
 and is the specification the Windows port implements.
 
@@ -71,6 +72,13 @@ scenarios about closing assert outcomes only (exit status, the session
 surviving, nothing left behind) and never the order of events. Differences
 between real ConPTY versions are the manual checklist's job.
 
+The pin is `pins/conpty.txt`: the version of Microsoft's
+`Microsoft.Windows.Console.ConPTY` package, a stable release, and the SHA-256
+of the package and of its x64 `conpty.dll` and `OpenConsole.exe`. The harness
+downloads that version from nuget.org, checks all three hashes, and fails if
+any differs. It keeps the two files in `target/conpty/<version>` and checks
+them again before each use.
+
 Job shape is a separate harness setting, not part of a host model. Three
 scenarios use it:
 
@@ -79,6 +87,13 @@ scenarios use it:
 | The shell is in a job that allows breakaway | `exec` succeeds and the session survives the host |
 | The shell is in a job that refuses breakaway | `exec` exits 125 |
 | `c2` is run through `Start-Process -Wait`, from each PowerShell | `exec` exits 125 |
+
+Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
+Windows Terminal model and the job-shape setting, in `climon2-test-term`'s
+Windows host. The VS Code model is not. A real host's shell answers Ctrl+C, so
+the harness clears any instruction to ignore Ctrl+C that the test process
+inherited before it starts the shell; otherwise the shell would inherit it
+too.
 
 ## Shell profiles
 
@@ -94,6 +109,10 @@ version fails CI, and the exact version is recorded with the results.
 
 The Store build of `pwsh` behaves differently around job objects and is not on
 the CI runner. Only the manual checklist covers it.
+
+Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
+`pwsh` profile. `CLIMON2_TEST_PWSH` may name another absolute path for local
+runs.
 
 ## Full-screen apps
 

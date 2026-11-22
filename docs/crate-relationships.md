@@ -134,7 +134,11 @@ raw-socket hello peer.
 Linux support adds native bodies inside `climon2-platform`, not another
 workspace crate or runtime dependency edge. The test harness consumes those
 same Unix seams on Linux and macOS; Linux's ownership exec adapter is a
-test-only executable of the existing harness crate.
+test-only executable of the existing harness crate. On Windows the harness
+builds with `core` alone: its edges to the CLI, client, daemon, installer,
+monitor and `platform` are Unix-only until those crates build on Windows. Its
+Windows host (#320) is described in
+[Windows host and shell qualification](windows-qualification.md#host-models).
 
 **Current (#74):** the [monitor](../GLOSSARY.md#sessions) is its own shipped
 crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It

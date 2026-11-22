@@ -2,6 +2,17 @@ use crate::runtime::SocketStream;
 pub use crate::waiting::Interest;
 use std::{io, path::Path, time::Duration};
 
+#[cfg(target_os = "linux")]
+#[path = "connection/linux.rs"]
+mod native;
+#[cfg(target_os = "macos")]
+#[path = "connection/macos.rs"]
+mod native;
+
+/// The client library's sends, which never raise `SIGPIPE` in its embedder.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use native::{quiet, send};
+
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!("climon2 socket connections require macOS or Linux");
 
@@ -32,4 +43,14 @@ fn poll_outcome(ready: usize) -> io::Result<()> {
         )),
         _ => Ok(()),
     }
+}
+
+/// A connect failure that says no daemon listens at the path: the socket is
+/// missing or refuses. Only these can begin to prove a session stale.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn nobody_listening(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::ENOENT | libc::ECONNREFUSED)
+    )
 }

@@ -7,7 +7,9 @@ contributors. So far the Test job (see [Pull request jobs](#pull-request-jobs)),
 registry's Windows arm and the source check are built
 ([#313](https://github.com/jackgeek/climon2/issues/313)), and so is the
 Quality job with everything [the native-only gate on Windows](#the-native-only-gate-on-windows)
-needs ([#314](https://github.com/jackgeek/climon2/issues/314)). Both jobs run
+needs ([#314](https://github.com/jackgeek/climon2/issues/314)), and the
+harness's Windows host, whose own tests the Test job runs
+([#320](https://github.com/jackgeek/climon2/issues/320)). Both jobs run
 only the tests that build on Windows yet. The rest is not built. It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 and is the specification the Windows port implements.
@@ -84,9 +86,11 @@ A repository variable, `CLIMON2_WINDOWS_TESTS`, works like
 A pull request touches Windows-only code when it changes any of:
 
 - a registered Windows file;
-- the Windows host in `climon2-test-term`;
+- the Windows host in `climon2-test-term` (`src/windows.rs`, `src/windows/`)
+  and its tests (`tests/windows_host.rs`);
 - the Windows scenario tests;
-- the pinned hashes of the ConPTY package, vim or Microsoft Edit;
+- the pinned downloads under `pins/`: the ConPTY package's
+  `pins/conpty.txt` and, once they are added, vim's and Microsoft Edit's;
 - the workflow files or xtask's quality code.
 
 ## Source ownership

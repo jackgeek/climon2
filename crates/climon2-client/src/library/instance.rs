@@ -20,7 +20,6 @@ use super::{
         INVALID_REQUEST_ID, PANIC, RESOURCE_LIMIT, Retry, TIMEOUT, WRONG_THREAD, require,
     },
     hook,
-    platform::Notifier,
     records::{Batch, CHARGE, Event, Response},
     request::{self, Operation, Submitted},
     startup::{Diagnostics, Paths, Startup},
@@ -33,12 +32,12 @@ use climon2_core::{
     keys::{ClientSettings, ControlKey},
     native,
 };
+use climon2_platform::{notifier::Notifier, process, runtime};
 use std::{
     collections::VecDeque,
-    fs::OpenOptions,
     io, mem,
     ops::{AddAssign, SubAssign},
-    os::unix::fs::OpenOptionsExt,
+    os::fd::{AsFd, BorrowedFd},
     panic::{self, AssertUnwindSafe},
     path::Path,
     sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError},
@@ -460,25 +459,17 @@ fn log(diagnostics: Diagnostics) -> Result<(Dispatch, u32), Failure> {
     let Some(path) = diagnostics.log else {
         return Ok((Dispatch::none(), 0));
     };
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(log_failure)?;
+    let file = runtime::create_new_file(&path).map_err(log_failure)?;
     Ok((dispatch(CappedWriter::new(file), diagnostics.filter), 1))
 }
 
 /// Why the log file cannot be created: no descriptor left is a resource
 /// limit; anything else is the caller's path.
 fn log_failure(error: io::Error) -> Failure {
-    match error.raw_os_error() {
-        Some(libc::EMFILE | libc::ENFILE) => {
-            Failure::new(RESOURCE_LIMIT, "no descriptor is left for the log file")
-        }
-        _ => Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"),
+    if process::out_of_descriptors(&error) {
+        return Failure::new(RESOURCE_LIMIT, "no descriptor is left for the log file");
     }
+    Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file")
 }
 
 /// This generation's terminal evidence. The connection is always closed by
@@ -556,8 +547,8 @@ impl Shared {
         &self.paths.metadata
     }
 
-    pub(super) fn waker(&self) -> i32 {
-        self.waker.descriptor()
+    pub(super) fn waker(&self) -> BorrowedFd<'_> {
+        self.waker.as_fd()
     }
 
     /// One exported call's work on this instance, under its diagnostics. A

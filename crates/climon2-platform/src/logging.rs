@@ -3,12 +3,9 @@ use climon2_core::{
     diagnostics::{CappedWriter, subscriber},
 };
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::fs::OpenOptionsExt,
-    },
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -120,12 +117,7 @@ impl LogFile {
     fn open(directory: &Path, name: &str, role: Role) -> io::Result<Self> {
         crate::runtime::private_directory(directory)?;
         let path = directory.join(name);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)?;
+        let file = crate::runtime::create_new_file(&path)?;
         let mut writer = CappedWriter::new(file);
         writeln!(
             writer,

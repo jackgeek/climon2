@@ -1029,9 +1029,10 @@ and `monitor stopped status=<n>` or `monitor failed error=<diagnostic>`,
 never terminal content or input.
 
 With `test-hooks` only, `CLIMON2_MONITOR_FAULT=draw` makes drawing fail,
-`CLIMON2_MONITOR_FAULT=poll` makes the kernel reject the wait for host input
-by giving it no descriptor table, `CLIMON2_MONITOR_FAULT=discovery` stalls
-discovery before its first pass for good, and `CLIMON2_MONITOR_FAULT=release`
+`CLIMON2_MONITOR_FAULT=poll` fails the wait for host input with EFAULT, as
+the kernel fails a wait given no descriptor table,
+`CLIMON2_MONITOR_FAULT=discovery` stalls discovery before its first pass for
+good, and `CLIMON2_MONITOR_FAULT=release`
 stalls the host's release for good. `cargo xtask test` first runs
 `cargo test -p climon2-monitor --test build` alone, which builds the plain
 binary; the workspace tests that follow unify `test-hooks` through

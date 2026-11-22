@@ -11,6 +11,7 @@ use climon2_core::{
     keys::{ClientSettings, ControlKey},
     native::{self, Bytes},
 };
+use climon2_platform::runtime;
 use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, slice};
 
 /// The validated startup, parsed and copied: nothing here borrows a caller
@@ -168,7 +169,7 @@ unsafe fn path(path: native::Path) -> Result<PathBuf, Failure> {
 }
 
 fn absolute(bytes: &[u8]) -> bool {
-    bytes.len() < libc::PATH_MAX as usize && bytes[0] == b'/' && !bytes.contains(&0)
+    bytes.len() < runtime::PATH_MAX && bytes[0] == b'/' && !bytes.contains(&0)
 }
 
 /// # Safety

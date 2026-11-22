@@ -32,10 +32,28 @@ dispatch or shell-specific logic.
 - `runtime::private_directory(&Path)` creates mode 0700, then checks with
   `symlink_metadata`: real directory, effective UID owner, no group/other bits.
   Existing unsafe directories are refused, never repaired.
+- `runtime::create_new_file(&Path) -> io::Result<File>` is the one create for
+  every file climon2 makes (#312): `create_new`, mode 0600 under the umask,
+  and `O_NOFOLLOW`, so never over an existing file or through a symlink. Logs
+  and the client library's log use it directly.
+- `runtime::create_private_file(&Path) -> io::Result<File>` creates through
+  `create_new_file`, then sets mode exactly 0600 whatever the umask. A file it
+  cannot make private is removed again. The daemon publishes session
+  metadata through it (#311).
+- `runtime::PATH_MAX` is the longest path the system accepts, in bytes with
+  its NUL.
 - `runtime::bind(&Path)` binds under umask 077. Bind before starting worker
   threads: umask is process-wide; the lock serializes only this helper's calls.
 - `runtime::{SocketListener,SocketStream}` name the Unix transport types
   without exposing libc types in callers' signatures.
+- `connection::nobody_listening(&io::Error)` is true when a connect found the
+  socket missing (ENOENT) or refusing (ECONNREFUSED). Only these can begin to
+  prove a session stale (#311).
+- `connection::send(BorrowedFd, &[u8])` sends what a socket takes now and
+  never raises `SIGPIPE` in the client library's embedder: Linux sends with
+  `MSG_NOSIGNAL`, and macOS needs `connection::quiet(BorrowedFd)` once per
+  socket to set `SO_NOSIGPIPE` (a no-op on Linux). Native files
+  `src/connection/{linux,macos}.rs` (#312).
 - `peer::accept(&SocketListener)` returns only authenticated streams.
   `peer::{uid,authenticate}` support already accepted streams; authentication
   must happen before hello and callers must drop rejected streams.
@@ -87,6 +105,11 @@ dispatch or shell-specific logic.
   handler in the child, which traps (SIGILL) or hangs if another thread was
   initialising libnotify at the fork; this call waits that initialisation out.
   Linux needs no libnotify preparation. `daemon::spawn` calls it itself.
+- `process::descriptor_limit() -> u64` is the soft `RLIMIT_NOFILE`, read
+  afresh; one that cannot be read is 0. `process::out_of_descriptors(&io::Error)`
+  is true for EMFILE and ENFILE. `process::exit_immediately(code) -> !` ends
+  the process with `_exit`, running no exit handlers and flushing nothing
+  (#312).
 - `daemon::spawn(Command, configure)` calls `configure(&mut Command, fd: u32)`
   so the caller can append its readiness descriptor argument. It uses exec via
   `Command::pre_exec(setsid)`, inherited pipe, null stdin/stdout, and the caller's
@@ -121,6 +144,11 @@ dispatch or shell-specific logic.
   restores them on drop through owned duplicates.
 - `terminal::hung_up(&io::Error)` is true for a read that failed because the
   terminal was lost (EIO). Callers treat it like end of file.
+- `pty::allocation()` serializes PTY pair allocation per user (Darwin's
+  EREDRIVEOPEN). `pty::set_nonblocking(BorrowedFd)` makes a PTY master
+  nonblocking and keeps its other status flags; `pty::output_ended(&io::Error)`
+  is true for a master read that failed because the command's side is gone
+  (EIO), the end of its output (#311).
 
 ## Waiting for readiness
 
@@ -140,6 +168,13 @@ dispatch or shell-specific logic.
 
 ## Client libraries
 
+- `notifier::Notifier` is the client library's pollable descriptor, raised and
+  cleared by `raise`, `clear` and `set(bool)`: its notification descriptor
+  (`new`) and each instance's waker (`waker`, never blocking either way).
+  Linux uses one nonblocking `eventfd`, macOS a close-on-exec pipe
+  (`DESCRIPTORS` counts 1 and 2). `descriptor()` is the raw descriptor the C
+  ABI hands out; `as_fd()` is the one a wait watches. Native files
+  `src/notifier/{linux,macos}.rs` (#312).
 - `library::Loader::new(ExecutableHome)` loads the client libraries of one
   climon2 executable home. `climon2_core::layout::ExecutableHome` is absolute
   and canonical by construction and owns each library's path,
@@ -192,7 +227,13 @@ dispatch or shell-specific logic.
 ## Behavioral evidence
 
 `tests/runtime.rs`: `issue18_private_directory_refuses_symlink_file_and_permissive_mode_without_repair`,
-`issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenticated`.
+`issue18_home_is_created_then_canonicalized_and_socket_is_private_and_authenticated`,
+`issue311_a_private_file_is_new_owner_only_and_never_a_symlink`,
+`issue312_a_new_file_keeps_the_umask_and_never_replaces_a_file`.
+
+`tests/connection.rs`: `issue19_socket_connection_waits_for_real_readiness_until_the_deadline`,
+`issue311_only_a_missing_or_refusing_socket_says_nobody_listens`. The unit tests
+in `src/pty.rs` cover `set_nonblocking` and `output_ended` (#311).
 
 `tests/home.rs` (#155) runs each case in a child of the test binary, with
 the environment or path under test:
@@ -217,7 +258,10 @@ proves the Windows names the same way:
 `issue19_kill_session_only_signals_session_members_on_the_given_terminal`,
 `issue19_kill_session_never_enumerates_beyond_terminal_and_observed_groups`,
 `issue19_terminal_must_be_a_character_device`,
-`issue15_bad_cwd_is_rejected_before_pty_can_fall_back`.
+`issue15_bad_cwd_is_rejected_before_pty_can_fall_back`,
+`issue312_the_descriptor_limit_is_the_soft_limit`,
+`issue312_only_emfile_and_enfile_are_out_of_descriptors`,
+`issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`.
 
 On Linux x86_64,
 `procfs_reaping::process_reaped_between_procfs_open_and_read_is_absent` traces
@@ -259,6 +303,9 @@ refusal proves nothing called them.
 
 `tests/waiting.rs` (#310): `issue310_one_wait_reports_each_ready_handle_until_the_timeout`,
 `issue310_a_hung_up_peer_is_ready`, `issue310_idle_slots_wait_out_the_timeout`.
+
+`tests/notifier.rs` (#312): `issue312_a_notifier_is_readable_from_a_raise_until_cleared`,
+`issue312_a_waker_never_blocks`, `issue312_a_send_to_a_closed_peer_fails_with_epipe`.
 
 Tests use isolated private directories. Direct socket fixtures use short `/tmp`
 paths so mutation workers and long checkouts do not exceed the socket limit.
