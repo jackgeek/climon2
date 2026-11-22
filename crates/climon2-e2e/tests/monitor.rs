@@ -8178,10 +8178,12 @@ fn notifications_toast_once_per_episode_and_progress_never_does() {
     no_toast(&terminal);
     assert_eq!(bells(&terminal), 1);
 
-    headless(&package, &stepped("Done", &["exit 3"]), "finish");
-    glance(&mut terminal, STATUS, "Done");
+    // Running on any clock. Without the report, a release archive's daemon
+    // would see the title change and soon request attention (`settled`).
+    headless(&package, &working(&stepped("Done", &["exit 3"])), "finish");
+    glance(&mut terminal, RUNNING, "Done");
     terminal.send("\x1dsDone\r").unwrap();
-    top_row_is(&mut terminal, &controlled("Done", STATUS));
+    top_row_is(&mut terminal, &controlled("Done", RUNNING));
     step(&package, "Done", 1);
     let ended = session_top_row(
         usize::from(COLS),
