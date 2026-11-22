@@ -38,7 +38,7 @@ fn host_platform() -> io::Result<Platform> {
 
 fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
     let version = env!("CARGO_PKG_VERSION");
-    validate_versions(root, version)?;
+    release::validate_versions(root, version, release::PACKAGES)?;
     let platform = host_platform()?;
     fs::create_dir_all(root.join("target"))?;
     let scratch = tempfile::Builder::new()
@@ -148,7 +148,7 @@ fn package_binary(
         )?;
         verify_macos_binary(destination)?;
     }
-    unhooked(destination)
+    release::unhooked(destination)
 }
 
 /// The client library is packaged like an executable into `payload`'s
@@ -166,75 +166,11 @@ fn package_library(
     crate::library::verify(&home, &version)
 }
 
-/// Release builds never enable `test-hooks`, so no shipped binary carries the marker.
-pub(crate) fn unhooked(path: &Path) -> io::Result<()> {
-    if release::has_marker(&fs::read(path)?) {
-        return Err(io::Error::other(format!(
-            "{} contains test hooks",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
 pub(crate) fn verify_linux_binary(path: &Path) -> io::Result<()> {
     if !climon2_platform::library::is_x86_64_elf(&fs::read(path)?) {
         return Err(io::Error::other(format!(
             "{} is not an x86_64 Linux ELF executable",
             path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn validate_versions(root: &Path, version: &str) -> io::Result<()> {
-    let expected = format!("v{version}");
-    if env::var("GITHUB_REF_TYPE").as_deref() == Ok("tag") {
-        let tag = env::var("GITHUB_REF_NAME").map_err(io::Error::other)?;
-        validate_tag(&tag, &expected)?;
-    }
-    let tags = quality::output(Command::new("git").current_dir(root).args([
-        "tag",
-        "--points-at",
-        "HEAD",
-    ]))?;
-    for tag in String::from_utf8_lossy(&tags.stdout).lines() {
-        if tag.starts_with('v') {
-            validate_tag(tag, &expected)?;
-        }
-    }
-    let metadata = quality::output(Command::new(env!("CARGO")).current_dir(root).args([
-        "metadata",
-        "--no-deps",
-        "--locked",
-        "--format-version",
-        "1",
-    ]))?;
-    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout)?;
-    let packages = metadata["packages"]
-        .as_array()
-        .ok_or_else(|| io::Error::other("Cargo metadata omitted packages"))?;
-    shipped_versions(packages, version)
-}
-
-/// Every shipped package exists at exactly the release version.
-fn shipped_versions(packages: &[serde_json::Value], version: &str) -> io::Result<()> {
-    for (name, _) in release::PACKAGES {
-        let package = packages
-            .iter()
-            .find(|package| package["name"] == *name)
-            .ok_or_else(|| io::Error::other(format!("missing shipped package {name}")))?;
-        if package["version"] != version {
-            return Err(io::Error::other(format!("{name} version is not {version}")));
-        }
-    }
-    Ok(())
-}
-
-fn validate_tag(tag: &str, expected: &str) -> io::Result<()> {
-    if tag != expected {
-        return Err(io::Error::other(format!(
-            "release tag {tag} does not match workspace version {expected}"
         )));
     }
     Ok(())
@@ -284,34 +220,7 @@ fn stamped_script(template: &str, version: &str) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, json};
     use std::path::PathBuf;
-
-    fn packages(monitor: Option<&str>) -> Vec<Value> {
-        let mut packages: Vec<_> = release::PACKAGES
-            .iter()
-            .filter(|(name, _)| *name != "climon2-monitor")
-            .map(|(name, _)| json!({"name": name, "version": "1.2.3"}))
-            .collect();
-        if let Some(version) = monitor {
-            packages.push(json!({"name": "climon2-monitor", "version": version}));
-        }
-        packages
-    }
-
-    /// #74: the release version check covers the shipped monitor package, so a
-    /// missing or differently versioned monitor fails before any build.
-    #[test]
-    fn version_check_rejects_a_missing_or_wrong_version_monitor() {
-        assert!(shipped_versions(&packages(Some("1.2.3")), "1.2.3").is_ok());
-        let wrong = shipped_versions(&packages(Some("1.2.4")), "1.2.3").unwrap_err();
-        assert_eq!(wrong.to_string(), "climon2-monitor version is not 1.2.3");
-        let missing = shipped_versions(&packages(None), "1.2.3").unwrap_err();
-        assert_eq!(
-            missing.to_string(),
-            "missing shipped package climon2-monitor"
-        );
-    }
 
     /// This workspace's monitor test build: an executable of this host's one
     /// architecture.
@@ -408,9 +317,9 @@ mod tests {
         let scratch = tempfile::tempdir_in(built_monitor().parent().unwrap()).unwrap();
         let monitor = scratch.path().join("climon2-monitor");
         fs::write(&monitor, monitor_stand_in(false)).unwrap();
-        unhooked(&monitor).unwrap();
+        release::unhooked(&monitor).unwrap();
         fs::write(&monitor, monitor_stand_in(true)).unwrap();
-        let error = unhooked(&monitor).unwrap_err().to_string();
+        let error = release::unhooked(&monitor).unwrap_err().to_string();
         assert_eq!(error, format!("{} contains test hooks", monitor.display()));
     }
 }

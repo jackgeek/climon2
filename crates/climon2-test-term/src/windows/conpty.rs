@@ -257,6 +257,13 @@ impl ConPty {
             .map_err(|error| io::Error::other(format!("pinned ConPTY unavailable: {error}")))
     }
 
+    /// The version folder under `root` holding the pinned `conpty.dll` and
+    /// `OpenConsole.exe`, each verified, fetched as for [`ConPty::pinned`]
+    /// but not loaded: the files a Windows release ships.
+    pub fn provide_files(root: &Path) -> io::Result<PathBuf> {
+        provide(&Pin::parse(PIN).map_err(io::Error::other)?, root, download)
+    }
+
     /// The folder holding the verified `conpty.dll` and `OpenConsole.exe`.
     pub fn folder(&self) -> &Path {
         &self.folder
