@@ -43,6 +43,10 @@ const MUTATION_WORKERS: &str = "8";
 /// (docs/for-humans/windows/quality.md, "Running the gate locally"), and 16 workers'
 /// builds do not fit in its memory.
 const NATIVE_WORKERS_VARIABLE: &str = "CLIMON2_NATIVE_MUTATION_WORKERS";
+/// Caps the host gates' workers (`cargo xtask check` and `cargo xtask mutate`), which
+/// otherwise number `MUTATION_WORKERS`. The owner's Linux runner shares its PC with the
+/// Windows VM (docs/for-humans/quality-runners.md, "Sharing the PC").
+const HOST_WORKERS_VARIABLE: &str = "CLIMON2_MUTATION_WORKERS";
 /// Rounds of the full gate's mutation-load measurement (`cargo xtask check --full`).
 const MUTATION_LOAD_ROUNDS: &str = "5";
 /// Rounds of the ticket gate's mutation-load measurement (`cargo xtask check`).
@@ -137,14 +141,22 @@ impl Scope {
     }
 
     fn workers(self) -> io::Result<String> {
-        self.workers_capped(env::var_os(NATIVE_WORKERS_VARIABLE))
+        self.workers_capped(env::var_os(self.workers_variable()))
     }
 
-    /// The native gate's workers: the CPUs up to 16, or `cap` when it is given.
+    /// The variable that caps this gate's mutation workers.
+    fn workers_variable(self) -> &'static str {
+        match self {
+            Self::Native => NATIVE_WORKERS_VARIABLE,
+            Self::Ticket | Self::Full | Self::Host => HOST_WORKERS_VARIABLE,
+        }
+    }
+
+    /// The gate's workers: `cap` when it is given; otherwise 8 for the host gates and the
+    /// CPUs up to 16 for the native gate.
     fn workers_capped(self, cap: Option<OsString>) -> io::Result<String> {
         match (self, cap) {
-            (Self::Ticket | Self::Full | Self::Host, _) => Ok(MUTATION_WORKERS.to_owned()),
-            (Self::Native, Some(cap)) => cap
+            (_, Some(cap)) => cap
                 .to_str()
                 .and_then(|text| text.parse::<u16>().ok())
                 .filter(|&count| count > 0)
@@ -153,10 +165,12 @@ impl Scope {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
-                            "{NATIVE_WORKERS_VARIABLE} must be a positive whole number, not {cap:?}"
+                            "{} must be a positive whole number, not {cap:?}",
+                            self.workers_variable()
                         ),
                     )
                 }),
+            (Self::Ticket | Self::Full | Self::Host, None) => Ok(MUTATION_WORKERS.to_owned()),
             (Self::Native, None) => Ok(std::thread::available_parallelism()?
                 .get()
                 .min(16)
@@ -2270,25 +2284,29 @@ No selected line holds a mutation site; nothing to mutate.
     }
 
     #[test]
-    fn only_the_native_gate_takes_a_worker_cap_and_it_must_be_a_positive_number() {
+    fn each_gate_takes_its_own_worker_cap_and_it_must_be_a_positive_number() {
         let cap = |text: &str| Some(OsString::from(text));
-        assert_eq!(Scope::Native.workers_capped(cap("2")).unwrap(), "2");
-        assert_eq!(Scope::Native.workers_capped(cap("40")).unwrap(), "40");
         let cpus = std::thread::available_parallelism().unwrap().get().min(16);
         assert_eq!(
             Scope::Native.workers_capped(None).unwrap(),
             cpus.to_string()
         );
+        assert_eq!(Scope::Native.workers_variable(), NATIVE_WORKERS_VARIABLE);
         for scope in [Scope::Ticket, Scope::Full, Scope::Host] {
-            assert_eq!(scope.workers_capped(cap("2")).unwrap(), MUTATION_WORKERS);
+            assert_eq!(scope.workers_capped(None).unwrap(), MUTATION_WORKERS);
+            assert_eq!(scope.workers_variable(), HOST_WORKERS_VARIABLE);
         }
-        for bad in ["0", "-1", "two", "", " 2"] {
-            let error = Scope::Native.workers_capped(cap(bad)).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
-            assert!(
-                error.to_string().contains(NATIVE_WORKERS_VARIABLE),
-                "{error}"
-            );
+        for scope in [Scope::Ticket, Scope::Full, Scope::Host, Scope::Native] {
+            assert_eq!(scope.workers_capped(cap("6")).unwrap(), "6");
+            assert_eq!(scope.workers_capped(cap("40")).unwrap(), "40");
+            for bad in ["0", "-1", "two", "", " 2"] {
+                let error = scope.workers_capped(cap(bad)).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
+                assert!(
+                    error.to_string().contains(scope.workers_variable()),
+                    "{error}"
+                );
+            }
         }
     }
 

@@ -294,6 +294,16 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
             "{name}: {lines:#?}"
         );
     }
+    for name in ["linux", "windows", "macos"] {
+        assert!(
+            job(&quality, name).contains(&"        run: rm -rf target/mutation-workers"),
+            "{name} must clear leftover mutation workers"
+        );
+    }
+    // The Linux and Windows gates share the owner's PC: 6 workers each
+    // (owner decision, 2026-11-22).
+    assert!(job(&quality, "linux").contains(&"      CLIMON2_MUTATION_WORKERS: \"6\""));
+    assert!(job(&quality, "windows").contains(&"      CLIMON2_NATIVE_MUTATION_WORKERS: \"6\""));
     for workflow_name in ["check.yml", "release.yml", "measure.yml"] {
         assert!(
             !workflow(workflow_name).contains("self-hosted"),
