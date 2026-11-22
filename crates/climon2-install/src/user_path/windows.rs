@@ -191,11 +191,13 @@ fn until_nul(units: impl Iterator<Item = u16>) -> Vec<u16> {
 /// already open do not reread it.
 fn broadcast() {
     let area = wide(ENVIRONMENT);
+    // An environment change names its area and no system setting.
+    let setting = 0;
     unsafe {
         SendMessageTimeoutW(
             HWND_BROADCAST,
             WM_SETTINGCHANGE,
-            0,
+            setting,
             area.as_ptr() as isize,
             SMTO_ABORTIFHUNG,
             // How long one unresponsive window may hold the install up; only
@@ -269,11 +271,13 @@ impl Key {
 
     fn set(&self, name: &str, kind: REG_VALUE_TYPE, text: &str) -> io::Result<()> {
         let data = wide(text);
+        // Windows refuses any other value.
+        let reserved = 0;
         check(unsafe {
             RegSetValueExW(
                 self.0,
                 wide(name).as_ptr(),
-                0,
+                reserved,
                 kind,
                 data.as_ptr().cast(),
                 (data.len() * size_of::<u16>()) as u32,
