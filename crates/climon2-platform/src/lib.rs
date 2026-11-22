@@ -10,7 +10,6 @@ pub mod logging;
 pub mod notifier;
 #[cfg(unix)]
 pub mod peer;
-#[cfg(unix)]
 pub mod presentation;
 pub mod private;
 pub mod process;
