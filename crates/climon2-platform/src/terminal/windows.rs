@@ -34,6 +34,12 @@ impl Signals {
         Ok(Self)
     }
 
+    /// The client's kill mode: it handles no console control event yet
+    /// (#321), so none ends it early.
+    pub fn client() -> io::Result<Self> {
+        Ok(Self)
+    }
+
     /// Never set on Windows, where no signal ends a daemon.
     pub fn termination_signal(&self) -> Option<u32> {
         None

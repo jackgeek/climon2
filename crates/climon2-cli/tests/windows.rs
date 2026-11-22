@@ -5,7 +5,7 @@
 
 #[test]
 fn subcommands_fail_as_unsupported_without_touching_home() {
-    for arguments in [&["exec", "cmd"][..], &["kill", "abc"], &["monitor"]] {
+    for arguments in [&["exec", "cmd"][..], &["attach", "abc"], &["monitor"]] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_climon2-cli"))
             .args(arguments)
             .env("CLIMON2_HOME", "relative/home/is/invalid")

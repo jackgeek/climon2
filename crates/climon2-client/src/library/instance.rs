@@ -32,12 +32,14 @@ use climon2_core::{
     keys::{ClientSettings, ControlKey},
     native,
 };
-use climon2_platform::{notifier::Notifier, private, process};
+use climon2_platform::{
+    notifier::{Notifier, Waker},
+    private, process,
+};
 use std::{
     collections::VecDeque,
     io, mem,
     ops::{AddAssign, SubAssign},
-    os::fd::{AsFd, BorrowedFd},
     panic::{self, AssertUnwindSafe},
     path::Path,
     sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError},
@@ -300,7 +302,7 @@ pub(super) struct Shared {
     settings: ClientSettings,
     notifier: Notifier,
     /// Raised whenever the connection has something new to look at.
-    waker: Notifier,
+    waker: Waker,
     /// Everything allocated while working for this instance.
     account: Account,
     dispatch: Dispatch,
@@ -435,7 +437,7 @@ pub(super) fn create(startup: Startup, account: Account) -> Result<Handles, Fail
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
     });
-    let descriptors = Notifier::DESCRIPTORS + Notifier::DESCRIPTORS + logs;
+    let descriptors = Notifier::DESCRIPTORS + Waker::DESCRIPTORS + logs;
     shared.lock().measures.descriptors.add(descriptors);
     shared.scope(|| tracing::info!("client instance created"));
     let owner = Owner {
@@ -547,8 +549,8 @@ impl Shared {
         &self.paths.metadata
     }
 
-    pub(super) fn waker(&self) -> BorrowedFd<'_> {
-        self.waker.as_fd()
+    pub(super) fn waker(&self) -> &Waker {
+        &self.waker
     }
 
     /// One exported call's work on this instance, under its diagnostics. A

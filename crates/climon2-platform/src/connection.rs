@@ -8,9 +8,11 @@ mod native;
 #[cfg(target_os = "macos")]
 #[path = "connection/macos.rs"]
 mod native;
+#[cfg(windows)]
+#[path = "connection/windows.rs"]
+mod native;
 
 /// The client library's sends, which never raise `SIGPIPE` in its embedder.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use native::{quiet, send};
 
 pub fn connect(path: &Path, timeout: Duration) -> io::Result<SocketStream> {

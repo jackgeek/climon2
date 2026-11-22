@@ -17,13 +17,13 @@ use climon2_core::{
 use climon2_platform::{
     library::{Functions, Library, Loader},
     logging::library_log_name,
-    waiting::{Interest, Watch},
+    native_path::NativePath,
+    notifier,
 };
 use std::{
     io,
     mem::MaybeUninit,
-    os::{fd::BorrowedFd, unix::ffi::OsStrExt},
-    path::{Path, PathBuf},
+    path::Path,
     slice,
     sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
@@ -107,11 +107,11 @@ pub(crate) fn session_instance(
     let startup = Startup {
         session: metadata.session_id.bytes(),
         release,
-        metadata: session.metadata.to_owned(),
-        home: home.to_owned(),
-        runtime: socket.parent().unwrap_or(socket).to_owned(),
+        metadata: NativePath::new(session.metadata),
+        home: NativePath::new(home),
+        runtime: NativePath::new(socket.parent().unwrap_or(socket)),
         settings: native::Settings::default(),
-        log: session.log.with_file_name(log),
+        log: NativePath::new(&session.log.with_file_name(log)),
         filter: session.filter.unwrap_or(default_filter()).to_owned(),
     };
     Embedded::start(library, startup)
@@ -122,12 +122,12 @@ pub(crate) struct Startup {
     pub(crate) session: [u8; 16],
     /// The executable's own release, which the library must serve.
     pub(crate) release: VersionName,
-    pub(crate) metadata: PathBuf,
-    pub(crate) home: PathBuf,
-    pub(crate) runtime: PathBuf,
+    pub(crate) metadata: NativePath,
+    pub(crate) home: NativePath,
+    pub(crate) runtime: NativePath,
     pub(crate) settings: native::Settings,
     /// The library's own log file, created new.
-    pub(crate) log: PathBuf,
+    pub(crate) log: NativePath,
     /// A `CLIMON2_LOG` filter for that log.
     pub(crate) filter: String,
 }
@@ -141,15 +141,15 @@ impl Startup {
             },
             generation: GENERATION,
             expected_release: bytes(self.release.as_str().as_bytes()),
-            metadata_path: path(&self.metadata),
-            home_path: path(&self.home),
-            runtime_path: path(&self.runtime),
+            metadata_path: self.metadata.native(),
+            home_path: self.home.native(),
+            runtime_path: self.runtime.native(),
             settings: self.settings,
             diagnostics: native::Diagnostics {
                 log_path: native::OptionalPath {
                     present: 1,
                     reserved: 0,
-                    value: path(&self.log),
+                    value: self.log.native(),
                 },
                 filter: bytes(self.filter.as_bytes()),
             },
@@ -162,14 +162,6 @@ fn bytes(bytes: &[u8]) -> native::Bytes {
     native::Bytes {
         data: bytes.as_ptr(),
         length: bytes.len() as u64,
-    }
-}
-
-fn path(path: &Path) -> native::Path {
-    native::Path {
-        encoding: native::NATIVE_UNIX,
-        reserved: 0,
-        bytes: bytes(path.as_os_str().as_bytes()),
     }
 }
 
@@ -230,6 +222,10 @@ pub(crate) enum Admission {
 }
 
 /// What one drain found.
+#[cfg_attr(
+    not(unix),
+    expect(dead_code, reason = "only Unix attach uses it yet (#321)")
+)]
 pub(crate) enum Drained {
     Delivered,
     Empty,
@@ -238,6 +234,10 @@ pub(crate) enum Drained {
 
 /// The end of an instance's stream: whether a Leave detached its
 /// attachment, and the failure that ended it, if one did.
+#[cfg_attr(
+    not(unix),
+    expect(dead_code, reason = "only Unix attach uses it yet (#321)")
+)]
 pub(crate) struct Ended {
     pub(crate) detached: bool,
     pub(crate) failure: Option<NativeError>,
@@ -315,12 +315,15 @@ impl Embedded {
         }
     }
 
-    /// The borrowed descriptor that is readable while there is something
-    /// to drain.
-    pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
-        // SAFETY: the library keeps the notification descriptor open while
-        // the communication handle lives, which is until `finish` takes self.
-        unsafe { BorrowedFd::borrow_raw(self.notification) }
+    /// The notification descriptor, raised while there is something to
+    /// drain. The library keeps it open while the communication handle
+    /// lives, which is until `finish` takes self.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only Unix attach uses it yet (#321)")
+    )]
+    pub(crate) fn notification(&self) -> i32 {
+        self.notification
     }
 
     /// One turn: drains once, visiting a delivery's records before it is
@@ -372,10 +375,9 @@ impl Embedded {
     /// Waits until the instance has something to drain or `timeout`
     /// passes.
     pub(crate) fn wait(&self, timeout: Duration) -> io::Result<()> {
-        crate::polling::wait(
-            &mut [Watch::new(self.descriptor(), Interest::Read)],
-            timeout,
-        )
+        // SAFETY: the library keeps the notification descriptor open while
+        // the communication handle lives, which is until `finish` takes self.
+        crate::polling::uninterrupted(unsafe { notifier::wait_raised(self.notification, timeout) })
     }
 
     /// After the stream's end: releases both handles, lets the owner thread

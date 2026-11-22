@@ -11,8 +11,8 @@ use climon2_core::{
     keys::{ClientSettings, ControlKey},
     native::{self, Bytes},
 };
-use climon2_platform::runtime;
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf, slice};
+use climon2_platform::native_path;
+use std::{path::PathBuf, slice};
 
 /// The validated startup, parsed and copied: nothing here borrows a caller
 /// buffer.
@@ -149,27 +149,19 @@ impl Paths {
     }
 }
 
-/// An absolute native Unix path, copied byte for byte: invalid UTF-8 is
-/// preserved; NUL, other encodings and paths the system cannot open
-/// (`PATH_MAX` bytes or more) are rejected.
+/// An absolute native path in this platform's encoding, copied exactly
+/// (`native_path`): every other encoding is rejected.
 ///
 /// # Safety
 ///
 /// As for [`buffer`].
 unsafe fn path(path: native::Path) -> Result<PathBuf, Failure> {
-    (path.encoding == native::NATIVE_UNIX && path.reserved == 0)
+    (path.reserved == 0)
         // SAFETY: guaranteed by the caller.
         .then(|| unsafe { buffer(path.bytes) })
         .flatten()
-        .filter(|bytes| absolute(bytes))
-        .map(|bytes| PathBuf::from(OsString::from_vec(bytes.to_vec())))
-        .ok_or(invalid(
-            "paths must be absolute native Unix paths without NUL, shorter than PATH_MAX",
-        ))
-}
-
-fn absolute(bytes: &[u8]) -> bool {
-    bytes.len() < runtime::PATH_MAX && bytes[0] == b'/' && !bytes.contains(&0)
+        .and_then(|bytes| native_path::parse(path.encoding, bytes))
+        .ok_or(invalid(native_path::RULE))
 }
 
 /// # Safety

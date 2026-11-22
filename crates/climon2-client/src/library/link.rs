@@ -6,14 +6,15 @@
 use super::failure::Fault;
 use climon2_core::wire::{FatalCode, Frame, FrameLimit};
 use climon2_platform::{
-    connection, process,
+    connection,
+    notifier::Waker,
+    process,
     runtime::SocketStream,
     waiting::{self, Interest, Watch},
 };
 use std::{
     io::{self, Read},
     mem,
-    os::fd::{AsFd, BorrowedFd},
     path::Path,
     time::{Duration, Instant},
 };
@@ -66,7 +67,7 @@ impl Link {
             connection::connect(path, timeout).map_err(|error| exhausted(&error, UNREACHABLE))?;
         climon2_platform::peer::authenticate(&socket).map_err(|_| UNREACHABLE)?;
         socket.set_nonblocking(true).map_err(|_| UNREACHABLE)?;
-        connection::quiet(socket.as_fd()).map_err(|_| UNREACHABLE)?;
+        connection::quiet(&socket).map_err(|_| UNREACHABLE)?;
         Ok(Self {
             socket,
             incoming: Vec::new(),
@@ -85,7 +86,7 @@ impl Link {
     /// Writes what the socket takes now, without waiting, if anything waits.
     pub(super) fn flush(&mut self) -> Result<(), Fault> {
         if self.writing() {
-            let sent = connection::send(self.socket.as_fd(), &self.outgoing);
+            let sent = connection::send(&self.socket, &self.outgoing);
             let written = pending(sent).map_err(|_| BROKEN)?;
             self.outgoing.drain(..written.unwrap_or_default());
         }
@@ -169,15 +170,12 @@ impl Link {
 
 /// Waits until `waker` or one of `links`' sockets is ready, or `deadline`
 /// passes. A signal or a spurious wake only makes the caller look again.
-pub(super) fn wait(waker: Option<BorrowedFd<'_>>, links: &[&Link], deadline: Option<Instant>) {
-    let mut watches: Vec<_> = waker
-        .map(|waker| Watch::new(waker, Interest::Read))
-        .into_iter()
-        .collect();
+pub(super) fn wait(waker: Option<&Waker>, links: &[&Link], deadline: Option<Instant>) {
+    let mut watches: Vec<_> = waker.map(Waker::watch).into_iter().collect();
     watches.extend(
         links
             .iter()
-            .map(|link| Watch::new(link.socket.as_fd(), link.interest())),
+            .map(|link| Watch::stream(&link.socket, link.interest())),
     );
     // Rounded up by the wait, so a wait never ends early; no deadline
     // saturates at the longest wait.

@@ -4,6 +4,11 @@
 //! records. Without either bundled ConPTY file, and in a job the daemon
 //! cannot leave, `exec` exits 125 and leaves nothing running.
 //!
+//! #318: `c2 kill` ends such a session through the session version's client
+//! and its client library: the pseudoconsole closes, the full grace passes,
+//! the session job ends with `0xC000013A`, and kill exits 0 once the session
+//! is cleaned up.
+//!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).
@@ -16,12 +21,16 @@ use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::PathBuf,
     process::Command,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
-use windows_sys::Win32::System::{
-    JobObjects::IsProcessInJob,
-    Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+use windows_sys::Win32::{
+    Foundation::{FILETIME, WAIT_OBJECT_0},
+    System::{
+        JobObjects::IsProcessInJob,
+        Threading::{
+            GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+        },
     },
 };
 
@@ -31,7 +40,8 @@ climon2_test_term::outside_relay!();
 const CONTROL_C_EXIT: &str = "0xc000013a";
 
 /// A version folder, `<root>/exe/0.1.0`, outside the crate folder, holding
-/// the CLI, the daemon and, unless left out, the two bundled ConPTY files.
+/// the CLI, the daemon, the client and its library and, unless left out, the
+/// two bundled ConPTY files.
 struct Install(tempfile::TempDir);
 
 impl Install {
@@ -40,15 +50,25 @@ impl Install {
         fs::create_dir_all(install.version()).unwrap();
         let cli = PathBuf::from(env!("CARGO_BIN_EXE_climon2-cli"));
         let daemon = cli.with_file_name("climon2-daemon.exe");
-        assert!(
-            daemon.is_file(),
-            "missing {}; build climon2-daemon first (cargo test -p climon2-daemon)",
-            daemon.display()
-        );
+        let client = cli.with_file_name("climon2-client.exe");
+        let library = cli.with_file_name("climon2_client.dll");
+        for (built, package) in [
+            (&daemon, "climon2-daemon"),
+            (&client, "climon2-client"),
+            (&library, "climon2-client"),
+        ] {
+            assert!(
+                built.is_file(),
+                "missing {}; build {package} first (cargo test -p {package})",
+                built.display()
+            );
+        }
         let conpty = ConPty::pinned().unwrap().folder();
         for from in [
             cli,
             daemon,
+            client,
+            library,
             conpty.join("conpty.dll"),
             conpty.join("OpenConsole.exe"),
         ] {
@@ -144,6 +164,23 @@ impl Home {
         fs::read_to_string(self.home().join("logs").join(id).join("daemon.log")).unwrap()
     }
 
+    /// Every log of session `id`, for a failure message.
+    fn session_logs(&self, id: &str) -> String {
+        let Ok(entries) = fs::read_dir(self.home().join("logs").join(id)) else {
+            return String::new();
+        };
+        entries
+            .map(|entry| entry.unwrap().path())
+            .map(|path| {
+                format!(
+                    "{}:\n{}",
+                    path.display(),
+                    fs::read_to_string(&path).unwrap()
+                )
+            })
+            .collect()
+    }
+
     /// Waits until `list` no longer shows a session.
     fn wait_until_ended(&self, install: &Install) {
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -151,6 +188,86 @@ impl Home {
             assert!(Instant::now() < deadline, "{}", self.list(install));
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// `c2 kill <selector>`, which starts no daemon, so it runs in the
+    /// test's own job.
+    fn kill(&self, install: &Install, selector: &str) -> std::process::Output {
+        Command::new(install.cli())
+            .args(["kill", selector])
+            .env("CLIMON2_HOME", self.home())
+            .env("LOCALAPPDATA", self.0.path().join("local"))
+            .output()
+            .unwrap()
+    }
+
+    /// The process whose PID the session's command wrote to `name` in the
+    /// working directory, once it has.
+    fn written_process(&self, name: &str) -> Held {
+        let path = self.work().join(name);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let written = fs::read_to_string(&path).unwrap_or_default();
+            if let Ok(pid) = written.trim().parse() {
+                return Held::open(pid);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} was never written",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// A handle on a process a session started, which outlives the process so
+/// its exit code and exit time can be read. Dropping it ends the process if
+/// it still runs, so a failed test leaves nothing running.
+struct Held(OwnedHandle);
+
+impl Held {
+    fn open(pid: u32) -> Self {
+        let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE;
+        Self(open(pid, access).expect("open the session's process"))
+    }
+
+    /// The exit code, once the process ends within `timeout`.
+    fn exit_code(&self, timeout: Duration) -> Option<u32> {
+        let milliseconds = u32::try_from(timeout.as_millis()).unwrap();
+        // The handle is open with SYNCHRONIZE.
+        if unsafe { WaitForSingleObject(self.0.as_raw_handle(), milliseconds) } != WAIT_OBJECT_0 {
+            return None;
+        }
+        let mut code = 0;
+        // The handle is open with query access; the call writes one DWORD.
+        assert_ne!(
+            unsafe { GetExitCodeProcess(self.0.as_raw_handle(), &mut code) },
+            0
+        );
+        Some(code)
+    }
+
+    /// When the process ended; it must have.
+    fn exit_time(&self) -> SystemTime {
+        let mut times = [FILETIME::default(); 4];
+        let [creation, exit, kernel, user] = &mut times;
+        // The handle is open with query access; the call writes four FILETIMEs.
+        assert_ne!(
+            unsafe { GetProcessTimes(self.0.as_raw_handle(), creation, exit, kernel, user) },
+            0
+        );
+        // FILETIME counts 100 ns intervals since 1601.
+        let intervals = (u64::from(exit.dwHighDateTime) << 32) | u64::from(exit.dwLowDateTime);
+        SystemTime::UNIX_EPOCH + Duration::from_nanos((intervals - 116_444_736_000_000_000) * 100)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // The handle is open with PROCESS_TERMINATE; ending an ended process
+        // only fails.
+        unsafe { TerminateProcess(self.0.as_raw_handle(), 1) };
     }
 }
 
@@ -317,4 +434,79 @@ fn a_daemon_that_cannot_leave_the_clis_job_is_ended_and_exec_exits_125() {
         assert!(home.sessions().is_empty(), "{jobs:?}");
         assert!(install.daemon_stopped(), "{jobs:?}");
     }
+}
+
+/// A command whose child, `ping`, runs with a hidden console of its own, so
+/// closing the session's pseudoconsole leaves it running in the session job;
+/// the command writes the child's PID to `child` and waits.
+const WITH_CHILD: &[&str] = &[
+    "powershell",
+    "-NoLogo",
+    "-NoProfile",
+    "-Command",
+    "$start = New-Object System.Diagnostics.ProcessStartInfo 'ping.exe', '-n 300 127.0.0.1'; \
+     $start.UseShellExecute = $false; $start.CreateNoWindow = $true; \
+     $child = [System.Diagnostics.Process]::Start($start); \
+     Set-Content child $child.Id; while ($true) { Start-Sleep 1 }",
+];
+
+#[test]
+fn kill_hangs_up_waits_the_full_grace_ends_the_job_and_exits_0_once_cleaned_up() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    let id = session_id(&home.exec(&install, WITH_CHILD));
+    let child = home.written_process("child");
+    let [session] = home.sessions().try_into().unwrap();
+
+    let started = SystemTime::now();
+    let killed = home.kill(&install, &id[..8]);
+
+    assert_eq!(
+        killed.status.code(),
+        Some(0),
+        "{killed:?}\n{}",
+        home.session_logs(&id)
+    );
+    assert!(
+        killed.stdout.is_empty() && killed.stderr.is_empty(),
+        "{killed:?}"
+    );
+    assert!(home.sessions().is_empty(), "kill confirmed before cleanup");
+    assert!(!std::path::Path::new(session.socket_path.as_str()).exists());
+    // The pseudoconsole's close spares the child; the job's end does not.
+    assert_eq!(child.exit_code(Duration::ZERO), Some(0xC000_013A));
+    let grace = child.exit_time().duration_since(started).unwrap();
+    assert!(
+        grace >= Duration::from_secs(5),
+        "the job ended after {grace:?}"
+    );
+    assert!(home.list(&install).contains("No climon2 sessions running."));
+}
+
+/// Until the client has its console rules (#321), the session's own client,
+/// started directly, refuses to attach before any connection.
+#[test]
+fn the_client_refuses_to_attach_on_windows_yet() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    let id = session_id(&home.exec(&install, HELD));
+    let metadata = home.home().join("sessions").join(format!("{id}.pty"));
+    let attached = Command::new(install.version().join("climon2-client.exe"))
+        .arg("attach")
+        .arg("--metadata")
+        .arg(&metadata)
+        .env("CLIMON2_HOME", home.home())
+        .env_remove("CLIMON2_CLIENT_STARTUP")
+        .output()
+        .unwrap();
+    assert_eq!(attached.status.code(), Some(125), "{attached:?}");
+    let stderr = String::from_utf8_lossy(&attached.stderr);
+    assert!(
+        stderr.starts_with("climon2: error: attach is not supported on Windows yet"),
+        "{stderr}"
+    );
+    assert!(
+        home.list(&install).contains(&id),
+        "attach ended the session"
+    );
+    fs::write(home.work().join("release"), b"").unwrap();
+    home.wait_until_ended(&install);
 }

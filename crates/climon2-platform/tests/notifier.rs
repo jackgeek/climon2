@@ -52,9 +52,9 @@ fn issue312_a_waker_never_blocks() {
 #[test]
 fn issue312_a_send_to_a_closed_peer_fails_with_epipe() {
     let (ours, peer) = UnixStream::pair().unwrap();
-    connection::quiet(ours.as_fd()).unwrap();
-    assert_eq!(connection::send(ours.as_fd(), b"ab").unwrap(), 2);
+    connection::quiet(&ours).unwrap();
+    assert_eq!(connection::send(&ours, b"ab").unwrap(), 2);
     drop(peer);
-    let error = connection::send(ours.as_fd(), b"c").unwrap_err();
+    let error = connection::send(&ours, b"c").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::BrokenPipe);
 }

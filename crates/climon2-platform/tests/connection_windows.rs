@@ -199,3 +199,25 @@ fn binding_over_a_stale_socket_file_fails_until_it_is_deleted() {
     fs::remove_file(&path).unwrap();
     drop(runtime::bind(&path).unwrap());
 }
+
+/// #318: the client library's sends take what the socket takes now; a send
+/// to a closed peer fails rather than raising anything.
+#[test]
+fn a_send_carries_bytes_and_one_to_a_closed_peer_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_listener, client, mut peer) = connected(&directory.path().join("send.sock"));
+    connection::quiet(&client).unwrap();
+    assert_eq!(connection::send(&client, b"ab").unwrap(), 2);
+    let mut received = [0; 2];
+    peer.read_exact(&mut received).unwrap();
+    assert_eq!(&received, b"ab");
+    drop(peer);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while connection::send(&client, b"c").is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "sends to a closed peer kept succeeding"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}

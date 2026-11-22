@@ -298,3 +298,22 @@ fn unopenable_process() -> (u32, Unopenable) {
         Unopenable(unsafe { OwnedHandle::from_raw_handle(information.hProcess) }),
     )
 }
+
+/// #318: the client library reports running out of sockets or handles as
+/// an exhausted resource, and nothing else as one.
+#[test]
+fn running_out_of_sockets_or_handles_is_out_of_descriptors() {
+    use climon2_platform::process::out_of_descriptors;
+    use std::io::Error;
+    const WSAEMFILE: i32 = 10024;
+    const ERROR_TOO_MANY_OPEN_FILES: i32 = 4;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    assert!(out_of_descriptors(&Error::from_raw_os_error(WSAEMFILE)));
+    assert!(out_of_descriptors(&Error::from_raw_os_error(
+        ERROR_TOO_MANY_OPEN_FILES
+    )));
+    assert!(!out_of_descriptors(&Error::from_raw_os_error(
+        ERROR_ACCESS_DENIED
+    )));
+    assert!(!out_of_descriptors(&Error::other("no OS error")));
+}

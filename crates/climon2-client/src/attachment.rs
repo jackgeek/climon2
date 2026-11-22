@@ -398,7 +398,9 @@ impl Attachment {
 
     /// The descriptor that is readable while there is something to receive.
     pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
-        self.instance.descriptor()
+        // SAFETY: the library keeps the notification descriptor open while
+        // the instance's communication handle lives, as long as `self`.
+        unsafe { BorrowedFd::borrow_raw(self.instance.notification()) }
     }
 
     /// One delivery's events, none, or the end of the stream.

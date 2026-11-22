@@ -2,8 +2,8 @@
 
 #[cfg(unix)]
 mod attach;
+mod client;
 mod exec;
-#[cfg(unix)]
 mod kill;
 pub mod list;
 #[cfg(unix)]
@@ -46,8 +46,6 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
 }
 
 /// The subcommands that need a home; help and version are answered here.
-/// Only list runs on Windows so far, so there nothing reads the others' arguments.
-#[cfg_attr(not(unix), expect(dead_code, reason = "only list runs on Windows yet"))]
 enum Work {
     Exec(Lifetime, CommandArgs),
     List { json: bool },
@@ -56,7 +54,10 @@ enum Work {
 
 /// Subcommands that another executable of a version folder carries out: the
 /// client attaches or kills, and the monitor monitors.
-#[cfg_attr(not(unix), expect(dead_code, reason = "only list runs on Windows yet"))]
+#[cfg_attr(
+    not(unix),
+    expect(dead_code, reason = "attach and the monitor do not run on Windows yet")
+)]
 enum Handoff {
     Attach(Selector),
     Kill(Selector),
