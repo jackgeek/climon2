@@ -193,11 +193,13 @@ consume the package as dev-dependencies only so that Cargo builds its
 for the source check and the Windows [quality gate](windows-quality.md); its
 release checks, distribution builds and installs need the Unix installer.
 
-**Current (#315):** `climon2-cli`'s edge to `discovery` and its `dev` edge to
-`climon2-test-term` are Unix-only dependencies. On Windows the CLI builds
-without them and answers only help, version and usage errors; every
-subcommand fails until its Windows seams exist. The launcher still has no
-dependencies on Windows: it declares the few Windows calls it makes itself.
+**Current (#316):** `climon2-cli`'s edge to `discovery` and its `dev` edge to
+`climon2-test-term` hold on every platform; until #316 they were Unix-only.
+On Windows the CLI answers help, version and usage errors and runs `list`,
+whose discovery now builds there; every other subcommand fails until its
+Windows seams exist. Its list tests drive the CLI in the harness's Windows
+host. The launcher still has no dependencies on Windows: it declares the few
+Windows calls it makes itself.
 
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so

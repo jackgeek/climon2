@@ -3,8 +3,10 @@
 This document says how climon2's processes start, run and end on Windows: the
 daemon, the session's command, the hand-offs between climon2's own programs,
 the client's console, and how a session is identified and cleaned up. It is
-for contributors. Only the launcher's hand-off (see [Hand-offs](#hand-offs)) is
-built so far ([#315](https://github.com/jackgeek/climon2/issues/315)). It was
+for contributors. Only the launcher's hand-off (see [Hand-offs](#hand-offs);
+[#315](https://github.com/jackgeek/climon2/issues/315)) and the daemon's
+identity and liveness check (see [Identity and liveness](#identity-and-liveness);
+[#316](https://github.com/jackgeek/climon2/issues/316)) are built so far. It was
 agreed in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 using the VM measurements from
@@ -198,7 +200,9 @@ creation time unchanged across clock steps.
 Liveness opens the process with
 `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` and waits on it with a zero
 timeout. Only "no such process" (`ERROR_INVALID_PARAMETER`) means the daemon
-is gone; any other error keeps the session.
+is gone; any other error keeps the session. A wait that succeeds at once
+means the process has exited while something still holds a handle to it, as
+a Unix zombie awaits its parent, so that daemon is gone too.
 
 ## Command resolution and arguments
 

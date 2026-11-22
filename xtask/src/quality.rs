@@ -75,6 +75,8 @@ const WINDOWS_SUITE: &[&[&str]] = &[
         "--test",
         "private_windows",
         "--test",
+        "cross_account_windows",
+        "--test",
         "presentation_windows",
         "--test",
         "connection_windows",

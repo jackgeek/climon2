@@ -27,14 +27,20 @@ matter most:
   compiled only on Windows.
 - A **registered native file** is a source file listed in xtask's native-source
   registry as belonging to one operating system. Today the registry lists
-  `linux.rs` and `macos.rs` files, and four `windows.rs` files:
+  `linux.rs` and `macos.rs` files, and eight `windows.rs` files:
   `crates/climon2-platform/src/home/windows.rs`, which names the Windows
   homes; `crates/climon2-platform/src/private/windows.rs`, which creates the
   files and folders only their user may open
   ([#339](https://github.com/jackgeek/climon2/issues/339));
+  `crates/climon2-platform/src/runtime/windows.rs`,
+  `crates/climon2-platform/src/waiting/windows.rs`,
+  `crates/climon2-platform/src/process/windows.rs` and
+  `crates/climon2-platform/src/presentation/windows.rs`, the runtime
+  directory, sockets, waiting, daemon identity and `list`'s presentation
+  ([#316](https://github.com/jackgeek/climon2/issues/316));
   `crates/climon2-launcher/src/handoff/windows.rs`, the launcher's
-  hand-off; and `crates/climon2-cli/src/windows.rs`, which refuses the
-  subcommands Windows cannot run yet.
+  hand-off; and `crates/climon2-cli/src/windows.rs`, which runs `list` and
+  refuses the subcommands Windows cannot run yet.
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a
@@ -166,6 +172,15 @@ Windows behaviour. Each is an ordinary test in the Test job:
 - the Authenticode signatures of the bundled `conpty.dll` and
   `OpenConsole.exe`;
 - binding the runtime directory on the runner's real `%LOCALAPPDATA%` volume.
+
+[#316](https://github.com/jackgeek/climon2/issues/316) built the first,
+second and fourth as tests in `climon2-platform`, listed in its README. On a
+Windows 11 VM a missing socket path and a stale socket both refuse with
+`WSAECONNREFUSED`, a missing runtime directory fails with `WSAENETDOWN`, and a
+live socket file can be deleted. Both Windows jobs create the second account,
+a local member of Users with a random password, and name it to the tests in
+`CLIMON2_SECOND_ACCOUNT` and `CLIMON2_SECOND_ACCOUNT_PASSWORD`. The test that
+uses it is skipped, saying why, where the account is missing, and fails on CI.
 
 The memory used by the daemon and console host, under the inbox and the
 bundled ConPTY, is written to the job summary on each run. It has no
