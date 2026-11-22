@@ -1,7 +1,7 @@
 # climon2-platform
 
 Shared macOS, Linux and Windows seams (ADR 0003). `home`, `private`,
-`logging`, `runtime`, `connection`, `waiting`, `process` (identity only),
+`logging`, `runtime`, `connection`, `waiting`, `process` (identity and `exit`),
 `presentation`, `peer`, `daemon`, `pty`, `terminal`, `library`, `notifier`
 and `native_path` build on Windows, and `handoff` exists only there (see
 [Windows](#windows)). Neutral contracts remain in `climon2-core`. No runtime
@@ -295,7 +295,9 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   time in epoch microseconds. Only "no such process"
   (`ERROR_INVALID_PARAMETER`) or a process that has exited while its object
   is still held reads as gone; any other failure, such as access denied, is
-  an error and never evidence of death.
+  an error and never evidence of death. `exit(status)` ends the process at
+  once with all 32 bits of `status`, through `TerminateProcess` (#323), as
+  the client exits; on Unix it exits with the status's low eight bits.
 - `src/presentation/windows.rs`: `local_datetime` uses the system's offset
   for the instant; `columns` is the visible console window's width, or 80
   when stdout is not a console.
