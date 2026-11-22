@@ -22,8 +22,16 @@ unicode-width = "0.2.3"
 libc = "0.2.191"
 tempfile = "3.27.0"
 filetime = "0.2.27"
-climon2-test-term = { path = "../climon2-test-term" }
 portable-pty = { version = "0.9.0", default-features = false }
+climon2-test-term = { path = "../climon2-test-term" }
 
 [lints]
 workspace = true
+
+# The Windows exec tests check the daemon's job and end daemons left running.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

@@ -30,6 +30,17 @@ fn start(command: &mut Command) -> Child {
     command.spawn().unwrap()
 }
 
+/// The `c2` built beside this test binary (`<profile>/deps/..`).
+/// `CARGO_BIN_EXE_c2` is fixed when this binary is compiled. A mutation
+/// worker that reuses a seeded build relinks `c2` from the mutant but keeps
+/// this binary, so that path would still name the unmutated launcher.
+fn built_launcher() -> std::path::PathBuf {
+    let test = std::env::current_exe().unwrap();
+    let launcher = test.parent().unwrap().parent().unwrap().join("c2");
+    assert!(launcher.is_file(), "no launcher at {}", launcher.display());
+    launcher
+}
+
 struct Layout(std::path::PathBuf);
 
 impl Layout {
@@ -41,7 +52,7 @@ impl Layout {
         ));
         fs::create_dir_all(&root).unwrap();
         write_executable(|| {
-            fs::copy(env!("CARGO_BIN_EXE_climon2"), root.join("climon2")).unwrap();
+            fs::copy(built_launcher(), root.join("c2")).unwrap();
         });
         Self(root)
     }
@@ -57,7 +68,7 @@ impl Layout {
     }
 
     fn launch(&self) -> Command {
-        let mut command = Command::new(self.0.join("climon2"));
+        let mut command = Command::new(self.0.join("c2"));
         command.env_clear().env("HOME", &self.0);
         preserve_instrumentation(&mut command);
         command
@@ -182,7 +193,7 @@ fn symlinked_launcher_uses_own_canonical_home_and_exec_preserves_signal() {
     fs::write(layout.0.join("current"), "0.0.0-a-0.1+000.build-x").unwrap();
     let elsewhere = layout.0.join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
-    symlink(layout.0.join("climon2"), elsewhere.join("linked")).unwrap();
+    symlink(layout.0.join("c2"), elsewhere.join("linked")).unwrap();
     let mut command = Command::new(elsewhere.join("linked"));
     command.env_clear();
     preserve_instrumentation(&mut command);

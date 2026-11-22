@@ -343,7 +343,7 @@ fn passive_requests_get_their_documented_outcomes() {
 
 /// CTL-01 (Contract): a passive registration is not an attachment and never
 /// acquires control, not even briefly: not of a detached session, and not of
-/// one controlled elsewhere. Hello `state`, which `climon2 list` shows as
+/// one controlled elsewhere. Hello `state`, which `c2 list` shows as
 /// STATE and CLIENTS, stays as it was, and core metadata flows before any
 /// control.
 #[test]

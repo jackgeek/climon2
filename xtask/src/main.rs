@@ -1,3 +1,6 @@
+// Off Unix only the source check, the native-only gate and dist are built
+// (docs/for-humans/windows/quality.md), so the release tooling they share goes unused.
+#![cfg_attr(not(unix), allow(dead_code))]
 use std::{
     env,
     ffi::OsString,
@@ -7,17 +10,26 @@ use std::{
 };
 
 mod coverage;
+#[cfg(unix)]
+mod dist;
+#[cfg(windows)]
+#[path = "windows_dist.rs"]
 mod dist;
 mod fixtures;
+#[cfg(unix)]
 mod library;
 mod measure;
 mod mutation_plan;
+// Only the Windows dist reads PE files; the reader's tests run everywhere.
+#[cfg_attr(unix, allow(dead_code))]
+mod pe;
 mod qualify;
 mod quality;
 mod release;
+mod windows_source;
 
 const HELP: &str = "\
-Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...>
+Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|windows-changed <base>|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...>
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
 check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
@@ -29,13 +41,18 @@ check --full is the full gate, run before a feature branch merges to main with
 CLIMON2_MUTATION_BASE=origin/main: 5 load rounds, then mutation of whole files changed
 since that merge base.
 --mutate-all mutates every shipped file; --print-mutation-plan prints the selection and exits.
-test runs fmt, clippy and workspace tests, including packaged acceptance, plus ShellCheck.
+test runs the Windows source-ownership check, then fmt, clippy and workspace tests,
+including packaged acceptance, plus ShellCheck.
+windows-changed prints whether the changes since the merge base of <base> and HEAD must run
+the Windows Test and Quality jobs whatever CLIMON2_WINDOWS_TESTS says.
 Before the workspace tests it runs the monitor's build test alone, against its plain binary.
 setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
-mutation-probe checks real-binary worker isolation.
+mutation-probe runs the sentinel, whose one checked mutant must be killed and one unchecked
+mutant survive, then checks real-binary worker isolation.
 tooling-probe proves staged coverage, complexity counting and covered mutation gates.
 release-check proves per-package releases exclude hooks and preserve test binaries.
-dist builds verified universal macOS release artifacts (arm64 host) or x86_64 GNU/Linux artifacts in target/dist.
+dist builds verified universal macOS release artifacts (arm64 host), x86_64 GNU/Linux artifacts
+or the x86_64 Windows zip in target/dist.
 install builds verified production artifacts and runs their installer (optional --dir).
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
@@ -47,6 +64,8 @@ the platform's Measure reports and the manual records; a failed case is a record
 qualify verdict judges every platform's records with the owner's recorded dispositions and fails
 unless the release may be published.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
+On Windows it tests only what builds there, after the sentinel and a probe that a killed
+process keeps its coverage. Windows builds no check, tooling-probe, release-check or install.
 Each load round runs 8 workspace suites at once before mutating, even with nothing to mutate;
 mutate skips it. Logs remain in target/flake-logs.
 Cross-architecture execution of the same final archive is enforced in CI.";
@@ -57,24 +76,18 @@ fn main() -> ExitCode {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
-    let result = if let Some(options) = CheckOptions::parse(&args) {
-        check(options)
+    let result = if let Some(result) = unix_command(&args) {
+        result
     } else if args == ["test"] {
         test()
+    } else if args.len() == 2 && args[0] == "windows-changed" {
+        windows_source::changed(workspace_root(), &args[1].to_string_lossy())
+    } else if args == ["dist"] {
+        dist::run(workspace_root())
     } else if args == ["setup-quality"] {
         quality::setup(workspace_root())
     } else if args == ["mutation-probe"] {
-        quality::probe(workspace_root())
-    } else if args == ["tooling-probe"] {
-        quality::tooling_probe(workspace_root())
-    } else if args == ["release-check"] {
-        release::check(workspace_root())
-    } else if args == ["dist"] {
-        dist::run(workspace_root())
-    } else if args == ["install"] {
-        dist::install(workspace_root(), &[])
-    } else if args.len() == 3 && args[0] == "install" && args[1] == "--dir" && !args[2].is_empty() {
-        dist::install(workspace_root(), &args[1..])
+        quality::mutation_probe(workspace_root())
     } else if args.first().is_some_and(|command| command == "measure") {
         measure::run(workspace_root(), &args[1..])
     } else if args.first().is_some_and(|command| command == "qualify") {
@@ -102,6 +115,30 @@ fn main() -> ExitCode {
     }
 }
 
+/// The commands that need the Unix installer and release tooling: everything
+/// but the source check and the native-only gate, which Windows CI runs.
+#[cfg(unix)]
+fn unix_command(args: &[OsString]) -> Option<io::Result<()>> {
+    Some(if let Some(options) = CheckOptions::parse(args) {
+        check(options)
+    } else if args == ["tooling-probe"] {
+        quality::tooling_probe(workspace_root())
+    } else if args == ["release-check"] {
+        release::unix::check(workspace_root())
+    } else if args == ["install"] {
+        dist::install(workspace_root(), &[])
+    } else if args.len() == 3 && args[0] == "install" && args[1] == "--dir" && !args[2].is_empty() {
+        dist::install(workspace_root(), &args[1..])
+    } else {
+        return None;
+    })
+}
+
+#[cfg(not(unix))]
+fn unix_command(_: &[OsString]) -> Option<io::Result<()>> {
+    None
+}
+
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -109,6 +146,7 @@ fn workspace_root() -> &'static Path {
 }
 
 /// `check [--full] [--mutate-all] [--print-mutation-plan]`, each flag at most once.
+#[cfg(unix)]
 #[derive(Debug, Default, Eq, PartialEq)]
 struct CheckOptions {
     full: bool,
@@ -116,6 +154,7 @@ struct CheckOptions {
     print: bool,
 }
 
+#[cfg(unix)]
 impl CheckOptions {
     fn parse(args: &[OsString]) -> Option<Self> {
         let (command, flags) = args.split_first()?;
@@ -147,6 +186,7 @@ impl CheckOptions {
     }
 }
 
+#[cfg(unix)]
 fn check(options: CheckOptions) -> io::Result<()> {
     if options.print {
         return quality::plan(workspace_root(), options.all, options.scope());
@@ -160,6 +200,7 @@ fn check(options: CheckOptions) -> io::Result<()> {
 
 fn test() -> io::Result<()> {
     let root = workspace_root();
+    windows_source::check(root)?;
     quality::run(Command::new("shellcheck").arg(root.join("install.sh")))?;
     for args in [
         &["fmt", "--all", "--", "--check"][..],
@@ -199,7 +240,7 @@ fn test() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

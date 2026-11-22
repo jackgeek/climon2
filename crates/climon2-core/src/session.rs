@@ -51,8 +51,11 @@ impl SessionEnvironment {
             .collect();
         values.push(("CLIMON2_SESSION_ID".into(), id.as_str().into()));
         values.push(("CLIMON2_SESSION_DEPTH".into(), depth.to_string().into()));
-        values.push(("TERM".into(), "xterm-256color".into()));
-        values.push(("COLORTERM".into(), "truecolor".into()));
+        values.extend(
+            TERMINAL_IDENTITY
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into())),
+        );
         Ok(Self {
             values,
             depth,
@@ -60,6 +63,10 @@ impl SessionEnvironment {
         })
     }
 }
+
+/// The terminal identity every session's command sees.
+pub const TERMINAL_IDENTITY: [(&str, &str); 2] =
+    [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
 
 const REPLACED_KEYS: [&str; 5] = [
     "CLIMON2_SESSION_ID",

@@ -43,7 +43,7 @@ flowchart TB
 
 | Crate | Purpose |
 | --- | --- |
-| `climon2-launcher` | The `climon2` executable that `c2` links to. It reads the install home's `current` version and hands off to that version's `climon2-cli`. |
+| `climon2-launcher` | The `c2` executable, the command users type. It reads the install home's `current` version and hands off to that version's `climon2-cli`. |
 | `climon2-cli` | The `climon2-cli` executable behind every `c2` command: `exec`, `attach`, `kill`, `list` and `monitor`. It orchestrates startup and talks to other executables only through their contracts. |
 | `climon2-client` | The version-matched, byte-transparent terminal [client](../../../GLOSSARY.md#sessions) that connects a terminal to one session daemon ([ADR 0001](../../adr/0001-version-matched-client-and-frozen-hello.md)), and the client library the monitor loads for each session. |
 | `climon2-daemon` | The session daemon: it owns one session's PTY and output pump, so clients never own terminal handles. |
@@ -100,12 +100,14 @@ flowchart TB
     fixtures --> core
     fixtures --> platform
     fixtures -.->|"dev"| test_term
-    platform -.->|"dev"| fixtures
-    client -.->|"dev"| fixtures
+    platform -.->|"dev, Unix"| fixtures
+    platform -.->|"dev, Windows"| test_term
+    client -.->|"dev, Unix"| fixtures
     xtask --> core
-    xtask --> install
+    xtask -->|"Unix"| install
+    xtask -->|"Windows"| test_term
     xtask --> platform
-    xtask -.->|"dev"| fixtures
+    xtask -.->|"dev, Unix"| fixtures
     xtask -.->|"dev"| second
     e2e -.->|"dev"| second
     second --> core
@@ -135,7 +137,13 @@ raw-socket hello peer.
 Linux support adds native bodies inside `climon2-platform`, not another
 workspace crate or runtime dependency edge. The test harness consumes those
 same Unix seams on Linux and macOS; Linux's ownership exec adapter is a
-test-only executable of the existing harness crate.
+test-only executable of the existing harness crate. On Windows the harness
+builds with `core` alone: its edges to the CLI, client, daemon, installer,
+monitor and `platform` are Unix-only until those crates build on Windows. Its
+Windows host (#320) is described in
+[Windows host and shell qualification](../windows/qualification.md#host-models).
+On Windows, `platform`'s tests consume the harness too, to host commands in
+its pinned ConPTY (#317).
 
 **Current (#74):** the [monitor](../../../GLOSSARY.md#sessions) is its own shipped
 crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It
@@ -185,6 +193,33 @@ consume the package as dev-dependencies only so that Cargo builds its
 `cdylib`; no code links it. Their tests find both artifacts through
 `climon2-fixtures`' `second_release` module, a dev-dependency of each. The
 developer accepted this package on 2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](../../adr/0004-crate-layout-and-dependency-direction.md)).
+
+**Current (#319):** `xtask` consumes `core` and `platform` on every platform.
+Its edge to `install` and its `dev` edge to `climon2-fixtures`, whose
+stand-ins are Unix programs, are Unix-only: the release checks and installs
+need the Unix installer. Its edge to `climon2-test-term` is Windows-only:
+Windows `cargo xtask dist` takes the pinned ConPTY files from the harness,
+which fetches and verifies them for its own Windows host, so one piece of
+code reads the pin. On Windows that edge brings no product crates, because
+the harness builds there with `core` alone. From #314 until #319, `xtask`
+built on Windows without any workspace crate, for the source check and the
+Windows [quality gate](../windows/quality.md) only.
+
+**Current (#316):** `climon2-cli`'s edge to `discovery` and its `dev` edge to
+`climon2-test-term` hold on every platform; until #316 they were Unix-only.
+On Windows the CLI answers help, version and usage errors and runs `list`,
+whose discovery now builds there; every other subcommand fails until its
+Windows seams exist. Its list tests drive the CLI in the harness's Windows
+host. The launcher still has no dependencies on Windows: it declares the few
+Windows calls it makes itself.
+
+**Current (#318):** `climon2-client` builds on Windows, with its edges to
+`core` and `platform` and its `dev` edge to `climon2-test-term`: its library
+is `climon2_client.dll`, and its executable runs kill mode there. Its `dev`
+edge to `climon2-fixtures`, whose stand-ins are Unix programs, is Unix-only,
+as `platform`'s already was. The Windows loader, notifier and native path
+encoding are bodies inside `climon2-platform`'s seams, not another crate or
+edge.
 
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so

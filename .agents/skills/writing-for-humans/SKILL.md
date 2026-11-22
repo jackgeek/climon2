@@ -82,7 +82,7 @@ A folder `README.md` holds, in order:
 ### Links
 
 The top-level folders of `docs/for-humans/` are **subjects**: `protocol/`,
-`behaviour/`, `architecture/`. These rules apply inside one subject; a link
+`behaviour/`, `architecture/`, `windows/`. These rules apply inside one subject; a link
 from one subject to another is a citation between specifications and is
 unrestricted. Within a subject, and from the files at the top of the tree, a
 document links only to:

@@ -1,2 +1,9 @@
 [alias]
 xtask = "run --locked --package xtask --"
+
+# Every Windows build links the C runtime statically, so no shipped file
+# needs the Visual C++ runtime and each loaded client library keeps its own C
+# runtime state (library embedding, "Windows"). Coverage builds set RUSTFLAGS,
+# which replaces this, so xtask's coverage adds the same flag.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

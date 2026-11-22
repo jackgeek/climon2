@@ -1,11 +1,10 @@
 use crate::args::Options;
 use climon2_core::metadata::{DisplayCommand, SessionMetadata};
-use climon2_platform::{logging, process, runtime};
+use climon2_platform::{logging, private, process, runtime};
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Write},
     num::NonZeroU32,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
 };
 
@@ -94,14 +93,8 @@ impl Resources {
         self.listener.take().expect("session listener is present")
     }
     fn create_metadata_file(&mut self) -> io::Result<std::fs::File> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&self.temporary)?;
+        let file = private::create_private_file(&self.temporary)?;
         self.temporary_owned = true;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         Ok(file)
     }
 }
@@ -113,13 +106,13 @@ impl Drop for Resources {
 }
 
 fn private_directories(options: &Options) -> Result<(), Failure> {
-    runtime::private_directory(&options.home.join("sessions"))
+    private::private_directory(&options.home.join("sessions"))
         .map_err(|_| Failure::own("sessions directory is not private or usable"))?;
     let parent = options
         .socket
         .parent()
         .ok_or_else(|| Failure::own("invalid socket path"))?;
-    runtime::private_directory(parent)
+    private::private_directory(parent)
         .map_err(|_| Failure::own("socket directory is not private or usable"))
 }
 

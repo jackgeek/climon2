@@ -950,7 +950,7 @@ fn cfg01_the_history_budget_holds_the_largest_recent_page() {
 fn inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key() {
     assert_eq!(
         invalid(r#"{"client":{"escape_prefix":null}}"#),
-        "client.escape_prefix may not be null for climon2 monitor"
+        "client.escape_prefix may not be null for c2 monitor"
     );
     let config = monitor(r#"{"client":{"take_control_key":null}}"#).unwrap();
     let mut expected = defaults();

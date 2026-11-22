@@ -1,10 +1,19 @@
 //! Interactive startup orchestration; binaries communicate only through contracts.
 
+#[cfg(unix)]
 mod attach;
+mod client;
 mod exec;
 mod kill;
 pub mod list;
+#[cfg(unix)]
 mod monitor;
+#[cfg(unix)]
+#[path = "unix.rs"]
+mod native;
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod native;
 
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
@@ -21,12 +30,6 @@ use std::{ffi::OsString, io, path::Path, time::SystemTime};
 /// How the CLI fails: the thin main prints it and exits with its code.
 pub use climon2_core::failure::Failure as Error;
 
-/// The install layout around this CLI: every sibling it starts, and every
-/// client it execs, is found from it.
-fn executable_layout() -> io::Result<ExecutableLayout> {
-    home::executable_layout(VersionBinary::Cli)?.map_err(io::Error::other)
-}
-
 /// Arguments exclude argv[0]. Success is a final status, except successful
 /// ordinary exec or attach, which replace this process with the metadata
 /// version's client, and monitor, which replaces it with this version's monitor.
@@ -34,7 +37,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
     match work(arguments) {
-        Ok(work) => logged_run(work),
+        Ok(work) => native::logged_run(work),
         Err(text) => {
             println!("{text}");
             Ok(0)
@@ -51,6 +54,10 @@ enum Work {
 
 /// Subcommands that another executable of a version folder carries out: the
 /// client attaches or kills, and the monitor monitors.
+#[cfg_attr(
+    not(unix),
+    expect(dead_code, reason = "attach and the monitor do not run on Windows yet")
+)]
 enum Handoff {
     Attach(Selector),
     Kill(Selector),
@@ -81,7 +88,12 @@ fn presentation(arguments: &CliArgs) -> String {
     }
 }
 
-fn logged_run(work: Work) -> Result<u32, Error> {
+/// Runs `command` inside the invocation's climon2 home, with its general log
+/// as the default subscriber and the `CLIMON2_LOG` filter; a failure is also
+/// logged there.
+fn logged(
+    command: impl FnOnce(&Path, &LogFile, Option<&str>) -> Result<u32, Error>,
+) -> Result<u32, Error> {
     let home = home::canonical()?;
     let general = LogFile::general(&home)?;
     let filter = std::env::var("CLIMON2_LOG").ok();
@@ -90,25 +102,17 @@ fn logged_run(work: Work) -> Result<u32, Error> {
         .map_err(|error| Error::from(error).logged(general.path()))?;
     tracing::dispatcher::with_default(&dispatch, || {
         logging::prune(&home, SystemTime::now());
-        command(work, &home, &general, filter.as_deref())
-            .map_err(|error| error.logged(general.path()))
+        command(&home, &general, filter.as_deref()).map_err(|error| error.logged(general.path()))
     })
 }
 
-fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> Result<u32, Error> {
-    match work {
-        Work::Exec(lifetime, command) => exec::run(home, lifetime, command, general, filter),
-        Work::List { json } => list::run(home, json).map(|()| 0).map_err(Error::from),
-        Work::Handoff(handoff) => handoff.run(home),
-    }
+/// `list`, which never needs a version's client.
+fn list(home: &Path, json: bool) -> Result<u32, Error> {
+    list::run(home, json).map(|()| 0).map_err(Error::from)
 }
 
-impl Handoff {
-    fn run(self, home: &Path) -> Result<u32, Error> {
-        match self {
-            Self::Attach(selector) => attach::run(home, selector),
-            Self::Kill(selector) => kill::run(home, &selector),
-            Self::Monitor => monitor::run(),
-        }
-    }
+/// The install layout around this CLI: every sibling it starts, and every
+/// client it execs, is found from it.
+fn executable_layout() -> io::Result<ExecutableLayout> {
+    home::executable_layout(VersionBinary::Cli)?.map_err(io::Error::other)
 }

@@ -3,16 +3,23 @@ use climon2_core::{
     diagnostics::{CappedWriter, subscriber},
 };
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::fs::OpenOptionsExt,
-    },
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 use time::{OffsetDateTime, macros::format_description};
+
+pub use native::StderrCapture;
+
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as native;
+
+#[cfg(windows)]
+#[path = "logging/windows.rs"]
+mod native;
 
 const RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -105,9 +112,9 @@ fn general_log_name(role: Role, at: SystemTime, pid: u32) -> io::Result<String> 
 /// within one second (#116's retries). The library creates the file itself.
 pub fn library_log(home: &Path, id: &SessionId, generation: u64) -> io::Result<PathBuf> {
     let logs = home.join("logs");
-    crate::runtime::private_directory(&logs)?;
+    crate::private::private_directory(&logs)?;
     let directory = logs.join(id.as_str());
-    crate::runtime::private_directory(&directory)?;
+    crate::private::private_directory(&directory)?;
     let name = format!(
         "library-{}-{}-{generation}.log",
         file_stamp(SystemTime::now())?,
@@ -118,14 +125,9 @@ pub fn library_log(home: &Path, id: &SessionId, generation: u64) -> io::Result<P
 
 impl LogFile {
     fn open(directory: &Path, name: &str, role: Role) -> io::Result<Self> {
-        crate::runtime::private_directory(directory)?;
+        crate::private::private_directory(directory)?;
         let path = directory.join(name);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)?;
+        let file = crate::private::create_new_file(&path)?;
         let mut writer = CappedWriter::new(file);
         writeln!(
             writer,
@@ -148,7 +150,7 @@ impl LogFile {
     }
 
     fn general_as(home: &Path, role: Role) -> io::Result<Self> {
-        crate::runtime::private_directory(&home.join("logs"))?;
+        crate::private::private_directory(&home.join("logs"))?;
         let name = general_log_name(role, SystemTime::now(), std::process::id())?;
         Self::open(&home.join("logs/general"), &name, role)
     }
@@ -160,7 +162,7 @@ impl LogFile {
         cli_pid: Option<u32>,
         previous: Option<&Path>,
     ) -> io::Result<Self> {
-        crate::runtime::private_directory(&home.join("logs"))?;
+        crate::private::private_directory(&home.join("logs"))?;
         let mut log = Self::session_file(&home.join("logs").join(id.as_str()), role)?;
         writeln!(log.writer, "session_id={id}")?;
         log.links(cli_pid, previous)?;
@@ -192,72 +194,6 @@ impl LogFile {
     pub fn dispatch(&self, filter: Option<&str>) -> io::Result<tracing::Dispatch> {
         subscriber(self.writer(), filter)
     }
-
-    pub fn capture_stderr(&self) -> io::Result<StderrCapture> {
-        let (reader, writer) = crate::daemon::pipe()?;
-        let saved = saved_stderr()?;
-        replace_stderr(writer.as_raw_fd())?;
-        drop(writer);
-        let mut sink = self.writer();
-        let reader = std::thread::spawn(move || {
-            let mut reader = reader;
-            io::copy(&mut reader, &mut sink)?;
-            sink.flush()
-        });
-        Ok(StderrCapture {
-            saved,
-            reader: Some(reader),
-        })
-    }
-}
-
-pub struct StderrCapture {
-    saved: OwnedFd,
-    reader: Option<std::thread::JoinHandle<io::Result<()>>>,
-}
-
-/// A duplicate of stderr, numbered above the standard streams, that is owned
-/// here and never inherited across exec.
-fn saved_stderr() -> io::Result<OwnedFd> {
-    let fd = crate::syscall::checked(unsafe {
-        libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 3)
-    })?;
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-}
-
-fn replace_stderr(fd: libc::c_int) -> io::Result<()> {
-    crate::syscall::checked(unsafe { libc::dup2(fd, libc::STDERR_FILENO) }).map(drop)
-}
-
-impl Drop for StderrCapture {
-    fn drop(&mut self) {
-        if let Some(message) = self.restore() {
-            eprintln!("climon2: error: {message}");
-        }
-    }
-}
-
-impl StderrCapture {
-    fn restore(&mut self) -> Option<String> {
-        if let Err(error) = replace_stderr(self.saved.as_raw_fd()) {
-            return Some(format!("cannot restore daemon stderr: {error}"));
-        }
-        reader_failure(self.reader.take().expect("stderr reader").join())
-    }
-}
-
-fn reader_failure(joined: std::thread::Result<io::Result<()>>) -> Option<String> {
-    match joined {
-        Ok(written) => write_failure(written),
-        Err(_) => Some("daemon log reader panicked".to_owned()),
-    }
-}
-
-fn write_failure(written: io::Result<()>) -> Option<String> {
-    if let Err(error) = written {
-        return Some(format!("daemon log write failed: {error}"));
-    }
-    None
 }
 
 fn old(path: &Path, now: SystemTime) -> io::Result<bool> {

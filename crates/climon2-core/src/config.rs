@@ -161,7 +161,7 @@ impl Default for MonitorSettings {
     }
 }
 
-const NULL_PREFIX: &str = "client.escape_prefix may not be null for climon2 monitor";
+const NULL_PREFIX: &str = "client.escape_prefix may not be null for c2 monitor";
 
 /// Everything the monitor validates before it changes the host terminal (spec
 /// #73): the client bindings, with the escape prefix it needs to reach its

@@ -43,7 +43,7 @@ with `unsupported_capability`, since no Open selected `focus-v1` or
 
 The revision-1 advertisement in the hello reply never changes the frozen
 tokens (`attach`, `kill`, `state-v1` and `client-startup-v1`) and `state`
-that CLI admission and `climon2 list` use, and they never imply revision-1
+that CLI admission and `c2 list` use, and they never imply revision-1
 support. A [passive monitor connection](../../../../GLOSSARY.md#attachment-and-control)
 is not an [attachment](../../../../GLOSSARY.md#attachment-and-control), so
 `state` never counts it until its Acquire or a promotion makes it one.

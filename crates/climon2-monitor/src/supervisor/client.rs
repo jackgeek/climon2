@@ -166,7 +166,7 @@ impl Client {
     }
 
     /// Submits a Kill of the instance's session as `request_id`, requiring
-    /// nothing beyond core support, as `climon2 kill` does (#117).
+    /// nothing beyond core support, as `c2 kill` does (#117).
     pub(super) fn kill(&self, request_id: u64) -> Result<(), String> {
         let request = kill_request(request_id);
         // SAFETY: a live communication handle and a complete request.
@@ -890,7 +890,7 @@ mod tests {
     }
 
     /// DEL-01 (pure supplement, the header's `CM1_KILL`; #117): a Kill
-    /// names its request and requires no family, as `climon2 kill`'s does.
+    /// names its request and requires no family, as `c2 kill`'s does.
     #[test]
     fn a_kill_requires_no_family() {
         let request = kill_request(7);

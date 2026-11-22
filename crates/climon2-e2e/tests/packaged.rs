@@ -43,14 +43,14 @@ fn installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven() {
 }
 
 fn launch(package: &Package, program: &str, args: &[&str]) -> Terminal {
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.args(["exec", program]);
     command.args(args);
     Terminal::spawn(command, 30, 120).unwrap()
 }
 
 fn launch_bash(package: &Package, bash: &Path) -> Terminal {
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.arg("exec");
     command.arg(bash);
     command.args(["--noprofile", "--norc", "-i"]);
@@ -123,7 +123,7 @@ fn installed_generic_fixture_preserves_runtime_contract_and_log_privacy() {
         "exit",
         "23",
     ];
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     configure(&mut command);
     command.args(["exec", "climon2-fixture"]);
     command.args(args);
@@ -188,7 +188,7 @@ fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
         return;
     };
     let package = Package::new();
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.args(["exec"]);
     command.arg(&bash);
     command.args(["--noprofile", "--norc", "-i"]);
@@ -198,7 +198,7 @@ fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
     type_until(&mut terminal, "echo enclosing-$((1+1))\n", "enclosing-2");
     terminal
         .send(format!(
-            "PS1='INNER> ' climon2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
+            "PS1='INNER> ' c2 exec {} --noprofile --norc -i; s=$?; printf '\\nNESTED-STATUS=%s\\n' \"$s\"\n",
             quote(&bash)
         ))
         .unwrap();
@@ -406,7 +406,7 @@ fn debug_hook_startup_panic_and_never_ready_report_and_clean_up() {
     for fault in ["panic", "never-ready"] {
         let package = Package::new();
         let report = package.isolation.home().join("must-not-spawn.json");
-        let mut command = package.command("climon2");
+        let mut command = package.command("c2");
         command.args(["exec", "climon2-fixture", "report"]);
         command.arg(&report);
         command.env("CLIMON2_DAEMON_FAULT", fault);
@@ -438,7 +438,7 @@ fn debug_hook_startup_panic_and_never_ready_report_and_clean_up() {
 fn installed_log_headers_links_and_filters_survive_exec_handoffs() {
     for filter in ["trace", "warn"] {
         let package = Package::new();
-        let mut command = package.command("climon2");
+        let mut command = package.command("c2");
         command.args([
             "exec",
             "climon2-fixture",
@@ -789,7 +789,7 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         &frozen_client_fixture(&package, &real_old, old_version),
     );
     let start = || {
-        let mut command = package.command("climon2");
+        let mut command = package.command("c2");
         command.arg("exec");
         command.arg(&bash);
         command.args(["--noprofile", "--norc", "-i"]);
@@ -833,8 +833,8 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
     let fixture_folder = payload_root.join(fixture_version);
     fs::create_dir_all(&fixture_folder).unwrap();
     copy_executable(
-        &package.executable_home().join("climon2"),
-        &payload_root.join("climon2"),
+        &package.executable_home().join("c2"),
+        &payload_root.join("c2"),
     );
     for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor"] {
         copy_executable(&old_folder.join(binary), &fixture_folder.join(binary));
@@ -894,7 +894,7 @@ fn debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy() {
         return;
     }
     let package = Package::new();
-    let mut command = package.command("climon2");
+    let mut command = package.command("c2");
     command.args(["exec", "climon2-fixture", "await-resize", "exit", "0"]);
     command.env("CLIMON2_CLIENT_FAULT", "panic");
     let mut terminal = Terminal::spawn(command, 30, 240).unwrap();

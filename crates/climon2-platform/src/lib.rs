@@ -4,10 +4,15 @@ pub mod daemon;
 pub mod home;
 pub mod library;
 pub mod logging;
+pub mod native_path;
+pub mod notifier;
 pub mod peer;
 pub mod presentation;
+pub mod private;
 pub mod process;
 pub mod pty;
 pub mod runtime;
+#[cfg(unix)]
 mod syscall;
 pub mod terminal;
+pub mod waiting;

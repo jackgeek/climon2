@@ -36,7 +36,7 @@ viewing and acknowledgement
 ([#95](https://github.com/jackgeek/climon2/issues/95)), and Command final and
 Kill ([#96](https://github.com/jackgeek/climon2/issues/96)),
 which the monitor loads (#106); the client executable loads its own release's
-library for `climon2 kill`
+library for `c2 kill`
 ([#100](https://github.com/jackgeek/climon2/issues/100)), the LIB-01 and LIB-02
 executable cases, and for ordinary attach
 ([#101](https://github.com/jackgeek/climon2/issues/101)), the COM-01 Monitor
@@ -110,8 +110,21 @@ artifacts. Dedicated heavy jobs are allowed; an older build or informal demo
 cannot discharge the gate. Qualify actual runtime behavior on x86-64 GNU/Linux
 (Ubuntu 24.04) and on both supported macOS arm64 and x86_64 architectures; the
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) added Linux.
-Cross-compilation alone proves no runtime support. Windows monitor support is
-not added by this specification.
+Cross-compilation alone proves no runtime support.
+
+Windows (agreed, not implemented,
+[#216](https://github.com/jackgeek/climon2/issues/216)): the monitor and the
+client library are full peers in the first Windows release, so x86-64 Windows
+MSVC on `windows-2025` becomes a fourth qualified platform. Every monitor,
+client-library and headless `exec` scenario runs in the Windows Test job, and
+the programs inside its sessions run under `pwsh`. Terminal-facing monitor
+scenarios (rendering, input routing, resize, the selector, toasts, the bell
+and attention reports) run under both
+[Windows host models](../../windows/qualification.md#host-models);
+every other scenario runs under the Windows Terminal model only. A scenario
+Windows cannot pass needs an explicit documented decision, as in the Windows
+foundation. The release checklist items `WINM-13` to `WINM-16` cover the
+monitor in both real hosts.
 
 ## Entry and discovery
 
@@ -124,7 +137,7 @@ and [selection lifetime](lifecycle.md#monitor-and-selection-lifetime).
 
 | ID | Setup and action | Required observable result | Layers |
 |---|---|---|---|
-| ENT-01 | Start `c2 monitor`, `c2 m`, `climon2 monitor` and `climon2 m` from an installed release with equivalent settings and sessions. | All open the same real monitor behavior; the launcher/install route is exercised, not a renderer fixture. | Monitor |
+| ENT-01 | Start `c2 monitor` and `c2 m` from an installed release with equivalent settings and sessions. | All open the same real monitor behavior; the launcher/install route is exercised, not a renderer fixture. | Monitor |
 | DSC-01 | Start with sessions having distinct creation times, effective statuses, change times and tied values; delay passive metadata. | Starts are bounded newest-created-first with ascending full [session ID](../../../../GLOSSARY.md#protocol-and-plugin-concepts) ties. Initial selection is the first eligible status/time row after bounded collection, not newest-created or first-connected; uncertainty is explicit. | Contract, Monitor |
 | DSC-02 | Initially stall newer sessions or one release, then let work progress. | Older sessions/other releases get fair first-start progress; selector and exit remain responsive. Every live session is scheduled, never silently capped or omitted. | Monitor, Fault |
 | DSC-03 | Start empty, add sessions continuously while the selector/placeholder/live display is active, and request discovery during a pass. | Immediate initial discovery; subsequent pass starts one second after completion, without overlap. New sessions get passive clients automatically; starting/retained clients are reused, and selection does not move. | Contract, Monitor |
@@ -340,7 +353,8 @@ The [measurement job](../../../../GLOSSARY.md#testing)
 workload as `cargo xtask measure` on the exact candidate archive, through the
 test-only [`climon2-measure`](../../../../crates/climon2-measure/README.md) harness,
 and the [Measure workflow](../../../../.github/workflows/measure.yml) runs it on hosted
-macos-15, macos-15-intel and ubuntu-24.04 for release candidates and on manual
+macos-15, macos-15-intel and ubuntu-24.04 (and, agreed for Windows but not
+implemented, windows-2025) for release candidates and on manual
 dispatch, never on pull requests (owner, 2026-11-16). Each scenario's window is
 60 s at fixed output rates; the comparison is the
 [standalone baseline](../../../../GLOSSARY.md#testing). A missed target, a stall or
@@ -418,8 +432,8 @@ Throwaway selector/rendering prototypes are design sources only.
 No current gate requires plugin implementation/configuration/interfaces/examples
 or plugin test endpoints. Core title/status/activity/attention and monitor
 notifications are required. Progress metadata is required where specified,
-not a progress-bar interface. Remote forwarding/security, other-platform monitor
-support, user naming/renaming, persisted final archives, old-version cleanup and
+not a progress-bar interface. Remote forwarding/security, monitor support on
+platforms other than macOS, Linux and Windows, user naming/renaming, persisted final archives, old-version cleanup and
 selector creation remain deferred. Confirmed Delete and explicit CLI headless
 creation are in scope. No new session-survival or native-crash isolation guarantee
 is introduced.

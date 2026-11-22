@@ -9,15 +9,33 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-climon2-cli = { path = "../climon2-cli", features = ["test-hooks"] }
-climon2-client = { path = "../climon2-client", features = ["test-hooks"] }
 climon2-core = { path = "../climon2-core" }
-climon2-daemon = { path = "../climon2-daemon", features = ["test-hooks"] }
-climon2-install = { path = "../climon2-install", features = ["test-hooks"] }
-climon2-monitor = { path = "../climon2-monitor", features = ["test-hooks"] }
 alacritty_terminal = { version = "0.26.0", default-features = false }
-nix = { version = "0.31", features = ["signal", "process", "term", "fs", "user"] }
 portable-pty = { version = "0.9.0", default-features = false }
 sha2 = "0.10"
 tempfile = "3"
+
+# The product crates and the Unix PTY host build only on Unix so far; the
+# Windows host (src/windows.rs) needs none of them.
+[target.'cfg(unix)'.dependencies]
+climon2-cli = { path = "../climon2-cli", features = ["test-hooks"] }
+climon2-client = { path = "../climon2-client", features = ["test-hooks"] }
+climon2-daemon = { path = "../climon2-daemon", features = ["test-hooks"] }
+climon2-install = { path = "../climon2-install", features = ["test-hooks"] }
+climon2-monitor = { path = "../climon2-monitor", features = ["test-hooks"] }
+nix = { version = "0.31", features = ["signal", "process", "term", "fs", "user"] }
 climon2-platform = { version = "0.1.0", path = "../climon2-platform" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_JobObjects", "Win32_System_Threading"] }

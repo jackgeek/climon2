@@ -20,7 +20,6 @@ use super::{
         INVALID_REQUEST_ID, PANIC, RESOURCE_LIMIT, Retry, TIMEOUT, WRONG_THREAD, require,
     },
     hook,
-    platform::Notifier,
     records::{Batch, CHARGE, Event, Response},
     request::{self, Operation, Submitted},
     startup::{Diagnostics, Paths, Startup},
@@ -33,12 +32,14 @@ use climon2_core::{
     keys::{ClientSettings, ControlKey},
     native,
 };
+use climon2_platform::{
+    notifier::{Notifier, Waker},
+    private, process,
+};
 use std::{
     collections::VecDeque,
-    fs::OpenOptions,
     io, mem,
     ops::{AddAssign, SubAssign},
-    os::unix::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
     path::Path,
     sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError},
@@ -301,7 +302,7 @@ pub(super) struct Shared {
     settings: ClientSettings,
     notifier: Notifier,
     /// Raised whenever the connection has something new to look at.
-    waker: Notifier,
+    waker: Waker,
     /// Everything allocated while working for this instance.
     account: Account,
     dispatch: Dispatch,
@@ -436,7 +437,7 @@ pub(super) fn create(startup: Startup, account: Account) -> Result<Handles, Fail
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
     });
-    let descriptors = Notifier::DESCRIPTORS + Notifier::DESCRIPTORS + logs;
+    let descriptors = Notifier::DESCRIPTORS + Waker::DESCRIPTORS + logs;
     shared.lock().measures.descriptors.add(descriptors);
     shared.scope(|| tracing::info!("client instance created"));
     let owner = Owner {
@@ -460,25 +461,17 @@ fn log(diagnostics: Diagnostics) -> Result<(Dispatch, u32), Failure> {
     let Some(path) = diagnostics.log else {
         return Ok((Dispatch::none(), 0));
     };
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(log_failure)?;
+    let file = private::create_new_file(&path).map_err(log_failure)?;
     Ok((dispatch(CappedWriter::new(file), diagnostics.filter), 1))
 }
 
 /// Why the log file cannot be created: no descriptor left is a resource
 /// limit; anything else is the caller's path.
 fn log_failure(error: io::Error) -> Failure {
-    match error.raw_os_error() {
-        Some(libc::EMFILE | libc::ENFILE) => {
-            Failure::new(RESOURCE_LIMIT, "no descriptor is left for the log file")
-        }
-        _ => Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file"),
+    if process::out_of_descriptors(&error) {
+        return Failure::new(RESOURCE_LIMIT, "no descriptor is left for the log file");
     }
+    Failure::new(INVALID_ARGUMENT, "log_path cannot be created as a new file")
 }
 
 /// This generation's terminal evidence. The connection is always closed by
@@ -556,8 +549,8 @@ impl Shared {
         &self.paths.metadata
     }
 
-    pub(super) fn waker(&self) -> i32 {
-        self.waker.descriptor()
+    pub(super) fn waker(&self) -> &Waker {
+        &self.waker
     }
 
     /// One exported call's work on this instance, under its diagnostics. A

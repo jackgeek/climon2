@@ -30,7 +30,7 @@ pub(crate) struct Startup {
 impl Startup {
     pub(crate) fn read() -> Result<Self, Error> {
         terminal::require_ttys()
-            .map_err(|_| Error::new(CLIMON2_ERROR, "climon2 monitor needs a terminal"))?;
+            .map_err(|_| Error::new(CLIMON2_ERROR, "c2 monitor needs a terminal"))?;
         let home = home::canonical()?;
         let log = LogFile::monitor(&home)?;
         Self::configured(&home, log)

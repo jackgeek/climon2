@@ -7,8 +7,7 @@ discovery crate shared by CLI and monitor. #77 moved the CLI's session discovery
 into it: `climon2-discovery`, a shipped library that the CLI and, since #106,
 the monitor use. The monitor is its own shipped
 package and executable, `climon2-monitor` (spec #73, confirmed 2026-11-08): the
-CLI execs its own version's monitor for `c2 monitor` and `c2 m` (or their
-`climon2` spellings), as it execs the version-matched client, and that handoff
+CLI execs its own version's monitor for `c2 monitor` and `c2 m`, as it execs the version-matched client, and that handoff
 between executables of one release is not frozen. The client library's `cdylib`
 artifact, agreed in spec #73, is recorded below (#75).
 The monitor is the one exception to the daemon-only `climon2-vt` rule: the
@@ -23,7 +22,7 @@ The workspace has one package per shipped binary. The CLI, daemon and client nev
 
 | Package | Kind | May depend on |
 |---|---|---|
-| `climon2-launcher` (bin `climon2`) | shipped | nothing, not even workspace crates (ADR 0002); contains seam 1 |
+| `climon2-launcher` (bin `c2`, the only command name since #303) | shipped | nothing, not even workspace crates (ADR 0002); contains seam 1 |
 | `climon2-core` | shipped lib | crates.io only |
 | `climon2-platform` | shipped lib | `core` |
 | `climon2-cli` (bin `climon2-cli`) | shipped lib + thin main | `core`, `platform`, `discovery` |
@@ -49,7 +48,7 @@ The [second-release fixture](../../GLOSSARY.md#testing) (#97; accepted by the de
 
 - **One `climon2` package with three bins:** rejected. Each binary keeps its own dependencies, and the client library mustn't grow code that only the daemon needs. A future monitor loads version-matched client libraries by path, using a separately specified embedding interface rather than a Cargo dependency on another release.
 - **One shared library containing both the core and platform modules:** rejected. `compile_error!` would stop the neutral code building on Linux and Windows.
-- **Building the CLI as `climon2` and renaming the launcher:** rejected. The CLI is `climon2-cli` everywhere, so the launcher alone is `climon2`, and Cargo binary names don't collide.
+- **Building the CLI as `climon2` and renaming the launcher:** rejected. The CLI is `climon2-cli` everywhere, so the launcher alone was `climon2` (`c2` since #303), and Cargo binary names don't collide.
 - **The client-library loader in the monitor only, or a third-party loader crate:** rejected (#84). The client executable needs the same checks, and two loaders would drift apart; a few `libc` calls do the loading, and the classification and validation rules are climon2's own.
 - **The monitor inside the CLI package or binary:** rejected. Ratatui, the monitor's `climon2-vt` models and its library loading would join every CLI invocation's dependencies; a separate executable keeps them in the monitor package alone.
 - **The second-release fixture as a C stand-in, a patched copy of the real library, or a nested build (#97):** rejected. A C stand-in would implement revision 1 again and could not open a passive connection to a real session daemon; patching the release text into a built library forges an identity; a nested Cargo build overwrote feature-unified artifacts (#31). Compiling the daemon library itself under the fixture's version would not give the daemon an identity, because the daemon takes its release from its invocation; a thin main gives it one without changing shipped source.

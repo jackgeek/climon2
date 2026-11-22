@@ -159,7 +159,7 @@ impl Layout {
         if home.exists() {
             let runtime = climon2_core::layout::RuntimeLayout::new(
                 std::path::Path::new("/tmp"),
-                unsafe { libc::geteuid() },
+                Some(unsafe { libc::geteuid() }),
                 &home.canonicalize().unwrap(),
             )
             .unwrap();
@@ -204,7 +204,7 @@ fn exec_rejects_non_tty_before_creating_a_session() {
         .unwrap();
     assert_eq!(output.status.code(), Some(125));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("climon2 exec needs a terminal"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("c2 exec needs a terminal"));
     layout.clean();
 }
 
@@ -883,7 +883,7 @@ fn exec_requires_both_stdin_and_stdout_ttys_but_not_stderr() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(125));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("climon2 exec needs a terminal"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("c2 exec needs a terminal"));
     }
     drop(master);
     layout.clean();
@@ -982,7 +982,7 @@ fn log_suffix_escapes_control_characters_in_the_actual_absolute_home() {
     assert_eq!(fs::read_dir(home.join("logs/general")).unwrap().count(), 1);
 }
 
-/// Starts `climon2 exec <fixture> <mode>` attached in a terminal and waits for the fixture.
+/// Starts `c2 exec <fixture> <mode>` attached in a terminal and waits for the fixture.
 fn held_session(
     layout: &Layout,
     mode: &str,
@@ -998,7 +998,7 @@ fn held_session(
     (terminal, only_metadata(layout))
 }
 
-/// `climon2 kill` with no terminal and an inherited attach envelope that must be
+/// `c2 kill` with no terminal and an inherited attach envelope that must be
 /// overwritten: (status, stdout, stderr).
 fn kill_session(layout: &Layout, selector: &str) -> (i32, String, String) {
     let output = layout

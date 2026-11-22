@@ -28,7 +28,7 @@ FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 
 def links(page):
     """Yield (line, resolved path) for each relative link outside code fences."""
-    text = FENCE.sub("", page.read_text())
+    text = FENCE.sub("", page.read_text(encoding="utf-8"))
     for line in text.splitlines():
         for target in LINK.findall(line):
             if re.match(r"[a-z][a-z0-9+.-]*:", target) or target.startswith("#"):
@@ -57,7 +57,7 @@ def subject(path):
 
 
 def audiences(readme):
-    match = AUDIENCE.search(readme.read_text()) if readme.exists() else None
+    match = AUDIENCE.search(readme.read_text(encoding="utf-8")) if readme.exists() else None
     if not match:
         return None
     words = re.split(r",|\band\b", match.group(1))
@@ -67,7 +67,7 @@ def audiences(readme):
 def declared(folder, pattern):
     """The paths a README's declaration line links, resolved."""
     readme = folder / "README.md"
-    match = pattern.search(readme.read_text()) if readme.exists() else None
+    match = pattern.search(readme.read_text(encoding="utf-8")) if readme.exists() else None
     if not match:
         return set()
     return {Path(os.path.normpath(folder / t.split("#", 1)[0])) for t in LINK.findall(match.group(1))}

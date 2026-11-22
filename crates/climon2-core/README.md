@@ -195,7 +195,7 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   `MonitorConfig`, ignoring `scrollback`. JSONC comments and trailing commas are
   accepted; unknown fields are ignored; errors name their class.
   - `MonitorConfig` (spec #73 Configuration model) exists only with an escape
-    prefix (`client.escape_prefix may not be null for climon2 monitor`); its
+    prefix (`client.escape_prefix may not be null for c2 monitor`); its
     take-control key may be null. `escape_prefix()` gives the prefix,
     `take_control_key()` the optional take-control key, and `settings()`
     gives `MonitorSettings` with `show_key_hints` (default true), `bell`

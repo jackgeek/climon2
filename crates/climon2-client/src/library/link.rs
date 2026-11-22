@@ -3,12 +3,18 @@
 //! one at a time, after its length prefix has been admitted, so no frame is
 //! larger than the ceiling it was read under.
 
-use super::{failure::Fault, platform};
+use super::failure::Fault;
 use climon2_core::wire::{FatalCode, Frame, FrameLimit};
+use climon2_platform::{
+    connection,
+    notifier::Waker,
+    process,
+    runtime::SocketStream,
+    waiting::{self, Interest, Watch},
+};
 use std::{
     io::{self, Read},
     mem,
-    os::{fd::AsRawFd, unix::net::UnixStream},
     path::Path,
     time::{Duration, Instant},
 };
@@ -34,10 +40,10 @@ pub(super) const TIMEOUT: Fault =
 /// `otherwise`, unless `error` is the process or the system running out of
 /// descriptors: an exhausted resource, explicit as such (#99).
 pub(super) fn exhausted(error: &io::Error, otherwise: Fault) -> Fault {
-    match error.raw_os_error() {
-        Some(libc::EMFILE | libc::ENFILE) => NO_DESCRIPTOR,
-        _ => otherwise,
+    if process::out_of_descriptors(error) {
+        return NO_DESCRIPTOR;
     }
+    otherwise
 }
 
 /// A connection-fatal code the library found in the daemon's traffic.
@@ -49,7 +55,7 @@ pub(super) fn fatal(code: FatalCode) -> Fault {
 }
 
 pub(super) struct Link {
-    socket: UnixStream,
+    socket: SocketStream,
     incoming: Vec<u8>,
     outgoing: Vec<u8>,
 }
@@ -57,11 +63,11 @@ pub(super) struct Link {
 impl Link {
     /// Connects to a same-UID peer within `timeout`.
     pub(super) fn connect(path: &Path, timeout: Duration) -> Result<Self, Fault> {
-        let socket = climon2_platform::connection::connect(path, timeout)
-            .map_err(|error| exhausted(&error, UNREACHABLE))?;
+        let socket =
+            connection::connect(path, timeout).map_err(|error| exhausted(&error, UNREACHABLE))?;
         climon2_platform::peer::authenticate(&socket).map_err(|_| UNREACHABLE)?;
         socket.set_nonblocking(true).map_err(|_| UNREACHABLE)?;
-        platform::quiet(socket.as_raw_fd()).map_err(|_| UNREACHABLE)?;
+        connection::quiet(&socket).map_err(|_| UNREACHABLE)?;
         Ok(Self {
             socket,
             incoming: Vec::new(),
@@ -80,7 +86,7 @@ impl Link {
     /// Writes what the socket takes now, without waiting, if anything waits.
     pub(super) fn flush(&mut self) -> Result<(), Fault> {
         if self.writing() {
-            let sent = platform::send(self.socket.as_raw_fd(), &self.outgoing);
+            let sent = connection::send(&self.socket, &self.outgoing);
             let written = pending(sent).map_err(|_| BROKEN)?;
             self.outgoing.drain(..written.unwrap_or_default());
         }
@@ -153,45 +159,30 @@ impl Link {
     }
 
     /// Reading, plus writing while bytes wait.
-    fn interest(&self) -> libc::c_short {
-        let write = if self.writing() {
-            libc::POLLOUT
+    fn interest(&self) -> Interest {
+        if self.writing() {
+            Interest::ReadWrite
         } else {
-            libc::c_short::default()
-        };
-        libc::POLLIN | write
+            Interest::Read
+        }
     }
 }
 
 /// Waits until `waker` or one of `links`' sockets is ready, or `deadline`
 /// passes. A signal or a spurious wake only makes the caller look again.
-pub(super) fn wait(waker: Option<i32>, links: &[&Link], deadline: Option<Instant>) {
-    let mut descriptors: Vec<_> = waker
-        .map(|waker| pollfd(waker, libc::POLLIN))
-        .into_iter()
-        .collect();
-    descriptors.extend(
+pub(super) fn wait(waker: Option<&Waker>, links: &[&Link], deadline: Option<Instant>) {
+    let mut watches: Vec<_> = waker.map(Waker::watch).into_iter().collect();
+    watches.extend(
         links
             .iter()
-            .map(|link| pollfd(link.socket.as_raw_fd(), link.interest())),
+            .map(|link| Watch::stream(&link.socket, link.interest())),
     );
-    let timeout = deadline.map_or(i32::MAX, milliseconds);
-    // SAFETY: the entries are valid for the call's duration.
-    unsafe {
-        libc::poll(
-            descriptors.as_mut_ptr(),
-            descriptors.len() as libc::nfds_t,
-            timeout,
-        )
-    };
-}
-
-fn pollfd(fd: i32, events: libc::c_short) -> libc::pollfd {
-    libc::pollfd {
-        fd,
-        events,
-        revents: libc::c_short::default(),
-    }
+    // Rounded up by the wait, so a wait never ends early; no deadline
+    // saturates at the longest wait.
+    let timeout = deadline.map_or(Duration::MAX, |deadline| {
+        remaining(deadline).unwrap_or_default()
+    });
+    let _ = waiting::wait(&mut watches, timeout);
 }
 
 /// The time left before `deadline`, if any.
@@ -199,12 +190,6 @@ pub(super) fn remaining(deadline: Instant) -> Option<Duration> {
     deadline
         .checked_duration_since(Instant::now())
         .filter(|left| !left.is_zero())
-}
-
-/// Milliseconds until `deadline`, rounded up, so a wait never ends early.
-fn milliseconds(deadline: Instant) -> i32 {
-    let left = remaining(deadline).unwrap_or_default();
-    i32::try_from(left.as_micros().div_ceil(1000)).unwrap_or(i32::MAX)
 }
 
 /// Bytes a nonblocking call moved; none when it would block or was

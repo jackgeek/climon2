@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use climon2_cli::list::{LiveSession, discover, json, table};
 use climon2_core::{SessionId, hello::HelloExtensions, metadata::SessionMetadata};
 use climon2_platform::{logging, process, runtime};
@@ -213,10 +215,13 @@ fn gone_pid_is_stale_but_wrong_or_malformed_hello_never_is() {
         let worker = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             read_frame(&mut socket).unwrap();
+            // One write: discovery may reject on the type byte and close at
+            // once, and a later write of the rest would then fail.
             let length = u32::try_from(body.len() + 1).unwrap();
-            socket.write_all(&length.to_be_bytes()).unwrap();
-            socket.write_all(&[type_code]).unwrap();
-            socket.write_all(&body).unwrap();
+            let mut frame = length.to_be_bytes().to_vec();
+            frame.push(type_code);
+            frame.extend_from_slice(&body);
+            socket.write_all(&frame).unwrap();
         });
         assert!(discover(home.path()).unwrap().is_empty());
         worker.join().unwrap();

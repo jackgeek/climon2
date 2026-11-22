@@ -5,6 +5,9 @@
 //! (`%c`) maps the counters into the profile file; the `%m` merge pool gives one
 //! file per binary, so PID reuse cannot collide. Darwin requires the profile
 //! sections to be page aligned for continuous mode (16 KiB covers arm64 too).
+//! ELF and COFF instead need runtime counter relocation: without it Linux and
+//! Windows binaries ignore `%c`, and a process ended by SIGKILL or
+//! `TerminateProcess` loses its counters.
 use crate::quality::{coverage_command, output, run};
 use std::{
     io,
@@ -46,7 +49,13 @@ fn continuous_profile(environment: &mut [(String, String)]) -> io::Result<String
     Ok(value.clone())
 }
 
+/// The coverage build's RUSTFLAGS, which replace the configured ones: on
+/// Windows they keep the static C runtime every Windows build links
+/// (`.cargo/config.toml`).
 fn aligned_sections() -> String {
+    if cfg!(windows) {
+        return "-Cllvm-args=-runtime-counter-relocation -Ctarget-feature=+crt-static".to_owned();
+    }
     if cfg!(target_os = "linux") {
         return "-Cllvm-args=-runtime-counter-relocation".to_owned();
     }

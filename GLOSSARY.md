@@ -351,7 +351,7 @@ _Avoid_: Client, protocol extension
 ## Installation
 
 **Launcher**:
-The executable invoked as `c2` or `climon2` on PATH that hands off to the current version's CLI.
+The executable invoked as `c2` on PATH that hands off to the current version's CLI.
 _Avoid_: Shim, wrapper, stub
 
 **Current version**:
@@ -411,6 +411,10 @@ The test harness's emulated host, whose visible cells, cursor, modes, bells and 
 The test harness's description of how to start one shell in a controlled way and drive it in tests; the only place climon2 knows about specific shells.
 _Avoid_: Shell config, shell adapter
 
+**Host model**:
+The test harness's description of how one qualified host terminal creates, feeds and closes the pseudoconsole it gives a client.
+_Avoid_: Host profile, host emulation
+
 **Smoke test**:
 The single end-to-end check that a freshly installed climon2 can start a bash session from bash, be listed, exit with the command's status, and leave nothing behind.
 _Avoid_: Sanity test, canary
@@ -436,7 +440,7 @@ The PERF-01 run of the test-only `climon2-measure` harness on a release candidat
 _Avoid_: Benchmark, perf test
 
 **Standalone baseline**:
-One `climon2 attach` per session, each in its own terminal, doing the work a Measure case gives the monitor; the comparison every PERF-01 case reports.
+One `c2 attach` per session, each in its own terminal, doing the work a Measure case gives the monitor; the comparison every PERF-01 case reports.
 _Avoid_: Control group, fewer-process savings
 
 **Ticket gate**:

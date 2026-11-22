@@ -246,8 +246,11 @@ A release without bounded qualified requirements is explicitly unsupported or
 resource-blocked once loaded; it is not assumed to use the default
 reservation.
 Qualified requirements are measured and recorded per platform, because a
-release's macOS and Linux libraries can differ, for example in notification
-descriptors.
+release's macOS, Linux and Windows libraries can differ, for example in
+notification descriptors. Windows is agreed, not implemented
+([#216](https://github.com/jackgeek/climon2/issues/216)). PERF-01 and the
+requirement values are measured and recorded for `windows-x86_64` too, and no
+threshold is relaxed for it.
 Qualified worker counts above the configured maximum require explicit rejection,
 not silently raising that ceiling. Greater reservations apply to actual
 stack/descriptor/shared-memory requirements, not permission to exceed a limit.

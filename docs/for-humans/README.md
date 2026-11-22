@@ -1,7 +1,8 @@
 # climon2 documentation
 
 Everything about climon2 written for people to read: how it is released, how
-it behaves, the protocols between its programs, and how its code is arranged.
+it behaves, the protocols between its programs, how its code is arranged, and
+how it is being ported to Windows.
 Architecture decisions live in [`docs/adr/`](../adr/) and agent instructions in
 [`docs/agents/`](../agents/), outside this tree.
 
@@ -35,5 +36,6 @@ line saying how much of it is implemented, and links the issue that settled it.
 | [behaviour/](behaviour/README.md) | Specifications of what sessions and the monitor do. |
 | [protocol/](protocol/README.md) | The interfaces between climon2's programs, for plugin and client authors. |
 | [architecture/](architecture/README.md) | Diagrams of climon2's executables, libraries and crates. |
+| [windows/](windows/README.md) | Specifications of the Windows port: lifecycle, packaging and qualification. |
 | [check.py](check.py) | CI check that this tree follows its own rules: no orphans, complete tables, allowed links. |
 | [test_check.py](test_check.py) | Tests of `check.py` against small trees it builds itself. |

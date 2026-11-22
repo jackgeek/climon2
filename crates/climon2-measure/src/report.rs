@@ -19,9 +19,9 @@ use std::{collections::BTreeMap, fmt::Write as _, time::Duration};
 /// Who does a case's work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
-    /// One `climon2 monitor` on one host terminal.
+    /// One `c2 monitor` on one host terminal.
     Monitor,
-    /// One `climon2 attach` per session, each on its own host terminal.
+    /// One `c2 attach` per session, each on its own host terminal.
     Standalone,
 }
 

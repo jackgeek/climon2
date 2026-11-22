@@ -1,6 +1,6 @@
 //! Drives the exact candidate archive through the matrix: for each case, N
-//! sessions of the workload, measured once under one `climon2 monitor` and
-//! once under N `climon2 attach` clients in N terminals (the owner's
+//! sessions of the workload, measured once under one `c2 monitor` and
+//! once under N `c2 attach` clients in N terminals (the owner's
 //! baseline, #121). Every wait is bounded; a probe that outlives its bound
 //! is recorded as a timeout, never retried into a sample.
 

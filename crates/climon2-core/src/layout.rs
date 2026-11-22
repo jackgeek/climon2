@@ -220,15 +220,21 @@ pub struct RuntimeLayout(PathBuf);
 
 impl RuntimeLayout {
     /// Platform selects the runtime root; core supplies only naming and bounds.
+    /// Unix names the directory `climon2-<uid>-<hash8>`; Windows, which has no
+    /// numeric uid and a root of its own, names it `<hash8>`.
     pub fn new(
         runtime_root: &Path,
-        uid: u32,
+        uid: Option<u32>,
         canonical_home: &Path,
     ) -> Result<Self, ContractError> {
         absolute(runtime_root)?;
         canonical_absolute(canonical_home)?;
         let hash = home_hash8(canonical_home.as_os_str().as_encoded_bytes());
-        Ok(Self(runtime_root.join(format!("climon2-{uid}-{hash}"))))
+        let name = match uid {
+            Some(uid) => format!("climon2-{uid}-{hash}"),
+            None => hash,
+        };
+        Ok(Self(runtime_root.join(name)))
     }
 
     pub fn directory(&self) -> &Path {

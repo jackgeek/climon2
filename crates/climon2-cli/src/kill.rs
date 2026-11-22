@@ -1,5 +1,5 @@
-//! `climon2 kill`: the target daemon owns shutdown; this only dispatches and waits.
-use crate::{Error, attach, list};
+//! `c2 kill`: the target daemon owns shutdown; this only dispatches and waits.
+use crate::{Error, client, list};
 use climon2_core::{SessionId, selector::Selector, startup_envelope::StartupEnvelope};
 use std::{
     process::{Child, ExitStatus, Stdio},
@@ -13,14 +13,14 @@ const POLL: Duration = Duration::from_millis(10);
 pub fn run(home: &std::path::Path, selector: &Selector) -> Result<u32, Error> {
     let deadline = Instant::now() + DEADLINE;
     let sessions = list::discover_live(home)?;
-    let session = attach::select(&sessions, selector)?;
+    let session = client::select(&sessions, selector)?;
     let child = start(home, session)?;
     confirm(child, deadline, &session.metadata.session_id)
 }
 
 fn start(home: &std::path::Path, session: &list::LiveSession) -> Result<Child, Error> {
     require_kill(session)?;
-    let child = attach::client(home, &session.metadata, StartupEnvelope::Kill)?
+    let child = client::client(home, &session.metadata, StartupEnvelope::Kill)?
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()?;

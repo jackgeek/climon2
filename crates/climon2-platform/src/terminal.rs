@@ -1,9 +1,14 @@
-//! Terminal ownership and deferred signal handling (#20).
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("terminal seam requires macOS or Linux");
+//! Terminal ownership, file-status flags, hang-up and deferred signal
+//! handling (#20). Windows has only what a detached daemon needs so far
+//! (#317); its console handling arrives with interactive `exec` (#321).
+pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::*;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "terminal/windows.rs"]
+mod native;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
@@ -13,7 +18,7 @@ mod unix {
         fs::File,
         io,
         mem::MaybeUninit,
-        os::fd::{AsRawFd, FromRawFd},
+        os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
         sync::{
             Arc, Mutex, Once,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -24,7 +29,7 @@ mod unix {
         if unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 } {
             return Ok(());
         }
-        Err(io::Error::other("climon2 exec needs a terminal"))
+        Err(io::Error::other("c2 exec needs a terminal"))
     }
 
     /// An owned duplicate; closing it never closes the process's stdin.
@@ -196,5 +201,59 @@ mod unix {
                 signal_hook::low_level::unregister(registration);
             }
         }
+    }
+
+    /// The single owner of the terminal's file-status flags while bridging. Both originals
+    /// are captured before either changes, because stdin and stdout may share one open-file
+    /// description, and are restored through owned duplicates, so closing the bridge's
+    /// descriptors can never skip or misdirect restoration.
+    pub struct Nonblocking {
+        saved: [(OwnedFd, i32); 2],
+    }
+
+    impl Nonblocking {
+        pub fn new(input: BorrowedFd<'_>, output: BorrowedFd<'_>) -> io::Result<Self> {
+            let guard = Self {
+                saved: [save_flags(input)?, save_flags(output)?],
+            };
+            guard.apply()?;
+            Ok(guard)
+        }
+
+        fn apply(&self) -> io::Result<()> {
+            for (fd, flags) in &self.saved {
+                set_flags(fd, flags | libc::O_NONBLOCK)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Nonblocking {
+        fn drop(&mut self) {
+            for (fd, flags) in self.saved.iter().rev() {
+                let _ = set_flags(fd, *flags);
+            }
+        }
+    }
+
+    fn save_flags(fd: BorrowedFd<'_>) -> io::Result<(OwnedFd, i32)> {
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((fd.try_clone_to_owned()?, flags))
+    }
+
+    fn set_flags(fd: &OwnedFd, flags: i32) -> io::Result<()> {
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// A terminal read failing because the terminal was lost (EIO), which,
+    /// like EOF, is a hang-up.
+    pub fn hung_up(error: &io::Error) -> bool {
+        error.raw_os_error() == Some(libc::EIO)
     }
 }
