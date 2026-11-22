@@ -159,7 +159,7 @@ impl Layout {
         if home.exists() {
             let runtime = climon2_core::layout::RuntimeLayout::new(
                 std::path::Path::new("/tmp"),
-                unsafe { libc::geteuid() },
+                Some(unsafe { libc::geteuid() }),
                 &home.canonicalize().unwrap(),
             )
             .unwrap();

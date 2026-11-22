@@ -18,6 +18,7 @@ workspace = true
 
 [dev-dependencies]
 filetime = "0.2.29"
+serde_json.workspace = true
 tempfile = "3.27.0"
 
 # The fixtures are Unix programs; only the home tests run on Windows so far.
@@ -25,10 +26,14 @@ tempfile = "3.27.0"
 climon2-fixtures = { path = "../climon2-fixtures" }
 
 [target.'cfg(windows)'.dependencies]
+time = { workspace = true, features = ["local-offset"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }

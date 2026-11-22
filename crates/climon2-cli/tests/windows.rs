@@ -1,15 +1,11 @@
-//! #315: on Windows the CLI so far answers only help, version and usage
-//! errors (`scaffold.rs`); every subcommand is its own failure.
+//! #315: on Windows the CLI so far answers help, version and usage errors
+//! (`scaffold.rs`) and `list` (#316, `list_windows.rs`); every other
+//! subcommand is its own failure.
 #![cfg(windows)]
 
 #[test]
 fn subcommands_fail_as_unsupported_without_touching_home() {
-    for arguments in [
-        &["list"][..],
-        &["exec", "cmd"],
-        &["kill", "abc"],
-        &["monitor"],
-    ] {
+    for arguments in [&["exec", "cmd"][..], &["kill", "abc"], &["monitor"]] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_climon2-cli"))
             .args(arguments)
             .env("CLIMON2_HOME", "relative/home/is/invalid")

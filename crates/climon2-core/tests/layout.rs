@@ -134,7 +134,7 @@ fn issue74_monitor_resolves_the_same_layout_as_the_cli() {
 fn issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded() {
     assert_eq!(home_hash8(b"/home/example/.climon2"), "64c3a98c");
     let root = std::env::current_dir().unwrap();
-    let runtime = RuntimeLayout::new(&root, 501, &root.join("home")).unwrap();
+    let runtime = RuntimeLayout::new(&root, Some(501), &root.join("home")).unwrap();
     let id = "550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
     let socket = runtime.socket_path(&id, 10_000).unwrap();
     assert_eq!(
@@ -153,7 +153,20 @@ fn issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded(
     let length = socket.as_os_str().as_encoded_bytes().len();
     assert_eq!(runtime.socket_path(&id, length).unwrap(), socket);
     assert!(runtime.socket_path(&id, length - 1).is_err());
-    assert!(RuntimeLayout::new(Path::new("relative"), 501, &root).is_err());
+    assert!(RuntimeLayout::new(Path::new("relative"), Some(501), &root).is_err());
+}
+
+/// #316: Windows has no numeric uid, so its runtime directory is named by the
+/// home hash alone, under its own root (`%LOCALAPPDATA%\c2`).
+#[test]
+fn issue316_runtime_directory_without_a_uid_is_the_home_hash_alone() {
+    let root = std::env::current_dir().unwrap();
+    let home = root.join("home");
+    let hash = home_hash8(home.as_os_str().as_encoded_bytes());
+    let windows = RuntimeLayout::new(&root, None, &home).unwrap();
+    assert_eq!(windows.directory(), root.join(&hash));
+    let unix = RuntimeLayout::new(&root, Some(7), &home).unwrap();
+    assert_eq!(unix.directory(), root.join(format!("climon2-7-{hash}")));
 }
 
 /// #84 LIB-01 (absolute exact-release lookup): an executable home is absolute

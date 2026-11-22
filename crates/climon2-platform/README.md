@@ -1,8 +1,9 @@
 # climon2-platform
 
-Shared macOS and Linux seams (ADR 0003). `home`, `private` and `logging` (all
-but its stderr capture) also build on Windows so far; every other seam is
-declared for Unix only, and other Unix targets fail inside each seam. Neutral contracts remain in `climon2-core`. No runtime
+Shared macOS, Linux and Windows seams (ADR 0003). `home`, `private`,
+`logging` (all but its stderr capture), `runtime`, `connection`, `waiting`,
+`process` (identity only) and `presentation` build on Windows so far (see
+[Windows](#windows)); every other seam is declared for Unix only. Neutral contracts remain in `climon2-core`. No runtime
 dispatch or shell-specific logic.
 
 ## Runtime and peers
@@ -13,7 +14,7 @@ dispatch or shell-specific logic.
   client executable and the monitor share one rule for each:
   `home::named()` is the climon2 home the environment names (`CLIMON2_HOME`,
   else `.climon2` in `HOME`; absolute; nothing touched), `home::canonical()`
-  that home created and canonicalized through `canonical_home` (Unix only),
+  that home created and canonicalized through `canonical_home`,
   `home::default_executable_home()` the executable home an installer uses
   without `--dir` (`.local/share/climon2` in an absolute `HOME`; nothing
   touched), and
@@ -27,7 +28,8 @@ dispatch or shell-specific logic.
   `LOCALAPPDATA`.
 - `RuntimeDirectory::prepare(&canonical_home)` creates/checks the core-derived
   `/tmp/climon2-<euid>-<hash8>` directory. `path()` and
-  `socket_path(&SessionId)` expose its paths; the socket limit is 103 bytes.
+  `socket_path(&SessionId)` expose its paths; the socket limit is 103 bytes
+  (107 on Windows, where the directory is `%LOCALAPPDATA%r<hash8>`).
   The directory is never deleted.
 - `private` (ADR 0003, "Private files and folders") holds every create of a
   file climon2 makes and every check of a folder it manages; `runtime`,
@@ -65,7 +67,9 @@ dispatch or shell-specific logic.
 - `runtime::{SocketListener,SocketStream}` name the Unix transport types
   without exposing libc types in callers' signatures.
 - `connection::nobody_listening(&io::Error)` is true when a connect found the
-  socket missing (ENOENT) or refusing (ECONNREFUSED). Only these can begin to
+  socket missing (ENOENT) or refusing (ECONNREFUSED), read as std's
+  `NotFound` and `ConnectionRefused` kinds; on Windows a missing path and a
+  stale socket both refuse with `WSAECONNREFUSED`. Only these can begin to
   prove a session stale (#311).
 - `connection::send(BorrowedFd, &[u8])` sends what a socket takes now and
   never raises `SIGPIPE` in the client library's embedder: Linux sends with
@@ -242,6 +246,40 @@ dispatch or shell-specific logic.
   `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` are neither cleared nor
   a reason to refuse.
 
+## Windows
+
+Registered native files give the Windows bodies (#316; ADR 0003, "Windows
+I/O and transport"; docs/windows-lifecycle.md, "Identity and liveness"):
+
+- `src/runtime/windows.rs`: `RuntimeDirectory::prepare` uses
+  `%LOCALAPPDATA%\c2` as its root (created when missing and not checked;
+  `LOCALAPPDATA` must be absolute) and names the directory `<hash8>`, with no
+  uid. The directory is prepared by `private::private_directory`, so an
+  unsafe one fails with the "unsafe runtime directory" error; the socket file
+  inherits its one ACE. The socket-path budget is 107 bytes; over it,
+  `socket_path` and `bind` fail, and `exec`'s own failure is 125.
+  `SocketStream` is `socket2::Socket`, and `bind` returns a `SocketListener`
+  whose `accept` returns the stream and its address. Windows has no peer
+  credentials, so there is no `peer` seam. `validate_stale_socket` accepts a
+  missing path and a reparse point tagged `IO_REPARSE_TAG_AF_UNIX` (std
+  reports a socket as a regular file), and refuses anything else, links and
+  junctions included.
+- `src/waiting/windows.rs`: `Watch` and `wait` over `WSAPoll`, which waits on
+  sockets only. `Watch::new(BorrowedSocket, Interest)` and, on every
+  platform, `Watch::stream(&SocketStream, Interest)`. `WSAPoll` can return up
+  to a clock tick early with nothing ready, so `wait` calls it again until
+  the timeout has passed. There is no `Watch::idle()` yet: `WSAPoll` reports
+  an ignored entry as invalid and fails when every entry is ignored.
+- `src/process/windows.rs`: `start_time`, `is_same_process` and
+  `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
+  time in epoch microseconds. Only "no such process"
+  (`ERROR_INVALID_PARAMETER`) or a process that has exited while its object
+  is still held reads as gone; any other failure, such as access denied, is
+  an error and never evidence of death.
+- `src/presentation/windows.rs`: `local_datetime` uses the system's offset
+  for the instant; `columns` is the visible console window's width, or 80
+  when stdout is not a console.
+
 ## Behavioral evidence
 
 `tests/runtime.rs`: `issue18_private_directory_refuses_symlink_file_and_permissive_mode_without_repair`,
@@ -282,6 +320,47 @@ an elevated session have it):
 `a_junction_or_directory_link_standing_in_for_a_folder_is_refused`,
 `a_general_log_is_a_private_file_in_private_folders` and
 `a_junction_or_directory_link_standing_in_for_logs_is_refused_and_pruning_leaves_its_target_alone`.
+
+The #316 tests are Windows only and run by CI's Windows Test job and the
+Windows gate. Tests that need their own `LOCALAPPDATA` run their body again
+in a child of the test binary.
+`tests/runtime_windows.rs`:
+`the_runtime_directory_is_the_home_hash_in_c2_under_local_app_data_and_private`,
+`an_unsafe_runtime_directory_is_refused_and_left_unrepaired`,
+`a_relative_local_app_data_is_refused`,
+`a_socket_path_over_107_bytes_is_refused_and_fails_with_125`,
+`bind_admits_a_107_byte_path_and_refuses_108_bytes`,
+`a_session_socket_binds_and_connects_in_the_real_runtime_directory`,
+`a_stale_socket_or_a_missing_path_may_be_removed_as_a_socket` and
+`anything_but_a_socket_file_is_refused_as_a_stale_socket`.
+`tests/connection_windows.rs`:
+`a_bound_socket_accepts_a_connection_that_carries_bytes_both_ways`,
+`a_connection_waits_for_real_readiness_until_the_deadline`,
+`one_wait_reports_each_ready_socket_until_the_timeout`,
+`a_hung_up_peer_is_ready`,
+`a_listener_is_readable_once_a_connection_is_pending`,
+`a_missing_or_stale_socket_is_refused_and_says_nobody_listens` (a missing
+directory instead fails with `WSAENETDOWN`, which proves nothing),
+`a_live_socket_file_can_be_deleted_and_then_refuses_new_connections` and
+`binding_over_a_stale_socket_file_fails_until_it_is_deleted`
+(`WSAEADDRINUSE`).
+`tests/process_windows.rs`:
+`a_live_process_has_its_creation_time_as_epoch_microseconds`,
+`a_daemon_is_the_same_only_with_its_pid_and_its_creation_time`,
+`a_gone_process_is_not_the_same_daemon`,
+`an_exited_process_whose_handle_is_held_is_not_the_same_daemon` and
+`a_process_the_caller_may_not_open_is_never_taken_for_a_gone_one` (an empty
+process DACL, opened without `SeDebugPrivilege`).
+`tests/presentation_windows.rs`:
+`a_creation_time_is_shown_in_the_systems_local_time` (checked against .NET)
+and `redirected_output_is_80_columns_wide`.
+`tests/cross_account_windows.rs`:
+`a_second_account_is_denied_the_runtime_directory_logs_and_metadata` logs
+on as a second, non-administrator account and finds it denied the runtime
+directory, creating a file in it, a session log, a metadata file and the
+`logs` folder, while it can read an ordinary file beside them. CI's Windows
+jobs create that account; elsewhere the test is skipped with that reason,
+and on CI it fails without the account.
 
 `tests/process.rs`: `issue26_identity_uses_start_time_and_refuses_zero_or_pid_reuse`,
 `issue19_waitpid_preserves_exit_and_real_signal_status`,

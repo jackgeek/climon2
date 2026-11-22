@@ -298,6 +298,7 @@ dependencies = [
  "climon2-fixtures",
  "filetime",
  "libc",
+ "serde_json",
  "signal-hook 0.3.18",
  "socket2",
  "tempfile",

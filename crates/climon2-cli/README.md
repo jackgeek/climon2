@@ -15,9 +15,13 @@ replaces it with the CLI's own version's `climon2-monitor`. Usage errors
 (including a malformed session selector) are 2; climon2 failures are 125; daemon
 startup preserves 126/127.
 
-On Windows the CLI so far answers only help, version and usage errors (#315).
-Every subcommand fails with 125 from `src/windows.rs` until its Windows seams
-exist; the subcommands themselves are behind `src/unix.rs`.
+On Windows the CLI so far answers help, version and usage errors (#315) and
+runs `list` (#316) through the same general-log dispatch as Unix. Every other
+subcommand fails with 125 from `src/windows.rs`, before touching the home,
+until its Windows seams exist; the subcommands themselves are behind
+`src/unix.rs`. `tests/list_windows.rs` proves `list` with no sessions, the
+reclaim of a stale session whose daemon has exited, the sessions it keeps,
+and a live session listed to the width of a pinned-ConPTY console.
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the
