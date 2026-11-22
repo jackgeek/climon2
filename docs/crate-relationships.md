@@ -188,6 +188,11 @@ consume the package as dev-dependencies only so that Cargo builds its
 `cdylib`; no code links it. The developer accepted this package on
 2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
+**Current (#314):** `xtask`'s normal edges to `core`, `install` and
+`platform` are Unix-only dependencies. On Windows `xtask` builds without them,
+for the source check and the Windows [quality gate](windows-quality.md); its
+release checks, distribution builds and installs need the Unix installer.
+
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so
 `xtask` gains no edge). It consumes `core` for session metadata,

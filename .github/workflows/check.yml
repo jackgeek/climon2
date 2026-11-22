@@ -31,7 +31,7 @@ permissions:
 # "on" (Settings > Secrets and variables > Actions > Variables). Off, checks run
 # on Linux and Windows, and macOS only builds its release artifact.
 #
-# The Windows Test job runs unless the repository variable
+# The Windows Test and Quality jobs run unless the repository variable
 # CLIMON2_WINDOWS_TESTS is "off" (docs/windows-quality.md). Off, it still runs
 # for release tags and for changes that `cargo xtask windows-changed` says
 # touch Windows-only code; the neutral job's Windows leg always runs.
@@ -152,6 +152,78 @@ jobs:
           key: conpty-${{ hashFiles('pins/conpty.txt') }}
       - name: Test the harness's Windows host
         run: cargo test --locked -p climon2-test-term
+  windows-quality:
+    name: Windows-only CRAP and mutation / windows-2025
+    needs: windows-scope
+    # As the macOS job: a draft feature/* -> main integration PR waits until ready.
+    if: >-
+      needs.windows-scope.outputs.test == 'true'
+      && !(github.event_name == 'pull_request'
+        && github.event.pull_request.draft
+        && github.base_ref == 'main'
+        && startsWith(github.head_ref, 'feature/'))
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: target/quality-run
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Select the changed-source mutation base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE"
+          if [[ -z "$base" || "$base" == 0000000000000000000000000000000000000000 ]]; then
+            base=HEAD
+          fi
+          echo "CLIMON2_MUTATION_BASE=$base" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: .metrics
+          key: quality-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs', 'tools/quality-requirements.txt') }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov.exe
+          key: llvm-cov-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xtask/src/quality.rs') }}
+      - name: Set up pinned quality tools
+        env:
+          CLIMON2_QUALITY_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: cargo xtask setup-quality
+      # On Windows the gate first runs the sentinel and the killed-process coverage
+      # probe. A release mutates every registered Windows file; its time is recorded
+      # against the 90-minute budget in docs/windows-quality.md.
+      - name: Qualify only Windows-exclusive source (shared source runs on Linux)
+        env:
+          MUTATE_ALL: ${{ inputs.mutate_all || false }}
+        run: |
+          flags=(--native-only)
+          if [[ "$MUTATE_ALL" == true ]]; then flags+=(--mutate-all); fi
+          started=$SECONDS
+          status=0
+          cargo xtask mutate "${flags[@]}" || status=$?
+          minutes=$(( (SECONDS - started + 59) / 60 ))
+          {
+            echo "### Windows native-only gate"
+            echo
+            echo "- Runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}; $(cmd //c ver | tr -d '\r' | grep .)"
+            echo "- \`cargo xtask mutate ${flags[*]}\`: exit $status after $minutes min"
+            if [[ "$MUTATE_ALL" == true ]]; then
+              verdict=within
+              if (( minutes > 90 )); then verdict=over; fi
+              echo "- Release mutate-all: $minutes of 90 budgeted minutes ($verdict budget)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
   quality:
     name: macOS-only CRAP and mutation
     # A draft feature/* -> main integration PR re-qualifies every macOS change

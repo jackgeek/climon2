@@ -17,16 +17,17 @@ use climon2_core::{
 use climon2_platform::{
     library::{Functions, Library, Loader},
     logging::library_log_name,
+    waiting::{Interest, Watch},
 };
 use std::{
     io,
     mem::MaybeUninit,
-    os::unix::ffi::OsStrExt,
+    os::{fd::BorrowedFd, unix::ffi::OsStrExt},
     path::{Path, PathBuf},
     slice,
     sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 /// The executable's fixed `cm1_limits` (spec #73, Client executable): the
@@ -316,23 +317,25 @@ impl Embedded {
 
     /// The borrowed descriptor that is readable while there is something
     /// to drain.
-    pub(crate) fn descriptor(&self) -> i32 {
-        self.notification
+    pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
+        // SAFETY: the library keeps the notification descriptor open while
+        // the communication handle lives, which is until `finish` takes self.
+        unsafe { BorrowedFd::borrow_raw(self.notification) }
     }
 
     /// One turn: drains once, visiting a delivery's records before it is
     /// released, or, with nothing to drain, waits until the instance
-    /// signals work or `milliseconds` pass. The stream is ended once
+    /// signals work or `timeout` passes. The stream is ended once
     /// nothing more will arrive.
     pub(crate) fn turn(
         &self,
         visit: &mut dyn FnMut(&native::Record),
-        milliseconds: i32,
+        timeout: Duration,
     ) -> io::Result<Stream> {
         match self.drain_once(visit)? {
             Drained::Delivered => Ok(Stream::Open),
             Drained::Ended(_) => Ok(Stream::Ended),
-            Drained::Empty => self.wait(milliseconds).map(|()| Stream::Open),
+            Drained::Empty => self.wait(timeout).map(|()| Stream::Open),
         }
     }
 
@@ -366,15 +369,13 @@ impl Embedded {
         check(unsafe { (self.functions.release_delivery)(out.delivery) }).map_err(failure)
     }
 
-    /// Waits until the instance has something to drain or `milliseconds`
-    /// pass.
-    pub(crate) fn wait(&self, milliseconds: i32) -> io::Result<()> {
-        let mut descriptor = [libc::pollfd {
-            fd: self.notification,
-            events: libc::POLLIN,
-            revents: Default::default(),
-        }];
-        crate::polling::poll(&mut descriptor, milliseconds)
+    /// Waits until the instance has something to drain or `timeout`
+    /// passes.
+    pub(crate) fn wait(&self, timeout: Duration) -> io::Result<()> {
+        crate::polling::wait(
+            &mut [Watch::new(self.descriptor(), Interest::Read)],
+            timeout,
+        )
     }
 
     /// After the stream's end: releases both handles, lets the owner thread

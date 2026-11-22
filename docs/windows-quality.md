@@ -6,8 +6,10 @@ and what a release needs from Windows before it is published. It is for
 contributors. So far the Test job (see [Pull request jobs](#pull-request-jobs)), its switch and change trigger, the
 registry's Windows arm and the source check are built
 ([#313](https://github.com/jackgeek/climon2/issues/313)), and so is the
+Quality job with everything [the native-only gate on Windows](#the-native-only-gate-on-windows)
+needs ([#314](https://github.com/jackgeek/climon2/issues/314)), and the
 harness's Windows host, whose own tests the Test job runs
-([#320](https://github.com/jackgeek/climon2/issues/320)); the Test job runs
+([#320](https://github.com/jackgeek/climon2/issues/320)). Both jobs run
 only the tests that build on Windows yet. The rest is not built. It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 and is the specification the Windows port implements.
@@ -108,20 +110,29 @@ Ownership of that source does not move.
 
 ## The native-only gate on Windows
 
-The gate needs three changes before its result means anything on Windows.
+The gate needs three changes before its result means anything on Windows. It
+also tests only what builds on Windows, the same tests the Test job runs; the
+list is `WINDOWS_SUITE` in `xtask/src/quality.rs`.
 
-**The mutator.** The pinned mutator has two faults on Windows: it runs its test
-command through `cmd.exe`, where the Python path variable is not expanded, and
-it crashes on the first timeout. Both are fixed in the mutator itself, on a
-fork the owner controls, pinned by revision and offered upstream. xtask also
-passes the test command with the Python path already expanded, on every
-platform, so no shell expands a variable.
+**The mutator.** The upstream mutator has two faults on Windows: it runs its
+test command through `cmd.exe`, where the Python path variable is not
+expanded, and it crashes on the first timeout. Building
+[#314](https://github.com/jackgeek/climon2/issues/314) found two more. It
+cannot delete a mutant's working copy once the build inside it passes
+Windows's 260-character path limit. And it writes each mutant in text mode,
+which turns the CRLF line endings of a Windows checkout into CR CR LF, so
+every Rust mutant fails to build and counts as killed; the sentinel below
+caught this on the first CI run. All four are fixed in the mutator itself,
+on the owner's fork [jackgeek/mutator](https://github.com/jackgeek/mutator)
+(branch `windows-runner`), pinned by revision and to be offered upstream.
+xtask also passes the test command with the Python path already expanded, on
+every platform, so no shell expands a variable.
 
 **The sentinel.** If every mutant failed to start, each would be scored as
-killed and the gate would pass having tested nothing. So before the gate,
-`cargo xtask mutation-probe` plants two mutants in a fixture: one the tests
-must kill and one that must survive. The gate fails unless both come out
-exactly so.
+killed and the gate would pass having tested nothing. So the Windows gate
+first plants two mutants in a fixture, the same check `cargo xtask
+mutation-probe` runs: one the tests must kill and one that must survive. The
+gate fails unless both come out exactly so.
 
 **Coverage.** `coverage.rs` gains a Windows arm that passes
 `-runtime-counter-relocation`. The gate starts with a probe showing that a
@@ -131,7 +142,11 @@ it does not; the daemon is often ended that way in tests.
 **Cost.** When no registered Windows file changed, the gate exits before doing
 any mutation work. A release mutates every registered Windows file. That run
 is measured in the first implementation slice against a budget of 90 minutes;
-over budget, the files are split across parallel jobs.
+over budget, the files are split across parallel jobs. Its first measurement,
+on [#343](https://github.com/jackgeek/climon2/pull/343) with one registered
+Windows file and no mutation sites in it, took 8.5 minutes on `windows-2025`
+(11 minutes for the whole job). Every run of the Quality job writes its time
+to the job summary, and a release run compares it with the budget there.
 
 ## Facts only CI can show
 

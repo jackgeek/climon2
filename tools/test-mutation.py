@@ -13,11 +13,16 @@ first and its tests then run under that stage's timeout. A stage that outlives i
 the run's whole process group, as the mutator's own timeout does, so the mutator counts
 the mutant as killed. The full workspace has no timeout of its own: the mutator's timeout
 for the whole command still bounds it.
+
+Where only part of the workspace builds (Windows so far), `CLIMON2_MUTATION_SUITE` names
+the `cargo test` runs that make up the suite, as a JSON list of argument lists. A mutant
+then runs those alone, in order, with no earlier stages, and measuring only builds them.
 """
 
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -78,6 +83,15 @@ def seed_build(workspace):
     if not baseline.is_dir():
         print("No baseline artifact cache; building a cold mutation worker.", file=sys.stderr)
         return
+    if sys.platform == "win32":
+        # No cp. copy2 keeps the modification times Cargo's freshness checks read, and
+        # extended-length paths pass the 260-character limit a worker's build reaches.
+        shutil.copytree(
+            "\\\\?\\" + str(baseline.resolve()),
+            "\\\\?\\" + str(destination.resolve()),
+            symlinks=True,
+        )
+        return
     destination.mkdir(parents=True)
     options = ["-cRp"] if sys.platform == "darwin" else ["-a", "--reflink=auto"]
     subprocess.run(
@@ -88,6 +102,29 @@ def seed_build(workspace):
 
 def cargo_test(cargo):
     return [cargo, "test", "--workspace", "--locked", "--target-dir", "target/mutation-tests"]
+
+
+def partial_suite(cargo):
+    """Each `cargo test` command of `CLIMON2_MUTATION_SUITE`, or None for the workspace."""
+    text = os.environ.get("CLIMON2_MUTATION_SUITE")
+    if text is None:
+        return None
+    return [
+        [cargo, "test", *selection, "--locked", "--target-dir", "target/mutation-tests"]
+        for selection in json.loads(text)
+    ]
+
+
+def run_suite(suite):
+    """A mutant's partial suite: each run in turn, until one fails."""
+    workspace = Path.cwd()
+    if mutated_source(workspace) is not None:
+        seed_build(workspace)
+    for command in suite:
+        code = subprocess.run(command).returncode
+        if code:
+            return code
+    return 0
 
 
 def name(selection):
@@ -125,7 +162,11 @@ def stage_timeouts():
 
 def run():
     # The rustup proxy pins rustc for nested builds too; tests may substitute Cargo.
-    command = cargo_test(os.environ.get("CLIMON2_MUTATION_CARGO", "cargo"))
+    cargo = os.environ.get("CLIMON2_MUTATION_CARGO", "cargo")
+    suite = partial_suite(cargo)
+    if suite is not None:
+        return run_suite(suite)
+    command = cargo_test(cargo)
     timeouts = stage_timeouts()
     for selection in stages(Path.cwd()):
         code = run_stage(command, selection, timeouts.get(name(selection)))
@@ -135,6 +176,12 @@ def run():
 
 
 def measure(root, cargo, timeout_factor, output, sources):
+    suite = partial_suite(cargo)
+    if suite is not None:
+        for command in suite:
+            subprocess.run(command + ["--no-run"], check=True)
+        output.write_text(json.dumps({}))
+        return
     command = cargo_test(cargo)
     subprocess.run(command + ["--no-run"], check=True)
     timeouts = {}
