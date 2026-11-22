@@ -107,6 +107,8 @@ const WINDOWS_SUITE: &[&[&str]] = &[
     // Builds the client binary and library, which the CLI's attach, kill and
     // smoke tests start.
     &["-p", "climon2-client", "--test", "library_windows"],
+    // Builds the monitor binary, which the CLI's monitor tests start.
+    &["-p", "climon2-monitor"],
     &["-p", "climon2-launcher", "-p", "climon2-cli"],
 ];
 

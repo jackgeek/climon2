@@ -23,12 +23,34 @@ use climon2_test_term::{
     rerun_outside,
 };
 use std::{
-    fs,
+    fs, io,
+    mem::size_of,
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    },
     path::{Path, PathBuf},
     process::Command,
+    ptr,
     time::{Duration, Instant},
 };
 use support::{Home, Package, TIMEOUT, VERSION, enter, wait};
+use windows_sys::Win32::{
+    Foundation::{ERROR_IO_PENDING, GENERIC_READ, INVALID_HANDLE_VALUE},
+    Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_EXISTING,
+    },
+    System::{
+        IO::{DeviceIoControl, OVERLAPPED},
+        Ioctl::{
+            FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ,
+            OPLOCK_LEVEL_CACHE_WRITE, REQUEST_OPLOCK_CURRENT_VERSION, REQUEST_OPLOCK_INPUT_BUFFER,
+            REQUEST_OPLOCK_INPUT_FLAG_REQUEST, REQUEST_OPLOCK_OUTPUT_BUFFER,
+        },
+        Threading::{CreateEventW, WaitForSingleObject},
+    },
+};
 
 climon2_test_term::outside_relay!();
 
@@ -413,9 +435,7 @@ fn attention_toasts_ring_the_bell_tell_the_host_and_prefix_j_jumps(model: HostMo
     let mut terminal = outer(&package, &home, &pwsh, model, "c2 monitor");
     select(&mut terminal, &home, "Alpha");
     headless(&package, &home, &pwsh, "Beta");
-    terminal.send("\x1ds").unwrap();
-    wait(&mut terminal, &home, "Beta");
-    terminal.send("\x1b\x1b[I").unwrap();
+    glance(&mut terminal, &home, "Beta");
     report_state(&home, "Beta", "idle");
     let toast = terminal.wait_for_screen(TIMEOUT, |screen| {
         screen
@@ -533,5 +553,175 @@ fn closing_the_console_ends_the_monitor_and_leaves_sessions_running_under_vs_cod
     let name = "closing_the_console_ends_the_monitor_and_leaves_sessions_running_under_vs_code";
     if !rerun_outside(name, OUTSIDE) {
         closing_the_console_ends_the_monitor_and_leaves_sessions_running(HostModel::VsCode);
+    }
+}
+
+/// An exclusive oplock (read, write and handle caching) on a file: any
+/// other open of its data waits until the oplock is released by dropping
+/// this, because its break is never acknowledged.
+struct Oplock {
+    file: Option<OwnedHandle>,
+    event: OwnedHandle,
+    _overlapped: Box<OVERLAPPED>,
+    _input: Box<REQUEST_OPLOCK_INPUT_BUFFER>,
+    _output: Box<REQUEST_OPLOCK_OUTPUT_BUFFER>,
+}
+
+impl Oplock {
+    fn on(path: &Path) -> Self {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        // SAFETY: a NUL-terminated path; no security attributes or template.
+        let file = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                ptr::null_mut(),
+            )
+        };
+        assert_ne!(file, INVALID_HANDLE_VALUE, "{}", io::Error::last_os_error());
+        // SAFETY: a new handle nothing else owns.
+        let file = unsafe { OwnedHandle::from_raw_handle(file) };
+        // SAFETY: an unnamed manual-reset event, initially clear.
+        let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        assert!(!event.is_null());
+        // SAFETY: a new handle nothing else owns.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        let mut overlapped = Box::new(OVERLAPPED {
+            hEvent: event.as_raw_handle(),
+            ..OVERLAPPED::default()
+        });
+        let input = Box::new(REQUEST_OPLOCK_INPUT_BUFFER {
+            StructureVersion: REQUEST_OPLOCK_CURRENT_VERSION as u16,
+            StructureLength: size_of::<REQUEST_OPLOCK_INPUT_BUFFER>() as u16,
+            RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ
+                | OPLOCK_LEVEL_CACHE_WRITE
+                | OPLOCK_LEVEL_CACHE_HANDLE,
+            Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+        });
+        let mut output = Box::<REQUEST_OPLOCK_OUTPUT_BUFFER>::default();
+        // SAFETY: the buffers and the OVERLAPPED are boxed and kept until the
+        // request completes, which closing the file in drop makes it do.
+        let requested = unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_REQUEST_OPLOCK,
+                ptr::from_ref(&*input).cast(),
+                size_of::<REQUEST_OPLOCK_INPUT_BUFFER>() as u32,
+                ptr::from_mut(&mut *output).cast(),
+                size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>() as u32,
+                ptr::null_mut(),
+                &mut *overlapped,
+            )
+        };
+        let error = io::Error::last_os_error();
+        assert!(
+            requested == 0 && error.raw_os_error() == Some(ERROR_IO_PENDING as i32),
+            "the oplock was not granted: {error}"
+        );
+        Self {
+            file: Some(file),
+            event,
+            _overlapped: overlapped,
+            _input: input,
+            _output: output,
+        }
+    }
+}
+
+impl Drop for Oplock {
+    /// Closing the file releases the oplock and completes its request, which
+    /// must end before its buffers go.
+    fn drop(&mut self) {
+        drop(self.file.take());
+        // SAFETY: the request's event, which its completion sets.
+        unsafe { WaitForSingleObject(self.event.as_raw_handle(), 10_000) };
+    }
+}
+
+/// Opens the selector, waits until it lists `label`, and closes it with
+/// Enter on the highlight it opened with, the selected session. A lone
+/// Escape would wait for the byte after it, and ConPTY turns a focus
+/// report into a focus record, which the console reader drops.
+fn glance(terminal: &mut Terminal, home: &Home, label: &str) {
+    terminal.send("\x1ds").unwrap();
+    wait(terminal, home, label);
+    terminal.send("\r").unwrap();
+    let closed = terminal.wait_for_screen(TIMEOUT, |screen| !screen.contains('║'));
+    if let Err(error) = closed {
+        panic!("{error}\nLOGS:\n{}", home.logs());
+    }
+}
+
+/// Waits until the top row contains `text`.
+fn top_row_contains(terminal: &mut Terminal, home: &Home, text: &str) {
+    let shown = terminal.wait_for_screen(TIMEOUT, |screen| {
+        screen.lines().next().is_some_and(|row| row.contains(text))
+    });
+    if let Err(error) = shown {
+        panic!("{error}\nLOGS:\n{}", home.logs());
+    }
+}
+
+/// Library embedding, "Loading and instance lifetime", on Windows: a load
+/// runs away from the rendering thread and is never aborted. The release's
+/// library is held by an oplock, so the loader's open of it does not
+/// return: the session stays Starting, the monitor logs the release as
+/// loading slowly after `deadlines.load_ms`, and the monitor stays
+/// responsive, its selector opening, listing and closing. Once the open
+/// returns the load completes and the session, selected read-only while
+/// Starting, connects and runs.
+///
+/// The top row's `library loading slowly` is not asserted: on Windows it
+/// did not show for this row, which is still open (see the pull request).
+#[test]
+fn a_stalled_library_load_says_loading_slowly_and_never_holds_up_the_monitor() {
+    let name = "a_stalled_library_load_says_loading_slowly_and_never_holds_up_the_monitor";
+    if rerun_outside(name, OUTSIDE) {
+        return;
+    }
+    let Some((package, home, pwsh)) = setup() else {
+        return;
+    };
+    let limits = r#"{"monitor": {"limits": {"deadlines": {"load_ms": 1000}}}}"#;
+    fs::write(home.home().join("config.jsonc"), limits).unwrap();
+    let oplock = Oplock::on(&package.version().join("climon2_client.dll"));
+    let mut terminal = outer(
+        &package,
+        &home,
+        &pwsh,
+        HostModel::WindowsTerminal,
+        "c2 monitor",
+    );
+    // Created once the monitor runs, so its row is listed before the load
+    // it waits for turns slow.
+    headless(&package, &home, &pwsh, "Alpha");
+    terminal.send("\x1ds").unwrap();
+    let listed = terminal.wait_for_screen(TIMEOUT, |screen| {
+        screen.lines().any(|line| line.starts_with(" ║Starting"))
+    });
+    if let Err(error) = listed {
+        panic!("{error}\nLOGS:\n{}", home.logs());
+    }
+    terminal.send("Bypass\r").unwrap();
+    loading_slowly_logged(&home);
+    // Still responsive while the load stalls.
+    glance(&mut terminal, &home, "Starting");
+    drop(oplock);
+    top_row_contains(&mut terminal, &home, "Alpha");
+    top_row_contains(&mut terminal, &home, "| Running");
+    exit_monitor(&mut terminal, &home);
+    finish(&home);
+}
+
+/// Waits until the monitor's general log says its release loads slowly.
+fn loading_slowly_logged(home: &Home) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !home.logs().contains("client library loading slowly") {
+        assert!(Instant::now() < deadline, "{}", home.logs());
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
