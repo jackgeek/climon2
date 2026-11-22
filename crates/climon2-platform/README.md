@@ -289,13 +289,19 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   manual-reset event with `WaitForMultipleObjects` (#321); one wait watches
   sockets or events, never both. `Watch::idle()` keeps a slot that is never
   ready, as on Unix. A Windows wait can return up to a clock tick early with
-  nothing ready, so `wait` waits again until the timeout has passed.
+  nothing ready, so `wait` waits again until the timeout has passed. One
+  `WaitForMultipleObjects` takes at most 64 events, so a wait on more watches
+  the first 64, and any event already signalled, beyond them too, ends it at
+  once (#327, the monitor's instances).
 - `src/process/windows.rs`: `start_time`, `is_same_process` and
   `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
   time in epoch microseconds. Only "no such process"
   (`ERROR_INVALID_PARAMETER`) or a process that has exited while its object
   is still held reads as gone; any other failure, such as access denied, is
-  an error and never evidence of death.
+  an error and never evidence of death. `descriptor_limit` is the kernel's
+  per-process handle table, 2^24 entries, as Windows has no soft limit;
+  `exit_immediately` ends the process with `TerminateProcess`, all 32 bits
+  of its status (#327).
 - `src/presentation/windows.rs`: `local_datetime` uses the system's offset
   for the instant; `columns` is the visible console window's width, or 80
   when stdout is not a console.

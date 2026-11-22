@@ -237,6 +237,13 @@ Windows wait and the CLI's spawn-and-wait hand-off are bodies inside
 product in the harness's Windows host through its existing `dev` edge to
 `climon2-test-term`.
 
+**Current (#327):** the edges are unchanged. `climon2-monitor` builds on
+Windows with its existing edges: its host input, notification waits, native
+paths, preference file and fail-stop exit go through `climon2-platform`'s
+seams, whose Windows bodies hold the Windows code. The CLI's Windows monitor
+tests drive the packaged product through its existing `dev` edge to
+`climon2-test-term`, whose Windows host gains the VS Code model.
+
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so
 `xtask` gains no edge). It consumes `core` for session metadata,

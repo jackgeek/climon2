@@ -69,8 +69,10 @@ the daemon, which hosts the session's command in the bundled ConPTY
 ([#317](https://github.com/jackgeek/climon2/issues/317)), and the client loading
 the library beside it to end a session for `c2 kill`
 ([#318](https://github.com/jackgeek/climon2/issues/318)) and to attach for
-`c2 exec` and `c2 attach` ([#321](https://github.com/jackgeek/climon2/issues/321)). Every dashed arrow is
-planned. How each process starts is in the
+`c2 exec` and `c2 attach` ([#321](https://github.com/jackgeek/climon2/issues/321)), and the monitor
+loading each session version's library
+([#327](https://github.com/jackgeek/climon2/issues/327)). No arrow is planned
+any more. How each process starts is in the
 [Windows platform and lifecycle contract](../windows/lifecycle.md). The decisions are in
 [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
 and, for the library,
@@ -95,7 +97,7 @@ flowchart TB
         wlauncher -->|"spawns and waits for current version; current"| wcli
         wcli -->|"starts detached, outside every job; reads readiness"| wdaemon
         wclient -->|"loads the copy beside itself by exact path; current"| wlibrary
-        wmonitor -.->|"loads each session version's copy by exact path; never frees it"| wlibrary
+        wmonitor -->|"loads each session version's copy by exact path; never frees it; current"| wlibrary
         wdaemon -->|"loads by full path from own folder"| conpty
         conpty -->|"starts from beside the DLL"| openconsole
         openconsole -->|"hosts the session pseudoconsole"| wcommand
@@ -107,18 +109,17 @@ flowchart TB
 | Node | Purpose |
 |---|---|
 | `c2.exe` | The frozen launcher, the only command name. Windows cannot replace a process, so it starts the CLI and waits for it. |
-| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. `climon2-cli.exe` runs `list`, `exec`, `attach` and `kill`; for `exec` without `--headless`, `attach` and `kill` it starts the session version's `climon2-client.exe` and waits for it. `monitor` fails with 125 until the monitor builds on Windows. |
+| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. `climon2-cli.exe` runs `list`, `exec`, `attach` and `kill`; for `exec` without `--headless`, `attach` and `kill` it starts the session version's `climon2-client.exe` and waits for it. for `monitor` it starts its own version's `climon2-monitor.exe` and waits for it. |
 | `climon2_client.dll` | The client library, the Windows build of the Rust cdylib above. It links the C runtime statically, as every Windows build does, imports only Windows system DLLs and exports only its bootstrap symbol. The loader never frees it and refuses it when Windows loaded another file for its path. |
 | `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
 | `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |
 | Session command | The program the session runs. |
 | Inbox `conhost.exe` | Windows' own console host. It is never used: if `OpenConsole.exe` is missing, `conpty.dll` would fall back to it, so the daemon checks both files and `exec` fails with 125. |
 
-**Current (#319, #329):** the Windows release zip carries `c2.exe`,
+**Current (#319, #329, #327):** the Windows release zip carries `c2.exe`,
 `install.exe` and, in its version folder, `climon2-cli.exe`,
-`climon2-daemon.exe`, `climon2-client.exe`, `climon2_client.dll`, `conpty.dll`
-and `OpenConsole.exe`. `climon2-monitor.exe` is not in it until the monitor
-builds on Windows ([#327](https://github.com/jackgeek/climon2/issues/327)).
+`climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe`,
+`climon2_client.dll`, `conpty.dll` and `OpenConsole.exe`.
 `cargo xtask dist` checks that each file is x86-64 code of its kind and that
 none imports the Visual C++ runtime
 ([Windows packaging](../windows/distribution.md#how-it-is-built)). The download
