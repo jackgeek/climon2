@@ -5059,7 +5059,9 @@ fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     other.wait_for_text("RAW SAID", TIMEOUT).unwrap();
     assert!(terminal.row(0).starts_with(TIMED_OUT));
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, &format!("║{RUNNING:<12} Alpha"));
+    // Taken's row may be Disconnected or already retried: its status
+    // column's width is not settled here.
+    listed_with(&terminal, RUNNING, "Alpha");
     enter_on(&mut terminal, "Alpha");
     first_row_starts(&terminal, "RAW");
     terminal.send("z").unwrap();
@@ -6029,7 +6031,9 @@ fn a_disconnect_discards_a_pending_prefix() {
     });
     read_alone(&mut terminal, monitor, b"x");
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, &format!("║{RUNNING:<12} Other"));
+    // Gone's row is Disconnected until its passive retry fails, then
+    // Unavailable, one column narrower: either may be listed by now.
+    listed_with(&terminal, RUNNING, "Other");
     enter_on(&mut terminal, "Other");
     ready_at(&mut terminal, "Other", RUNNING, "29 120");
     terminal.send("y").unwrap();
