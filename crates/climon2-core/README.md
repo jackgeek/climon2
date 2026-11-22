@@ -248,6 +248,10 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   envelope is used exactly or rejected.
 - `title::{encode,default_title}`: percent-encodes C0, DEL and C1 per UTF-8
   byte; the default title joins the command argv with single spaces.
+- `utf8::whole_characters`: how much of some output can be written without
+  cutting a UTF-8 character; only an incomplete, so far valid character at the
+  end is held back. The Windows console needs it, because it decodes each
+  write on its own (#321).
 - `session::SessionEnvironment::for_session`: preserves inherited OS-string
   values except the replaced keys: the two session variables,
   `TERM=xterm-256color` and `COLORTERM=truecolor` are always set, and any

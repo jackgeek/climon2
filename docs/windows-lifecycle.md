@@ -13,7 +13,12 @@ daemon, its session job and its command for `exec --headless` (see
 [#317](https://github.com/jackgeek/climon2/issues/317)), and `c2 kill`, which
 hangs the session up through the client and its library (see
 [Session job and hang-up](#session-job-and-hang-up);
-[#318](https://github.com/jackgeek/climon2/issues/318)). Command resolution
+[#318](https://github.com/jackgeek/climon2/issues/318)), and the CLI's hand-offs
+to the client for `exec`, `attach` and `kill` and the client's console (see
+[Hand-offs](#hand-offs) and [Client console](#client-console);
+[#321](https://github.com/jackgeek/climon2/issues/321)). Ctrl+C reaches the
+session as byte `0x03`; Ctrl+Break is not passed on yet
+([#326](https://github.com/jackgeek/climon2/issues/326)). Command resolution
 is not built yet: the command line's first token is resolved by
 `CreateProcessW` itself, and any command that cannot start makes `exec` exit
 126. It was
@@ -185,6 +190,13 @@ Raw mode clears `ENABLE_PROCESSED_INPUT`, `ENABLE_LINE_INPUT` and
 client reads key-down records only: key-up records are ignored. Resize
 arrives as `WINDOW_BUFFER_SIZE_EVENT`. Close, logoff and shutdown end the
 client with 129. The monitor uses the same console rules.
+
+Output adds `ENABLE_VIRTUAL_TERMINAL_PROCESSING` and
+`DISABLE_NEWLINE_AUTO_RETURN`, and both code pages are UTF-8 while the client
+runs. Every exit path, a panic included, restores both modes and both code
+pages. A Ctrl+C that reaches the client as `CTRL_C_EVENT`, as it does in kill
+mode, where the console is not raw, ends the client with 130, as SIGINT does
+on Unix; the CLI waiting for it then exits 130 too.
 
 ## Ctrl+C and Ctrl+Break
 

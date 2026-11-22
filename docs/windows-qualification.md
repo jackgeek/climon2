@@ -175,6 +175,19 @@ One scenario is an exception: "the actual previous release remains live
 across an install" cannot run for the first Windows release, which has no
 predecessor. It is recorded as not applicable until the second.
 
+Built so far ([#321](https://github.com/jackgeek/climon2/issues/321)): the
+smoke test, in `crates/climon2-cli/tests/packaged_windows.rs` until
+`climon2-e2e` builds on Windows. From `pwsh` it runs `c2 exec pwsh`, runs a
+command, detaches, lists the session with `c2 list`, reattaches with
+`c2 attach` and sees the session's screen restored, then ends the session with
+`exit 7`, which reaches the outer shell. The Windows Test job runs it against
+the zip the Dist job built
+([Windows quality and CI qualification](windows-quality.md#pull-request-jobs)).
+Until the installer exists
+([#329](https://github.com/jackgeek/climon2/issues/329)), the test unpacks the
+zip and writes the `current` file itself. Like headless `exec`'s tests, it
+runs again outside every job, through the harness's relay.
+
 The refusal of a session attaching to itself keeps its Unix intent, because
 the daemon sets `CLIMON2_SESSION_ID` for the command on Windows too
 ([Windows platform and lifecycle contract](windows-lifecycle.md#self-attach-and-nested-sessions)).

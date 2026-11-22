@@ -52,14 +52,16 @@ matter most:
   `crates/climon2-platform/src/notifier/windows.rs`,
   `crates/climon2-platform/src/connection/windows.rs` and
   `crates/climon2-platform/src/native_path/windows.rs`, the client library's
-  loading, notification and waker, sends and native paths, and
-  `crates/climon2-client/src/windows.rs`, which refuses ordinary attach
-  until it has its console rules
+  loading, notification and waker, sends and native paths
   ([#318](https://github.com/jackgeek/climon2/issues/318));
+  `crates/climon2-platform/src/handoff/windows.rs`, the CLI's spawn-and-wait
+  hand-off to the client ([#321](https://github.com/jackgeek/climon2/issues/321),
+  which also gave `terminal/windows.rs` the client's console and
+  `waiting/windows.rs` its waits on events);
   `crates/climon2-launcher/src/handoff/windows.rs`, the launcher's
   hand-off; and `crates/climon2-cli/src/windows.rs`, which runs `list`,
-  `exec --headless` and `kill` and refuses the subcommands Windows cannot run
-  yet.
+  `exec`, `attach` and `kill` and refuses the monitor until it builds on
+  Windows.
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a
@@ -93,7 +95,7 @@ number.
 
 | Job | What it does |
 | --- | --- |
-| Test | Every workspace test, including the harness's host-model scenarios |
+| Test | Every workspace test, including the harness's host-model scenarios. It waits for Dist and runs the smoke test against its zip ([#321](https://github.com/jackgeek/climon2/issues/321)) |
 | Quality | The native-only gate over registered Windows files |
 | Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks |
 | Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip |
