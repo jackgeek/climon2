@@ -25,9 +25,11 @@ matter most:
   compiled only on Windows.
 - A **registered native file** is a source file listed in xtask's native-source
   registry as belonging to one operating system. Today the registry lists
-  `linux.rs` and `macos.rs` files, and one `windows.rs` file:
+  `linux.rs` and `macos.rs` files, and three `windows.rs` files:
   `crates/climon2-platform/src/home/windows.rs`, which names the Windows
-  homes.
+  homes; `crates/climon2-launcher/src/handoff/windows.rs`, the launcher's
+  hand-off; and `crates/climon2-cli/src/windows.rs`, which refuses the
+  subcommands Windows cannot run yet.
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a

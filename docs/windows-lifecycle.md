@@ -1,9 +1,11 @@
-# Windows platform and lifecycle contract (agreed, not implemented)
+# Windows platform and lifecycle contract (agreed, partly implemented)
 
 This document says how climon2's processes start, run and end on Windows: the
 daemon, the session's command, the hand-offs between climon2's own programs,
 the client's console, and how a session is identified and cleaned up. It is
-for contributors. Nothing here is built yet. It was agreed in
+for contributors. Only the launcher's hand-off (see [Hand-offs](#hand-offs)) is
+built so far ([#315](https://github.com/jackgeek/climon2/issues/315)). It was
+agreed in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 using the VM measurements from
 [Probe Windows lifecycle facts on a Windows 11 VM](https://github.com/jackgeek/climon2/issues/300),
@@ -138,8 +140,11 @@ The daemon start above is the fourth, and its parent does not wait.
 
 Each waiting parent:
 
-- exits with the child's raw `u32` status through `std::process::exit`, so
-  full-width codes such as `0xC000013A` pass through unchanged;
+- exits with the child's raw `u32` status, so full-width codes such as
+  `0xC000013A` pass through unchanged. The launcher ends itself with
+  `TerminateProcess`, not `std::process::exit`: `exit` sets the status only
+  after unloading the process's libraries, and a close event arriving
+  meanwhile replaced it with `0xC000013A` in about one run in sixteen;
 - registers a handler routine that returns TRUE for `CTRL_C_EVENT` and
   `CTRL_BREAK_EVENT`, never `SetConsoleCtrlHandler(NULL, TRUE)`, which children
   would inherit;
