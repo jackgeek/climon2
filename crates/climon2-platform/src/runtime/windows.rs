@@ -67,11 +67,15 @@ pub(super) fn runtime_root() -> io::Result<(PathBuf, Option<u32>)> {
 
 pub fn bind(path: &Path) -> io::Result<SocketListener> {
     super::within_budget(path)?;
+    listening(&SockAddr::unix(path)?).map(SocketListener)
+}
+
+fn listening(address: &SockAddr) -> io::Result<Socket> {
     let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
-    socket.bind(&SockAddr::unix(path)?)?;
+    socket.bind(address)?;
     // SOMAXCONN in winsock2.h: the provider's reasonable maximum.
     socket.listen(i32::MAX)?;
-    Ok(SocketListener(socket))
+    Ok(socket)
 }
 
 /// A missing path is no socket to remove; anything there but an AF_UNIX
