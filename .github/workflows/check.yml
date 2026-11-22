@@ -184,7 +184,7 @@ jobs:
       - name: Test the launcher, the CLI's Windows answers, exec, attach, kill and the smoke test
         shell: bash
         run: |
-          CLIMON2_E2E_ARCHIVE="$(cygpath -w "$(ls target/dist-artifact/*.zip)")"
+          CLIMON2_E2E_ARCHIVE="$(cygpath -aw "$(ls target/dist-artifact/*.zip)")"
           export CLIMON2_E2E_ARCHIVE
           cargo test --locked -p climon2-launcher -p climon2-cli
   windows-quality:

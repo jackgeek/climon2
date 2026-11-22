@@ -68,6 +68,11 @@ impl Package {
 
 /// The zip's one folder, unpacked into `root` with Windows' own `tar`.
 fn extracted(archive: &Path, root: &Path) -> PathBuf {
+    assert!(
+        archive.is_absolute(),
+        "CLIMON2_E2E_ARCHIVE must be absolute: {}",
+        archive.display()
+    );
     let tar = Path::new(&env::var_os("SystemRoot").unwrap()).join(r"System32\tar.exe");
     let status = Command::new(tar)
         .arg("-xf")
