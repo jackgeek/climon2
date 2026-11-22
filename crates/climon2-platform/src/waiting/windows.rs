@@ -101,3 +101,27 @@ fn poll(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<usize> {
     }
     Ok(ready as usize)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::io::RawSocket;
+    use windows_sys::Win32::Networking::WinSock::WSAENOTSOCK;
+
+    /// A wait on something that is not a socket fails with Winsock's error
+    /// at once, rather than waiting out its timeout. A test cannot make a
+    /// real socket's wait fail, so this is the one way to reach that error.
+    #[test]
+    fn a_wait_on_no_socket_fails_with_the_winsock_error() {
+        // Winsock must be started, which making any socket does.
+        drop(socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap());
+        // A handle value no process is given (handles are multiples of 4).
+        // SAFETY: nothing but WSAPoll, which rejects it, uses it as a socket.
+        let none = unsafe { BorrowedSocket::borrow_raw(0x7fff_fff1 as RawSocket) };
+        let mut watches = [Watch::new(none, Interest::Read)];
+
+        let error = wait(&mut watches, Duration::from_secs(5)).unwrap_err();
+
+        assert_eq!(error.raw_os_error(), Some(WSAENOTSOCK));
+    }
+}
