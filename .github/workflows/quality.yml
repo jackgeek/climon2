@@ -75,6 +75,9 @@ jobs:
       # The Linux and Windows gates share the owner's PC; 6 workers each
       # (owner decision, 2026-11-22, docs/for-humans/quality-runners.md).
       CLIMON2_MUTATION_WORKERS: "6"
+      # Each worker's Cargo gets 2 build jobs and 2 test threads, so the two gates
+      # do not starve each other's timing tests (owner decision, 2026-11-22).
+      CLIMON2_MUTATION_WORKER_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -113,6 +116,8 @@ jobs:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
       # Shares the owner's PC with the Linux gate; 6 workers each.
       CLIMON2_NATIVE_MUTATION_WORKERS: "6"
+      # 2 build jobs and 2 test threads per worker, as on the Linux gate.
+      CLIMON2_MUTATION_WORKER_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
         with:
