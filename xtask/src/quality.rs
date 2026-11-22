@@ -66,7 +66,15 @@ pub(crate) const SHIPPED: &[&str] = &[
 /// workspace builds so far: as the Windows Test job runs them.
 const WINDOWS_SUITE: &[&[&str]] = &[
     &["-p", "climon2-core", "-p", "climon2-vt"],
-    &["-p", "climon2-platform", "--lib", "--test", "home_windows"],
+    &[
+        "-p",
+        "climon2-platform",
+        "--lib",
+        "--test",
+        "home_windows",
+        "--test",
+        "private_windows",
+    ],
 ];
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -615,7 +623,8 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/notifier/macos.rs")
         | Some("crates/climon2-platform/src/connection/macos.rs")
         | Some("crates/climon2-install/src/platform/macos.rs") => Some("macos"),
-        Some("crates/climon2-platform/src/home/windows.rs") => Some("windows"),
+        Some("crates/climon2-platform/src/home/windows.rs")
+        | Some("crates/climon2-platform/src/private/windows.rs") => Some("windows"),
         _ => None,
     }
 }
@@ -2258,6 +2267,10 @@ No selected line holds a mutation site; nothing to mutate.
                 cfg!(target_os = "linux"),
             ),
             ("crates/climon2-platform/src/home/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/private/windows.rs",
+                cfg!(windows),
+            ),
         ];
         for (path, _) in sources {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();

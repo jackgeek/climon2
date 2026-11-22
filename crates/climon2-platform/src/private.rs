@@ -78,3 +78,7 @@ mod native {
         )
     }
 }
+
+#[cfg(windows)]
+#[path = "private/windows.rs"]
+mod native;
