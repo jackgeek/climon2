@@ -327,6 +327,20 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    /// The `c2.exe` built beside this test binary (`<profile>/deps/..`).
+    /// `CARGO_BIN_EXE_c2` is fixed when this binary is compiled, so a mutation
+    /// worker that reuses a seeded build would run the unmutated launcher.
+    fn built_launcher() -> PathBuf {
+        let deps = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let launcher = deps.parent().unwrap().join("c2.exe");
+        assert!(launcher.is_file(), "no launcher at {}", launcher.display());
+        launcher
+    }
+
     struct Layout(PathBuf);
 
     impl Layout {
@@ -340,7 +354,7 @@ mod tests {
                     NEXT.fetch_add(1, Ordering::Relaxed)
                 ));
             fs::create_dir_all(&root).unwrap();
-            fs::copy(env!("CARGO_BIN_EXE_c2"), root.join("c2.exe")).unwrap();
+            fs::copy(built_launcher(), root.join("c2.exe")).unwrap();
             Self(root)
         }
 
