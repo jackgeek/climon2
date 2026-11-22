@@ -13,6 +13,7 @@ use std::{
         io::{AsRawHandle, AsSocket, BorrowedSocket},
     },
     path::{Path, PathBuf},
+    time::Instant,
 };
 use windows_sys::Win32::{
     Foundation::FALSE,
@@ -38,6 +39,26 @@ impl SocketListener {
     /// The next connection, as std's `UnixListener::accept` gives it.
     pub fn accept(&self) -> io::Result<(SocketStream, SockAddr)> {
         self.0.accept()
+    }
+
+    /// As std's `UnixListener::set_nonblocking`: accept then fails with
+    /// `WouldBlock` instead of waiting.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.0.set_nonblocking(nonblocking)
+    }
+}
+
+/// Nothing ages `%LOCALAPPDATA%`, so Windows has no freshness refresh (ADR
+/// 0003): the daemon's hourly refresh does nothing here.
+pub struct SocketFreshness;
+
+impl SocketFreshness {
+    pub fn new(_socket: &Path, _now: Instant) -> Self {
+        Self
+    }
+
+    pub fn refresh(&mut self, _now: Instant) -> io::Result<()> {
+        Ok(())
     }
 }
 

@@ -100,6 +100,7 @@ flowchart TB
     fixtures --> platform
     fixtures -.->|"dev"| test_term
     platform -.->|"dev"| fixtures
+    platform -.->|"dev, Windows"| test_term
     client -.->|"dev"| fixtures
     xtask --> core
     xtask --> install
@@ -139,6 +140,8 @@ builds with `core` alone: its edges to the CLI, client, daemon, installer,
 monitor and `platform` are Unix-only until those crates build on Windows. Its
 Windows host (#320) is described in
 [Windows host and shell qualification](windows-qualification.md#host-models).
+On Windows, `platform`'s tests consume the harness too, to host commands in
+its pinned ConPTY (#317).
 
 **Current (#74):** the [monitor](../GLOSSARY.md#sessions) is its own shipped
 crate, `climon2-monitor`, with a library and the `climon2-monitor` binary. It

@@ -1,11 +1,16 @@
 //! PTY allocation serialization and master I/O. Concurrent `posix_openpt` calls on Darwin can
 //! fail with the kernel-internal EREDRIVEOPEN (-6), so every climon2 process
 //! (and test harness) holds this per-user lock only while allocating a pair.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("PTY allocation seam requires macOS or Linux");
+//! On Windows the session's terminal is a pseudoconsole of the bundled
+//! ConPTY instead (#317; ADR 0003, "Windows I/O and transport").
+pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::*;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "pty/windows.rs"]
+mod native;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {

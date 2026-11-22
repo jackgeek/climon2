@@ -25,6 +25,10 @@ tempfile = "3.27.0"
 [target.'cfg(unix)'.dev-dependencies]
 climon2-fixtures = { path = "../climon2-fixtures" }
 
+# The pinned ConPTY the Windows PTY tests host their commands in.
+[target.'cfg(windows)'.dev-dependencies]
+climon2-test-term = { path = "../climon2-test-term" }
+
 [target.'cfg(windows)'.dependencies]
 time = { workspace = true, features = ["local-offset"] }
 windows-sys = { version = "0.61", features = [
@@ -34,6 +38,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_Environment",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }

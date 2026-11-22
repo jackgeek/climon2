@@ -459,7 +459,7 @@ fn start(
 
 /// The command line for `argv`, each argument quoted as the Microsoft C
 /// runtime parses it.
-fn command_line(argv: &[std::ffi::OsString]) -> io::Result<Vec<u16>> {
+pub(crate) fn command_line(argv: &[std::ffi::OsString]) -> io::Result<Vec<u16>> {
     if argv.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

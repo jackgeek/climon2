@@ -27,7 +27,7 @@ matter most:
   compiled only on Windows.
 - A **registered native file** is a source file listed in xtask's native-source
   registry as belonging to one operating system. Today the registry lists
-  `linux.rs` and `macos.rs` files, and eight `windows.rs` files:
+  `linux.rs` and `macos.rs` files, and fourteen `windows.rs` files:
   `crates/climon2-platform/src/home/windows.rs`, which names the Windows
   homes; `crates/climon2-platform/src/private/windows.rs`, which creates the
   files and folders only their user may open
@@ -38,9 +38,18 @@ matter most:
   `crates/climon2-platform/src/presentation/windows.rs`, the runtime
   directory, sockets, waiting, daemon identity and `list`'s presentation
   ([#316](https://github.com/jackgeek/climon2/issues/316));
+  `crates/climon2-platform/src/daemon/windows.rs`, which starts the session
+  daemon; `crates/climon2-platform/src/pty/windows.rs`, which hosts the
+  session's command in the bundled ConPTY and its session job;
+  `crates/climon2-platform/src/peer/windows.rs`,
+  `crates/climon2-platform/src/terminal/windows.rs` and
+  `crates/climon2-platform/src/logging/windows.rs`, the daemon's
+  connections, signals and captured stderr; and
+  `crates/climon2-daemon/src/pty/windows.rs`, the daemon's side of its
+  pseudoconsole ([#317](https://github.com/jackgeek/climon2/issues/317));
   `crates/climon2-launcher/src/handoff/windows.rs`, the launcher's
   hand-off; and `crates/climon2-cli/src/windows.rs`, which runs `list` and
-  refuses the subcommands Windows cannot run yet.
+  `exec --headless` and refuses the subcommands Windows cannot run yet.
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a

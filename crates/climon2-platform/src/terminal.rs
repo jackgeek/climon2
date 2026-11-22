@@ -1,10 +1,14 @@
 //! Terminal ownership, file-status flags, hang-up and deferred signal
-//! handling (#20).
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("terminal seam requires macOS or Linux");
+//! handling (#20). Windows has only what a detached daemon needs so far
+//! (#317); its console handling arrives with interactive `exec` (#321).
+pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::*;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "terminal/windows.rs"]
+mod native;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {

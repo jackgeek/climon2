@@ -95,6 +95,18 @@ the harness clears any instruction to ignore Ctrl+C that the test process
 inherited before it starts the shell; otherwise the shell would inherit it
 too.
 
+cargo runs every test inside a job of its own that refuses breakaway, so a
+`c2 exec` started from a test would always exit 125. On the `windows-2025`
+runner every process from `Runner.Listener` down, the step's shell included,
+is also in a job of the runner's that refuses breakaway, so no process a test
+can reach is outside every job. The harness therefore runs a program through
+WMI's `Win32_Process.Create`, the one documented way out of the caller's job,
+with `CREATE_BREAKAWAY_FROM_JOB` to leave WMI's own: it starts the test
+executable again as a relay, which starts the program with captured output,
+optionally inside jobs of the shapes above, outer job first
+([#317](https://github.com/jackgeek/climon2/issues/317)). Headless `exec`'s
+tests use it for every job shape.
+
 ## Shell profiles
 
 | Shell | Start-up | Prompt |

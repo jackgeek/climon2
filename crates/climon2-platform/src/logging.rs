@@ -10,10 +10,16 @@ use std::{
 };
 use time::{OffsetDateTime, macros::format_description};
 
+pub use native::StderrCapture;
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::StderrCapture;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "logging/windows.rs"]
+mod native;
 
 const RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 

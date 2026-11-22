@@ -2,7 +2,6 @@
 
 #[cfg(unix)]
 mod attach;
-#[cfg(unix)]
 mod exec;
 #[cfg(unix)]
 mod kill;
@@ -18,6 +17,7 @@ mod native;
 
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
+    layout::{ExecutableLayout, VersionBinary},
     lifetime::Lifetime,
     selector::Selector,
 };
@@ -25,7 +25,7 @@ use climon2_platform::{
     home,
     logging::{self, LogFile},
 };
-use std::{ffi::OsString, path::Path, time::SystemTime};
+use std::{ffi::OsString, io, path::Path, time::SystemTime};
 
 /// How the CLI fails: the thin main prints it and exits with its code.
 pub use climon2_core::failure::Failure as Error;
@@ -108,4 +108,10 @@ fn logged(
 /// `list`, which never needs a version's client.
 fn list(home: &Path, json: bool) -> Result<u32, Error> {
     list::run(home, json).map(|()| 0).map_err(Error::from)
+}
+
+/// The install layout around this CLI: every sibling it starts, and every
+/// client it execs, is found from it.
+fn executable_layout() -> io::Result<ExecutableLayout> {
+    home::executable_layout(VersionBinary::Cli)?.map_err(io::Error::other)
 }
