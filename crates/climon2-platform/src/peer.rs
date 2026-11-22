@@ -1,9 +1,14 @@
-//! Authenticate a connection before reading any hello bytes.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("peer credential seam requires macOS or Linux");
+//! Authenticate a connection before reading any hello bytes. Windows AF_UNIX
+//! has no peer credentials, so there the private runtime directory is the
+//! only check (ADR 0003, "Windows I/O and transport").
+pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::*;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "peer/windows.rs"]
+mod native;
 
 #[cfg(target_os = "linux")]
 #[path = "peer/linux.rs"]

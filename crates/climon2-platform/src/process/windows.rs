@@ -3,7 +3,7 @@
 //! `GetProcessTimes`, in epoch microseconds as the frozen `daemon_start_time`
 //! (ADR 0005). Only "no such process" or an exited process proves it gone;
 //! any other failure to look is an error, never evidence of death.
-use climon2_core::metadata::SessionMetadata;
+use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata};
 use std::{
     io,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -19,6 +19,12 @@ use windows_sys::Win32::{
 /// 100-nanosecond intervals from 1601-01-01, where FILETIME counts from, to
 /// the Unix epoch.
 const UNIX_EPOCH_INTERVALS: u64 = 116_444_736_000_000_000;
+
+/// Windows has no Linux boot and start-tick identity: creation time alone,
+/// in `daemon_start_time`, identifies a daemon.
+pub fn linux_identity(_pid: u32) -> io::Result<Option<LinuxProcessIdentity>> {
+    Ok(None)
+}
 
 pub fn is_same_daemon(metadata: &SessionMetadata) -> io::Result<bool> {
     is_same_process(metadata.daemon_pid, metadata.daemon_start_time)

@@ -8,7 +8,6 @@ pub mod library;
 pub mod logging;
 #[cfg(unix)]
 pub mod notifier;
-#[cfg(unix)]
 pub mod peer;
 pub mod presentation;
 pub mod private;
@@ -18,6 +17,5 @@ pub mod pty;
 pub mod runtime;
 #[cfg(unix)]
 mod syscall;
-#[cfg(unix)]
 pub mod terminal;
 pub mod waiting;
