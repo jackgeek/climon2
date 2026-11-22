@@ -1,8 +1,8 @@
 # climon2-platform
 
-Shared macOS and Linux seams (ADR 0003). Only `home` also builds on Windows so
-far; every other seam is declared for Unix only, and other Unix targets fail
-inside each seam. Neutral contracts remain in `climon2-core`. No runtime
+Shared macOS and Linux seams (ADR 0003). `home`, `private` and `logging` (all
+but its stderr capture) also build on Windows so far; every other seam is
+declared for Unix only, and other Unix targets fail inside each seam. Neutral contracts remain in `climon2-core`. No runtime
 dispatch or shell-specific logic.
 
 ## Runtime and peers
@@ -29,6 +29,10 @@ dispatch or shell-specific logic.
   `/tmp/climon2-<euid>-<hash8>` directory. `path()` and
   `socket_path(&SessionId)` expose its paths; the socket limit is 103 bytes.
   The directory is never deleted.
+- `private` (ADR 0003, "Private files and folders") holds every create of a
+  file climon2 makes and every check of a folder it manages; `runtime`,
+  logging, the PTY allocation lock, session metadata and the client
+  library's log all go through it.
 - `private::private_directory(&Path)` creates mode 0700, then checks with
   `symlink_metadata`: real directory, effective UID owner, no group/other bits.
   Existing unsafe directories are refused, never repaired.
@@ -40,6 +44,20 @@ dispatch or shell-specific logic.
   `create_new_file`, then sets mode exactly 0600 whatever the umask. A file it
   cannot make private is removed again. The daemon publishes session
   metadata through it (#311).
+- On Windows the registered native file `src/private/windows.rs` (#339) gives
+  the same three functions their bodies. Every file and folder gets the
+  private descriptor when it is created: owner the process token's user SID
+  (set explicitly, since an elevated process's objects are otherwise owned by
+  Administrators) and a protected DACL with one ACE, that SID with full
+  control, inheritable on folders. `create_new_file` calls `CreateFileW` with
+  `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT`, so any existing name,
+  including a dangling link, is refused and nothing is created at a link's
+  target; a name holding a NUL is refused. `create_private_file` is the same
+  function, as Windows has no umask. `private_directory` creates the folder
+  when missing, then opens the name itself and requires a directory that is
+  not a reparse point of any tag and whose owner and DACL read back exactly as
+  the private descriptor; otherwise it fails with the "unsafe runtime
+  directory" error and changes nothing.
 - `runtime::PATH_MAX` is the longest path the system accepts, in bytes with
   its NUL.
 - `runtime::bind(&Path)` binds under umask 077. Bind before starting worker
@@ -247,6 +265,23 @@ the test binary in a version folder), and
 proves the Windows names the same way:
 `issue313_the_profile_names_the_climon2_home_on_windows` and
 `issue313_local_application_data_names_the_default_executable_home_on_windows`.
+
+`tests/private_windows.rs` (#339, Windows only, run by CI's Windows Test job
+and the Windows gate) reads descriptors back independently, with Windows
+PowerShell's `Get-Acl`, and needs the right to create symbolic links (CI and
+an elevated session have it):
+`a_dangling_file_link_at_the_final_name_is_refused_and_nothing_appears_at_its_target`,
+`an_existing_file_is_refused_and_kept`,
+`a_name_holding_a_nul_is_refused_and_nothing_is_created_at_its_prefix`,
+`a_created_file_carries_exactly_the_private_descriptor`,
+`a_prepared_folder_carries_exactly_the_private_descriptor_and_preparing_again_keeps_it`,
+`a_folder_whose_parent_is_missing_is_not_prepared`,
+`a_folder_with_the_inherited_descriptor_is_refused_and_left_unrepaired`,
+`a_folder_with_an_extra_ace_is_refused_and_left_unrepaired`,
+`a_file_standing_in_for_a_folder_is_refused`,
+`a_junction_or_directory_link_standing_in_for_a_folder_is_refused`,
+`a_general_log_is_a_private_file_in_private_folders` and
+`a_junction_or_directory_link_standing_in_for_logs_is_refused_and_pruning_leaves_its_target_alone`.
 
 `tests/process.rs`: `issue26_identity_uses_start_time_and_refuses_zero_or_pid_reuse`,
 `issue19_waitpid_preserves_exit_and_real_signal_status`,
