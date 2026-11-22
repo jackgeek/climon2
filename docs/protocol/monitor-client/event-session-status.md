@@ -3,7 +3,9 @@
 **Status: agreed revision-1 specification. The
 [client library](../../../GLOSSARY.md#sessions) delivers it with `status-v1` selected ([#95](https://github.com/jackgeek/climon2/issues/95)), as its
 [implemented behavior](core-v1.md#implemented-behavior) details; the monitor
-labels and orders its rows by it ([#107](https://github.com/jackgeek/climon2/issues/107)).**
+labels and orders its rows by it ([#107](https://github.com/jackgeek/climon2/issues/107)), and drives
+attention jump and host reports ([#114](https://github.com/jackgeek/climon2/issues/114)) and toasts
+([#115](https://github.com/jackgeek/climon2/issues/115)) from it.**
 The [session daemon](../../../GLOSSARY.md#sessions) supplies effective
 [session status](../../../GLOSSARY.md#status-and-attention) through its
 [client](../../../GLOSSARY.md#sessions) to the [monitor](../../../GLOSSARY.md#sessions).

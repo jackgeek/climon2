@@ -61,7 +61,8 @@ modal, removal and [run-local dismissal](../../../GLOSSARY.md#attachment-and-con
 above ([#117](https://github.com/jackgeek/climon2/issues/117)); operation
 fields/results are unchanged.
 #69 owns agreed deadlines/bounds; [native declarations](../monitor-client/core-v1.md)
-are agreed in #71; the [acceptance matrix](../../monitor-acceptance.md)
+are agreed in #71 and implemented by the client library, Kill included
+([#96](https://github.com/jackgeek/climon2/issues/96)); the [acceptance matrix](../../monitor-acceptance.md)
 is agreed in #62, not executed conformance evidence.
 Related: [Command final](event-command-final.md).
 
@@ -69,7 +70,9 @@ Related: [Command final](event-command-final.md).
 
 The [session daemon](../../../GLOSSARY.md#sessions) validates a first-role
 Kill like Open: `unsupported_revision` unless revision 1, and
-`unsupported_capability` for an unknown or unadvertised required family. Each
+`unsupported_capability` for an unknown or unadvertised required family, or a
+required `notification-v1` without a required `status-v1`, as for
+[Open](request-open.md#implemented-behavior). Each
 rejection has no effects, carries the command's result as `known_final` once
 it is final (see [Command final](event-command-final.md#implemented-behavior)),
 and ends the stream. A Kill on a connection that already
@@ -114,7 +117,8 @@ failed write to the command's terminal, does not by itself fail a Kill whose
 termination was confirmed and cleaned up. While a Kill awaits its answer, a
 later Open or Kill on its connection is `invalid_state`, as are Leave and
 Acquire, since it opened nothing; Input, Resize and Ready are
-`not_attached`, and Focus is `unsupported_capability`. The Kill's connection
+`not_attached`, and Focus, Set viewing and Acknowledge are
+`unsupported_capability`. The Kill's connection
 receives no [Command final](event-command-final.md): its answer carries the
 result. `c2 kill` sends this Kill through its own release's client library
 ([#100](https://github.com/jackgeek/climon2/issues/100)).

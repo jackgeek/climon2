@@ -1,6 +1,8 @@
 # Acquire — `0x33`
 
 **Status: agreed and implemented** for [attachments](../../../GLOSSARY.md#attachment-and-control) ([#87](https://github.com/jackgeek/climon2/issues/87)) and [passive monitor connections](../../../GLOSSARY.md#attachment-and-control) ([#89](https://github.com/jackgeek/climon2/issues/89)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+The [client library](../../../GLOSSARY.md#sessions) sends it ([#94](https://github.com/jackgeek/climon2/issues/94)); the [client executable](../../../GLOSSARY.md#sessions)'s ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)) and the
+[monitor](../../../GLOSSARY.md#sessions) ([#108](https://github.com/jackgeek/climon2/issues/108), [#110](https://github.com/jackgeek/climon2/issues/110)) use it.
 The [client](../../../GLOSSARY.md#sessions) explicitly requests
 [control](../../../GLOSSARY.md#attachment-and-control) from the
 [session daemon](../../../GLOSSARY.md#sessions) after Open.
@@ -33,6 +35,10 @@ included. Acceptance is not
 [readiness](../../../GLOSSARY.md#protocol-and-plugin-concepts).
 
 Discovery, menu browsing and passive reconnect do not originate Acquire.
+The monitor sends Acquire only for Enter on a connected row, the take-control
+key, the attention jump (prefix+j) to a session it does not control, and its
+initial selection
+([#108](https://github.com/jackgeek/climon2/issues/108), [#110](https://github.com/jackgeek/climon2/issues/110), [#114](https://github.com/jackgeek/climon2/issues/114), [#266](https://github.com/jackgeek/climon2/issues/266)).
 See [succession](core-v1.md#membership-and-succession) for
 [promotion](../../../GLOSSARY.md#attachment-and-control) without
 selection, input, resize or acknowledgement.
