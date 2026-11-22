@@ -280,3 +280,19 @@ fn a_command_that_cannot_start_fails_to_start() {
     // ERROR_DIRECTORY
     assert_eq!(error.raw_os_error(), Some(267));
 }
+
+/// #325, `WIN-08`: the pseudoconsole's own start-up negotiation (the window
+/// position report request, the device attributes request, focus reporting
+/// and win32-input-mode) never reaches the session's output; the command's
+/// own output, a focus reporting request among it, does.
+#[test]
+fn the_start_up_negotiation_never_reaches_the_output() {
+    let hosted = start(&["cmd", "/d", "/c", "echo first& echo \x1b[?1004hfocus-on"]);
+    let (text, _) = read_until(&hosted, |text| text.contains("focus-on"));
+    for sequence in ["\x1b[1t", "\x1b[c", "\x1b[?9001"] {
+        assert!(!text.contains(sequence), "{sequence:?} in {text:?}");
+    }
+    let first = text.find("first").expect(&text);
+    assert!(!text[..first].contains("\x1b[?1004h"), "{text:?}");
+    assert!(text[first..].contains("\x1b[?1004hfocus-on"), "{text:?}");
+}
