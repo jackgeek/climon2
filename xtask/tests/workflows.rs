@@ -269,3 +269,35 @@ fn the_windows_quality_job_waits_for_its_switch_except_for_releases() {
         )
     );
 }
+
+/// The owner's own machines run each platform's CRAP and mutation gate
+/// (docs/for-humans/quality-runners.md). The repository is public and a
+/// fork's pull request runs its own copy of a workflow, so these
+/// self-hosted jobs run only on push and manual dispatch, never on a pull
+/// request, and each waits for its platform in `CLIMON2_OWN_RUNNERS`.
+#[test]
+fn own_hardware_gates_run_on_push_never_on_pull_requests() {
+    let quality = workflow("quality.yml");
+    assert_eq!(triggers(&quality), ["push", "workflow_dispatch"]);
+    for (name, os, gate) in [
+        ("linux", "Linux", "cargo xtask mutate ||"),
+        ("windows", "Windows", "cargo xtask mutate --native-only ||"),
+        ("macos", "macOS", "cargo xtask mutate --native-only ||"),
+    ] {
+        let lines = job(&quality, name);
+        let runs_on = format!("    runs-on: [self-hosted, {os}, X64, climon2-quality]");
+        assert!(lines.contains(&runs_on.as_str()), "{name}: {lines:#?}");
+        let switch = format!("    if: contains(vars.CLIMON2_OWN_RUNNERS, '{name}')");
+        assert!(lines.contains(&switch.as_str()), "{name}: {lines:#?}");
+        assert!(
+            lines.iter().any(|line| line.trim_start().starts_with(gate)),
+            "{name}: {lines:#?}"
+        );
+    }
+    for workflow_name in ["check.yml", "release.yml", "measure.yml"] {
+        assert!(
+            !workflow(workflow_name).contains("self-hosted"),
+            "{workflow_name} must stay on GitHub-hosted runners"
+        );
+    }
+}
