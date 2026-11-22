@@ -10,10 +10,12 @@ mod conpty;
 mod host;
 mod job;
 mod keys;
+mod outside;
 mod pwsh;
 
 pub use conpty::ConPty;
 pub use host::{HostModel, HostSettings, Terminal};
 pub use job::JobShape;
 pub use keys::{Key, Modifiers};
+pub use outside::{Finished, Outside};
 pub use pwsh::{PWSH_PROMPT, controlled_pwsh, pwsh};

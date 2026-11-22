@@ -46,5 +46,6 @@ pub use terminal::InputTerminal;
 pub use terminal::{Modes, Options, Terminal};
 #[cfg(windows)]
 pub use windows::{
-    ConPty, HostModel, HostSettings, JobShape, Key, Modifiers, PWSH_PROMPT, controlled_pwsh, pwsh,
+    ConPty, Finished, HostModel, HostSettings, JobShape, Key, Modifiers, Outside, PWSH_PROMPT,
+    controlled_pwsh, pwsh,
 };

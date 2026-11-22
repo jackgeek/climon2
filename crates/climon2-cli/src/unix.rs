@@ -1,15 +1,17 @@
 //! The subcommands, each run inside the invocation's climon2 home with its
 //! general log.
 use crate::{Error, Handoff, Work, attach, exec, kill, monitor};
-use climon2_core::layout::{ExecutableLayout, VersionBinary};
-use climon2_platform::{home, logging::LogFile};
-use std::{io, path::Path};
-
-/// The install layout around this CLI: every sibling it starts, and every
-/// client it execs, is found from it.
-pub(crate) fn executable_layout() -> io::Result<ExecutableLayout> {
-    home::executable_layout(VersionBinary::Cli)?.map_err(io::Error::other)
-}
+use climon2_platform::{
+    logging::LogFile,
+    process::{self, Signal},
+};
+use std::{
+    os::unix::process::CommandExt,
+    path::Path,
+    process::Command,
+    thread,
+    time::{Duration, Instant},
+};
 
 pub(crate) fn logged_run(work: Work) -> Result<u32, Error> {
     crate::logged(|home, general, filter| command(work, home, general, filter))
@@ -31,4 +33,23 @@ impl Handoff {
             Self::Monitor => monitor::run(),
         }
     }
+}
+
+/// Replaces this process with `client`; returns only when that fails.
+pub(crate) fn exec_client(mut client: Command) -> Error {
+    Error::from(client.exec())
+}
+
+/// Ends a daemon this CLI started whose session must not outlive it.
+pub(crate) fn stop_daemon(pid: u32) {
+    let _ = process::signal_group(pid, Signal::Terminate);
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while deadline.checked_duration_since(Instant::now()).is_some() {
+        match process::try_wait(pid) {
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            _ => return,
+        }
+    }
+    let _ = process::signal_group(pid, Signal::Kill);
+    let _ = process::wait(pid);
 }

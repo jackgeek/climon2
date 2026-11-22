@@ -95,7 +95,7 @@ fn installed(client: &Path, metadata: &SessionMetadata) -> Result<PathBuf, Error
 }
 
 fn client_invocation(home: &Path, metadata: &SessionMetadata) -> io::Result<Invocation> {
-    let layout = crate::native::executable_layout()?;
+    let layout = crate::executable_layout()?;
     let path = home
         .join("sessions")
         .join(format!("{}.pty", metadata.session_id));

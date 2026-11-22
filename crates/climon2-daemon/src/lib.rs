@@ -1,10 +1,13 @@
 //! A session daemon owns one PTY and one output pump; clients never own terminal handles.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("climon2-daemon requires macOS or Linux");
+//! On Windows the PTY is a pseudoconsole of the bundled ConPTY (#317).
 
 mod args;
 mod connection;
 pub mod control;
+#[cfg(unix)]
+mod pty;
+#[cfg(windows)]
+#[path = "pty/windows.rs"]
 mod pty;
 mod session;
 mod startup;
@@ -159,6 +162,10 @@ fn passed(deadline: Instant, now: Instant) -> bool {
 }
 
 /// Whether an action done at `last` and paced to once per `period` is due again.
+#[cfg_attr(
+    not(unix),
+    expect(dead_code, reason = "only the Unix PTY paces its job-group looks")
+)]
 fn due(last: Instant, period: Duration) -> bool {
     last.elapsed().checked_sub(period).is_some()
 }

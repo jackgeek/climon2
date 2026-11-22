@@ -156,17 +156,20 @@ jobs:
       # Windows arms exist.
       - name: Test the neutral crates
         run: cargo test --locked -p climon2-core -p climon2-vt
-      - name: Test the platform seams that build on Windows
-        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test cross_account_windows --test presentation_windows --test connection_windows --test runtime_windows --test process_windows
       # The harness fetches the pinned ConPTY package itself and verifies it
       # against pins/conpty.txt; the cache only saves the download.
       - uses: actions/cache@v4
         with:
           path: target/conpty
           key: conpty-${{ hashFiles('pins/conpty.txt') }}
+      - name: Test the platform seams that build on Windows
+        run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test cross_account_windows --test presentation_windows --test connection_windows --test runtime_windows --test process_windows --test pty_windows
       - name: Test the harness's Windows host
         run: cargo test --locked -p climon2-test-term
-      - name: Test the launcher and the CLI's Windows answers
+      # Also builds the daemon binary, which the CLI's exec tests start.
+      - name: Test the daemon binary's Windows answers
+        run: cargo test --locked -p climon2-daemon --test windows
+      - name: Test the launcher, the CLI's Windows answers and headless exec
         run: cargo test --locked -p climon2-launcher -p climon2-cli
   windows-quality:
     name: Windows-only CRAP and mutation / windows-2025
@@ -184,6 +187,8 @@ jobs:
         shell: bash
     env:
       CARGO_TARGET_DIR: target/quality-run
+      # One verified ConPTY download for every coverage and mutation build.
+      CLIMON2_TEST_CONPTY_CACHE: ${{ github.workspace }}/target/conpty
     steps:
       - uses: actions/checkout@v4
         with:
