@@ -30,6 +30,17 @@ fn start(command: &mut Command) -> Child {
     command.spawn().unwrap()
 }
 
+/// The `c2` built beside this test binary (`<profile>/deps/..`).
+/// `CARGO_BIN_EXE_c2` is fixed when this binary is compiled. A mutation
+/// worker that reuses a seeded build relinks `c2` from the mutant but keeps
+/// this binary, so that path would still name the unmutated launcher.
+fn built_launcher() -> std::path::PathBuf {
+    let test = std::env::current_exe().unwrap();
+    let launcher = test.parent().unwrap().parent().unwrap().join("c2");
+    assert!(launcher.is_file(), "no launcher at {}", launcher.display());
+    launcher
+}
+
 struct Layout(std::path::PathBuf);
 
 impl Layout {
@@ -41,7 +52,7 @@ impl Layout {
         ));
         fs::create_dir_all(&root).unwrap();
         write_executable(|| {
-            fs::copy(env!("CARGO_BIN_EXE_c2"), root.join("c2")).unwrap();
+            fs::copy(built_launcher(), root.join("c2")).unwrap();
         });
         Self(root)
     }
