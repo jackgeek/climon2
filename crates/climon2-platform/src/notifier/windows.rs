@@ -12,7 +12,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{HANDLE, WAIT_FAILED},
-    System::Threading::{CreateEventW, ResetEvent, SetEvent, WaitForSingleObject},
+    System::Threading::{CreateEventW, INFINITE, ResetEvent, SetEvent, WaitForSingleObject},
 };
 
 /// The notification descriptor: a manual-reset event, signalled while there
@@ -54,16 +54,16 @@ impl Notifier {
 }
 
 /// Waits until the notification descriptor `descriptor` is signalled or
-/// `timeout` passes.
+/// about `timeout` passes: a Windows wait can end up to a clock tick early,
+/// which only makes the caller look again.
 ///
 /// # Safety
 ///
 /// `descriptor` is a notification descriptor that stays open for the call.
 pub unsafe fn wait_raised(descriptor: i32, timeout: Duration) -> io::Result<()> {
     let event = descriptor as isize as HANDLE;
-    // Whole milliseconds, rounded up so a wait never ends early; INFINITE
-    // (u32::MAX) for a timeout too long to count.
-    let milliseconds = u32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(u32::MAX);
+    // Whole milliseconds; a timeout too long to count waits forever.
+    let milliseconds = u32::try_from(timeout.as_millis()).unwrap_or(INFINITE);
     // SAFETY: guaranteed by the caller: an open event handle.
     if unsafe { WaitForSingleObject(event, milliseconds) } == WAIT_FAILED {
         return Err(io::Error::last_os_error());

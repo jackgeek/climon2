@@ -61,7 +61,13 @@ fn a_wait_on_the_notification_descriptor_ends_when_it_is_raised_or_at_the_timeou
     let started = Instant::now();
     // SAFETY (both): the notifier keeps the descriptor open for the call.
     unsafe { wait_raised(notifier.descriptor(), timeout) }.unwrap();
-    assert!(started.elapsed() >= timeout, "{:?}", started.elapsed());
+    // A Windows wait can end up to a clock tick (15.625 ms) early.
+    let tick = Duration::from_millis(16);
+    assert!(
+        started.elapsed() + tick >= timeout,
+        "{:?}",
+        started.elapsed()
+    );
 
     notifier.set(true);
     let started = Instant::now();

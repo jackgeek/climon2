@@ -10,11 +10,13 @@ identity and liveness check (see [Identity and liveness](#identity-and-liveness)
 daemon, its session job and its command for `exec --headless` (see
 [Starting the daemon](#starting-the-daemon) and
 [Starting the command](#starting-the-command);
-[#317](https://github.com/jackgeek/climon2/issues/317)). Command resolution
+[#317](https://github.com/jackgeek/climon2/issues/317)), and `c2 kill`, which
+hangs the session up through the client and its library (see
+[Session job and hang-up](#session-job-and-hang-up);
+[#318](https://github.com/jackgeek/climon2/issues/318)). Command resolution
 is not built yet: the command line's first token is resolved by
 `CreateProcessW` itself, and any command that cannot start makes `exec` exit
-126. The daemon has hang-up's steps, but nothing on Windows hangs a session
-up yet. It was
+126. It was
 agreed in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 using the VM measurements from

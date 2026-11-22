@@ -29,10 +29,7 @@ mod platform;
 #[path = "library/windows.rs"]
 mod platform;
 
-#[cfg(windows)]
 use platform::bootstrap;
-#[cfg(unix)]
-use unix::bootstrap;
 
 use climon2_core::{
     VersionName,

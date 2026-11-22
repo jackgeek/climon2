@@ -13,13 +13,7 @@ mod native;
 #[path = "notifier/windows.rs"]
 mod native;
 
-#[cfg(unix)]
-pub use unix::{Waker, wait_raised};
-
-#[cfg(windows)]
-pub use native::{Waker, wait_raised};
-
-pub use native::Notifier;
+pub use native::{Notifier, Waker, wait_raised};
 
 #[cfg(unix)]
 mod unix {

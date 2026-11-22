@@ -85,8 +85,9 @@ explicit availability errors, not evidence that a session ended.
 Load the absolute path `<executable home>/<session version>/<library file>`
 from the [install layout](../../GLOSSARY.md#installation). The library file is
 `libclimon2_client.dylib` on macOS and `libclimon2_client.so` on x86-64
-GNU/Linux, and on x86-64 Windows will be `climon2_client.dll` (agreed, not
-implemented: [#216](https://github.com/jackgeek/climon2/issues/216)); the
+GNU/Linux, and `climon2_client.dll` on x86-64 Windows
+([#216](https://github.com/jackgeek/climon2/issues/216), implemented in
+[#318](https://github.com/jackgeek/climon2/issues/318)); the
 version folder, not the file name, carries the release. Never
 substitute `current`, another installed release, or a library found through a
 search path. The [client executable](../../GLOSSARY.md#sessions) loads the same
@@ -157,11 +158,18 @@ Installed libraries are trusted native code. Initializers execute before
 identity validation; compatibility checks do not sandbox a malicious artifact.
 A native crash during loading can terminate the whole monitor.
 
-### Windows (agreed, not implemented)
+### Windows (partly implemented)
 
 These rules were decided on
-[#216](https://github.com/jackgeek/climon2/issues/216); nothing here exists
-yet.
+[#216](https://github.com/jackgeek/climon2/issues/216). Loading, the path check,
+the failure classification and the event notification exist since
+[#318](https://github.com/jackgeek/climon2/issues/318), used by the client
+executable for `c2 kill`. `cargo xtask dist`'s checks arrive with the release
+zip ([#319](https://github.com/jackgeek/climon2/issues/319)), and the
+monitor's wait with the monitor on Windows
+([#327](https://github.com/jackgeek/climon2/issues/327)). Every Windows build
+links the C runtime statically, and tests check that the built library
+exports only its bootstrap and imports only system DLLs.
 
 Open the library with `LoadLibraryExW(path, NULL,
 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)`, the flags
@@ -191,6 +199,12 @@ The monitor waits on up to 64 of them at a time with `WaitForMultipleObjects`,
 the most one Windows wait accepts. It still drains every live instance on
 each tick of its wait, so an instance beyond the first 64 is served no later
 than the next tick.
+
+Inside the library, each instance's worker waits on its daemon connections
+with `WSAPoll`, which watches only sockets. The waker that ends that wait
+when the caller submits work is therefore a loopback UDP socket connected to
+its own address, so it accepts only its own datagrams. It is internal to the
+library and never crosses the native interface.
 
 Classify Windows load failures from the loader's own results, never from
 message text. A failed load whose file is absent afterwards is a missing
