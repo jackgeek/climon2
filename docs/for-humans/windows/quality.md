@@ -100,7 +100,7 @@ number.
 | Job | What it does |
 | --- | --- |
 | Test | Every workspace test, including the harness's host-model scenarios. It waits for Dist and runs the smoke test against its zip ([#321](https://github.com/jackgeek/climon2/issues/321)) |
-| Quality | The native-only gate over registered Windows files |
+| Quality | The native-only gate over registered Windows files; during development, only when its own switch is on (see [The Quality job during development](#the-quality-job-during-development)) |
 | Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks |
 | Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip, under Windows PowerShell 5.1 and PowerShell 7 |
 | Neutral (existing) | Its Windows leg stays: `climon2-core`'s tests on Windows |
@@ -130,6 +130,50 @@ A pull request touches Windows-only code when it changes any of:
 - the pinned downloads under `pins/`: the ConPTY package's
   `pins/conpty.txt` and, once they are added, vim's and Microsoft Edit's;
 - the workflow files or xtask's quality code.
+
+### The Quality job during development
+
+While Windows support is being built, the Quality job is off for pull
+requests and pushes to `main`. A run takes 25 to 50 minutes, and each round
+of fixes waited for one. The gate runs on the Windows development VM instead
+(see [Running the gate locally](#running-the-gate-locally)), and each pull
+request that changes a registered Windows file reports its result. This was
+the owner's decision on 2026-11-22.
+
+A second repository variable, `CLIMON2_WINDOWS_QUALITY`, turns the job back
+on when it is `on`. Release qualification and tags run it whatever that
+variable says. Turning it back on for good is part of
+[#330](https://github.com/jackgeek/climon2/issues/330).
+
+### Running the gate locally
+
+The VM needs Python 3.11 or later and
+[cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov); `setup-quality`
+installs the pinned tools and builds `cargo-llvm-cov` when it is missing. From
+the worktree of the branch, in Git Bash:
+
+```sh
+export CLIMON2_QUALITY_PYTHON="$LOCALAPPDATA/Programs/Python/Python313/python.exe"
+export CLIMON2_MUTATION_BASE=origin/main
+export CLIMON2_NATIVE_MUTATION_WORKERS=2
+cargo xtask setup-quality
+cargo xtask mutate --native-only
+```
+
+- `CLIMON2_MUTATION_BASE` makes the gate mutate the registered Windows files
+  changed since `main`, as the job does on a pull request.
+- `CLIMON2_NATIVE_MUTATION_WORKERS` caps the workers. Without it the gate uses
+  one per CPU, up to 16, and 16 workers' builds do not fit in the VM's 16 GB.
+  Use 2 when another build or gate is running, and at most 4 otherwise.
+- The gate runs the sentinel and the coverage probe first, as on CI. It fails
+  if any function in a changed file scores over 5 or any mutant survives.
+
+The cross-account test is skipped, saying why, unless
+`CLIMON2_SECOND_ACCOUNT` and `CLIMON2_SECOND_ACCOUNT_PASSWORD` name a second,
+non-administrator account. The Test job still runs it on every pull request.
+
+The VM runs with UAC off, so the gate runs with a full administrator token,
+as the runner does.
 
 ## Source ownership
 

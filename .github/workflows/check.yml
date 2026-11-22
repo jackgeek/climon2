@@ -36,6 +36,12 @@ permissions:
 # for release tags and for changes that `cargo xtask windows-changed` says
 # touch Windows-only code. The neutral job's Windows leg and the Windows Dist
 # job always run.
+#
+# While Windows support is being built, the Windows Quality job (CRAP and
+# mutation) runs on pull requests and main only when the repository variable
+# CLIMON2_WINDOWS_QUALITY is "on"; developers run the same gate on the Windows
+# development VM instead (docs/for-humans/windows/quality.md, "Running the gate
+# locally"). Release qualification always runs it.
 
 # A newer push to the same pull request supersedes its in-progress checks.
 # Main pushes and release calls get a group of their own and are never cancelled.
@@ -195,8 +201,13 @@ jobs:
     name: Windows-only CRAP and mutation / windows-2025
     needs: windows-scope
     # As the macOS job: a draft feature/* -> main integration PR waits until ready.
+    # Off by default during development (see the top of this file); release
+    # qualification (mutate_all) and tags always run it.
     if: >-
       needs.windows-scope.outputs.test == 'true'
+      && (vars.CLIMON2_WINDOWS_QUALITY == 'on'
+        || inputs.mutate_all
+        || startsWith(github.ref, 'refs/tags/'))
       && !(github.event_name == 'pull_request'
         && github.event.pull_request.draft
         && github.base_ref == 'main'
