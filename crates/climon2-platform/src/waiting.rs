@@ -1,10 +1,5 @@
 //! Waiting for readiness over a set of handles: the one wait every tick loop
 //! and deadline shares (ADR 0003, Windows I/O and transport).
-use std::{io, os::fd::BorrowedFd, time::Duration};
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("waiting seam requires macOS or Linux");
-
 /// What a wait wants from one handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Interest {
@@ -13,13 +8,26 @@ pub enum Interest {
     ReadWrite,
 }
 
+pub use native::{Watch, wait};
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::{Watch, wait};
+use unix as native;
+
+/// `WSAPoll`, which waits on sockets only.
+#[cfg(windows)]
+#[path = "waiting/windows.rs"]
+mod native;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
     use super::*;
-    use std::{marker::PhantomData, os::fd::AsRawFd};
+    use crate::runtime::SocketStream;
+    use std::{
+        io,
+        marker::PhantomData,
+        os::fd::{AsFd, AsRawFd, BorrowedFd},
+        time::Duration,
+    };
 
     impl Interest {
         fn events(self) -> libc::c_short {
@@ -42,6 +50,11 @@ mod unix {
     impl<'a> Watch<'a> {
         pub fn new(handle: BorrowedFd<'a>, interest: Interest) -> Self {
             Self::entry(handle.as_raw_fd(), interest.events())
+        }
+
+        /// A connected socket, as every platform names it.
+        pub fn stream(stream: &'a SocketStream, interest: Interest) -> Self {
+            Self::new(stream.as_fd(), interest)
         }
 
         /// A slot poll ignores.

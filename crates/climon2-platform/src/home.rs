@@ -54,7 +54,6 @@ pub fn default_executable_home() -> io::Result<PathBuf> {
 
 /// The named climon2 home, created when missing and canonicalized: the
 /// invocation's one `runtime::canonical_home` call.
-#[cfg(unix)]
 pub fn canonical() -> io::Result<PathBuf> {
     crate::runtime::canonical_home(named()?.root())
 }

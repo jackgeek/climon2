@@ -75,6 +75,10 @@ const WINDOWS_SUITE: &[&[&str]] = &[
         "--test",
         "private_windows",
         "--test",
+        "connection_windows",
+        "--test",
+        "runtime_windows",
+        "--test",
         "process_windows",
     ],
     &["-p", "climon2-launcher", "-p", "climon2-cli"],
@@ -630,7 +634,9 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/private/windows.rs")
         | Some("crates/climon2-launcher/src/handoff/windows.rs")
         | Some("crates/climon2-cli/src/windows.rs")
-        | Some("crates/climon2-platform/src/process/windows.rs") => Some("windows"),
+        | Some("crates/climon2-platform/src/process/windows.rs")
+        | Some("crates/climon2-platform/src/runtime/windows.rs")
+        | Some("crates/climon2-platform/src/waiting/windows.rs") => Some("windows"),
         _ => None,
     }
 }
@@ -2282,6 +2288,14 @@ No selected line holds a mutation site; nothing to mutate.
                 cfg!(windows),
             ),
             ("crates/climon2-cli/src/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/waiting/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/runtime/windows.rs",
+                cfg!(windows),
+            ),
             (
                 "crates/climon2-platform/src/process/windows.rs",
                 cfg!(windows),

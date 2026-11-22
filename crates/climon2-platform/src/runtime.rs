@@ -1,9 +1,20 @@
-//! Private runtime directories and bounded AF_UNIX sockets (#18).
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("runtime directory and socket seam requires macOS or Linux");
+//! Private runtime directories and bounded AF_UNIX sockets (#18; Windows #316).
+//! The directory's name and its socket-path budget are decided here; where it
+//! lives, the socket types and how a stale socket is recognised are native.
+use climon2_core::{SessionId, layout::RuntimeLayout};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::*;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "runtime/windows.rs"]
+mod native;
 
 #[cfg(target_os = "linux")]
 #[path = "runtime/linux.rs"]
@@ -17,9 +28,49 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::SocketFreshness;
 
+pub fn canonical_home(path: &Path) -> io::Result<PathBuf> {
+    if !path.is_absolute() {
+        return Err(io::Error::other("climon2 home must be absolute"));
+    }
+    fs::create_dir_all(path)?;
+    fs::canonicalize(path)
+}
+
+pub struct RuntimeDirectory(RuntimeLayout);
+
+impl RuntimeDirectory {
+    /// `home` is the result of the invocation's single `canonical_home` call.
+    pub fn prepare(home: &Path) -> io::Result<Self> {
+        let (root, uid) = native::runtime_root()?;
+        let layout = RuntimeLayout::new(&root, uid, home).map_err(io::Error::other)?;
+        crate::private::private_directory(layout.directory())?;
+        Ok(Self(layout))
+    }
+
+    pub fn path(&self) -> &Path {
+        self.0.directory()
+    }
+
+    pub fn socket_path(&self, id: &SessionId) -> io::Result<PathBuf> {
+        self.0
+            .socket_path(id, native::SOCKET_PATH_MAX)
+            .map_err(io::Error::other)
+    }
+}
+
+/// A socket path the platform's budget admits, checked before binding.
+fn within_budget(path: &Path) -> io::Result<()> {
+    if path.as_os_str().as_encoded_bytes().len() > native::SOCKET_PATH_MAX {
+        return Err(io::Error::other(format!(
+            "socket path exceeds {} bytes",
+            native::SOCKET_PATH_MAX
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
-    use climon2_core::{SessionId, layout::RuntimeLayout};
     use std::{
         fs, io,
         os::unix::{
@@ -34,6 +85,19 @@ mod unix {
 
     pub type SocketListener = UnixListener;
     pub type SocketStream = UnixStream;
+
+    /// A connected socket2 socket as this platform's stream.
+    pub(crate) fn into_stream(socket: socket2::Socket) -> SocketStream {
+        std::os::fd::OwnedFd::from(socket).into()
+    }
+
+    /// The conservative socket-path budget on both Unix platforms.
+    pub(super) const SOCKET_PATH_MAX: usize = 103;
+
+    /// `/tmp` and the effective uid, which names the directory.
+    pub(super) fn runtime_root() -> io::Result<(PathBuf, Option<u32>)> {
+        Ok((PathBuf::from("/tmp"), Some(crate::peer::effective_uid())))
+    }
 
     pub fn validate_stale_socket(path: &Path) -> io::Result<()> {
         match fs::symlink_metadata(path) {
@@ -50,42 +114,11 @@ mod unix {
         Ok(())
     }
 
-    pub fn canonical_home(path: &Path) -> io::Result<PathBuf> {
-        if !path.is_absolute() {
-            return Err(io::Error::other("climon2 home must be absolute"));
-        }
-        fs::create_dir_all(path)?;
-        fs::canonicalize(path)
-    }
-
-    pub struct RuntimeDirectory(RuntimeLayout);
-
-    impl RuntimeDirectory {
-        /// `home` is the result of the invocation's single `canonical_home` call.
-        pub fn prepare(home: &Path) -> io::Result<Self> {
-            let layout =
-                RuntimeLayout::new(Path::new("/tmp"), Some(crate::peer::effective_uid()), home)
-                    .map_err(io::Error::other)?;
-            crate::private::private_directory(layout.directory())?;
-            Ok(Self(layout))
-        }
-
-        pub fn path(&self) -> &Path {
-            self.0.directory()
-        }
-
-        pub fn socket_path(&self, id: &SessionId) -> io::Result<PathBuf> {
-            self.0.socket_path(id, 103).map_err(io::Error::other)
-        }
-    }
-
     /// The longest path, in bytes with its NUL, the system accepts.
     pub const PATH_MAX: usize = libc::PATH_MAX as usize;
 
     pub fn bind(path: &Path) -> io::Result<SocketListener> {
-        if path.as_os_str().as_encoded_bytes().len() > 103 {
-            return Err(io::Error::other("socket path exceeds 103 bytes"));
-        }
+        super::within_budget(path)?;
         let _lock = UMASK
             .lock()
             .map_err(|_| io::Error::other("socket creation lock poisoned"))?;
