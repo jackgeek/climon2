@@ -22,10 +22,7 @@ pub(crate) struct Pty {
 
 impl Pty {
     pub fn spawn(options: &Options, _startup: ExecListener) -> Result<Self, Failure> {
-        let conpty = ConPty::load(&own_folder()?)
-            .map_err(|_| Failure::own("the bundled ConPTY is missing or cannot be loaded"))?;
-        let opened = pty::open(conpty, options.size.rows, options.size.cols)
-            .map_err(|_| Failure::own("cannot create the command's pseudoconsole"))?;
+        let opened = pseudoconsole(options)?;
         let hosted = opened
             .start(&resolved(options)?, &options.cwd, &environment(options))
             .map_err(|error| {
@@ -100,6 +97,14 @@ impl Pty {
     pub fn observe_jobs(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+/// The command's pseudoconsole, of the bundled ConPTY, not yet running it.
+fn pseudoconsole(options: &Options) -> Result<pty::Opened, Failure> {
+    let conpty = ConPty::load(&own_folder()?)
+        .map_err(|_| Failure::own("the bundled ConPTY is missing or cannot be loaded"))?;
+    pty::open(conpty, options.size.rows, options.size.cols)
+        .map_err(|_| Failure::own("cannot create the command's pseudoconsole"))
 }
 
 /// The command as `CreateProcessW` is to start it, found through the
