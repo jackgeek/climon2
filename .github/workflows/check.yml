@@ -31,8 +31,8 @@ permissions:
 # "on" (Settings > Secrets and variables > Actions > Variables). Off, checks run
 # on Linux and Windows, and macOS only builds its release artifact.
 #
-# The Windows Test and Quality jobs run unless the repository variable
-# CLIMON2_WINDOWS_TESTS is "off" (docs/for-humans/windows/quality.md). Off, it still runs
+# The Windows Test, Quality and Archive jobs run unless the repository variable
+# CLIMON2_WINDOWS_TESTS is "off" (docs/for-humans/windows/quality.md). Off, they still run
 # for release tags and for changes that `cargo xtask windows-changed` says
 # touch Windows-only code. The neutral job's Windows leg and the Windows Dist
 # job always run.
@@ -187,6 +187,10 @@ jobs:
           CLIMON2_E2E_ARCHIVE="$(cygpath -aw "$(ls target/dist-artifact/*.zip)")"
           export CLIMON2_E2E_ARCHIVE
           cargo test --locked -p climon2-launcher -p climon2-cli
+      # Without CLIMON2_E2E_ARCHIVE the archive tests pass without running;
+      # the Windows Archive job runs them.
+      - name: Test the installer
+        run: cargo test --locked -p climon2-install
   windows-quality:
     name: Windows-only CRAP and mutation / windows-2025
     needs: windows-scope
@@ -404,6 +408,48 @@ jobs:
           name: release-dist-windows-x86_64-msvc
           path: target/dist/*
           if-no-files-found: error
+  # The Windows archive's end-to-end tests on the exact zip the Windows Dist job
+  # built (docs/for-humans/windows/quality.md, "Pull request jobs"): its install.exe, and
+  # install.ps1 under Windows PowerShell 5.1 and PowerShell 7. The runner is
+  # thrown away afterwards, so these tests may change the real user PATH; they
+  # put it back.
+  windows-archive:
+    name: Windows archive / windows-2025
+    needs: [windows-scope, windows-dist]
+    if: needs.windows-scope.outputs.test == 'true'
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      # Restore the Rust cache before downloading the archive: a partial-match
+      # restore cleans target/, which would delete target/dist.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-2025-archive
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist-windows-x86_64-msvc
+          path: target/dist
+      - name: Verify the exact downloaded artifact
+        run: |
+          cd target/dist
+          sha256sum -c SHA256SUMS
+          archives=(climon2-*-windows-x86_64-msvc.zip)
+          test "${#archives[@]}" = 1
+          test -f "${archives[0]}"
+          test -f install.ps1
+          echo "CLIMON2_E2E_ARCHIVE=$(cygpath -w "$PWD/${archives[0]}")" >> "$GITHUB_ENV"
+      - name: Test this exact archive, its installer and install.ps1 under both PowerShells
+        env:
+          CLIMON2_E2E_REAL_USER_PATH: "1"
+        run: |
+          powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          cargo test --locked -p climon2-install --test archive_windows
   archive:
     name: Final archive / ${{ matrix.runner }} / bash 5
     needs: dist

@@ -10,7 +10,9 @@ Quality job with everything [the native-only gate on Windows](#the-native-only-g
 needs ([#314](https://github.com/jackgeek/climon2/issues/314)), and the
 harness's Windows host, whose own tests the Test job runs
 ([#320](https://github.com/jackgeek/climon2/issues/320)), and the Dist job
-([#319](https://github.com/jackgeek/climon2/issues/319)). The Test and
+([#319](https://github.com/jackgeek/climon2/issues/319)), and the Archive job
+([#329](https://github.com/jackgeek/climon2/issues/329)), which so far tests
+the installer and the download script on the zip. The Test and
 Quality jobs run only the tests that build on Windows yet. The rest is not built. It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 and is the specification the Windows port implements.
@@ -28,7 +30,7 @@ matter most:
   compiled only on Windows.
 - A **registered native file** is a source file listed in xtask's native-source
   registry as belonging to one operating system. Today the registry lists
-  `linux.rs` and `macos.rs` files, and nineteen `windows.rs` files:
+  `linux.rs` and `macos.rs` files, and twenty-one `windows.rs` files:
   `crates/climon2-platform/src/home/windows.rs`, which names the Windows
   homes; `crates/climon2-platform/src/private/windows.rs`, which creates the
   files and folders only their user may open
@@ -59,9 +61,11 @@ matter most:
   which also gave `terminal/windows.rs` the client's console and
   `waiting/windows.rs` its waits on events);
   `crates/climon2-launcher/src/handoff/windows.rs`, the launcher's
-  hand-off; and `crates/climon2-cli/src/windows.rs`, which runs `list`,
-  `exec`, `attach` and `kill` and refuses the monitor until it builds on
-  Windows.
+  hand-off; `crates/climon2-install/src/windows.rs` and
+  `crates/climon2-install/src/user_path/windows.rs`, the installer and its
+  user PATH edit ([#329](https://github.com/jackgeek/climon2/issues/329)); and
+  `crates/climon2-cli/src/windows.rs`, which runs `list`, `exec`, `attach`
+  and `kill` and refuses the monitor until it builds on Windows.
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a
@@ -98,7 +102,7 @@ number.
 | Test | Every workspace test, including the harness's host-model scenarios. It waits for Dist and runs the smoke test against its zip ([#321](https://github.com/jackgeek/climon2/issues/321)) |
 | Quality | The native-only gate over registered Windows files |
 | Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks |
-| Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip |
+| Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip, under Windows PowerShell 5.1 and PowerShell 7 |
 | Neutral (existing) | Its Windows leg stays: `climon2-core`'s tests on Windows |
 
 ### The switch
@@ -110,15 +114,19 @@ A repository variable, `CLIMON2_WINDOWS_TESTS`, works like
   Neutral still proves shared source compiles and `climon2-core` passes on
   Windows.
 - Release qualification runs every Windows job regardless.
-- A pull request that touches Windows-only code runs Test and Quality
-  regardless. Without this, such a change would merge having run nowhere.
+- A pull request that touches Windows-only code runs Test, Quality and
+  Archive regardless. Without this, such a change would merge having run nowhere.
 
 A pull request touches Windows-only code when it changes any of:
 
 - a registered Windows file;
 - the Windows host in `climon2-test-term` (`src/windows.rs`, `src/windows/`)
   and its tests (`tests/windows_host.rs`);
-- the Windows scenario tests;
+- the Windows scenario tests, and the installer's Windows tests and archive
+  tests (`crates/climon2-install/tests/windows.rs` and
+  `archive_windows.rs`);
+- the Windows dist (`xtask/src/windows_dist.rs`) and the download script
+  (`install.ps1`), which make the zip the Archive job tests;
 - the pinned downloads under `pins/`: the ConPTY package's
   `pins/conpty.txt` and, once they are added, vim's and Microsoft Edit's;
 - the workflow files or xtask's quality code.

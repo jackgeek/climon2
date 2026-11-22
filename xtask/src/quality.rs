@@ -65,6 +65,8 @@ pub(crate) const SHIPPED: &[&str] = &[
 /// The test runs that make up the workspace suite on Windows, where only part of the
 /// workspace builds so far: as the Windows Test job runs them.
 const WINDOWS_SUITE: &[&[&str]] = &[
+    // First: it takes seconds, so a mutant of the installer dies before the long runs.
+    &["-p", "climon2-install"],
     &["-p", "climon2-core", "-p", "climon2-vt"],
     &[
         "-p",
@@ -667,7 +669,9 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/notifier/windows.rs")
         | Some("crates/climon2-platform/src/connection/windows.rs")
         | Some("crates/climon2-platform/src/native_path/windows.rs")
-        | Some("crates/climon2-platform/src/handoff/windows.rs") => Some("windows"),
+        | Some("crates/climon2-platform/src/handoff/windows.rs")
+        | Some("crates/climon2-install/src/windows.rs")
+        | Some("crates/climon2-install/src/user_path/windows.rs") => Some("windows"),
         _ => None,
     }
 }
@@ -2368,6 +2372,11 @@ No selected line holds a mutation site; nothing to mutate.
             ),
             (
                 "crates/climon2-platform/src/handoff/windows.rs",
+                cfg!(windows),
+            ),
+            ("crates/climon2-install/src/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-install/src/user_path/windows.rs",
                 cfg!(windows),
             ),
         ];

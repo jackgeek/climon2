@@ -1,6 +1,7 @@
 //! Forked children inherit every descriptor of the test process, including pipe
 //! ends that other tests close to provoke write failures, so this test runs in its
 //! own test binary.
+#![cfg(unix)]
 mod support;
 
 use std::sync::atomic::{AtomicBool, Ordering};

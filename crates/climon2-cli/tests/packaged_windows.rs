@@ -6,8 +6,8 @@
 //!
 //! The product comes from the release zip named by `CLIMON2    let [session] = home.sessions().try_into().unwrap();E2E_ARCHIVE`,
 //! as the Windows Test job builds it, or else from this build's binaries in
-//! the same layout. Until the installer exists (#329), this test writes the
-//! `current` file the launcher reads itself.
+//! the same layout. It writes the `current` file the launcher reads itself;
+//! installing with `install.ps1` is the Windows Archive job's (#329).
 //!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each test runs again outside every job
