@@ -219,3 +219,32 @@ fn the_windows_archive_job_tests_the_windows_dist_jobs_zip() {
         "the zip, install.ps1 and SHA256SUMS: {dist:#?}"
     );
 }
+
+/// Owner decision, 2026-11-22: while Windows support is built, Windows CRAP
+/// and mutation run on the development VM, not on every pull request. The
+/// Quality job runs only when `CLIMON2_WINDOWS_QUALITY` is "on", and always
+/// for release qualification (`mutate_all`) and tags.
+#[test]
+fn the_windows_quality_job_waits_for_its_switch_except_for_releases() {
+    let check = workflow("check.yml");
+    let quality = job(&check, "windows-quality");
+    let condition = quality
+        .iter()
+        .skip_while(|line| !line.starts_with("    if: >-"))
+        .take_while(|line| !line.starts_with("    runs-on:"))
+        .map(|line| line.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for clause in [
+        "needs.windows-scope.outputs.test == 'true'",
+        "&& (vars.CLIMON2_WINDOWS_QUALITY == 'on' || inputs.mutate_all || startsWith(github.ref, 'refs/tags/'))",
+    ] {
+        assert!(condition.contains(clause), "{clause} not in {condition}");
+    }
+    let release = workflow("release.yml");
+    assert!(
+        release.contains(
+            "    uses: ./.github/workflows/check.yml\n    with:\n      mutate_all: true\n"
+        )
+    );
+}

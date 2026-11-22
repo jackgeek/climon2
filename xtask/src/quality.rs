@@ -5,7 +5,7 @@ use crate::{
 use std::{
     collections::BTreeSet,
     env,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs,
     io::{self, Read},
     ops::RangeInclusive,
@@ -38,6 +38,11 @@ const LLVM_COV: &str = "0.9.1";
 /// Full-host mutation workers, and so the suites the mutation-load measurement runs at once;
 /// 8 leaves room for another agent's tests on the shared development host.
 const MUTATION_WORKERS: &str = "8";
+/// Caps the native gate's workers, which otherwise number the CPUs up to 16. Windows-only
+/// CRAP and mutation run on the development VM while Windows support is built
+/// (docs/for-humans/windows/quality.md, "Running the gate locally"), and 16 workers'
+/// builds do not fit in its memory.
+const NATIVE_WORKERS_VARIABLE: &str = "CLIMON2_NATIVE_MUTATION_WORKERS";
 /// Rounds of the full gate's mutation-load measurement (`cargo xtask check --full`).
 const MUTATION_LOAD_ROUNDS: &str = "5";
 /// Rounds of the ticket gate's mutation-load measurement (`cargo xtask check`).
@@ -125,9 +130,27 @@ impl Scope {
     }
 
     fn workers(self) -> io::Result<String> {
-        match self {
-            Self::Ticket | Self::Full | Self::Host => Ok(MUTATION_WORKERS.to_owned()),
-            Self::Native => Ok(std::thread::available_parallelism()?
+        self.workers_capped(env::var_os(NATIVE_WORKERS_VARIABLE))
+    }
+
+    /// The native gate's workers: the CPUs up to 16, or `cap` when it is given.
+    fn workers_capped(self, cap: Option<OsString>) -> io::Result<String> {
+        match (self, cap) {
+            (Self::Ticket | Self::Full | Self::Host, _) => Ok(MUTATION_WORKERS.to_owned()),
+            (Self::Native, Some(cap)) => cap
+                .to_str()
+                .and_then(|text| text.parse::<u16>().ok())
+                .filter(|&count| count > 0)
+                .map(|count| count.to_string())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{NATIVE_WORKERS_VARIABLE} must be a positive whole number, not {cap:?}"
+                        ),
+                    )
+                }),
+            (Self::Native, None) => Ok(std::thread::available_parallelism()?
                 .get()
                 .min(16)
                 .to_string()),
@@ -2236,6 +2259,29 @@ No selected line holds a mutation site; nothing to mutate.
             plan_text(root, &[], &nothing).unwrap(),
             "No changed shipped Rust source to mutate.\n"
         );
+    }
+
+    #[test]
+    fn only_the_native_gate_takes_a_worker_cap_and_it_must_be_a_positive_number() {
+        let cap = |text: &str| Some(OsString::from(text));
+        assert_eq!(Scope::Native.workers_capped(cap("2")).unwrap(), "2");
+        assert_eq!(Scope::Native.workers_capped(cap("40")).unwrap(), "40");
+        let cpus = std::thread::available_parallelism().unwrap().get().min(16);
+        assert_eq!(
+            Scope::Native.workers_capped(None).unwrap(),
+            cpus.to_string()
+        );
+        for scope in [Scope::Ticket, Scope::Full, Scope::Host] {
+            assert_eq!(scope.workers_capped(cap("2")).unwrap(), MUTATION_WORKERS);
+        }
+        for bad in ["0", "-1", "two", "", " 2"] {
+            let error = Scope::Native.workers_capped(cap(bad)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
+            assert!(
+                error.to_string().contains(NATIVE_WORKERS_VARIABLE),
+                "{error}"
+            );
+        }
     }
 
     #[test]
