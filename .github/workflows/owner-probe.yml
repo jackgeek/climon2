@@ -1,0 +1,30 @@
+# Temporary: runs the elevated-owner probe on the hosted Windows runner.
+# Lives only on research/elevated-owner-probe; never merge.
+name: Owner probe
+on:
+  push:
+    branches: [research/elevated-owner-probe]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner account
+        shell: pwsh
+        run: |
+          whoami /user
+          whoami /groups | Select-String 'Administrators|Mandatory'
+          whoami /priv | Select-String 'SeImpersonate|SeTcb|SeRestore'
+      - name: Probe as the runner's user
+        shell: pwsh
+        run: ./probes/elevated-owner/probe.ps1
+      - name: Probe a fresh local administrator under each nodefaultadminowner value
+        shell: pwsh
+        run: ./probes/elevated-owner/probe.ps1 -Logon
