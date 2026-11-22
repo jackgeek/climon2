@@ -9,8 +9,19 @@ runs:
       shell: bash
       run: |
         if [[ "$RUNNER_OS" == macOS ]]; then
-          brew list bash >/dev/null 2>&1 || brew install bash
-          bash_path="$(brew --prefix bash)/bin/bash"
+          # A self-hosted runner's account may not own Homebrew, so an
+          # installed bash 5 is used before Homebrew is asked for one.
+          bash_path=
+          for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            if [[ -x "$candidate" && "$("$candidate" --version)" == "GNU bash, version 5."* ]]; then
+              bash_path="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$bash_path" ]]; then
+            brew list bash >/dev/null 2>&1 || brew install bash
+            bash_path="$(brew --prefix bash)/bin/bash"
+          fi
         else
           bash_path=/bin/bash
         fi
