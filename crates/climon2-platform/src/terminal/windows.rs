@@ -18,7 +18,10 @@
 //! Ctrl+Break does nothing yet (#326); close, logoff and shutdown are a
 //! hang-up, which ends the client with 129, and the handler holds the process
 //! until the client has ended itself.
-use crate::{notifier::Notifier, waiting::Watch};
+use crate::{
+    notifier::Notifier,
+    waiting::{self, Watch},
+};
 use climon2_core::{protocol::TerminalSize, utf8};
 use std::{
     fs::File,
@@ -31,7 +34,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use windows_sys::{
     Win32::{
@@ -399,12 +402,9 @@ impl Bridged {
         let carry = std::mem::take(&mut self.carry);
         let _ = self.queue(carry);
         self.screen = mpsc::sync_channel(QUEUED).0;
-        let deadline = Instant::now() + DRAIN;
         let writer = self.writer.take().expect("one drain");
-        while !writer.is_finished() && !deadline.saturating_duration_since(Instant::now()).is_zero()
-        {
-            thread::sleep(Duration::from_millis(5));
-        }
+        // A thread's handle is signalled once it has ended.
+        let _ = waiting::wait(&mut [Watch::event(writer.as_handle())], DRAIN);
     }
 }
 

@@ -23,6 +23,7 @@ use windows_sys::Win32::System::Console::{
     GetConsoleOutputCP, GetStdHandle, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCP,
     SetConsoleOutputCP,
 };
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 const ROLE: &str = "CLIMON2_CONSOLE_ROLE";
@@ -238,8 +239,11 @@ fn output(report: &Path) -> i32 {
     write_all(&mut console, &text);
     write_all(&mut console, b"END-\xc3");
     write_all(&mut console, b"\xa9!\r\n");
-    drop(console);
     write_report(report, "written");
+    drop(console);
+    // Ends at once, as the CLI ends itself: no output thread outlives this.
+    // SAFETY: this process's own pseudo-handle.
+    unsafe { TerminateProcess(GetCurrentProcess(), 0) };
     0
 }
 
