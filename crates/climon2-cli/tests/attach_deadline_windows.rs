@@ -88,6 +88,19 @@ impl Install {
         self.0.path().join("work")
     }
 
+    /// Every log the home holds, for a failure message.
+    fn logs(&self) -> String {
+        let mut logs = String::new();
+        for folder in fs::read_dir(self.home().join("logs")).into_iter().flatten() {
+            for log in fs::read_dir(folder.unwrap().path()).into_iter().flatten() {
+                let path = log.unwrap().path();
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                logs.push_str(&format!("{}:\n{text}\n", path.display()));
+            }
+        }
+        logs
+    }
+
     fn sessions(&self) -> Vec<SessionMetadata> {
         let Ok(entries) = fs::read_dir(self.home().join("sessions")) else {
             return Vec::new();
@@ -189,7 +202,13 @@ fn an_ordinary_session_nobody_attaches_to_within_five_seconds_ends() {
     let mut execing = Terminal::spawn(command, 24, 100).unwrap();
     let deadline = Instant::now() + TIMEOUT;
     while !hold.with_extension("held").exists() {
-        assert!(Instant::now() < deadline, "{}", execing.screen());
+        assert!(
+            Instant::now() < deadline,
+            "{}
+{}",
+            execing.screen(),
+            install.logs()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     let [session] = install.sessions().try_into().unwrap();
@@ -198,7 +217,7 @@ fn an_ordinary_session_nobody_attaches_to_within_five_seconds_ends() {
     assert!(command.ended_within(TIMEOUT), "the command still runs");
     let deadline = Instant::now() + TIMEOUT;
     while !install.sessions().is_empty() || process::is_same_daemon(&session).unwrap() {
-        assert!(Instant::now() < deadline, "the session did not end");
+        assert!(Instant::now() < deadline, "{}", install.logs());
         std::thread::sleep(Duration::from_millis(50));
     }
     let started = SystemTime::UNIX_EPOCH + Duration::from_micros(session.daemon_start_time);
@@ -207,5 +226,12 @@ fn an_ordinary_session_nobody_attaches_to_within_five_seconds_ends() {
 
     fs::write(&hold, b"").unwrap();
     let status = execing.wait_exit(TIMEOUT).unwrap();
-    assert_eq!(status, 125, "{}", execing.screen());
+    assert_eq!(
+        status,
+        125,
+        "{}
+{}",
+        execing.screen(),
+        install.logs()
+    );
 }
