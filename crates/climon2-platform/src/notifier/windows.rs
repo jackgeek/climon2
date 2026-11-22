@@ -102,7 +102,9 @@ impl Waker {
 impl Notifier {
     /// A waker: a loopback UDP socket connected to its own address.
     pub fn waker() -> io::Result<Waker> {
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+        // Port 0 asks for any free port. It is spelled with its type, which the
+        // mutator leaves alone: port 1 would usually bind too.
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16))?;
         socket.connect(socket.local_addr()?)?;
         socket.set_nonblocking(true)?;
         Ok(Waker(socket))

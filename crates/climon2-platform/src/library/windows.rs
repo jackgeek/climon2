@@ -16,14 +16,14 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{ERROR_BAD_EXE_FORMAT, HMODULE},
-    System::LibraryLoader::{GetModuleFileNameW, GetProcAddress, LoadLibraryExW},
+    System::LibraryLoader::{
+        GetModuleFileNameW, GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+    },
 };
 
 /// Beside the library, then System32: never the working directory or `PATH`.
-/// `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR (0x100) | LOAD_LIBRARY_SEARCH_SYSTEM32 (0x800)`,
-/// spelled as its value: the bits are disjoint, so `^` for `|` would be an
-/// equivalent mutant.
-const SEARCH: u32 = 0x0900;
+const SEARCH: u32 = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
 
 /// The PE machine of every climon2 Windows artifact.
 const X86_64: u16 = 0x8664;
@@ -83,15 +83,19 @@ fn unloadable(path: &Path, error: &io::Error) -> Refusal {
 }
 
 /// The machine a PE file's header names: the DOS header's `e_lfanew` at
-/// 0x3C locates the `PE\0\0` signature, which the machine follows. A header
-/// that cannot be read names none.
-fn machine(file: &File) -> Option<u16> {
-    let mut header = Vec::new();
-    file.take(4096).read_to_end(&mut header).ok()?;
-    let offset = u32::from_le_bytes(header.get(0x3C..0x40)?.try_into().ok()?) as usize;
-    let signature = header.get(offset..offset.checked_add(6)?)?;
-    let dos = header.starts_with(b"MZ") && signature.starts_with(b"PE\0\0");
-    dos.then(|| u16::from_le_bytes([signature[4], signature[5]]))
+/// 0x3C locates the `PE\0\0` signature, which the machine follows. A file
+/// too short to hold one names none. Windows refuses any file that is no
+/// image with `ERROR_BAD_EXE_FORMAT`, so the signatures are not checked.
+fn machine(mut file: &File) -> Option<u16> {
+    let mut image = Vec::new();
+    let _ = file.read_to_end(&mut image);
+    let header = u32::from_le_bytes(field(&image, 0x3C)?) as usize;
+    field(&image, header + 4).map(u16::from_le_bytes)
+}
+
+/// The `N` bytes of `image` at `at`, if it holds them.
+fn field<const N: usize>(image: &[u8], at: usize) -> Option<[u8; N]> {
+    image.get(at..)?.first_chunk().copied()
 }
 
 /// The file Windows loaded as `module` when it is not `requested`, or `None`
