@@ -29,14 +29,14 @@ dispatch or shell-specific logic.
   `/tmp/climon2-<euid>-<hash8>` directory. `path()` and
   `socket_path(&SessionId)` expose its paths; the socket limit is 103 bytes.
   The directory is never deleted.
-- `runtime::private_directory(&Path)` creates mode 0700, then checks with
+- `private::private_directory(&Path)` creates mode 0700, then checks with
   `symlink_metadata`: real directory, effective UID owner, no group/other bits.
   Existing unsafe directories are refused, never repaired.
-- `runtime::create_new_file(&Path) -> io::Result<File>` is the one create for
+- `private::create_new_file(&Path) -> io::Result<File>` is the one create for
   every file climon2 makes (#312): `create_new`, mode 0600 under the umask,
   and `O_NOFOLLOW`, so never over an existing file or through a symlink. Logs
   and the client library's log use it directly.
-- `runtime::create_private_file(&Path) -> io::Result<File>` creates through
+- `private::create_private_file(&Path) -> io::Result<File>` creates through
   `create_new_file`, then sets mode exactly 0600 whatever the umask. A file it
   cannot make private is removed again. The daemon publishes session
   metadata through it (#311).

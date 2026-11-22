@@ -21,10 +21,9 @@ pub use macos::SocketFreshness;
 mod unix {
     use climon2_core::{SessionId, layout::RuntimeLayout};
     use std::{
-        fs::{self, DirBuilder, File, OpenOptions},
-        io,
+        fs, io,
         os::unix::{
-            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+            fs::FileTypeExt,
             net::{UnixListener, UnixStream},
         },
         path::{Path, PathBuf},
@@ -66,7 +65,7 @@ mod unix {
         pub fn prepare(home: &Path) -> io::Result<Self> {
             let layout = RuntimeLayout::new(Path::new("/tmp"), crate::peer::effective_uid(), home)
                 .map_err(io::Error::other)?;
-            private_directory(layout.directory())?;
+            crate::private::private_directory(layout.directory())?;
             Ok(Self(layout))
         }
 
@@ -79,66 +78,8 @@ mod unix {
         }
     }
 
-    pub fn private_directory(path: &Path) -> io::Result<()> {
-        create_directory(path)?;
-        check_directory(path)
-    }
-
     /// The longest path, in bytes with its NUL, the system accepts.
     pub const PATH_MAX: usize = libc::PATH_MAX as usize;
-
-    /// A new file only this user can read and write once the umask is
-    /// applied, never opened through a symlink or over an existing file:
-    /// every file climon2 creates is created here.
-    pub fn create_new_file(path: &Path) -> io::Result<File> {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-    }
-
-    /// As [`create_new_file`], made exactly owner-only whatever the umask.
-    /// A file that cannot be made private is removed again.
-    pub fn create_private_file(path: &Path) -> io::Result<File> {
-        let file = create_new_file(path)?;
-        if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
-            let _ = fs::remove_file(path);
-            return Err(error);
-        }
-        Ok(file)
-    }
-
-    fn create_directory(path: &Path) -> io::Result<()> {
-        match DirBuilder::new().mode(0o700).create(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-        Ok(())
-    }
-
-    fn check_directory(path: &Path) -> io::Result<()> {
-        let metadata = fs::symlink_metadata(path)?;
-        if !metadata.is_dir() {
-            return Err(unsafe_directory(path, "not a real directory"));
-        }
-        if metadata.uid() != crate::peer::effective_uid() {
-            return Err(unsafe_directory(path, "wrong owner"));
-        }
-        if metadata.mode() & 0o077 != 0 {
-            return Err(unsafe_directory(path, "group or other permissions"));
-        }
-        Ok(())
-    }
-
-    fn unsafe_directory(path: &Path, problem: &str) -> io::Error {
-        io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("unsafe runtime directory {}: {problem}", path.display()),
-        )
-    }
 
     pub fn bind(path: &Path) -> io::Result<SocketListener> {
         if path.as_os_str().as_encoded_bytes().len() > 103 {

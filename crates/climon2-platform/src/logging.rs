@@ -102,9 +102,9 @@ fn general_log_name(role: Role, at: SystemTime, pid: u32) -> io::Result<String> 
 /// within one second (#116's retries). The library creates the file itself.
 pub fn library_log(home: &Path, id: &SessionId, generation: u64) -> io::Result<PathBuf> {
     let logs = home.join("logs");
-    crate::runtime::private_directory(&logs)?;
+    crate::private::private_directory(&logs)?;
     let directory = logs.join(id.as_str());
-    crate::runtime::private_directory(&directory)?;
+    crate::private::private_directory(&directory)?;
     let name = format!(
         "library-{}-{}-{generation}.log",
         file_stamp(SystemTime::now())?,
@@ -115,9 +115,9 @@ pub fn library_log(home: &Path, id: &SessionId, generation: u64) -> io::Result<P
 
 impl LogFile {
     fn open(directory: &Path, name: &str, role: Role) -> io::Result<Self> {
-        crate::runtime::private_directory(directory)?;
+        crate::private::private_directory(directory)?;
         let path = directory.join(name);
-        let file = crate::runtime::create_new_file(&path)?;
+        let file = crate::private::create_new_file(&path)?;
         let mut writer = CappedWriter::new(file);
         writeln!(
             writer,
@@ -140,7 +140,7 @@ impl LogFile {
     }
 
     fn general_as(home: &Path, role: Role) -> io::Result<Self> {
-        crate::runtime::private_directory(&home.join("logs"))?;
+        crate::private::private_directory(&home.join("logs"))?;
         let name = general_log_name(role, SystemTime::now(), std::process::id())?;
         Self::open(&home.join("logs/general"), &name, role)
     }
@@ -152,7 +152,7 @@ impl LogFile {
         cli_pid: Option<u32>,
         previous: Option<&Path>,
     ) -> io::Result<Self> {
-        crate::runtime::private_directory(&home.join("logs"))?;
+        crate::private::private_directory(&home.join("logs"))?;
         let mut log = Self::session_file(&home.join("logs").join(id.as_str()), role)?;
         writeln!(log.writer, "session_id={id}")?;
         log.links(cli_pid, previous)?;

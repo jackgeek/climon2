@@ -1,6 +1,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
-use climon2_platform::{peer, runtime};
+use climon2_platform::{peer, private, runtime};
 use std::{
     fs,
     os::unix::{
@@ -20,24 +20,24 @@ fn directory() -> tempfile::TempDir {
 fn issue18_private_directory_refuses_symlink_file_and_permissive_mode_without_repair() {
     let root = directory();
     let private = root.path().join("private");
-    runtime::private_directory(&private).unwrap();
+    private::private_directory(&private).unwrap();
     assert_eq!(
         fs::metadata(&private).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    runtime::private_directory(&private).unwrap();
+    private::private_directory(&private).unwrap();
     fs::set_permissions(&private, fs::Permissions::from_mode(0o750)).unwrap();
-    assert!(runtime::private_directory(&private).is_err());
+    assert!(private::private_directory(&private).is_err());
     assert_eq!(
         fs::metadata(&private).unwrap().permissions().mode() & 0o777,
         0o750
     );
     let link = root.path().join("link");
     std::os::unix::fs::symlink(&private, &link).unwrap();
-    assert!(runtime::private_directory(&link).is_err());
+    assert!(private::private_directory(&link).is_err());
     let file = root.path().join("file");
     fs::write(&file, b"").unwrap();
-    assert!(runtime::private_directory(&file).is_err());
+    assert!(private::private_directory(&file).is_err());
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn issue18_private_directory_refuses_existing_root_owned_directory_without_repai
     assert_eq!(before.uid(), 0);
     assert_ne!(before.uid(), peer::effective_uid());
 
-    let error = runtime::private_directory(path).unwrap_err();
+    let error = private::private_directory(path).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(error.to_string().contains("wrong owner"));
 
@@ -97,15 +97,15 @@ fn issue18_private_directory_refuses_existing_root_owned_directory_without_repai
 fn issue311_a_private_file_is_new_owner_only_and_never_a_symlink() {
     let directory = directory();
     let path = directory.path().join("metadata.publishing");
-    let file = runtime::create_private_file(&path).unwrap();
+    let file = private::create_private_file(&path).unwrap();
     assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(
-        runtime::create_private_file(&path).unwrap_err().kind(),
+        private::create_private_file(&path).unwrap_err().kind(),
         std::io::ErrorKind::AlreadyExists
     );
     let link = directory.path().join("link");
     std::os::unix::fs::symlink(directory.path().join("absent"), &link).unwrap();
-    assert!(runtime::create_private_file(&link).is_err());
+    assert!(private::create_private_file(&link).is_err());
     assert!(!directory.path().join("absent").exists());
 }
 
@@ -115,10 +115,10 @@ fn issue311_a_private_file_is_new_owner_only_and_never_a_symlink() {
 fn issue312_a_new_file_keeps_the_umask_and_never_replaces_a_file() {
     let directory = directory();
     let path = directory.path().join("instance.log");
-    let file = runtime::create_new_file(&path).unwrap();
+    let file = private::create_new_file(&path).unwrap();
     assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
     assert_eq!(
-        runtime::create_new_file(&path).unwrap_err().kind(),
+        private::create_new_file(&path).unwrap_err().kind(),
         std::io::ErrorKind::AlreadyExists
     );
 }
