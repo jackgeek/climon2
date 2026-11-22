@@ -117,9 +117,11 @@ fn require_plain_directory(folder: &File, path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Owned by the user's SID and holding exactly the private DACL.
+/// Owned by the user's SID and holding exactly the private DACL. Both sides
+/// are written by the same conversion, which spells well-known SIDs by their
+/// alias (`LA` for the built-in Administrator, which CI runs as).
 fn require_private(folder: &File, path: &Path) -> io::Result<()> {
-    if owner_and_dacl(folder)? != private_sddl(FOLDER)? {
+    if found_sddl(folder)? != private_folder_sddl()? {
         return Err(unsafe_directory(
             path,
             "not exactly the private owner and DACL",
@@ -135,8 +137,18 @@ fn unsafe_directory(path: &Path, problem: &str) -> io::Error {
     )
 }
 
-/// The owner and DACL `file` has, in SDDL.
-fn owner_and_dacl(file: &File) -> io::Result<String> {
+/// The owner and DACL `folder` has, in SDDL.
+fn found_sddl(folder: &File) -> io::Result<String> {
+    sddl(&security_of(folder)?)
+}
+
+/// The private descriptor a folder is created with, in SDDL.
+fn private_folder_sddl() -> io::Result<String> {
+    sddl(&Descriptor::private(FOLDER)?.0)
+}
+
+/// The owner and DACL `file` has.
+fn security_of(file: &File) -> io::Result<Local> {
     let mut descriptor = ptr::null_mut();
     // The handle is open; the descriptor is allocated for this call to free.
     let status = unsafe {
@@ -154,7 +166,11 @@ fn owner_and_dacl(file: &File) -> io::Result<String> {
     if status != ERROR_SUCCESS {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
-    let descriptor = Local(descriptor);
+    Ok(Local(descriptor))
+}
+
+/// The owner and DACL of `descriptor` in SDDL.
+fn sddl(descriptor: &Local) -> io::Result<String> {
     let mut text = ptr::null_mut();
     // The descriptor is valid; the text is allocated for this call to free.
     check(unsafe {
