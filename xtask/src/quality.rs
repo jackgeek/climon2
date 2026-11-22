@@ -47,6 +47,12 @@ const NATIVE_WORKERS_VARIABLE: &str = "CLIMON2_NATIVE_MUTATION_WORKERS";
 /// otherwise number `MUTATION_WORKERS`. The owner's Linux runner shares its PC with the
 /// Windows VM (docs/for-humans/quality-runners.md, "Sharing the PC").
 const HOST_WORKERS_VARIABLE: &str = "CLIMON2_MUTATION_WORKERS";
+/// Limits each mutation worker's Cargo to this many build jobs and test threads, which
+/// otherwise number the CPUs. It applies to the stage-timeout measurement too, so the
+/// timeouts fit the workers. The owner's runners set it so that two gates sharing a PC
+/// do not starve each other's timing tests (docs/for-humans/quality-runners.md,
+/// "Sharing the PC").
+const WORKER_JOBS_VARIABLE: &str = "CLIMON2_MUTATION_WORKER_JOBS";
 /// Rounds of the full gate's mutation-load measurement (`cargo xtask check --full`).
 const MUTATION_LOAD_ROUNDS: &str = "5";
 /// Rounds of the ticket gate's mutation-load measurement (`cargo xtask check`).
@@ -514,13 +520,24 @@ const SUITE: &[&[&str]] = if cfg!(windows) {
 };
 
 /// Names the suite to the quality scripts when it is only part of the workspace; without
-/// it they test the whole workspace.
+/// it they test the whole workspace. It also applies the worker job limit.
 fn suite_environment(command: &mut Command) -> &mut Command {
     if SUITE != [["--workspace"]] {
         command.env(
             "CLIMON2_MUTATION_SUITE",
             serde_json::to_string(SUITE).expect("the suite serializes"),
         );
+    }
+    worker_limits(command, env::var_os(WORKER_JOBS_VARIABLE))
+}
+
+/// Cargo and libtest read their limits from the environment, which the mutator passes on
+/// to every worker.
+fn worker_limits(command: &mut Command, jobs: Option<OsString>) -> &mut Command {
+    if let Some(jobs) = jobs {
+        command
+            .env("CARGO_BUILD_JOBS", &jobs)
+            .env("RUST_TEST_THREADS", &jobs);
     }
     command
 }
@@ -2280,6 +2297,32 @@ No selected line holds a mutation site; nothing to mutate.
         assert_eq!(
             plan_text(root, &[], &nothing).unwrap(),
             "No changed shipped Rust source to mutate.\n"
+        );
+    }
+
+    #[test]
+    fn a_worker_job_limit_caps_each_workers_cargo_build_jobs_and_test_threads() {
+        let limits = |jobs: Option<&str>| {
+            let mut command = Command::new("cargo");
+            worker_limits(&mut command, jobs.map(OsString::from));
+            command
+                .get_envs()
+                .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(limits(None), []);
+        assert_eq!(
+            limits(Some("2")),
+            [
+                (
+                    OsString::from("CARGO_BUILD_JOBS"),
+                    Some(OsString::from("2"))
+                ),
+                (
+                    OsString::from("RUST_TEST_THREADS"),
+                    Some(OsString::from("2"))
+                ),
+            ]
         );
     }
 
