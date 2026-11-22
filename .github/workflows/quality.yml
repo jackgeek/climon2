@@ -72,6 +72,9 @@ jobs:
     timeout-minutes: 360
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+      # The Linux and Windows gates share the owner's PC; 6 workers each
+      # (owner decision, 2026-11-22, docs/for-humans/quality-runners.md).
+      CLIMON2_MUTATION_WORKERS: "6"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,11 +102,13 @@ jobs:
     defaults:
       run:
         shell: bash
-    # The runner's .env supplies CLIMON2_QUALITY_PYTHON, CLIMON2_NATIVE_MUTATION_WORKERS,
-    # CLIMON2_TEST_CONPTY_CACHE and the second account the cross-account test logs on
-    # as (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
+    # The runner's .env supplies CLIMON2_QUALITY_PYTHON, CLIMON2_TEST_CONPTY_CACHE
+    # and the second account the cross-account test logs on as
+    # (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+      # Shares the owner's PC with the Linux gate; 6 workers each.
+      CLIMON2_NATIVE_MUTATION_WORKERS: "6"
     steps:
       - uses: actions/checkout@v4
         with:
