@@ -17,5 +17,5 @@ pub use conpty::ConPty;
 pub use host::{HostModel, HostSettings, Terminal};
 pub use job::JobShape;
 pub use keys::{Key, Modifiers};
-pub use outside::{Finished, Outside, relay_outside};
+pub use outside::{Finished, Outside, relay_outside, rerun_outside};
 pub use pwsh::{PWSH_PROMPT, controlled_pwsh, pwsh};

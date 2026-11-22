@@ -27,6 +27,8 @@ use syn::{
 /// what the Windows gate builds xtask from and its probes' fixtures.
 const WINDOWS_TRIGGERS: &[&str] = &[
     ".github/",
+    "crates/climon2-cli/tests/exec_windows.rs",
+    "crates/climon2-cli/tests/packaged_windows.rs",
     "crates/climon2-test-term/src/windows",
     "crates/climon2-test-term/tests/windows_host.rs",
     "pins/",
@@ -273,6 +275,8 @@ mod tests {
             "crates/climon2-test-term/src/windows.rs",
             "crates/climon2-test-term/src/windows/host.rs",
             "crates/climon2-test-term/tests/windows_host.rs",
+            "crates/climon2-cli/tests/exec_windows.rs",
+            "crates/climon2-cli/tests/packaged_windows.rs",
             "pins/conpty.txt",
             ".github/workflows/check.yml",
             ".github/actions/controlled-bash/action.yml",

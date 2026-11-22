@@ -90,10 +90,15 @@ const WINDOWS_SUITE: &[&[&str]] = &[
         "notifier_windows",
         "--test",
         "native_path_windows",
+        "--test",
+        "terminal_windows",
+        "--test",
+        "handoff_windows",
     ],
     // Builds the daemon binary, which the CLI's exec tests start.
     &["-p", "climon2-daemon", "--test", "windows"],
-    // Builds the client binary and library, which the CLI's kill tests start.
+    // Builds the client binary and library, which the CLI's attach, kill and
+    // smoke tests start.
     &["-p", "climon2-client", "--test", "library_windows"],
     &["-p", "climon2-launcher", "-p", "climon2-cli"],
 ];
@@ -662,7 +667,7 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/notifier/windows.rs")
         | Some("crates/climon2-platform/src/connection/windows.rs")
         | Some("crates/climon2-platform/src/native_path/windows.rs")
-        | Some("crates/climon2-client/src/windows.rs") => Some("windows"),
+        | Some("crates/climon2-platform/src/handoff/windows.rs") => Some("windows"),
         _ => None,
     }
 }
@@ -2361,7 +2366,10 @@ No selected line holds a mutation site; nothing to mutate.
                 "crates/climon2-platform/src/native_path/windows.rs",
                 cfg!(windows),
             ),
-            ("crates/climon2-client/src/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/handoff/windows.rs",
+                cfg!(windows),
+            ),
         ];
         for (path, _) in sources {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
