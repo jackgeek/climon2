@@ -302,6 +302,19 @@ fn run(launch: &command::Launch, cwd: &Path) -> u32 {
     }
 }
 
+/// The command line the script recorded. `echo` writes in its console's code
+/// page, which differs between this test's console and the pseudoconsole, so
+/// non-ASCII characters are masked; the echoed arguments check them exactly.
+fn recorded_line(folders: &Folders) -> String {
+    let bytes = fs::read(folders.at(r"work\line.txt")).unwrap();
+    String::from_utf8_lossy(&bytes)
+        .chars()
+        .map(|character| if character.is_ascii() { character } else { '?' })
+        .collect::<String>()
+        .replace("???", "?")
+        .replace("??", "?")
+}
+
 #[test]
 fn a_batch_files_arguments_round_trip_with_the_standard_librarys_escaping() {
     let folders = Folders::new();
@@ -311,13 +324,12 @@ fn a_batch_files_arguments_round_trip_with_the_standard_librarys_escaping() {
     // The command line the standard library gives `cmd.exe`.
     let status = Command::new(&script).args(&arguments).status().unwrap();
     assert!(status.success());
-    let by_std = fs::read_to_string(folders.at(r"work\line.txt")).unwrap();
+    let by_std = recorded_line(&folders);
     fs::remove_file(folders.at(r"work\echoed.json")).unwrap();
 
     let launch = command::launch(script.as_os_str(), &arguments, &folders.at("a")).unwrap();
     assert_eq!(run(&launch, &folders.at("a")), 0);
-    let line = fs::read_to_string(folders.at(r"work\line.txt")).unwrap();
-    assert_eq!(line, by_std);
+    assert_eq!(recorded_line(&folders), by_std);
     let echoed: Vec<String> =
         serde_json::from_slice(&fs::read(folders.at(r"work\echoed.json")).unwrap()).unwrap();
     assert_eq!(echoed, CORPUS);
