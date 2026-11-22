@@ -3,7 +3,8 @@
 **Status: agreed and implemented** ([#91](https://github.com/jackgeek/climon2/issues/91));
 the [client library](../../../../GLOSSARY.md#sessions) sends it ([#95](https://github.com/jackgeek/climon2/issues/95)),
 and the [client executable](../../../../GLOSSARY.md#sessions)'s ordinary attach
-uses it ([#102](https://github.com/jackgeek/climon2/issues/102)). Owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+uses it ([#102](https://github.com/jackgeek/climon2/issues/102)), as does the
+[monitor](../../../../GLOSSARY.md#sessions) ([#114](https://github.com/jackgeek/climon2/issues/114)). Owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [client](../../../../GLOSSARY.md#sessions) reports per-[attachment](../../../../GLOSSARY.md#attachment-and-control)
 [viewing](../../../../GLOSSARY.md#status-and-attention) to the
 [session daemon](../../../../GLOSSARY.md#sessions), as current
@@ -46,6 +47,10 @@ assumed, not detected. Application [Focus](request-focus.md) is separate.
 No aggregate viewing field/broadcast exists. Another monitor's viewing never
 suppresses this monitor's notifications. See
 [local notification rules](README.md#viewing-acknowledgement-and-local-notifications).
+The monitor reports viewing this way ([#114](https://github.com/jackgeek/climon2/issues/114)): true only for the selected
+session while it takes input with no modal over it and room to show it,
+its view is live, the host has focus (assumed until the host reports
+otherwise) and no toast covers its canvas; false for every other session.
 
 Stale IDs, missing attachment/control/readiness, termination and operational
 failures use [explicit errors](README.md#errors-and-bounded-delivery).

@@ -89,7 +89,8 @@ pub fn run() -> Result<u32, Error> {
 
 /// Records how the monitor ended: the host terminal may be gone, so a failure
 /// is logged as well as returned for main to print.
-/// The host bell a toast rings as it begins (docs/for-humans/protocol/monitor-host/bell.md).
+/// The host bell a toast rings once the frame first showing its full title
+/// has been written (docs/for-humans/protocol/monitor-host/bell.md).
 const BEL: &[u8] = b"\x07";
 /// The library log filter when `CLIMON2_LOG` sets none.
 const DEFAULT_FILTER: &str = "info";

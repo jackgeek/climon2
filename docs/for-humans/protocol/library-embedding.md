@@ -14,7 +14,8 @@ never raising `SIGPIPE` in the process
 ([#93](https://github.com/jackgeek/climon2/issues/93)), or an interactive
 attachment, and relays control and display
 ([#94](https://github.com/jackgeek/climon2/issues/94)), status, Set viewing
-and Acknowledge ([#95](https://github.com/jackgeek/climon2/issues/95)), and sends
+and Acknowledge ([#95](https://github.com/jackgeek/climon2/issues/95)),
+notifications and progress ([#98](https://github.com/jackgeek/climon2/issues/98)), and sends
 [Kill](../../../GLOSSARY.md#attachment-and-control) on an auxiliary connection
 of its own ([#96](https://github.com/jackgeek/climon2/issues/96)). The one
 shared loader that the [monitor](../../../GLOSSARY.md#sessions) and the
@@ -45,14 +46,16 @@ with its viewing and acknowledgement
 ([#102](https://github.com/jackgeek/climon2/issues/102)), and kill
 ([#100](https://github.com/jackgeek/climon2/issues/100)) through the function
 table; test tooling uses it too. The monitor also recovers lost clients
-passively ([#116](https://github.com/jackgeek/climon2/issues/116)), shuts every instance down with a bounded fail-stop
+passively ([#116](https://github.com/jackgeek/climon2/issues/116)), submits
+Kill through a session's instance for a confirmed Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)), shuts every instance down with a bounded fail-stop
 ([#118](https://github.com/jackgeek/climon2/issues/118)) and admits each load and client against its limits ([#120](https://github.com/jackgeek/climon2/issues/120)). The
 [library decision](https://github.com/jackgeek/climon2/issues/65) owns these
 requirements; the [Linux decision](https://github.com/jackgeek/climon2/issues/125)
 adds x86-64 GNU/Linux. [Native revision 1](monitor-client/README.md), confirmed in
 [#71](https://github.com/jackgeek/climon2/issues/71), publishes complete declarations,
 [native-path](TERMS.md#native-path) encoding, result codes and compilable examples;
-the shipped client library implements it.
+its status lists which parts the shipped library implements.
 
 Use the [domain glossary](../../../GLOSSARY.md), [technical terms](TERMS.md),
 and [protocol overview](README.md) with this reference.
@@ -264,8 +267,9 @@ connection, per-session state, and any internal workers. Only documented
 control/communication operations may execute concurrently with that instance.
 A separate thread-safe control handle lets the monitor request shutdown without
 waiting for the running operation or thread to finish.
-The agreed [communication contract](README.md#shared-in-process-communication-contract)
-adds a per-instance thread-safe
+The [communication contract](README.md#shared-in-process-communication-contract),
+agreed in [#66](https://github.com/jackgeek/climon2/issues/66) and implemented
+by the library and the monitor, adds a per-instance thread-safe
 [communication handle](TERMS.md#communication-handle) for nonblocking submit/drain,
 without callbacks into monitor application code. Shutdown is independent of
 ordinary queue capacity; connection work remains on the dedicated client thread.
@@ -367,14 +371,24 @@ exception is implemented and adds no native-crash isolation.
 
 ## Required automated evidence
 
-These obligations are the LIB-01 to LIB-06 scenarios of the
-[monitor acceptance matrix](../behaviour/monitor/acceptance.md); Library,
-Monitor and Fault tests now cover them, mapped to scenarios in the crate
-READMEs. One gap remains: releases ship no private
-dependencies, so no test can yet show that a private dependency never
-cross-binds between releases
-([#97](https://github.com/jackgeek/climon2/issues/97)).
-
+These are the decision's obligations. Automated tests now cover the
+packaged library through the frozen C ABI
+([#75](https://github.com/jackgeek/climon2/issues/75)), every loader refusal
+([#84](https://github.com/jackgeek/climon2/issues/84)), mixed releases
+installed side by side with no symbol, table or daemon crossing releases
+([#97](https://github.com/jackgeek/climon2/issues/97)), the monitor's shutdown,
+fail-stop and native abort in a disposable monitor
+([#118](https://github.com/jackgeek/climon2/issues/118)), and the Linux
+release checks below. On x86-64 Windows, CI tests check the built library's
+single export and system-only imports, its exact-path load, two same-named
+releases loading as two modules, and each load-failure class
+([#318](https://github.com/jackgeek/climon2/issues/318)). Releases ship no
+private dependencies, so no fixture yet exercises private-dependency
+cross-binding. Release qualification
+([#122](https://github.com/jackgeek/climon2/issues/122)) records which cases
+ran and passed on x86-64 GNU/Linux and both macOS architectures before a
+release is published; Windows is not yet published or qualified, and no
+release has been qualified yet.
 
 - Exercise packaged dynamic libraries through the public interface: multiple
   same-release instances and simultaneous different-release libraries.

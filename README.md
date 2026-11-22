@@ -194,7 +194,7 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   },
   "monitor": {
     "show_key_hints": true,        // false hides the monitor's implicit key hints, never a binding
-    "bell": true,                  // false: no host bell as a toast first draws
+    "bell": true,                  // false: no host bell when a toast's title first shows
     "limits": {
       "memory": {
         "total_bytes": 603979776,

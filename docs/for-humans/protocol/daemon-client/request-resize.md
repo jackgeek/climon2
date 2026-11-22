@@ -1,6 +1,8 @@
 # Resize — `0x32`
 
 **Status: agreed and implemented** ([#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+The [client library](../../../../GLOSSARY.md#sessions) sends it ([#94](https://github.com/jackgeek/climon2/issues/94)); the [client executable](../../../../GLOSSARY.md#sessions)'s ordinary attach ([#101](https://github.com/jackgeek/climon2/issues/101)) and the
+[monitor](../../../../GLOSSARY.md#sessions) ([#108](https://github.com/jackgeek/climon2/issues/108)) use it.
 The [client](../../../../GLOSSARY.md#sessions) requests geometry from the
 [session daemon](../../../../GLOSSARY.md#sessions) as current
 [controller](../../../../GLOSSARY.md#attachment-and-control).
@@ -44,6 +46,11 @@ application input. Coalesce unsent intent only; preserve all submitted outcomes.
 #69 owns numeric limits/clamping bounds and progress budgets. A background
 [monitor](../../../../GLOSSARY.md#sessions) must not
 originate resize just because it inherits control.
+The monitor follows these rules ([#108](https://github.com/jackgeek/climon2/issues/108), [#110](https://github.com/jackgeek/climon2/issues/110)): it sends Resize only
+for the selected controller, once per control period and desired size,
+never for a background controller, promoted ones included, never because
+overlays open or close, and none while the host is under 5 columns or 4
+rows.
 
 ## Implemented behavior
 
@@ -54,9 +61,14 @@ readiness. A geometry with a dimension above 65,535 is then
 The success is sent at once, before the size applies: the next daemon loop
 step applies the controller's latest host size once, under the same session
 geometry policy as an ordinary attach. A ready controller then receives
-[Geometry](event-geometry.md) if the session geometry changed. Before
-readiness, a changed host instead replaces the current restoration within
-the same period: a new [Restoration begin](event-restoration-begin.md)
+[Geometry](event-geometry.md) if the session geometry changed; a ready
+monitor-mode controller, whose
+[canonical presentation](../../../../GLOSSARY.md#restoration-and-presentation)
+follows the session geometry, also gets a new restoration within the same
+period when that geometry changed. Before readiness, a change of the size
+the restoration is serialized for, the host or for a monitor-mode
+controller the session geometry, instead replaces the current restoration
+within the same period: a new [Restoration begin](event-restoration-begin.md)
 reports the new restoration ID and geometry, and the superseded restoration
 gets no completion. A Resize whose applied size would need such a new
 restoration, before readiness or, for a monitor-mode controller, at a new

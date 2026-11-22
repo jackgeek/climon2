@@ -17,7 +17,10 @@ Use the [overview](../README.md), [glossary](../../../../GLOSSARY.md) and
 `CM1_INPUT` uses `args.input`: current [generation](../TERMS.md#connection-generation)/
 [period](../../../../GLOSSARY.md#attachment-and-control)/
 [restoration](../../../../GLOSSARY.md#restoration-and-presentation) and
-nonempty exact binary bytes. See [header](client-v1.h),
+nonempty exact binary bytes, at most the instance's `chunk_bytes`
+[limit](README.md#startup-limits-and-resources) per request; more is
+`CM1_INVALID_ARGUMENT` at `submit`, so longer input is split into ordered
+requests. See [header](client-v1.h),
 [values](README.md#shared-values) and [Input mapping](README.md#requests-and-result-mapping).
 
 ```c

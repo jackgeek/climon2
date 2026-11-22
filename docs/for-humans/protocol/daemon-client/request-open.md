@@ -3,6 +3,8 @@
 **Status: agreed and implemented** (monitor mode in
 [#86](https://github.com/jackgeek/climon2/issues/86), interactive mode in
 [#87](https://github.com/jackgeek/climon2/issues/87)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
+The [client library](../../../../GLOSSARY.md#sessions) sends it ([#93](https://github.com/jackgeek/climon2/issues/93), [#94](https://github.com/jackgeek/climon2/issues/94)); the [client executable](../../../../GLOSSARY.md#sessions)'s ordinary attach
+([#101](https://github.com/jackgeek/climon2/issues/101)) opens interactive mode and the [monitor](../../../../GLOSSARY.md#sessions) monitor mode ([#106](https://github.com/jackgeek/climon2/issues/106)).
 The [client](../../../../GLOSSARY.md#sessions) sends this first role request to the
 [session daemon](../../../../GLOSSARY.md#sessions) after
 [hello](hello-request.md).

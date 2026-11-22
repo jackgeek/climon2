@@ -42,7 +42,8 @@ passive registration, before final-participant
 Committed termination overrides [succession](README.md#membership-and-succession).
 Switching [monitor](../../../../GLOSSARY.md#sessions) selection is not Leave;
 inherited control does not select,
-resize, send input or acknowledge.
+resize, send input or acknowledge;
+the monitor keeps to both ([#110](https://github.com/jackgeek/climon2/issues/110)).
 
 Invalid state and resource/I/O/internal failures use the shared
 [error catalog](README.md#errors-and-bounded-delivery).

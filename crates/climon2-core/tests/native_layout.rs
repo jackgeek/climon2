@@ -448,7 +448,6 @@ fn assertions() -> Assertions {
         UNSUPPORTED_LIMIT,
         RESOURCE_LIMIT,
         INTERNAL_ERROR,
-        CLEANUP_FAILED,
         TIMEOUT,
         RELEASE_MISMATCH,
         ORIGIN_NONE,

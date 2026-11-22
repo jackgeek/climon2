@@ -23,7 +23,7 @@ All fields required:
 |---|---|
 | `request_id` | [Counter](README.md#shared-types) matching the received request. |
 | `outcome` | `ok`, `rejected`, `failed`, `indeterminate`. |
-| `result` | Matching result variant below; on non-success, null or a known result described below. |
+| `result` | Matching result variant below on `ok`; on non-success, null or a known result as below. |
 | `error` | Error on every non-success; null on success. |
 
 ```json
@@ -54,7 +54,10 @@ Shared types are in [core wire types](README.md#shared-types).
 | [Focus](request-focus.md) (#63 amendment) | `kind:"focus"`, `changed:bool`, `focused:bool`, `accepted_bytes:u32` (0 or 3). |
 
 Initial role rejection may carry
-`{"kind":"known_final","command_result":<CommandResult>}`.
+`{"kind":"known_final","command_result":<CommandResult>}`; a rejection
+carries no other result. Failed or indeterminate outcomes never carry
+`known_final`; they may carry the operation's success shape, except Kill's
+confirmed termination.
 Failed/[indeterminate](../TERMS.md#indeterminate-outcome) Kill may carry the termination shape with
 `command_result:CommandResult or null` and cleanup `incomplete` or `unknown`;
 this is never successful confirmation. Success requires a confirmed nonnull

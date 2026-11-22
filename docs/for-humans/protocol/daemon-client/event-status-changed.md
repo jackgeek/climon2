@@ -1,7 +1,9 @@
 # Status changed — `0x43`
 
-**Status: agreed and implemented for heuristic detection**
-([#91](https://github.com/jackgeek/climon2/issues/91)), and relayed by the
+**Status: agreed and implemented** for heuristic detection
+([#91](https://github.com/jackgeek/climon2/issues/91)) and for explicit and
+fallback detection from program status and shell markers
+([#92](https://github.com/jackgeek/climon2/issues/92)), and relayed by the
 [client library](../../../../GLOSSARY.md#sessions) ([#95](https://github.com/jackgeek/climon2/issues/95)), owned by [#67](https://github.com/jackgeek/climon2/issues/67).
 The [session daemon](../../../../GLOSSARY.md#sessions) sends effective
 [session status](../../../../GLOSSARY.md#status-and-attention) to the
@@ -50,8 +52,9 @@ Related: [Acknowledge](request-acknowledge.md).
 ## Implemented behavior
 
 The [session daemon](../../../../GLOSSARY.md#sessions) runs both
-[detector machines](../../behaviour/session-status.md) in heuristic mode and sends a
-Status changed to every passive monitor connection and interactive
+[detector machines](../../behaviour/session-status.md), starting in heuristic mode, and sends a
+Status changed to every
+[passive monitor connection](../../../../GLOSSARY.md#attachment-and-control) and interactive
 [attachment](../../../../GLOSSARY.md#attachment-and-control) that selected
 `status-v1`, whatever its control, once per effective change, after the
 event that caused it ran to completion: an inactivity expiry that requests

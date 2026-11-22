@@ -20,7 +20,7 @@ extern "C" {
 #define CM1_UNSUPPORTED_LIMIT UINT32_C(9)
 #define CM1_RESOURCE_LIMIT UINT32_C(10)
 #define CM1_INTERNAL_ERROR UINT32_C(11)
-#define CM1_CLEANUP_FAILED UINT32_C(12)
+/* 12 is retired: no call returns it, and it is never reassigned. */
 #define CM1_TIMEOUT UINT32_C(13)
 #define CM1_RELEASE_MISMATCH UINT32_C(14)
 

@@ -129,12 +129,11 @@ including Escape closing the dialog when Escape is not the prefix
 ([#109](https://github.com/jackgeek/climon2/issues/109)); history and synchronized updates ([#112](https://github.com/jackgeek/climon2/issues/112)); the selector
 ([#113](https://github.com/jackgeek/climon2/issues/113)); the attention jump, hints and host reports ([#114](https://github.com/jackgeek/climon2/issues/114)); toasts
 and the bell ([#115](https://github.com/jackgeek/climon2/issues/115)); and read-only disconnected history with passive
-recovery ([#116](https://github.com/jackgeek/climon2/issues/116)), as each section below says. Selector Delete
-([#117](https://github.com/jackgeek/climon2/issues/117)), coordinated
-shutdown ([#118](https://github.com/jackgeek/climon2/issues/118)), memory
-accounting and cadence ([#119](https://github.com/jackgeek/climon2/issues/119))
-and admission ([#120](https://github.com/jackgeek/climon2/issues/120)) are
-implemented too. Native host selection and
+recovery ([#116](https://github.com/jackgeek/climon2/issues/116)), as each section below says; selector Delete
+([#117](https://github.com/jackgeek/climon2/issues/117)); coordinated shutdown, its bounded fail-stop and
+root clear ([#118](https://github.com/jackgeek/climon2/issues/118)); memory accounting and bounded history
+([#119](https://github.com/jackgeek/climon2/issues/119)); and admission and fair scheduling
+([#120](https://github.com/jackgeek/climon2/issues/120)). Native host selection and
 copy is a manual check, not an automated test. The
 [monitor README](../../../crates/climon2-monitor/README.md#specification-mapping)
 lists the cases its tests do not yet claim.
@@ -186,10 +185,11 @@ configured limits hold one session's mandatory model allocation
 chooses no workspace crate.
 The [allocation-aware prerequisite](../behaviour/monitor/operational-limits.md#allocation-aware-terminal-prerequisite)
 explicitly reopens the unbounded combining-data/infallible-interface assumptions
-for monitor qualification. The engine itself is unchanged: `climon2-vt`'s
-allocation-bounded monitor model meets the prerequisite around it
-([#76](https://github.com/jackgeek/climon2/issues/76),
-[#166](https://github.com/jackgeek/climon2/issues/166)).
+for monitor qualification. `climon2-vt`'s monitor model meets it on the
+unchanged engine, charging each update before the engine sees it
+([#76](https://github.com/jackgeek/climon2/issues/76)), and the monitor
+accounts every model against its limits
+([#119](https://github.com/jackgeek/climon2/issues/119)).
 Never write session bytes directly to the [host](../../../GLOSSARY.md#sessions).
 The monitor parser must not send duplicate query replies; host replies remain
 monitor-local and bypass shortcut detection and real-user application input.
@@ -532,8 +532,9 @@ settings remain ignored, and there is no live reload.
 No new monitor-specific binding settings are introduced.
 `monitor.bell` is independently boolean and defaults to true; the monitor
 rings the bell with its toasts ([#115](https://github.com/jackgeek/climon2/issues/115)).
-It emits one [host bell](monitor-host/bell.md) when each eligible toast first
-begins drawing, not per animation frame. Validate it in the same startup
+It emits one [host bell](monitor-host/bell.md) for each eligible toast once
+the frame first showing its full title has been written, not per animation
+frame. Validate it in the same startup
 snapshot; wrong types/null or duplicate known fields fail before terminal setup.
 Disabling it does not hide toasts or suppress monitor-generated OSC 7501 reports.
 The [selector reference](../behaviour/monitor/selector.md#toasts-and-bell) defines the
@@ -590,12 +591,15 @@ Restore host modes/terminal settings and emit root
 [clear](monitor-host/report-clear.md) before diagnostics.
 Stalls use bounded whole-process failure, never thread killing/unloading or a
 false cleanup claim. Broken output permits only best-effort restoration/clear;
-report failure. [Numeric budgets](../behaviour/monitor/operational-limits.md) and
-[native calls](monitor-client/README.md) and the
-[acceptance matrix](../behaviour/monitor/acceptance.md) are agreed. The
-monitor's end-to-end tests drive the installed monitor; the
-[monitor README](../../../crates/climon2-monitor/README.md#specification-mapping)
-maps the cases they claim and lists those they do not yet claim.
+report failure. The monitor implements this shutdown path
+([#118](https://github.com/jackgeek/climon2/issues/118)) and the
+[numeric budgets](../behaviour/monitor/operational-limits.md)
+([#119](https://github.com/jackgeek/climon2/issues/119),
+[#120](https://github.com/jackgeek/climon2/issues/120)) through the
+[native calls](monitor-client/README.md). Executable conformance to the
+[acceptance matrix](../behaviour/monitor/acceptance.md) is judged by release
+qualification's evidence records
+([#122](https://github.com/jackgeek/climon2/issues/122)) before a release is published; no release has been qualified yet.
 No session-survival promise or containment of a native client crash is added.
 Native selection/copy limitations are manually verified where automation cannot
 honestly establish host-specific behavior. Documentation checks prove none of

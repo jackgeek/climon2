@@ -1,6 +1,14 @@
 # Notification metadata
 
-**Status: agreed revision-1 specification, implemented by the client library ([#98](https://github.com/jackgeek/climon2/issues/98)); see [implemented behavior](README.md#implemented-behavior).**
+**Status: agreed revision-1 specification, implemented by the
+[client library](../../../../GLOSSARY.md#sessions)
+([#98](https://github.com/jackgeek/climon2/issues/98)); see
+[implemented behavior](README.md#implemented-behavior). The
+[monitor](../../../../GLOSSARY.md#sessions) requests `notification-v1` as
+optional at Open ([#106](https://github.com/jackgeek/climon2/issues/106))
+but does not read these records: its toasts follow the attention episode
+in [Session status](event-session-status.md)
+([#115](https://github.com/jackgeek/climon2/issues/115)).**
 The [session daemon](../../../../GLOSSARY.md#sessions) sends normalized notification
 metadata through its [client](../../../../GLOSSARY.md#sessions) to the
 [monitor](../../../../GLOSSARY.md#sessions). Use the [overview](../README.md),

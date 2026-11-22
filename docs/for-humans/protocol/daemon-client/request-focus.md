@@ -1,6 +1,7 @@
 # Focus — `0x39`
 
 **Status: agreed #63 amendment to wire revision 1, implemented ([#87](https://github.com/jackgeek/climon2/issues/87)).**
+The [client library](../../../../GLOSSARY.md#sessions) sends it ([#94](https://github.com/jackgeek/climon2/issues/94)), and the [monitor](../../../../GLOSSARY.md#sessions) uses it ([#111](https://github.com/jackgeek/climon2/issues/111)).
 The [client](../../../../GLOSSARY.md#sessions) reports desired application focus to
 the [session daemon](../../../../GLOSSARY.md#sessions), as the current ready
 [controller](../../../../GLOSSARY.md#attachment-and-control).
@@ -48,7 +49,8 @@ this is not permission for background application input or resize.
 Neither selection nor [viewing](../../../../GLOSSARY.md#status-and-attention) true is required for focus-out.
 The [monitor](../../../../GLOSSARY.md#sessions) sends focus-in only for its selected
 ready [host](../../../../GLOSSARY.md#sessions)-focused keyboard target without modal
-[UI](../TERMS.md#ui).
+[UI](../TERMS.md#ui), and focus-out to every other ready session it controls
+([#111](https://github.com/jackgeek/climon2/issues/111)).
 
 Remember desired state for the current attachment even when application
 focus-reporting mode is disabled. When mode is enabled and state is known, queue
@@ -56,7 +58,8 @@ exactly `ESC [ I` for true or `ESC [ O` for false.
 Repeated state does not duplicate [bytes](../TERMS.md#byte). Enabling reporting later queues current
 known state once; no unknown state is invented. New authority does not inherit
 or replay old requests. Restoration retains latest local desired focus; a newly
-ready monitor submits its current state with current authority.
+ready monitor submits its current state with current authority, as the
+monitor does ([#111](https://github.com/jackgeek/climon2/issues/111)).
 
 Success [Response](response.md) result is:
 `{"kind":"focus","changed":<bool>,"focused":<bool>,"accepted_bytes":<u32>}`.

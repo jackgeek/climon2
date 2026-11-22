@@ -44,10 +44,8 @@ const RELEASE: &str = env!("CARGO_PKG_VERSION");
 
 const MIB: u64 = 1024 * 1024;
 
-/// Provisional bounded requirements: the default `monitor.limits`
-/// reservations, plus 1 MiB of instance-local allocation. The measurement job
-/// (#121) checks each against measured use with 25% headroom; no measured
-/// value has replaced them yet.
+/// Provisional bounded requirements until measured ones replace them (#297): the default `monitor.limits` reservations, plus 1 MiB of
+/// instance-local allocation.
 const REQUIREMENTS: Requirements = Requirements {
     release_bytes: 64 * MIB,
     instance_bytes: MIB,

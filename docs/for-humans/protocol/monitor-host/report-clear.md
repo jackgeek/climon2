@@ -1,8 +1,9 @@
 # Clear monitor program-status advertising on exit
 
 **Implemented** by the monitor once it has started
-([#114](https://github.com/jackgeek/climon2/issues/114)) on every exit that
-restores the host, after releasing it, and attempted on the fail-stop
+([#114](https://github.com/jackgeek/climon2/issues/114)) on every exit, right
+after it attempts to release the host, whether or not that release succeeded,
+and attempted on the fail-stop
 ([#118](https://github.com/jackgeek/climon2/issues/118)), from
 [the selector decision](https://github.com/jackgeek/climon2/issues/60).
 The [monitor](../../../../GLOSSARY.md#sessions) sends this

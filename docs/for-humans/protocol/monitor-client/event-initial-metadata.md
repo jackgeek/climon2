@@ -3,7 +3,8 @@
 **Status: agreed revision-1 specification. The
 [client library](../../../../GLOSSARY.md#sessions) delivers this barrier for
 [passive monitor connections](../../../../GLOSSARY.md#attachment-and-control)
-([#93](https://github.com/jackgeek/climon2/issues/93)): the title by
+([#93](https://github.com/jackgeek/climon2/issues/93)) and interactive
+attachments ([#94](https://github.com/jackgeek/climon2/issues/94)): the title by
 selection, the status by selection ([#95](https://github.com/jackgeek/climon2/issues/95)), progress by selection
 ([#98](https://github.com/jackgeek/climon2/issues/98)), and the command result. The monitor reads its title, status and
 command result ([#106](https://github.com/jackgeek/climon2/issues/106), [#107](https://github.com/jackgeek/climon2/issues/107)).**
