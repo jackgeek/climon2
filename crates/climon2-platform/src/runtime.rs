@@ -63,8 +63,9 @@ mod unix {
     impl RuntimeDirectory {
         /// `home` is the result of the invocation's single `canonical_home` call.
         pub fn prepare(home: &Path) -> io::Result<Self> {
-            let layout = RuntimeLayout::new(Path::new("/tmp"), crate::peer::effective_uid(), home)
-                .map_err(io::Error::other)?;
+            let layout =
+                RuntimeLayout::new(Path::new("/tmp"), Some(crate::peer::effective_uid()), home)
+                    .map_err(io::Error::other)?;
             crate::private::private_directory(layout.directory())?;
             Ok(Self(layout))
         }
