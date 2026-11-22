@@ -34,7 +34,8 @@ permissions:
 # The Windows Test and Quality jobs run unless the repository variable
 # CLIMON2_WINDOWS_TESTS is "off" (docs/windows-quality.md). Off, it still runs
 # for release tags and for changes that `cargo xtask windows-changed` says
-# touch Windows-only code; the neutral job's Windows leg always runs.
+# touch Windows-only code. The neutral job's Windows leg and the Windows Dist
+# job always run.
 
 # A newer push to the same pull request supersedes its in-progress checks.
 # Main pushes and release calls get a group of their own and are never cancelled.
@@ -359,6 +360,37 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-dist-${{ matrix.platform }}
+          path: target/dist/*
+          if-no-files-found: error
+  # The Windows release zip (docs/windows-distribution.md). It runs on every run,
+  # whatever CLIMON2_WINDOWS_TESTS says (docs/windows-quality.md, "The switch"),
+  # and tests the dist's own checks first. Publishing the zip comes with #330.
+  windows-dist:
+    name: Windows dist / windows-2025
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-windows-x86_64-msvc
+      - name: Require native architecture
+        run: test "$PROCESSOR_ARCHITECTURE" = AMD64
+      - name: Test the Windows dist, its PE checks and this job
+        run: |
+          cargo test --locked -p xtask --bin xtask -- pe:: dist::
+          cargo test --locked -p xtask --test dist --test workflows
+      - name: Build and verify the Windows release zip
+        run: cargo xtask dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist-windows-x86_64-msvc
           path: target/dist/*
           if-no-files-found: error
   archive:

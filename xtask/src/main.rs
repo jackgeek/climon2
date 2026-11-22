@@ -1,4 +1,4 @@
-// Off Unix only the source check and the native-only gate are built
+// Off Unix only the source check, the native-only gate and dist are built
 // (docs/windows-quality.md), so the release tooling they share goes unused.
 #![cfg_attr(not(unix), allow(dead_code))]
 use std::{
@@ -12,14 +12,19 @@ use std::{
 mod coverage;
 #[cfg(unix)]
 mod dist;
+#[cfg(windows)]
+#[path = "windows_dist.rs"]
+mod dist;
 mod fixtures;
 #[cfg(unix)]
 mod library;
 mod measure;
 mod mutation_plan;
+// Only the Windows dist reads PE files; the reader's tests run everywhere.
+#[cfg_attr(unix, allow(dead_code))]
+mod pe;
 mod qualify;
 mod quality;
-#[cfg(unix)]
 mod release;
 mod windows_source;
 
@@ -46,7 +51,8 @@ mutation-probe runs the sentinel, whose one checked mutant must be killed and on
 mutant survive, then checks real-binary worker isolation.
 tooling-probe proves staged coverage, complexity counting and covered mutation gates.
 release-check proves per-package releases exclude hooks and preserve test binaries.
-dist builds verified universal macOS release artifacts (arm64 host) or x86_64 GNU/Linux artifacts in target/dist.
+dist builds verified universal macOS release artifacts (arm64 host), x86_64 GNU/Linux artifacts
+or the x86_64 Windows zip in target/dist.
 install builds verified production artifacts and runs their installer (optional --dir).
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
@@ -59,7 +65,7 @@ qualify verdict judges every platform's records with the owner's recorded dispos
 unless the release may be published.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
 On Windows it tests only what builds there, after the sentinel and a probe that a killed
-process keeps its coverage. Windows builds no check, tooling-probe, release-check, dist or install.
+process keeps its coverage. Windows builds no check, tooling-probe, release-check or install.
 Each load round runs 8 workspace suites at once before mutating, even with nothing to mutate;
 mutate skips it. Logs remain in target/flake-logs.
 Cross-architecture execution of the same final archive is enforced in CI.";
@@ -76,6 +82,8 @@ fn main() -> ExitCode {
         test()
     } else if args.len() == 2 && args[0] == "windows-changed" {
         windows_source::changed(workspace_root(), &args[1].to_string_lossy())
+    } else if args == ["dist"] {
+        dist::run(workspace_root())
     } else if args == ["setup-quality"] {
         quality::setup(workspace_root())
     } else if args == ["mutation-probe"] {
@@ -116,9 +124,7 @@ fn unix_command(args: &[OsString]) -> Option<io::Result<()>> {
     } else if args == ["tooling-probe"] {
         quality::tooling_probe(workspace_root())
     } else if args == ["release-check"] {
-        release::check(workspace_root())
-    } else if args == ["dist"] {
-        dist::run(workspace_root())
+        release::unix::check(workspace_root())
     } else if args == ["install"] {
         dist::install(workspace_root(), &[])
     } else if args.len() == 3 && args[0] == "install" && args[1] == "--dir" && !args[2].is_empty() {

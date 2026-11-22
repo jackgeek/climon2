@@ -113,6 +113,17 @@ flowchart TB
 | Session command | The program the session runs. |
 | Inbox `conhost.exe` | Windows' own console host. It is never used: if `OpenConsole.exe` is missing, `conpty.dll` would fall back to it, so the daemon checks both files and `exec` fails with 125. |
 
+**Current (#319):** the Windows release zip carries `c2.exe` and, in its
+version folder, `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`,
+`climon2_client.dll`, `conpty.dll` and `OpenConsole.exe`. `climon2-monitor.exe`
+is not in it until the monitor builds on Windows
+([#327](https://github.com/jackgeek/climon2/issues/327)), nor is the
+installer ([#329](https://github.com/jackgeek/climon2/issues/329)).
+`cargo xtask dist` checks that each file is x86-64 code of its kind and that
+none imports the Visual C++ runtime
+([Windows packaging](windows-distribution.md#how-it-is-built)). Packaging adds
+no relationship to the diagram.
+
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
 `climon2-test-term` builds `climon2-test-owned` as test tooling on Linux and

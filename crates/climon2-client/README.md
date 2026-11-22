@@ -638,6 +638,15 @@ never freed, two same-named copies as two modules, its dependencies found only
 beside it or in System32, and each failure classified. `climon2-cli`'s
 `tests/exec_windows.rs` proves `c2 kill` end to end and the attach refusal.
 
+On Windows the executable and the library both write their debug symbols to
+`climon2_client.pdb`, which Cargo reports as an output filename collision.
+The executable links after the library, so a build keeps only the
+executable's symbols; the two binaries themselves never collide. The Windows
+release ships no `.pdb`: `cargo xtask dist` (#319) copies
+`climon2-client.exe` and `climon2_client.dll` by name, checks that one is an
+x86-64 program and the other an x86-64 library exporting only the bootstrap,
+and fails if the zip holds any file it should not.
+
 ## Behavioral evidence
 
 `tests/bridge.rs` drives the real binary on real PTYs (#20, #101). Each test

@@ -94,6 +94,7 @@ flowchart TB
     test_term --> monitor
     test_term --> platform
     e2e -.->|"dev"| core
+    e2e -.->|"dev"| fixtures
     e2e -.->|"dev"| install
     e2e -.->|"dev"| test_term
     fixtures --> core
@@ -103,9 +104,10 @@ flowchart TB
     platform -.->|"dev, Windows"| test_term
     client -.->|"dev, Unix"| fixtures
     xtask --> core
-    xtask --> install
+    xtask -->|"Unix"| install
+    xtask -->|"Windows"| test_term
     xtask --> platform
-    xtask -.->|"dev"| fixtures
+    xtask -.->|"dev, Unix"| fixtures
     xtask -.->|"dev"| second
     e2e -.->|"dev"| second
     second --> core
@@ -191,10 +193,16 @@ consume the package as dev-dependencies only so that Cargo builds its
 `cdylib`; no code links it. The developer accepted this package on
 2026-11-15 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
-**Current (#314):** `xtask`'s normal edges to `core`, `install` and
-`platform` are Unix-only dependencies. On Windows `xtask` builds without them,
-for the source check and the Windows [quality gate](windows-quality.md); its
-release checks, distribution builds and installs need the Unix installer.
+**Current (#319):** `xtask` consumes `core` and `platform` on every platform.
+Its edge to `install` and its `dev` edge to `climon2-fixtures`, whose
+stand-ins are Unix programs, are Unix-only: the release checks and installs
+need the Unix installer. Its edge to `climon2-test-term` is Windows-only:
+Windows `cargo xtask dist` takes the pinned ConPTY files from the harness,
+which fetches and verifies them for its own Windows host, so one piece of
+code reads the pin. On Windows that edge brings no product crates, because
+the harness builds there with `core` alone. From #314 until #319, `xtask`
+built on Windows without any workspace crate, for the source check and the
+Windows [quality gate](windows-quality.md) only.
 
 **Current (#316):** `climon2-cli`'s edge to `discovery` and its `dev` edge to
 `climon2-test-term` hold on every platform; until #316 they were Unix-only.

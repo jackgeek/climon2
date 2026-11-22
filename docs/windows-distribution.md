@@ -2,8 +2,11 @@
 
 This document says what a Windows release of climon2 contains, how it is
 installed, and what an upgrade may and may not touch. It is for contributors.
-Only the launcher's retry of [`current`](#current) is built so far
-([#315](https://github.com/jackgeek/climon2/issues/315)); it was agreed in
+So far the launcher's retry of [`current`](#current)
+([#315](https://github.com/jackgeek/climon2/issues/315)) and
+[the archive](#the-archive) with its Dist job
+([#319](https://github.com/jackgeek/climon2/issues/319)) are built, but
+not `install.exe`, `install.ps1` or publishing. It was agreed in
 [Define Windows packaging and upgrade contract](https://github.com/jackgeek/climon2/issues/215)
 and is the specification the Windows port implements. The macOS and Linux
 equivalent, which is built, is [Release distribution](distribution.md).
@@ -51,7 +54,8 @@ climon2. The same change for Linux and macOS is
 
 ## The archive
 
-The archive is `climon2-<version>-windows-x86_64-msvc.zip`:
+The archive is `climon2-<version>-windows-x86_64-msvc.zip`. As on the other
+platforms, it holds one folder of the same name, which holds:
 
 ```
 install.exe
@@ -61,37 +65,64 @@ README.md
 <version>\climon2-cli.exe
 <version>\climon2-daemon.exe
 <version>\climon2-client.exe
+<version>\climon2_client.dll
 <version>\conpty.dll
 <version>\OpenConsole.exe
 <version>\THIRD-PARTY-NOTICES.txt
 ```
 
+- `climon2_client.dll` is the client library: the code that the
+  [client](../GLOSSARY.md#sessions) program and the monitor load to talk to a
+  session daemon.
 - `install.ps1`, the download script, is stamped with the version and
   published beside the zip. The release's one `SHA256SUMS` lists both.
 - Debug symbol files (`.pdb`) are not shipped.
 - There are no test fixtures in the archive.
+- `install.exe` and `install.ps1` are not built yet
+  ([#329](https://github.com/jackgeek/climon2/issues/329)), so today's zip
+  holds every other file, and `SHA256SUMS` lists only the zip.
 
 ### How it is built
 
-`cargo xtask dist` builds the archive in the Windows Dist job.
+`cargo xtask dist` builds the archive and `SHA256SUMS` into `target\dist` on
+an x86_64 Windows host. The Windows Dist job runs it on `windows-2025` on
+every run of the checks, even when the Windows test switch is off
+([Windows quality](windows-quality.md#the-switch)), and keeps the result as a
+workflow artifact. Publishing it with a release is
+[#330](https://github.com/jackgeek/climon2/issues/330).
 
 - **Static C runtime.** Every climon2 program is built with the C runtime
-  linked in, so a clean Windows 11 needs nothing installed first. xtask sets
-  the flag itself for distribution and coverage builds, because coverage
-  builds discard the setting when it comes from Cargo's configuration.
-- **Import check.** The build fails if any shipped file needs
-  `vcruntime140*.dll` or `msvcp140*.dll`. The CI runner has those installed,
-  so without this check a missing-runtime fault would pass CI.
-- **Format check.** Every program must be a 64-bit x86 Windows executable, and
-  none may contain test-hook markers, as on the other platforms.
+  linked in, so a clean Windows 11 needs nothing installed first. The
+  workspace's Cargo configuration (`.cargo/config.toml`) sets this for every
+  Windows build, distribution builds included. Coverage builds replace that
+  setting with their own flags, so xtask's coverage adds the same flag.
+- **Import check.** The build fails if any shipped program or library imports
+  `vcruntime140*.dll` or `msvcp140*.dll`, delay-loaded imports included. The
+  CI runner has those installed, so without this check a missing-runtime
+  fault would pass CI. The ConPTY files import the Universal C Runtime
+  (`api-ms-win-crt-*`), which is part of Windows, and pass.
+- **Format check.** Every program and library must be 64-bit x86 Windows code
+  of the expected kind: the `.exe` files programs and the `.dll` files
+  libraries. climon2's own files may not contain test-hook markers, as on the
+  other platforms, and the client library must export only its bootstrap
+  symbol.
+- **Exact contents.** The build lists the finished zip and fails unless it
+  holds exactly the files above, so a `.pdb` or any other stray file cannot
+  ship. On Windows the client program and the client library both write
+  debug symbols to `climon2_client.pdb`, and Cargo warns about the clash;
+  the build copies each shipped file by its own name and checks its kind, so
+  the clash cannot put a wrong file in the zip.
 - **ConPTY files.** `conpty.dll` and `OpenConsole.exe` come from one pinned
-  `Microsoft.Windows.Console.ConPTY` package. One checked-in file records the
-  package version, the package's SHA-256 and the SHA-256 of each of the two
-  files. The build downloads the package, verifies all three and copies the
-  two files into the version folder. A change to that file counts as a
+  `Microsoft.Windows.Console.ConPTY` package. One checked-in file,
+  [`pins/conpty.txt`](../pins/conpty.txt), records the package version, the
+  package's SHA-256 and the SHA-256 of each of the two files. The build
+  downloads the package, verifies all three and copies the two files into the
+  version folder, using the same code as the test harness, which hosts its
+  programs with the same files. A change to that file counts as a
   Windows-only change, so it runs the Windows quality jobs.
 - **Notice.** `THIRD-PARTY-NOTICES.txt` carries the MIT notice of
-  microsoft/terminal, beside the files it covers.
+  microsoft/terminal, beside the files it covers. Its source is
+  [`pins/THIRD-PARTY-NOTICES.txt`](../pins/THIRD-PARTY-NOTICES.txt).
 
 ## Installing
 
