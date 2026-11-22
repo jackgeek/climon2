@@ -90,7 +90,7 @@ pub fn run() -> Result<u32, Error> {
 /// Records how the monitor ended: the host terminal may be gone, so a failure
 /// is logged as well as returned for main to print.
 /// The host bell a toast rings once the frame first showing its full title
-/// has been written (docs/protocol/monitor-host/bell.md).
+/// has been written (docs/for-humans/protocol/monitor-host/bell.md).
 const BEL: &[u8] = b"\x07";
 /// The library log filter when `CLIMON2_LOG` sets none.
 const DEFAULT_FILTER: &str = "info";
@@ -510,7 +510,7 @@ impl Monitor {
     /// Once the frame first showing a toast's full title (`titling`) has
     /// been written to the host, the toast's hold starts and, while
     /// `monitor.bell` is on, one BEL rings (owner decision on #115,
-    /// 2026-11-17; docs/protocol/monitor-host/bell.md).
+    /// 2026-11-17; docs/for-humans/protocol/monitor-host/bell.md).
     fn title(&mut self, titling: bool) -> io::Result<()> {
         if !titling {
             return Ok(());

@@ -45,14 +45,17 @@ becomes the exit status of every client attached when it finishes. Nested
 sessions are supported. Session data defaults to `~/.climon2`; set
 `CLIMON2_HOME` to override it.
 
-The [protocol reference](docs/protocol/README.md) explains the current daemon
-handshake and the in-process monitor-client interface for future plugin authors.
+The [documentation index](docs/for-humans/README.md) lists every document
+written for people to read.
+The [protocol reference](docs/for-humans/protocol/README.md) explains the daemon
+handshake and wire protocol, the in-process monitor-client interface and the
+monitor's reports to its host, for client and future plugin authors.
 It distinguishes implemented behavior from agreed plans and unresolved details.
-The [session status, attention, and activity mechanics](docs/session-status.md)
+The [session status, attention, and activity mechanics](docs/for-humans/behaviour/session-status.md)
 include both daemon state machines and the monitor's ordering/recovery behavior;
 the daemon implements them (#91, #92, #98), and so does the monitor (#107,
 #114, #115, #116).
-The agreed [monitor acceptance criteria](docs/monitor-acceptance.md) define
+The agreed [monitor acceptance criteria](docs/for-humans/behaviour/monitor/acceptance.md) define
 the required real-monitor, packaged-library and measured evidence. Each
 crate's README maps the scenarios it covers to their tests; a mapped test is
 not release qualification evidence.
@@ -285,7 +288,7 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
   is kept apart and never changes this setting.
 - `monitor.bell` (default true): false keeps toasts from ringing the host
   bell, never hiding a toast or the host attention reports.
-- `monitor.limits` holds the [operational limits](docs/monitor-operational-limits.md),
+- `monitor.limits` holds the [operational limits](docs/for-humans/behaviour/monitor/operational-limits.md),
   in bytes, milliseconds (`_ms`) or counts. The monitor validates and reports
   them and enforces most of them (#106 to #120); the operational limits'
   status says which it does not enforce yet. Its `history.max_rows` is the monitor's own
@@ -348,7 +351,7 @@ auto-creation or live reload.
 
 ### Monitor behavior
 
-The [agreed terminal integration](docs/protocol/terminal-integration.md) provides
+The [agreed terminal integration](docs/for-humans/protocol/terminal-integration.md) provides
 interactive terminal input/rendering, internal normal-screen history, one top
 status row, and explicit control/restoration gates. The [monitor](#monitor)
 implements them (#108 to #112) and treats pasted shortcuts as data. It reads the
@@ -356,7 +359,7 @@ configuration above once, before changing terminal state. Null takeover is
 allowed because selector confirmation can acquire control. Lowercase prefix+s
 opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
 currently connected session needing attention, not necessarily a toast's session.
-Prefix+? opens the [key introduction/help dialog](docs/monitor-selector.md#key-introduction-and-help).
+Prefix+? opens the [key introduction/help dialog](docs/for-humans/behaviour/monitor/selector.md#key-introduction-and-help).
 Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
 
 Needs-attention toasts hint the actual configured prefix plus lowercase j
@@ -368,9 +371,9 @@ anything (#113).
 
 `monitor.bell` false suppresses the explicit host bell, not
 toasts or OSC 7501 reports; host settings govern actual audibility.
-The [selector specification](docs/monitor-selector.md) records the accepted
+The [selector specification](docs/for-humans/behaviour/monitor/selector.md) records the accepted
 layout, read-only disconnected/final history selection and animated toasts.
-The later [lifecycle specification](docs/monitor-lifecycle.md) adds
+The later [lifecycle specification](docs/for-humans/behaviour/monitor/lifecycle.md) adds
 default-Cancel Delete confirmation pinned to immutable session identity
 (implemented by #117), and the recovery below (implemented by #116).
 Removal waits for definitive termination and local instance cleanup/join,
@@ -389,7 +392,7 @@ owned instance (implemented by #118). Accepted Leave, connection closure, final 
 join are separate evidence. Restore host state and clear root attention before
 diagnostics; stalled cleanup uses bounded whole-process failure, never a false
 detach/join claim or thread kill. The agreed
-[operational limits](docs/monitor-operational-limits.md) define the
+[operational limits](docs/for-humans/behaviour/monitor/operational-limits.md) define the
 `monitor.limits` budgets, deadlines and evidence; the monitor enforces most
 of them (#119, #120), and that document's status lists what it does not.
 Under pressure, local history shrinks to its newest captured
@@ -403,7 +406,7 @@ restoration failure use 125; a catchable signal uses signal-style status only
 after successful cleanup. Session-local command/client failures alone do not
 poison a later clean monitor exit.
 The monitor also generates its own
-[OSC 7501 aggregate attention reports](docs/protocol/README.md#monitor-to-host-status-and-bell),
+[OSC 7501 aggregate attention reports](docs/for-humans/protocol/README.md#monitor-to-host-status-and-bell),
 never raw session-sequence passthrough.
 
 ## Listing
@@ -463,18 +466,31 @@ to the general log in the climon2 home, including its effective
 configuration as JSON, never your input.
 
 Until you turn it off, the monitor starts with its key introduction over the
-empty state, listing its keys with your escape prefix:
+empty state, listing its keys with your escape prefix and the session list's
+own keys (on macOS, Delete is shown as `Del (fn+⌫)`):
 
 ```text
-┌ Keys ────────────────────────────────┐
-│ Ctrl+] then x  Exit the monitor      │
-│ Ctrl+] then s  Open the session list │
-│ Ctrl+] then ?  Show this dialog      │
-│                                      │
-│ [ ] Don't show again (Space)         │
-│                                      │
-│ Continue (Enter)                     │
-└──────────────────────────────────────┘
+┌ Keys ───────────────────────────────────────────────────┐
+│ Ctrl+] then x  Exit the monitor                         │
+│ Ctrl+] then s  Open the session list                    │
+│ Ctrl+] then j  Jump to the session that needs attention │
+│ Ctrl+] then ?  Show this dialog                         │
+│                                                         │
+│ In the session list:                                    │
+│ Type or paste  Search by status and title               │
+│ Left, Right, Home, End, Backspace  Edit the search      │
+│ Up, Down, PageUp, PageDown  Move the highlight          │
+│ Enter  Select the highlighted session                   │
+│ Esc  Cancel                                             │
+│ Del  Delete the highlighted session                     │
+│ Click a row  Highlight it                               │
+│ Click outside  Cancel                                   │
+│ Wheel  Scroll the list                                  │
+│                                                         │
+│ [ ] Don't show again (Space)                            │
+│                                                         │
+│ Continue (Enter)                                        │
+└─────────────────────────────────────────────────────────┘
 ```
 
 Enter continues to the empty state. Space checks **Don't show again**, or
@@ -486,8 +502,10 @@ showing your saved choice; doing so while it is open changes nothing. The
 dialog takes every other key and any paste, and none of them does anything
 else; the escape prefix followed by `x` still exits. The escape prefix pressed
 twice reaches the dialog as that key, so with `Ctrl+M` (Enter) as the prefix,
-Enter Enter continues. The escape prefix followed by `s` opens the session
-list (#106, #113). A bare Escape closes the dialog when the next key arrives
+Enter Enter continues. While the dialog is open, the escape prefix followed by
+`s` does nothing; once it is closed, it opens the session list (#106, #113).
+The escape prefix followed by `j` closes the dialog and jumps to the session
+needing attention (#114). A bare Escape closes the dialog when the next key arrives
 (#109), except with `Ctrl+[` as the prefix: then it never can, because Escape
 is the prefix.
 
@@ -562,7 +580,7 @@ Supports **macOS 15 or newer** on Apple Silicon and Intel, and **x86_64
 GNU/Linux** with glibc 2.39 or newer, qualified on Ubuntu 24.04. macOS binaries
 are universal and ad-hoc signed, without Developer ID signing or notarisation.
 Arch Linux is supported for native development; musl and Linux arm64 are not
-qualified. See [distribution](docs/distribution.md) for platform archives.
+qualified. See [distribution](docs/for-humans/distribution.md) for platform archives.
 
 Latest release:
 
@@ -621,10 +639,10 @@ logs older than seven days are pruned.
 
 ## Development and releases
 
-See the [executable and dynamic-library relationships](https://github.com/jackgeek/climon2/blob/main/docs/runtime-artifacts.md)
+See the [executable and dynamic-library relationships](https://github.com/jackgeek/climon2/blob/main/docs/for-humans/architecture/runtime-artifacts.md)
 for the current runtime and client library, test tooling, and the monitor's
 loading of client libraries.
-See the [workspace crate diagram](https://github.com/jackgeek/climon2/blob/main/docs/crate-relationships.md)
+See the [workspace crate diagram](https://github.com/jackgeek/climon2/blob/main/docs/for-humans/architecture/crate-relationships.md)
 for consumption relationships between climon2 crates, including test tooling.
 
 ```sh
@@ -650,18 +668,21 @@ compatible with macOS `/bin/bash` 3.2.
 On arm64 macOS, install both Rust targets before running workspace tests,
 `dist` or `install`: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
-CI runs full runtime, real-terminal and packaged tests on Linux and both macOS
-architectures. Windows runs neutral contracts only. The agreed
-[Windows host and shell qualification](docs/windows-qualification.md) says what a
+CI runs full runtime, real-terminal and packaged tests on Linux, and on both
+macOS architectures while the repository variable `CLIMON2_MACOS_TESTS` is
+`on`; otherwise macOS only builds its release archive. Windows runs neutral
+contracts only. The agreed
+[Windows host and shell qualification](docs/for-humans/windows/qualification.md) says what a
 Windows release will have to pass,
-[Windows quality and CI qualification](docs/windows-quality.md) says how CI will
+[Windows quality and CI qualification](docs/for-humans/windows/quality.md) says how CI will
 check it, and the
-[Windows platform and lifecycle contract](docs/windows-lifecycle.md) says how its
+[Windows platform and lifecycle contract](docs/for-humans/windows/lifecycle.md) says how its
 processes will start, run and end. Shared and Linux-specific
 CRAP/mutation run on the dedicated Linux development host, with 8 mutation
 workers. CI does not repeat those quality checks.
 
-The macOS CI quality job uses `cargo xtask mutate --native-only`: CRAP scores
+The macOS CI quality job, which also needs `CLIMON2_MACOS_TESTS` on, uses
+`cargo xtask mutate --native-only`: CRAP scores
 only registered macOS-exclusive source, and mutation selects changed files
 within that set. Shared-only changes skip that quality run; release tags use
 `--native-only --mutate-all` to qualify every macOS-exclusive file. Coverage
@@ -761,7 +782,7 @@ Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
 On an **x86_64 Windows host**, `xtask dist` builds the Windows zip and its
 `SHA256SUMS` instead, with the pinned ConPTY files; it fails if any shipped
 program or library imports the Visual C++ runtime. That zip is not installable
-or published yet; see [Windows packaging and upgrades](docs/windows-distribution.md).
+or published yet; see [Windows packaging and upgrades](docs/for-humans/windows/distribution.md).
 
 `xtask install` builds and verifies the same production payload as `dist`, then
 runs its installer without creating an archive. It has the same host and build
@@ -772,7 +793,9 @@ versions and prints a PATH hint when needed; shell startup files are unchanged.
 A release requires a local `cargo xtask check --full --mutate-all` pass for the exact
 release commit; this is the maintainer's responsibility, not a duplicated CI
 job. A `v<workspace version>` tag runs full macOS-only mutation and the native
-runtime/archive gates. The same final
+runtime/archive gates (on macOS only while `CLIMON2_MACOS_TESTS` is on), then
+[release qualification](docs/for-humans/distribution.md#release-qualification)
+of the exact archives on all three platforms, whatever that variable says. The same final
 macOS archive must pass both architectures, and the Linux archive must pass
 Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
 before one GitHub Release and provenance attestation are published.

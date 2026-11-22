@@ -1,4 +1,4 @@
-//! The `pwsh` shell profile (docs/windows-qualification.md, "Shell
+//! The `pwsh` shell profile (docs/for-humans/windows/qualification.md, "Shell
 //! profiles"): PowerShell 7 started by absolute path with `-NoLogo
 //! -NoProfile` and a fixed `prompt` function. PSReadLine stays on, because
 //! users run with it.

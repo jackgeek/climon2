@@ -1,5 +1,5 @@
 //! The job object a host may put its shell in: a harness setting of its own,
-//! separate from the host model (docs/windows-qualification.md, "Host models").
+//! separate from the host model (docs/for-humans/windows/qualification.md, "Host models").
 
 use std::{
     io,

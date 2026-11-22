@@ -184,7 +184,7 @@ fn bind_admits_a_107_byte_path_and_refuses_108_bytes() {
 }
 
 /// On the real profile folder, as every session will use it
-/// (docs/windows-quality.md, "Facts only CI can show").
+/// (docs/for-humans/windows/quality.md, "Facts only CI can show").
 #[test]
 fn a_session_socket_binds_and_connects_in_the_real_runtime_directory() {
     let parent = tempfile::tempdir().unwrap();

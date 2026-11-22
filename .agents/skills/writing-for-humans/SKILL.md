@@ -1,23 +1,11 @@
 ---
 name: writing-for-humans
-description: Writing documents a human reads. Use when creating, editing, moving or removing `/README.md` or any document under `docs/` other than `docs/adr/` and `docs/agents/`.
+description: Writing documents a human reads. Use when creating, editing, moving or removing `/README.md` or any document under `docs/for-humans/`.
 ---
 
 Reference for every document a human reads: `/README.md` and the tree under
 `docs/for-humans/`. Where a skill that owns a document type (`protocol-docs`)
 differs from this one, that skill wins.
-
-## Until the documents move
-
-`docs/for-humans/` does not exist yet. Until a dedicated change creates it,
-`docs/*.md` and `docs/protocol/` are the tree:
-
-- Apply [Introducing terms](#introducing-terms) and [Diagrams](#diagrams) to
-  every edit.
-- Put new documents where their neighbours live today, linked from a document
-  that `/README.md` already reaches.
-- Leave existing files, folders and links where they are. Other branches are
-  editing them, and a move now loses their work in merge conflicts.
 
 ## The reader
 
@@ -44,10 +32,22 @@ A term counts as introduced when an ancestor of the document (see
 need the same term, introduce it once in their parent. When the parent is the
 wrong place for it, add a folder between them whose `README.md` introduces it.
 
-For a term that `/GLOSSARY.md` or `docs/protocol/TERMS.md` defines, link its
-first use to that definition. A short paraphrase beside the link is fine; the
-definition's own words stay in the glossary, so the two cannot drift apart.
-Change `/GLOSSARY.md` only through the `domain-modeling` skill.
+A **reference** is a document of definitions that a folder `README.md`
+declares, with one line linking it:
+
+```markdown
+**Reference:** [technical terms](TERMS.md)
+```
+
+Its terms count as introduced throughout that folder and below, provided each
+document links a term's first use to its definition. A short paraphrase beside
+the link is fine; the definition's own words stay in the reference, so the two
+cannot drift apart. A declared reference lives in the folder it serves, or
+outside the tree. `docs/for-humans/README.md` declares `/GLOSSARY.md`, the
+domain glossary, for the whole tree; change that one only through the
+`domain-modeling` skill. Declare a new reference when a branch has enough
+vocabulary of its own that its parent would be the wrong place to introduce
+it.
 
 ## The document tree
 
@@ -66,32 +66,56 @@ material sits at the top and each branch narrows to one detail.
 
 A folder `README.md` holds, in order:
 
-1. What the folder covers, in one or two sentences.
-2. Its audience. A subfolder inherits its parent's audiences and may narrow
-   them; it never adds one its parent lacks. Material for a new audience moves
+1. What the folder covers, in one or two sentences, and any `**Builds on:**`
+   declaration (see [Links](#links)).
+2. Its audience, as one line: `**Audience:** Integrators and Contributors.`
+   A subfolder inherits its parent's audiences and may narrow them; it never
+   adds one its parent lacks. Material for a new audience moves
    up to the level where that audience is declared, because a reader does not
    search for their documents beneath someone else's.
-3. The terms its children share.
+3. The terms its children share, and any `**Reference:**` declaration (see
+   [Introducing terms](#introducing-terms)).
 4. A table with one row per file and subfolder: a link and a one-line purpose.
    Keep it complete: adding, renaming or removing a file updates the table in
    the same change.
 
 ### Links
 
-Within the tree, a document links only to:
+The top-level folders of `docs/for-humans/` are **subjects**: `protocol/`,
+`behaviour/`, `architecture/`, `windows/`. These rules apply inside one subject; a link
+from one subject to another is a citation between specifications and is
+unrestricted. Within a subject, and from the files at the top of the tree, a
+document links only to:
 
 1. files in its own folder: its siblings and its parent;
 2. files in any folder above it: its ancestors, aunts and uncles;
 3. the `README.md` of a subfolder of its own folder or of a folder above it,
    which is the way into a branch the document is not in;
-4. `docs/protocol/TERMS.md`.
+4. anything below its own folder: links straight down follow the tree, as
+   links straight up do;
+5. anything in a sibling folder that its folder, or a folder above it, declares
+   it builds on;
+6. a page that links to it under such a declaration: a **reply** to that
+   link.
 
-So cousins reach each other through the README of the other's folder:
+A folder declares that it builds on a sibling folder in its `README.md`, with
+one line linking the sibling's README:
+
+```markdown
+**Builds on:** [daemon-client](../daemon-client/README.md)
+```
+
+Use it when one folder's pages are defined in terms of the other's, as the
+monitor-client calls relay daemon-client messages. The declaration runs one
+way, and two folders never declare each other. The declared folder gains only
+replies: `daemon-client/request-focus.md` may link to
+`monitor-client/request-focus.md` because that page links to it first. A
+reply cannot open a path that the declaration has not already opened.
+
+Links run straight up or straight down. Only a sideways link, to a cousin in
+another branch, goes through that branch's README:
 `protocol/daemon-client/request-open.md` links to
 `protocol/monitor-client/README.md`, never to a page inside `monitor-client/`.
-Siblings may link to each other in both directions. Everywhere else links run
-one way; two documents that each need the other share material that belongs in
-their parent.
 
 Links that leave the tree are unrestricted: `/GLOSSARY.md`, ADRs, crate
 READMEs, source files, issues and external pages.
@@ -109,10 +133,12 @@ Each Mermaid diagram answers one question:
 3. Below it, keep a table with one row per node giving its purpose, so the
    diagram itself carries only names.
 
-`docs/crate-relationships.md` is the worked example.
+`docs/for-humans/architecture/crate-relationships.md` is the worked example.
 
 ## Before finishing
 
 Read each changed document from top to bottom as its reader. Every term is
 introduced above its first use, every link is one the family tree allows, and
 `/README.md` still reaches every document you added or moved.
+`python3 docs/for-humans/check.py` checks the tree, the tables, the audiences,
+the declarations and the links; CI runs it on every change to a Markdown file.

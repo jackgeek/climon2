@@ -34,7 +34,7 @@ use windows_sys::Win32::{
 };
 
 /// How a qualified host creates, feeds and closes the pseudoconsole it gives
-/// its shell (docs/windows-qualification.md, "Host models").
+/// its shell (docs/for-humans/windows/qualification.md, "Host models").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HostModel {
     /// Windows Terminal: creation flags `0x08` (grapheme width), keys in

@@ -17,15 +17,15 @@ reference in the same change.
    Distinguish agreed but unimplemented behavior from shipped behavior. Mark
    unresolved details explicitly and link their decision tickets.
 
-2. Maintain `docs/protocol/README.md` as the entry point. Explain which programs
+2. Maintain `docs/for-humans/protocol/README.md` as the entry point. Explain which programs
    communicate, the basic framing and message structure for each interface,
    startup and capability negotiation, and how to read the message reference.
-   Link the domain glossary, technical terms, and a separate Markdown page for
-   every message type. Group the message index by interface and show each
-   message's direction and purpose. Keep message-specific details on their
-   own pages.
+   Link the domain glossary, technical terms, and each interface folder's
+   `README.md`. Keep message-specific details on their own pages.
 
-3. Maintain message pages under `docs/protocol/<interface>/`. Use distinct
+3. Maintain each interface folder `docs/for-humans/protocol/<interface>/`. Its
+   `README.md` holds the interface's shared rules and indexes every message
+   page, showing each message's direction and purpose. Use distinct
    filenames for requests, responses, and events where names overlap. When one
    message type carries several operations, give each operation its own page.
    Each page must explain:
@@ -39,10 +39,13 @@ reference in the same change.
    - Capability requirements, compatible extensions, and unknown-field behavior.
    - A valid example and any binary payload explained separately.
    - Links to related messages and the specification that owns the contract.
+     Link related messages in the same interface directly. Link another
+     interface through its `README.md`, unless this interface's README
+     declares that it builds on that one.
 
 4. Maintain domain concepts in root `GLOSSARY.md`, the single domain glossary
    for this repository. Invoke `domain-modeling` when changing those concepts.
-   Define non-intuitive technical vocabulary in `docs/protocol/TERMS.md`;
+   Define non-intuitive technical vocabulary in `docs/for-humans/protocol/TERMS.md`;
    keep wire schemas and implementation details in the message reference.
    Link both references from the overview and every message page. At the first
    prose occurrence of each domain term, non-intuitive technical term, or
@@ -58,8 +61,8 @@ reference in the same change.
    guarantees where relevant. Preserve the distinction between protocol support
    for future plugins and an implemented plugin system.
 
-6. Verify completeness. Every documented message and operation is reachable
-   from the overview; relative links resolve; examples match the stated
+6. Verify completeness. Every documented message and operation is indexed in
+   its interface's `README.md`; `python3 docs/for-humans/check.py` passes; examples match the stated
    contract; and fields, limits, ordering, and failure behavior agree with the
    owning specification and implementation status. Read each changed document
    from top to bottom: verify first-use term links appear before subsequent

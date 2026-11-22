@@ -16,7 +16,7 @@ climon2-core = { path = "../crates/climon2-core" }
 climon2-platform = { path = "../crates/climon2-platform" }
 
 # Windows runs the source check, the native-only quality gate and dist
-# (docs/windows-quality.md); the other release commands need the Unix
+# (docs/for-humans/windows/quality.md); the other release commands need the Unix
 # installer.
 [target.'cfg(unix)'.dependencies]
 climon2-install = { version = "0.1.0", path = "../crates/climon2-install" }

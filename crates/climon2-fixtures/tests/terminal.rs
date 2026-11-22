@@ -216,7 +216,7 @@ fn generic_terminal_cursor_reports_position_visibility_shape_and_blink() {
     isolation.assert_clean();
 }
 
-/// Documented exact bytes of the monitor's host reports (`docs/protocol/monitor-host`).
+/// Documented exact bytes of the monitor's host reports (`docs/for-humans/protocol/monitor-host`).
 const WORKING: &[u8] = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
 const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
 

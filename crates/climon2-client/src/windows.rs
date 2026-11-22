@@ -1,5 +1,5 @@
 //! The client on Windows so far: kill mode runs as on Unix (#318); ordinary
-//! attach needs the console rules (docs/windows-lifecycle.md, "Client
+//! attach needs the console rules (docs/for-humans/windows/lifecycle.md, "Client
 //! console"), which arrive with #321.
 use crate::embedded;
 use climon2_core::{keys::ClientSettings, metadata::SessionMetadata};

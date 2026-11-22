@@ -1,6 +1,6 @@
 //! The session's retained progress: OSC 9;4 reports normalized into the
 //! current `progress-v1` value, after the agreed
-//! [source normalization](../../../../docs/protocol/daemon-client/core-v1.md#source-normalization).
+//! [source normalization](../../../../docs/for-humans/protocol/daemon-client/README.md#source-normalization).
 //! Progress never requests attention.
 use climon2_core::wire::{Percent, Progress, ProgressState};
 

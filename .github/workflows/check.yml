@@ -9,7 +9,7 @@ on:
       - "**"
       - "!**/*.md"
       - "!LICENSE"
-      - "docs/protocol/**/*.md"
+      - "docs/for-humans/protocol/**/*.md"
   pull_request:
     # ready_for_review re-runs checks when a draft integration PR is marked ready.
     types: [opened, synchronize, reopened, ready_for_review]
@@ -17,7 +17,7 @@ on:
       - "**"
       - "!**/*.md"
       - "!LICENSE"
-      - "docs/protocol/**/*.md"
+      - "docs/for-humans/protocol/**/*.md"
   workflow_call:
     inputs:
       mutate_all:
@@ -32,7 +32,7 @@ permissions:
 # on Linux and Windows, and macOS only builds its release artifact.
 #
 # The Windows Test and Quality jobs run unless the repository variable
-# CLIMON2_WINDOWS_TESTS is "off" (docs/windows-quality.md). Off, it still runs
+# CLIMON2_WINDOWS_TESTS is "off" (docs/for-humans/windows/quality.md). Off, it still runs
 # for release tags and for changes that `cargo xtask windows-changed` says
 # touch Windows-only code. The neutral job's Windows leg and the Windows Dist
 # job always run.
@@ -80,7 +80,7 @@ jobs:
           fi
       - uses: ./.github/actions/controlled-bash
       - name: Check native interface specification declarations and examples
-        run: python3 docs/protocol/monitor-client/check.py
+        run: python3 docs/for-humans/protocol/monitor-client/check.py
       - name: Run formatting, lint and real-terminal tests
         run: |
           cargo xtask fixtures-check
@@ -139,7 +139,7 @@ jobs:
         with:
           key: windows-2025-test
       # The cross-account test logs on as a second, non-administrator account
-      # (docs/windows-quality.md, "Facts only CI can show"); it fails on CI
+      # (docs/for-humans/windows/quality.md, "Facts only CI can show"); it fails on CI
       # without one.
       - name: Create the second account the cross-account test logs on as
         shell: powershell
@@ -226,7 +226,7 @@ jobs:
           CLIMON2_QUALITY_PYTHON: ${{ steps.python.outputs.python-path }}
         run: cargo xtask setup-quality
       # The cross-account test logs on as a second, non-administrator account
-      # (docs/windows-quality.md, "Facts only CI can show"); it fails on CI
+      # (docs/for-humans/windows/quality.md, "Facts only CI can show"); it fails on CI
       # without one.
       - name: Create the second account the cross-account test logs on as
         shell: powershell
@@ -241,7 +241,7 @@ jobs:
           [IO.File]::AppendAllText($env:GITHUB_ENV, "CLIMON2_SECOND_ACCOUNT=c2second`nCLIMON2_SECOND_ACCOUNT_PASSWORD=$password`n")
       # On Windows the gate first runs the sentinel and the killed-process coverage
       # probe. A release mutates every registered Windows file; its time is recorded
-      # against the 90-minute budget in docs/windows-quality.md.
+      # against the 90-minute budget in docs/for-humans/windows/quality.md.
       - name: Qualify only Windows-exclusive source (shared source runs on Linux)
         env:
           MUTATE_ALL: ${{ inputs.mutate_all || false }}
@@ -362,8 +362,8 @@ jobs:
           name: release-dist-${{ matrix.platform }}
           path: target/dist/*
           if-no-files-found: error
-  # The Windows release zip (docs/windows-distribution.md). It runs on every run,
-  # whatever CLIMON2_WINDOWS_TESTS says (docs/windows-quality.md, "The switch"),
+  # The Windows release zip (docs/for-humans/windows/distribution.md). It runs on every run,
+  # whatever CLIMON2_WINDOWS_TESTS says (docs/for-humans/windows/quality.md, "The switch"),
   # and tests the dist's own checks first. Publishing the zip comes with #330.
   windows-dist:
     name: Windows dist / windows-2025

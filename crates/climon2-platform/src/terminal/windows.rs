@@ -1,6 +1,6 @@
 //! Terminals on Windows, so far only what `exec --headless` and its detached
 //! daemon need (#317). The console rules for `exec` and `attach`
-//! (docs/windows-lifecycle.md, "Client console") arrive with #321.
+//! (docs/for-humans/windows/lifecycle.md, "Client console") arrive with #321.
 use climon2_core::protocol::TerminalSize;
 use std::{fs::File, io};
 

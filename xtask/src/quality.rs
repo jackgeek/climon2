@@ -782,7 +782,7 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     verify_llvm_cov()?;
     verify_tools(root)?;
     if scope == Scope::Native && cfg!(windows) {
-        // The Windows tooling has no history behind it (docs/windows-quality.md): prove
+        // The Windows tooling has no history behind it (docs/for-humans/windows/quality.md): prove
         // mutants really run and killed processes keep coverage before trusting either.
         sentinel(root)?;
         killed_coverage_probe(root)?;

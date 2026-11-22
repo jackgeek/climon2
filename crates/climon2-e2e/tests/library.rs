@@ -76,7 +76,7 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
 
 /// Present, and within the default reservations: every requirement fits the
 /// default `monitor.limits` reservations
-/// (docs/monitor-operational-limits.md), so a default-configured monitor
+/// (docs/for-humans/behaviour/monitor/operational-limits.md), so a default-configured monitor
 /// admits the release without raising a reservation. Resources every
 /// instance needs (owner stack, local allocation, notification descriptor)
 /// are nonzero; workers need stacks.
