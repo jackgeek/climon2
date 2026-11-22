@@ -16,12 +16,22 @@ replaces it with the CLI's own version's `climon2-monitor`. Usage errors
 startup preserves 126/127.
 
 On Windows the CLI so far answers help, version and usage errors (#315) and
-runs `list` (#316) through the same general-log dispatch as Unix. Every other
-subcommand fails with 125 from `src/windows.rs`, before touching the home,
-until its Windows seams exist; the subcommands themselves are behind
-`src/unix.rs`. `tests/list_windows.rs` proves `list` with no sessions, the
-reclaim of a stale session whose daemon has exited, the sessions it keeps,
-and a live session listed to the width of a pinned-ConPTY console.
+runs `list` (#316) and `exec --headless` (#317) through the same general-log
+dispatch as Unix. Every other subcommand, ordinary `exec` included, fails
+with 125 from `src/windows.rs`, before touching the home, until its Windows
+seams exist; the others are behind `src/unix.rs`, which also holds `exec`'s
+Unix-only hand-off pieces (exec of the client, stopping a daemon).
+`tests/list_windows.rs` proves `list` with no sessions, the reclaim of a
+stale session whose daemon has exited, the sessions it keeps, and a live
+session listed to the width of a pinned-ConPTY console.
+`tests/exec_windows.rs` runs a version folder of the CLI, daemon and pinned
+ConPTY outside cargo's job (which refuses breakaway): a headless session is
+listed as detached with its daemon in no job and ends with its command,
+whose full status the daemon logs; the command sees the terminal identity
+and its session ID at 80x24; a missing ConPTY file or a job the daemon
+cannot leave is 125 with no daemon left; a command that cannot start is
+126. It needs the daemon binary built first (`cargo test -p climon2-daemon
+--test windows`).
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the

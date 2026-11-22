@@ -95,6 +95,14 @@ the harness clears any instruction to ignore Ctrl+C that the test process
 inherited before it starts the shell; otherwise the shell would inherit it
 too.
 
+cargo runs every test inside a job of its own that refuses breakaway, so a
+`c2 exec` started from a test would always exit 125. The harness therefore
+also runs a program outside the test's job: it starts it as a child of the
+nearest ancestor process that is in no job, optionally inside jobs of the
+shapes above, outer job first
+([#317](https://github.com/jackgeek/climon2/issues/317)). Headless `exec`'s
+tests use it for every job shape.
+
 ## Shell profiles
 
 | Shell | Start-up | Prompt |

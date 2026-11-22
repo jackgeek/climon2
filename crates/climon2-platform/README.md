@@ -1,9 +1,10 @@
 # climon2-platform
 
 Shared macOS, Linux and Windows seams (ADR 0003). `home`, `private`,
-`logging` (all but its stderr capture), `runtime`, `connection`, `waiting`,
-`process` (identity only) and `presentation` build on Windows so far (see
-[Windows](#windows)); every other seam is declared for Unix only. Neutral contracts remain in `climon2-core`. No runtime
+`logging`, `runtime`, `connection`, `waiting`, `process` (identity only),
+`presentation`, `peer`, `daemon`, `pty` and `terminal` (a daemon's signals
+only) build on Windows so far (see [Windows](#windows)); `library` and
+`notifier` are declared for Unix only. Neutral contracts remain in `climon2-core`. No runtime
 dispatch or shell-specific logic.
 
 ## Runtime and peers
@@ -259,8 +260,9 @@ I/O and transport"; docs/windows-lifecycle.md, "Identity and liveness"):
   inherits its one ACE. The socket-path budget is 107 bytes; over it,
   `socket_path` and `bind` fail, and `exec`'s own failure is 125.
   `SocketStream` is `socket2::Socket`, and `bind` returns a `SocketListener`
-  whose `accept` returns the stream and its address. Windows has no peer
-  credentials, so there is no `peer` seam. `validate_stale_socket` accepts a
+  whose `accept` returns the stream and its address, and whose
+  `set_nonblocking` is std's. `SocketFreshness` does nothing: nothing ages
+  `%LOCALAPPDATA%`. `validate_stale_socket` accepts a
   missing path and a reparse point tagged `IO_REPARSE_TAG_AF_UNIX` (std
   reports a socket as a regular file), and refuses anything else, links and
   junctions included.
@@ -279,6 +281,45 @@ I/O and transport"; docs/windows-lifecycle.md, "Identity and liveness"):
 - `src/presentation/windows.rs`: `local_datetime` uses the system's offset
   for the instant; `columns` is the visible console window's width, or 80
   when stdout is not a console.
+
+For the session daemon and headless `exec` (#317; docs/windows-lifecycle.md,
+"Starting the daemon" and "Starting the command"):
+
+- `src/daemon/windows.rs`: `spawn` starts the daemon with one
+  `CreateProcessW`: detached, breaking away only when the caller is in a
+  job, suspended until `IsProcessInJob` shows it left every job, with null
+  standard handles, its own folder as working directory, exactly the
+  variables set on the `Command`, and a one-entry handle list holding the
+  readiness pipe, whose handle value it gets as `--readiness-fd`. A spawn
+  refused in a job, or a daemon still in one, fails ("cannot leave the job")
+  and the daemon is ended. The readiness reply is the same bytes as on Unix,
+  read on a thread of its own until `STARTUP_TIMEOUT`.
+  `ReadinessWriter::from_inherited` takes the handle value and clears its
+  inheritance.
+- `src/pty/windows.rs`: `ConPty::load` loads `conpty.dll` by full path from
+  a folder, its imports limited to that folder and System32, and refuses a
+  folder without `OpenConsole.exe`. `open` creates the session job
+  (`BREAKAWAY_OK` and `KILL_ON_JOB_CLOSE`) and the pseudoconsole;
+  `Opened::start` sets the given variables in this process, clears an
+  inherited "ignore Ctrl+C", starts the command with one `CreateProcessW`
+  carrying the pseudoconsole and the job, inheritance off and null standard
+  handles, and releases the pseudoconsole. `Hosted` reads output and writes
+  input through one thread each and a bounded channel; `output_ended` is
+  `ERROR_BROKEN_PIPE`. `try_wait` reads the leader's handle; `close`, `end`
+  (the job terminated with `0xC000013A`, then the leader's status) and
+  `finish` are hang-up's steps.
+- `src/peer/windows.rs`: `accept` and `authenticate` check nothing: Windows
+  AF_UNIX has no peer credentials, and the private runtime directory keeps
+  other users out.
+- `src/terminal/windows.rs`: a detached daemon's `Signals`, which never
+  report a termination signal; console access fails as unsupported until
+  #321.
+- `src/logging/windows.rs`: `capture_stderr` makes a pipe the standard error
+  handle and copies it into the log until dropped.
+
+`tests/pty_windows.rs` proves the PTY seam against the pinned ConPTY that
+`climon2-test-term` fetches and verifies; headless `exec`'s tests in
+`climon2-cli` prove the daemon's start.
 
 ## Behavioral evidence
 

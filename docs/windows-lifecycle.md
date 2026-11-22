@@ -3,10 +3,18 @@
 This document says how climon2's processes start, run and end on Windows: the
 daemon, the session's command, the hand-offs between climon2's own programs,
 the client's console, and how a session is identified and cleaned up. It is
-for contributors. Only the launcher's hand-off (see [Hand-offs](#hand-offs);
-[#315](https://github.com/jackgeek/climon2/issues/315)) and the daemon's
+for contributors. Built so far: the launcher's hand-off (see [Hand-offs](#hand-offs);
+[#315](https://github.com/jackgeek/climon2/issues/315)), the daemon's
 identity and liveness check (see [Identity and liveness](#identity-and-liveness);
-[#316](https://github.com/jackgeek/climon2/issues/316)) are built so far. It was
+[#316](https://github.com/jackgeek/climon2/issues/316)), and starting the
+daemon, its session job and its command for `exec --headless` (see
+[Starting the daemon](#starting-the-daemon) and
+[Starting the command](#starting-the-command);
+[#317](https://github.com/jackgeek/climon2/issues/317)). Command resolution
+is not built yet: the command line's first token is resolved by
+`CreateProcessW` itself, and any command that cannot start makes `exec` exit
+126. The daemon has hang-up's steps, but nothing on Windows hangs a session
+up yet. It was
 agreed in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 using the VM measurements from
@@ -57,10 +65,16 @@ checked at run time. CI qualifies on `windows-2025`, which shares build
   in a job. Never `CREATE_NEW_PROCESS_GROUP`, which would make the command
   ignore Ctrl+C, and never `CREATE_NEW_CONSOLE`, which Windows 11 can hand to
   Windows Terminal as a new window.
-- Standard handles are `NUL`. The working directory is the daemon's own
-  version folder. The environment is inherited.
-- Readiness comes back on an inheritable pipe, limited to the child by
-  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, whose value is passed as an argument.
+- Standard handles are null, which Rust treats as `NUL`: only the readiness
+  pipe may be inherited, so there is no `NUL` handle to pass. The working
+  directory is the daemon's own version folder. The environment is the
+  session environment `exec` builds, as on Unix: the CLI's own, with the
+  session's variables set and the client startup envelope dropped.
+- Readiness comes back on an inheritable pipe, limited to the child by a
+  one-entry `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, whose value is passed as an
+  argument.
+- The daemon starts suspended (`CREATE_SUSPENDED`) and runs only after the
+  job check below, so a refused daemon never does anything.
 
 A detached session must survive its host terminal closing. Breakaway only
 leaves the innermost job, and an outer job can still hold the daemon, so the
