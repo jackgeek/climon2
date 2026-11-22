@@ -156,7 +156,13 @@ Options), or a job waits until it wakes.
 The Linux gate and the Windows gate run on the same PC, the Windows one
 inside the VM, and they run at the same time. So the workflow runs each of
 them with 6 mutation workers, set in `quality.yml`, to keep the PC from being
-overloaded. This was the owner's decision on 2026-11-22. Each worker builds
-and tests the workspace on its own, and Cargo inside a worker can still use
-every core it sees, so 6 workers is a cap on concurrent mutants, not on
-cores. Change the two values in `quality.yml` to resize them.
+overloaded. This was the owner's decision on 2026-11-22.
+
+Each worker builds and tests the workspace on its own. Without a limit,
+each worker's Cargo would use every core, and timing tests failed on both
+gates. So `CLIMON2_MUTATION_WORKER_JOBS`, also set in `quality.yml`, gives
+each worker's Cargo 2 build jobs and 2 test threads. The gate measures its
+stage timeouts under the same limit. The gate's own first build and test
+run are not limited.
+
+Change the values in `quality.yml` to resize either.
