@@ -307,6 +307,10 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
     // Each worker gets 2 Cargo build jobs and 2 test threads (owner decision, 2026-11-22).
     for name in ["linux", "windows"] {
         assert!(job(&quality, name).contains(&"      CLIMON2_MUTATION_WORKER_JOBS: \"2\""));
+        // And the whole gate, its own baseline included, 8 of each, so the two gates
+        // together stay within half the PC's 32 threads.
+        assert!(job(&quality, name).contains(&"      CARGO_BUILD_JOBS: \"8\""));
+        assert!(job(&quality, name).contains(&"      RUST_TEST_THREADS: \"8\""));
     }
     for workflow_name in ["check.yml", "release.yml", "measure.yml"] {
         assert!(
