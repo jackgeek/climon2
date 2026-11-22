@@ -68,8 +68,8 @@ fn a_prepared_folder_carries_exactly_the_private_descriptor_and_preparing_again_
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("logs");
 
-    private::private_directory(&folder).unwrap();
-    private::private_directory(&folder).unwrap();
+    prepare(&folder);
+    prepare(&folder);
 
     let user = user_sid();
     assert_eq!(
@@ -106,7 +106,7 @@ fn a_folder_with_the_inherited_descriptor_is_refused_and_left_unrepaired() {
 fn a_folder_with_an_extra_ace_is_refused_and_left_unrepaired() {
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("logs");
-    private::private_directory(&folder).unwrap();
+    prepare(&folder);
     let granted = Command::new("icacls.exe")
         .arg(&folder)
         .args(["/grant", "*S-1-1-0:(R)"])
@@ -136,7 +136,7 @@ fn a_file_standing_in_for_a_folder_is_refused() {
 fn a_junction_or_directory_link_standing_in_for_a_folder_is_refused() {
     let parent = tempfile::tempdir().unwrap();
     let target = parent.path().join("target");
-    private::private_directory(&target).unwrap();
+    prepare(&target);
     for (name, link) in [
         ("junction", junction as fn(&Path, &Path)),
         ("link", directory_link),
@@ -198,6 +198,13 @@ fn a_junction_or_directory_link_standing_in_for_logs_is_refused_and_pruning_leav
     }
 }
 
+/// Prepares `folder`, which must succeed; a refusal shows what was found.
+fn prepare(folder: &Path) {
+    if let Err(error) = private::private_directory(folder) {
+        panic!("{error}; found {}, user {}", descriptor(folder), user_sid());
+    }
+}
+
 fn assert_unsafe(error: &io::Error, folder: &Path, problem: &str) {
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert_eq!(
@@ -246,6 +253,8 @@ fn powershell(script: &str, environment: &[(&str, &OsStr)]) -> String {
             "-Command",
             script,
         ])
+        // A PowerShell 7 parent's module path would load its own modules here.
+        .env_remove("PSModulePath")
         .envs(environment.iter().copied())
         .output()
         .unwrap();
