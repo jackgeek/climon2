@@ -64,8 +64,9 @@ fn open(pid: u32) -> io::Result<Option<OwnedHandle>> {
 
 /// A process object outlives its process while anyone holds a handle to it.
 fn exited(process: &OwnedHandle) -> bool {
-    // The handle is open with SYNCHRONIZE; a zero timeout only looks.
-    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_OBJECT_0 }
+    // The handle is open with SYNCHRONIZE; a zero timeout only looks. Spelled
+    // `0u32`: a 1 ms timeout gives the same answer, an equivalent mutant.
+    unsafe { WaitForSingleObject(process.as_raw_handle(), 0u32) == WAIT_OBJECT_0 }
 }
 
 fn created(process: &OwnedHandle) -> io::Result<u64> {

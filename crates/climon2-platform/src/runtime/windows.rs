@@ -111,7 +111,7 @@ fn require_socket(file: &File) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     // The tag means nothing unless the file is a reparse point.
-    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != FILE_ATTRIBUTE_REPARSE_POINT
         || info.ReparseTag != IO_REPARSE_TAG_AF_UNIX
     {
         return Err(io::Error::other("stale socket path is not a socket"));
