@@ -191,6 +191,20 @@ client reads key-down records only: key-up records are ignored. Resize
 arrives as `WINDOW_BUFFER_SIZE_EVENT`. Close, logoff and shutdown end the
 client with 129. The monitor uses the same console rules.
 
+With VT input on, the console turns the host's focus reports into the
+typed bytes `CSI I` and `CSI O` once the program reading it turns focus
+reporting on (`CSI ? 1004 h`), and drops them until then. It makes no focus
+records in this mode; they come only with VT input off. So a session that
+turns focus reporting on, and the monitor, which always does, read the
+host's focus reports as on Unix, under both host models
+([#325](https://github.com/jackgeek/climon2/issues/325)).
+
+The session's pseudoconsole starts its output with its own negotiation with
+a host: `ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h` and `CSI ? 9001 h`. The daemon
+is no host, so it drops these from the start of the output, and neither its
+clients nor the screen it restores for them ever see them. From the
+command's first output on, everything passes unchanged.
+
 Output adds `ENABLE_VIRTUAL_TERMINAL_PROCESSING` and
 `DISABLE_NEWLINE_AUTO_RETURN`, and both code pages are UTF-8 while the client
 runs. Every exit path, a panic included, restores both modes and both code
