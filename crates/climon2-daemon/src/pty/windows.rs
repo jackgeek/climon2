@@ -3,11 +3,15 @@
 //!
 //! The command runs in a pseudoconsole of the bundled ConPTY loaded from the
 //! daemon's own folder, inside the session job; the platform seam does the
-//! Windows work. `CreateProcessW` itself reports a command that cannot
-//! start, so there is no exec helper and no startup socket as on Unix.
+//! Windows work. The daemon resolves the command through the session's
+//! `PATH` and `PATHEXT` (#322), and `CreateProcessW` reports a command that
+//! cannot start, so there is no exec helper and no startup socket as on Unix.
 use crate::{args::Options, startup::Failure};
 use climon2_core::{protocol::TerminalSize, session::TERMINAL_IDENTITY, wire::CommandResult};
-use climon2_platform::pty::{self, ConPty, Hosted};
+use climon2_platform::{
+    command::{self, Refusal},
+    pty::{self, ConPty, Hosted},
+};
 use std::{ffi::OsString, io, path::PathBuf, time::Duration};
 
 pub(crate) struct Pty {
@@ -22,8 +26,10 @@ impl Pty {
             .map_err(|_| Failure::own("the bundled ConPTY is missing or cannot be loaded"))?;
         let opened = pty::open(conpty, options.size.rows, options.size.cols)
             .map_err(|_| Failure::own("cannot create the command's pseudoconsole"))?;
+        let launch = command::launch(&options.command, &options.arguments, &options.cwd)
+            .map_err(|refusal| Failure::launch(launch_status(refusal)))?;
         let hosted = opened
-            .start(&argv(options), &options.cwd, &environment(options))
+            .start(&launch, &options.cwd, &environment(options))
             .map_err(|error| {
                 tracing::error!(%error, "the command cannot start");
                 Failure::launch(126)
@@ -98,6 +104,16 @@ impl Pty {
     }
 }
 
+/// 127 for a command not found, as on Unix. The CLI refuses a batch argument
+/// `cmd.exe` cannot represent before starting the daemon, so here it is only
+/// a command that cannot be executed.
+fn launch_status(refusal: Refusal) -> u32 {
+    match refusal {
+        Refusal::NotFound => 127,
+        Refusal::Unrepresentable => 126,
+    }
+}
+
 /// A leader's status is recorded in full, as Windows reports it, and logged.
 fn exited(code: u32) -> CommandResult {
     tracing::info!(status = format!("{code:#010x}"), "command exited");
@@ -108,12 +124,6 @@ fn own_folder() -> Result<PathBuf, Failure> {
     let executable =
         std::env::current_exe().map_err(|_| Failure::own("cannot locate daemon executable"))?;
     Ok(executable.with_file_name(""))
-}
-
-fn argv(options: &Options) -> Vec<OsString> {
-    std::iter::once(options.command.clone())
-        .chain(options.arguments.iter().cloned())
-        .collect()
 }
 
 /// The terminal identity and the session ID, set in the daemon's own

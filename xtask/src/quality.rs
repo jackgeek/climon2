@@ -94,6 +94,8 @@ const WINDOWS_SUITE: &[&[&str]] = &[
         "--test",
         "pty_windows",
         "--test",
+        "command_windows",
+        "--test",
         "notifier_windows",
         "--test",
         "native_path_windows",
@@ -687,6 +689,7 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/logging/windows.rs")
         | Some("crates/climon2-platform/src/daemon/windows.rs")
         | Some("crates/climon2-platform/src/pty/windows.rs")
+        | Some("crates/climon2-platform/src/command/windows.rs")
         | Some("crates/climon2-daemon/src/pty/windows.rs")
         | Some("crates/climon2-platform/src/library/windows.rs")
         | Some("crates/climon2-platform/src/notifier/windows.rs")
@@ -2399,6 +2402,10 @@ No selected line holds a mutation site; nothing to mutate.
                 cfg!(windows),
             ),
             ("crates/climon2-platform/src/pty/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/command/windows.rs",
+                cfg!(windows),
+            ),
             ("crates/climon2-daemon/src/pty/windows.rs", cfg!(windows)),
             (
                 "crates/climon2-platform/src/library/windows.rs",
