@@ -4,11 +4,11 @@ use climon2_core::{
     },
     wire::{self, ControlRecord, Counter, FatalCode, FrameLimit, Request},
 };
+use climon2_platform::runtime::SocketStream;
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
     net::Shutdown,
-    os::unix::net::UnixStream,
     time::{Duration, Instant},
 };
 
@@ -77,7 +77,7 @@ pub(crate) enum Failure {
 }
 
 pub(crate) struct Connection {
-    stream: UnixStream,
+    stream: SocketStream,
     protocol: Protocol,
     accepted: Instant,
     incoming: Vec<u8>,
@@ -88,7 +88,7 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
-    pub fn new(stream: UnixStream) -> io::Result<Self> {
+    pub fn new(stream: SocketStream) -> io::Result<Self> {
         stream.set_nonblocking(true)?;
         Ok(Self {
             stream,
@@ -367,8 +367,8 @@ mod tests {
     /// and length) and its written count, 8 bytes each on 64-bit targets.
     const SLOT: usize = 32;
 
-    fn connection() -> (Connection, UnixStream) {
-        let (ours, peer) = UnixStream::pair().unwrap();
+    fn connection() -> (Connection, SocketStream) {
+        let (ours, peer) = SocketStream::pair().unwrap();
         (Connection::new(ours).unwrap(), peer)
     }
 
