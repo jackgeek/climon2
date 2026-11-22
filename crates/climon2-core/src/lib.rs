@@ -20,6 +20,7 @@ pub mod selector;
 pub mod session;
 pub mod startup_envelope;
 pub mod title;
+pub mod utf8;
 pub mod wire;
 pub use identity::{ContractError, SessionId, Timestamp, VersionName};
 
