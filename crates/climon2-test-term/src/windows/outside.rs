@@ -234,7 +234,11 @@ fn cargo_starter() -> io::Result<OwnedHandle> {
     let ours = user(current_process()).ok_or_else(io::Error::last_os_error)?;
     let mut ancestors = Vec::new();
     let mut pid = std::process::id();
+    // A reused PID can make parents form a cycle (PID 0 is its own parent).
     while let Some((parent, _)) = processes.get(&pid) {
+        if *parent == pid || ancestors.iter().any(|(seen, _)| seen == parent) {
+            break;
+        }
         let name = processes.get(parent).map_or("?", |(_, name)| name.as_str());
         ancestors.push((*parent, name));
         pid = *parent;
