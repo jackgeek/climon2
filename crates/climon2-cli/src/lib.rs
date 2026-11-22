@@ -6,7 +6,6 @@ mod attach;
 mod exec;
 #[cfg(unix)]
 mod kill;
-#[cfg(unix)]
 pub mod list;
 #[cfg(unix)]
 mod monitor;
@@ -22,7 +21,11 @@ use climon2_core::{
     lifetime::Lifetime,
     selector::Selector,
 };
-use std::ffi::OsString;
+use climon2_platform::{
+    home,
+    logging::{self, LogFile},
+};
+use std::{ffi::OsString, path::Path, time::SystemTime};
 
 /// How the CLI fails: the thin main prints it and exits with its code.
 pub use climon2_core::failure::Failure as Error;
@@ -43,11 +46,8 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
 }
 
 /// The subcommands that need a home; help and version are answered here.
-/// Only Unix runs them so far, so elsewhere nothing reads their arguments.
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "no subcommand runs on Windows yet")
-)]
+/// Only list runs on Windows so far, so there nothing reads the others' arguments.
+#[cfg_attr(not(unix), expect(dead_code, reason = "only list runs on Windows yet"))]
 enum Work {
     Exec(Lifetime, CommandArgs),
     List { json: bool },
@@ -56,10 +56,7 @@ enum Work {
 
 /// Subcommands that another executable of a version folder carries out: the
 /// client attaches or kills, and the monitor monitors.
-#[cfg_attr(
-    not(unix),
-    expect(dead_code, reason = "no subcommand runs on Windows yet")
-)]
+#[cfg_attr(not(unix), expect(dead_code, reason = "only list runs on Windows yet"))]
 enum Handoff {
     Attach(Selector),
     Kill(Selector),
@@ -88,4 +85,27 @@ fn presentation(arguments: &CliArgs) -> String {
         CliArgs::Version => format!("climon2 {}", env!("CARGO_PKG_VERSION")),
         _ => climon2_core::cli::USAGE.to_owned(),
     }
+}
+
+/// Runs `command` inside the invocation's climon2 home, with its general log
+/// as the default subscriber and the `CLIMON2_LOG` filter; a failure is also
+/// logged there.
+fn logged(
+    command: impl FnOnce(&Path, &LogFile, Option<&str>) -> Result<u32, Error>,
+) -> Result<u32, Error> {
+    let home = home::canonical()?;
+    let general = LogFile::general(&home)?;
+    let filter = std::env::var("CLIMON2_LOG").ok();
+    let dispatch = general
+        .dispatch(filter.as_deref())
+        .map_err(|error| Error::from(error).logged(general.path()))?;
+    tracing::dispatcher::with_default(&dispatch, || {
+        logging::prune(&home, SystemTime::now());
+        command(&home, &general, filter.as_deref()).map_err(|error| error.logged(general.path()))
+    })
+}
+
+/// `list`, which never needs a version's client.
+fn list(home: &Path, json: bool) -> Result<u32, Error> {
+    list::run(home, json).map(|()| 0).map_err(Error::from)
 }
