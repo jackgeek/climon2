@@ -532,8 +532,11 @@ fn suite_environment(command: &mut Command) -> &mut Command {
 }
 
 /// Cargo and libtest read their limits from the environment, which the mutator passes on
-/// to every worker.
+/// to every worker. Workers build without debug info: each has its own target folder,
+/// which with debug info nears 8.4 GB on Windows, and the gate's workers together filled
+/// the owner's VM's disk.
 fn worker_limits(command: &mut Command, jobs: Option<OsString>) -> &mut Command {
+    command.env("CARGO_PROFILE_DEV_DEBUG", "0");
     if let Some(jobs) = jobs {
         command
             .env("CARGO_BUILD_JOBS", &jobs)
@@ -2301,7 +2304,7 @@ No selected line holds a mutation site; nothing to mutate.
     }
 
     #[test]
-    fn a_worker_job_limit_caps_each_workers_cargo_build_jobs_and_test_threads() {
+    fn workers_build_without_debug_info_and_a_job_limit_caps_their_cargo() {
         let limits = |jobs: Option<&str>| {
             let mut command = Command::new("cargo");
             worker_limits(&mut command, jobs.map(OsString::from));
@@ -2310,18 +2313,14 @@ No selected line holds a mutation site; nothing to mutate.
                 .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(limits(None), []);
+        let set = |name: &str, value: &str| (OsString::from(name), Some(OsString::from(value)));
+        assert_eq!(limits(None), [set("CARGO_PROFILE_DEV_DEBUG", "0")]);
         assert_eq!(
             limits(Some("2")),
             [
-                (
-                    OsString::from("CARGO_BUILD_JOBS"),
-                    Some(OsString::from("2"))
-                ),
-                (
-                    OsString::from("RUST_TEST_THREADS"),
-                    Some(OsString::from("2"))
-                ),
+                set("CARGO_BUILD_JOBS", "2"),
+                set("CARGO_PROFILE_DEV_DEBUG", "0"),
+                set("RUST_TEST_THREADS", "2"),
             ]
         );
     }

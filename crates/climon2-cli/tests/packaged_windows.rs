@@ -4,7 +4,15 @@
 //! shows the session, `c2 attach` restores its screen, and `exit 7` in the
 //! session reaches the outer shell.
 //!
-//! The product comes from the release zip named by `CLIMON2    let [session] = home.sessions().try_into().unwrap();E2E_ARCHIVE`,
+//! #324: `WIN-03`, the three job shapes (qualification.md, "Host models").
+//! From a shell in a job that allows breakaway, `exec` starts a session that
+//! survives the host. From one in a job that refuses it, and through
+//! `Start-Process -Wait` from each PowerShell, `exec` exits 125 and leaves no
+//! session. Also the Windows forms of two Unix scenarios: nested `pwsh`
+//! sessions, whose inner daemon leaves the outer session's job, and the
+//! refusal of a session attaching to itself.
+//!
+//! The product comes from the release zip named by `CLIMON2_E2E_ARCHIVE`,
 //! as the Windows Test job builds it, or else from this build's binaries in
 //! the same layout. It writes the `current` file the launcher reads itself;
 //! installing with `install.ps1` is the Windows Archive job's (#329).
@@ -16,7 +24,9 @@
 #![cfg(windows)]
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Terminal, controlled_pwsh, rerun_outside};
+use climon2_test_term::{
+    ConPty, HostModel, HostSettings, JobShape, Options, Terminal, controlled_pwsh, rerun_outside,
+};
 use portable_pty::CommandBuilder;
 use std::{
     env, fs,
@@ -25,7 +35,12 @@ use std::{
     process::Command,
     time::Duration,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+use windows_sys::Win32::System::{
+    JobObjects::IsProcessInJob,
+    Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+    },
+};
 
 climon2_test_term::outside_relay!();
 
@@ -203,6 +218,46 @@ fn terminate(pid: u32) {
     }
 }
 
+/// Whether the running process `pid` is in any job.
+fn in_any_job(pid: u32) -> bool {
+    // Opening by PID has no preconditions.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    assert!(!raw.is_null(), "process {pid} is not running");
+    // A new handle, owned by nothing else.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut in_job = 1;
+    // The handle is open with query access; the call writes one BOOL.
+    assert_ne!(
+        unsafe { IsProcessInJob(process.as_raw_handle(), std::ptr::null_mut(), &mut in_job) },
+        0
+    );
+    in_job != 0
+}
+
+/// Windows PowerShell 5.1, which every Windows 11 has, by absolute path.
+fn windows_powershell() -> PathBuf {
+    Path::new(&env::var_os("SystemRoot").unwrap())
+        .join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
+/// `shell` at the prompt `OUTER> `, hosted under the Windows Terminal model
+/// in a job of `job`'s shape.
+fn host(package: &Package, home: &Home, shell: &Path, job: JobShape) -> Terminal {
+    let settings = HostSettings {
+        model: HostModel::WindowsTerminal,
+        job,
+    };
+    let command = home.pwsh(package, shell, "OUTER");
+    let mut terminal =
+        Terminal::spawn_hosted(command, 30, 120, Options::default(), settings).unwrap();
+    wait(&mut terminal, home, "OUTER> ");
+    terminal
+}
+
+/// Typed in a hosted shell: a headless session running `cmd`, which waits
+/// for input that never comes, then the status `exec` exited with.
+const HEADLESS_EXEC: &str = "c2 exec --headless -- cmd /d; \"EXEC-STATUS=$LASTEXITCODE\"";
+
 /// The shell profile's start-up, with the prompt `<name>> `, no line
 /// predictions (which would show earlier commands) and no saved history.
 /// The prompt is put together when shown, so a typed command that names it
@@ -322,6 +377,199 @@ fn pwsh_from_pwsh_detaches_lists_reattaches_restored_and_exits_seven() {
         "{}",
         terminal.screen()
     );
+    drop(terminal);
+    assert!(home.sessions().is_empty());
+}
+
+/// `WIN-03`: from a shell in a job that allows breakaway, `exec` succeeds,
+/// and the session survives the host ending every process in that job.
+#[test]
+fn from_a_job_that_allows_breakaway_exec_starts_a_session_that_survives_the_host() {
+    if rerun_outside(
+        "from_a_job_that_allows_breakaway_exec_starts_a_session_that_survives_the_host",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let Some(pwsh) = controlled_pwsh() else {
+        return;
+    };
+    let (package, home) = (Package::new(), Home::new());
+    let mut terminal = host(&package, &home, &pwsh, JobShape::AllowsBreakaway);
+    enter(&mut terminal, HEADLESS_EXEC);
+    wait(&mut terminal, &home, "EXEC-STATUS=0");
+    // Dropping the host closes its job, which ends every process in it.
+    drop(terminal);
+    let [session] = home.sessions().try_into().unwrap();
+    assert_eq!(process::is_same_daemon(&session).ok(), Some(true));
+    assert!(!in_any_job(session.daemon_pid));
+}
+
+/// `WIN-03`: from a shell in a job that refuses breakaway, `exec` exits 125
+/// and leaves no session.
+#[test]
+fn from_a_job_that_refuses_breakaway_exec_exits_125() {
+    if rerun_outside("from_a_job_that_refuses_breakaway_exec_exits_125", OUTSIDE) {
+        return;
+    }
+    let Some(pwsh) = controlled_pwsh() else {
+        return;
+    };
+    let (package, home) = (Package::new(), Home::new());
+    let mut terminal = host(&package, &home, &pwsh, JobShape::RefusesBreakaway);
+    enter(&mut terminal, HEADLESS_EXEC);
+    wait(&mut terminal, &home, "EXEC-STATUS=125");
+    assert!(
+        terminal
+            .screen()
+            .replace('\n', "")
+            .contains("cannot leave the job"),
+        "{}",
+        terminal.screen()
+    );
+    assert!(home.sessions().is_empty());
+}
+
+/// `WIN-03`: `c2` run through `Start-Process -Wait`, which puts it in a job
+/// that refuses breakaway, exits 125 and leaves no session, from `pwsh` and
+/// from Windows PowerShell 5.1.
+#[test]
+fn through_start_process_wait_from_each_powershell_exec_exits_125() {
+    if rerun_outside(
+        "through_start_process_wait_from_each_powershell_exec_exits_125",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let Some(pwsh) = controlled_pwsh() else {
+        return;
+    };
+    for shell in [pwsh, windows_powershell()] {
+        let (package, home) = (Package::new(), Home::new());
+        let mut terminal = host(&package, &home, &shell, JobShape::None);
+        enter(
+            &mut terminal,
+            "$c2 = Start-Process -Wait -PassThru -NoNewWindow c2 \
+             -ArgumentList 'exec','--headless','--','cmd','/d'; \
+             \"EXEC-STATUS=$($c2.ExitCode)\"",
+        );
+        wait(&mut terminal, &home, "EXEC-STATUS=125");
+        assert!(
+            terminal
+                .screen()
+                .replace('\n', "")
+                .contains("cannot leave the job"),
+            "{}: {}",
+            shell.display(),
+            terminal.screen()
+        );
+        assert!(home.sessions().is_empty(), "{}", shell.display());
+    }
+}
+
+/// The Windows form of the nested bash scenario: `c2 exec pwsh` inside a
+/// session starts a second session, at depth 2, whose daemon is in no job,
+/// so it left the outer session's; each session's status reaches the shell
+/// that started it.
+#[test]
+fn nested_pwsh_sessions_are_both_listed_leave_the_outer_job_and_route_exit_status() {
+    if rerun_outside(
+        "nested_pwsh_sessions_are_both_listed_leave_the_outer_job_and_route_exit_status",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let Some(pwsh) = controlled_pwsh() else {
+        return;
+    };
+    let (package, home) = (Package::new(), Home::new());
+    let mut terminal = host(&package, &home, &pwsh, JobShape::None);
+    let exec = |prompt: &str, then: &str| {
+        let arguments: Vec<String> = pwsh_arguments(prompt)
+            .iter()
+            .map(|argument| quoted(argument))
+            .collect();
+        format!(
+            "c2 exec {} {}; {then}",
+            quoted(&pwsh.to_string_lossy()),
+            arguments.join(" ")
+        )
+    };
+    enter(&mut terminal, &exec("ENCLOSING", "exit $LASTEXITCODE"));
+    wait(&mut terminal, &home, "ENCLOSING> ");
+    enter(
+        &mut terminal,
+        &exec("NESTED", "\"NESTED-STATUS=$LASTEXITCODE\""),
+    );
+    wait(&mut terminal, &home, "NESTED> ");
+    enter(&mut terminal, "\"depth:$env:CLIMON2_SESSION_DEPTH\"");
+    wait(&mut terminal, &home, "depth:2");
+
+    let mut sessions = home.sessions();
+    sessions.sort_by_key(|session| session.depth);
+    let depths: Vec<u32> = sessions.iter().map(|session| session.depth.get()).collect();
+    assert_eq!(depths, [1u32, 2u32]);
+    assert_ne!(sessions[0].session_id, sessions[1].session_id);
+    assert!(!in_any_job(sessions[1].daemon_pid));
+
+    enter(&mut terminal, "exit 7");
+    wait(&mut terminal, &home, "NESTED-STATUS=7");
+    assert_eq!(home.sessions().len(), 1);
+    enter(&mut terminal, "exit 9");
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 9);
+    drop(terminal);
+    assert!(home.sessions().is_empty());
+}
+
+/// The Windows form of the self-attach scenario: the session's command sees
+/// `CLIMON2_SESSION_ID`, so `c2 attach` to it is refused with 125 and the
+/// session carries on undisturbed.
+#[test]
+fn a_session_attaching_to_itself_is_refused_with_125_and_carries_on() {
+    if rerun_outside(
+        "a_session_attaching_to_itself_is_refused_with_125_and_carries_on",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let Some(pwsh) = controlled_pwsh() else {
+        return;
+    };
+    let (package, home) = (Package::new(), Home::new());
+    let mut terminal = host(&package, &home, &pwsh, JobShape::None);
+    let inner: Vec<String> = pwsh_arguments("INNER")
+        .iter()
+        .map(|argument| quoted(argument))
+        .collect();
+    enter(
+        &mut terminal,
+        &format!(
+            "c2 exec {} {}; exit $LASTEXITCODE",
+            quoted(&pwsh.to_string_lossy()),
+            inner.join(" ")
+        ),
+    );
+    wait(&mut terminal, &home, "INNER> ");
+    let [session] = home.sessions().try_into().unwrap();
+    enter(
+        &mut terminal,
+        "c2 attach $env:CLIMON2_SESSION_ID; \"SELF-STATUS=$LASTEXITCODE\"",
+    );
+    wait(&mut terminal, &home, "SELF-STATUS=125");
+    assert!(
+        terminal.screen().replace('\n', "").contains(&format!(
+            "cannot attach to the current session {}",
+            session.session_id
+        )),
+        "{}",
+        terminal.screen()
+    );
+    enter(&mut terminal, "\"still-$(1+1)\"");
+    wait(&mut terminal, &home, "still-2");
+    let [still] = home.sessions().try_into().unwrap();
+    assert_eq!(still.session_id, session.session_id);
+    enter(&mut terminal, "exit 0");
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
     drop(terminal);
     assert!(home.sessions().is_empty());
 }
