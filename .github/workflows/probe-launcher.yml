@@ -62,3 +62,23 @@ jobs:
             echo "::group::$label site log"; cat "mutation-$label.txt"; echo "::endgroup::"
             echo "::group::$label stderr (tail)"; tail -60 "mutation-$label.err"; echo "::endgroup::"
           done
+      - name: Install the pinned cargo-llvm-cov
+        run: |
+          rustup component add llvm-tools
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Launcher coverage from main's and this branch's tests
+        run: |
+          tests=crates/climon2-launcher/tests/launcher.rs
+          cp "$tests" "$RUNNER_TEMP/launcher.rs"
+          cover() {
+            cargo llvm-cov clean --workspace
+            cargo llvm-cov --locked -p climon2-launcher --test launcher --lcov --output-path "lcov-$1.info"
+            awk -v label="$1" '/^SF:/{f=$0} /^DA:/ && f ~ /climon2-launcher\/src/ {split(substr($0,4),a,","); n++; if (a[2]>0) h++} /^end_of_record/{if (n) printf "%s %s: %d of %d lines hit\n", label, f, h, n; n=0; h=0}' "lcov-$1.info"
+            grep -A10000 'climon2-launcher/src/handoff.rs' "lcov-$1.info" | sed '/end_of_record/q' | grep '^DA:' | sort -t: -k2 -n > "hits-$1.txt"
+          }
+          git show origin/main:"$tests" > "$tests"
+          cover main-tests
+          cp "$RUNNER_TEMP/launcher.rs" "$tests"
+          cover branch-tests
+          if diff hits-main-tests.txt hits-branch-tests.txt; then echo "identical handoff.rs line hits"; fi
+          echo "lines never hit (branch tests):"; grep ',0$' hits-branch-tests.txt || echo none
