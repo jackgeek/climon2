@@ -33,14 +33,21 @@ jobs:
             | jq -r 'select(.reason=="compiler-artifact" and .target.name=="monitor" and .profile.test) | .executable' \
             > monitor-path
           cat monitor-path
-      - name: Old wait with Gone already Unavailable (expected to fail)
+      - name: Gone's settled status against the old and new waits, 20 runs per retry setting
         run: |
-          set +e
-          "$(cat monitor-path)" --exact probe_old_wait_with_gone_unavailable
-          echo "exit=$?"
-      - name: New wait with Gone already Unavailable (expected to pass)
-        run: '"$(cat monitor-path)" --exact probe_new_wait_with_gone_unavailable'
+          monitor="$(cat monitor-path)"
+          mkdir -p probes
+          for test in probe_default_retry probe_fast_retry probe_slow_retry; do
+            seq 1 20 | xargs -P 4 -I{} bash -c "'$monitor' --exact $test --nocapture > probes/$test-{}.log 2>&1 || echo 'FAIL $test {}'"
+          done
+          grep -h '^PROBE' probes/*.log | sort | uniq -c
+          if grep -L '^PROBE' probes/*.log | grep -q .; then
+            echo "runs without a PROBE line:"; grep -L '^PROBE' probes/*.log
+            for log in $(grep -L '^PROBE' probes/*.log); do tail -40 "$log"; done
+          fi
+          ! grep -l 'test result: FAILED' probes/*.log
       - name: Fixed tests repeated, eight at a time
+        if: always()
         run: |
           monitor="$(cat monitor-path)"
           mkdir -p runs

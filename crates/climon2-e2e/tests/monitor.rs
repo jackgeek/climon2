@@ -6047,13 +6047,19 @@ fn a_disconnect_discards_a_pending_prefix() {
     package.assert_clean();
 }
 
-/// PROBE (#350, not for merge): forces the losing interleaving by waiting
-/// until Gone's failed retry has made its row Unavailable before the
-/// selector opens, then waits for Other's row the old way (`old`) or the new
-/// way.
-fn probe_unavailable_before_the_selector(old: bool) {
+/// PROBE (#350, not for merge): once discovery has proved Gone's daemon gone
+/// (no retry follows), records Gone's settled status and whether the old
+/// fixed-width wait text and the new width-agnostic match each find Other's
+/// row in the same whole frame.
+fn probe_status_width(retry: Option<u64>) {
     let package = Package::new();
     without_introduction(&package);
+    if let Some(ms) = retry {
+        limits_config(
+            &package,
+            json!({"retry": {"initial_ms": ms, "cap_ms": ms, "jitter_percent": 0}}),
+        );
+    }
     let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     let gone = headless(&package, &watched("Gone"), "finish");
@@ -6062,21 +6068,27 @@ fn probe_unavailable_before_the_selector(old: bool) {
     let monitor = monitor_process(&package).0;
     read_alone(&mut terminal, monitor, b"\x1d");
     kill(Pid::from_raw(daemon_of(&package, &gone)), Signal::SIGKILL).unwrap();
-    whole_frame_shows(&terminal, "the lost connection", |screen| {
+    whole_frame_shows(&terminal, "Gone proved gone", |screen| {
         let top = screen.lines().next().unwrap_or_default();
-        top.starts_with("Gone") && top.contains("Disconnected")
+        top.starts_with(&format!("Gone | {GONE}"))
     });
+    let top = terminal
+        .screen()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let status = ["Disconnected", "Unavailable", "Starting"]
+        .into_iter()
+        .find(|status| top.contains(&format!("| {status} ")))
+        .unwrap_or("other");
     read_alone(&mut terminal, monitor, b"x");
-    whole_frame_shows(&terminal, "Gone unavailable", |screen| {
-        let top = screen.lines().next().unwrap_or_default();
-        top.starts_with("Gone") && top.contains("| Unavailable ")
-    });
     terminal.send("\x1ds").unwrap();
-    if old {
-        shows_row(&mut terminal, &format!("║{RUNNING:<12} Other"));
-    } else {
-        listed_with(&terminal, RUNNING, "Other");
-    }
+    listed_with(&terminal, RUNNING, "Other");
+    let screen = terminal.screen();
+    let old = screen.contains(&format!("║{RUNNING:<12} Other"));
+    println!("PROBE retry={retry:?} status={status} old_wait_matches={old} new_wait_matches=true");
+    assert_eq!(old, status == "Disconnected", "{screen}");
     enter_on(&mut terminal, "Other");
     ready_at(&mut terminal, "Other", RUNNING, "29 120");
     terminal.send("y").unwrap();
@@ -6089,13 +6101,18 @@ fn probe_unavailable_before_the_selector(old: bool) {
 }
 
 #[test]
-fn probe_old_wait_with_gone_unavailable() {
-    probe_unavailable_before_the_selector(true);
+fn probe_default_retry() {
+    probe_status_width(None);
 }
 
 #[test]
-fn probe_new_wait_with_gone_unavailable() {
-    probe_unavailable_before_the_selector(false);
+fn probe_fast_retry() {
+    probe_status_width(Some(100));
+}
+
+#[test]
+fn probe_slow_retry() {
+    probe_status_width(Some(60_000));
 }
 
 /// Over a lost session's retained history, while a passive retry is
