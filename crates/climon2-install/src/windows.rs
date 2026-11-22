@@ -7,8 +7,8 @@
 //! One installer at a time holds `install.lock`. The version folder is staged
 //! and renamed into place: an identical one is kept, a different one no
 //! program runs from is swapped for the new one, and a different one in use
-//! is refused. The launcher is replaced unless it is identical or running.
-//! `current` is replaced last.
+//! is refused. The launcher is replaced unless it is identical or Windows
+//! refuses. `current` is replaced last.
 #[path = "user_path/windows.rs"]
 mod user_path;
 
@@ -48,16 +48,11 @@ pub fn version_files() -> Vec<String> {
 /// Run the installer command with arguments excluding argv[0].
 pub fn run(args: impl IntoIterator<Item = OsString>) -> io::Result<()> {
     let options = Options::parse(args)?;
-    let executable = std::env::current_exe()?;
-    let release = executable.parent().expect("a program is in a folder");
     let home = executable_home(options.dir)?;
+    // Held until the end, so two installers never edit PATH at once either.
     let _lock = lock(&home)?;
-    install(release, &home)?;
-    if options.modify_path {
-        user_path::add(&home)
-    } else {
-        hint(&home)
-    }
+    install(&home)?;
+    finish(&home, options.modify_path)
 }
 
 struct Options {
@@ -98,10 +93,7 @@ fn usage() -> io::Error {
 
 /// The absolute executable home, created when missing.
 fn executable_home(dir: Option<PathBuf>) -> io::Result<PathBuf> {
-    let home = match dir {
-        Some(dir) => std::path::absolute(dir)?,
-        None => default_home()?,
-    };
+    let home = dir.map_or_else(default_home, std::path::absolute)?;
     fs::create_dir_all(&home)?;
     Ok(home)
 }
@@ -134,12 +126,22 @@ fn lock(home: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn install(release: &Path, home: &Path) -> io::Result<()> {
+/// The release beside this installer, staged and put in place.
+fn install(home: &Path) -> io::Result<()> {
+    let executable = std::env::current_exe()?;
+    let release = executable.parent().expect("a program is in a folder");
     let stage = Stage::new(home)?;
-    let version = stage.version(release)?;
-    place_version(&version, &home.join(VERSION), &stage.aside())?;
-    place_launcher(&stage.launcher(release)?, &home.join(LAUNCHER))?;
-    fs::rename(stage.current()?, home.join("current"))
+    stage.place_version(release, home)?;
+    stage.place_launcher(release, home)?;
+    stage.place_current(home)
+}
+
+fn finish(home: &Path, modify_path: bool) -> io::Result<()> {
+    if modify_path {
+        user_path::add(home)
+    } else {
+        hint(home)
+    }
 }
 
 /// The staging folder, removed with whatever is left in it when dropped.
@@ -156,31 +158,27 @@ impl Stage {
         Ok(Self(root))
     }
 
-    /// The release's version folder, copied into the stage.
-    fn version(&self, release: &Path) -> io::Result<PathBuf> {
+    /// Copies the release's version folder into the stage and puts it in
+    /// place. A version folder it replaces waits in the stage to be removed.
+    fn place_version(&self, release: &Path, home: &Path) -> io::Result<()> {
         let staged = self.0.join("version");
         fs::create_dir(&staged)?;
         for name in version_files() {
             copy(&release.join(VERSION).join(&name), &staged.join(&name))?;
         }
-        Ok(staged)
+        place_version(&staged, &home.join(VERSION), &self.0.join("replaced"))
     }
 
-    /// Where a replaced version folder waits to be removed with the stage.
-    fn aside(&self) -> PathBuf {
-        self.0.join("replaced")
-    }
-
-    fn launcher(&self, release: &Path) -> io::Result<PathBuf> {
+    fn place_launcher(&self, release: &Path, home: &Path) -> io::Result<()> {
         let staged = self.0.join(LAUNCHER);
         copy(&release.join(LAUNCHER), &staged)?;
-        Ok(staged)
+        place_launcher(&staged, &home.join(LAUNCHER))
     }
 
-    fn current(&self) -> io::Result<PathBuf> {
+    fn place_current(&self, home: &Path) -> io::Result<()> {
         let staged = self.0.join("current");
         fs::write(&staged, format!("{VERSION}\n"))?;
-        Ok(staged)
+        fs::rename(staged, home.join("current"))
     }
 }
 
@@ -191,13 +189,12 @@ impl Drop for Stage {
 }
 
 fn copy(from: &Path, to: &Path) -> io::Result<()> {
-    match fs::copy(from, to) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(io::Error::new(
+    fs::copy(from, to).map(drop).map_err(|error| {
+        io::Error::new(
             error.kind(),
             format!("cannot copy {}: {error}", from.display()),
-        )),
-    }
+        )
+    })
 }
 
 /// Puts the staged version folder in place of the installed one: keeps an
@@ -209,9 +206,7 @@ fn place_version(staged: &Path, installed: &Path, aside: &Path) -> io::Result<()
     if identical(staged, installed)? {
         return Ok(());
     }
-    refuse_in_use(installed)?;
-    fs::rename(installed, aside)?;
-    fs::rename(staged, installed)
+    swap(staged, installed, aside)
 }
 
 /// Whether both folders hold the same file names with the same contents.
@@ -220,8 +215,12 @@ fn identical(staged: &Path, installed: &Path) -> io::Result<bool> {
     if names != self::names(installed)? {
         return Ok(false);
     }
+    same_files(staged, installed, &names)
+}
+
+fn same_files(first: &Path, second: &Path, names: &BTreeSet<OsString>) -> io::Result<bool> {
     for name in names {
-        if !same_contents(&staged.join(&name), &installed.join(&name))? {
+        if !same_contents(&first.join(name), &second.join(name))? {
             return Ok(false);
         }
     }
@@ -236,6 +235,14 @@ fn names(folder: &Path) -> io::Result<BTreeSet<OsString>> {
 
 fn same_contents(first: &Path, second: &Path) -> io::Result<bool> {
     Ok(fs::read(first)? == fs::read(second)?)
+}
+
+/// Replaces the installed version folder with the staged one, unless a
+/// program runs from it. Windows cannot swap two folders in one step.
+fn swap(staged: &Path, installed: &Path, aside: &Path) -> io::Result<()> {
+    refuse_in_use(installed)?;
+    fs::rename(installed, aside)?;
+    fs::rename(staged, installed)
 }
 
 /// Fails if a program runs from `folder`: Windows refuses to open a running
@@ -269,15 +276,14 @@ fn place_launcher(staged: &Path, installed: &Path) -> io::Result<()> {
     if installed.try_exists()? && same_contents(staged, installed)? {
         return Ok(());
     }
-    match fs::rename(staged, installed) {
-        Ok(()) => Ok(()),
-        Err(error) => writeln!(
+    fs::rename(staged, installed).or_else(|error| {
+        writeln!(
             io::stdout(),
             "climon2: kept {}, which is in use and could not be replaced ({error}); \
              it runs this version too",
             installed.display()
-        ),
-    }
+        )
+    })
 }
 
 /// `--no-modify-path`: the entry the user may add to `PATH` themselves.

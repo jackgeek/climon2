@@ -43,21 +43,13 @@ pub(super) fn add(home: &Path) -> io::Result<()> {
             format!("{} cannot be written to PATH", home.display()),
         )
     })?;
-    let environment = Key::create(ENVIRONMENT)?;
-    let records = Key::create(RECORD_KEY)?;
-    // A user with no PATH of their own gets the type Windows gives one.
-    let (path, kind) = environment
-        .text(PATH)?
-        .unwrap_or((String::new(), REG_EXPAND_SZ));
-    let recorded = records.text(RECORD)?.map(|(entry, _)| entry);
-    let edit = Edit::new(&path, recorded.as_deref(), entry, &expand);
-    if edit.path != path {
-        environment.set(PATH, kind, &edit.path)?;
-        broadcast();
-    }
-    if edit.record != recorded {
-        records.record(edit.record.as_deref())?;
-    }
+    let stored = Stored::read()?;
+    let edit = Edit::new(&stored.path, stored.recorded.as_deref(), entry, &expand);
+    stored.write(&edit)?;
+    report(&edit, entry)
+}
+
+fn report(edit: &Edit, entry: &str) -> io::Result<()> {
     if !edit.added {
         return Ok(());
     }
@@ -65,6 +57,60 @@ pub(super) fn add(home: &Path) -> io::Result<()> {
         io::stdout(),
         "climon2: added {entry} to your user PATH; terminals opened before now do not see it"
     )
+}
+
+/// The user `PATH` and the installer's record of its entry, as stored.
+struct Stored {
+    environment: Key,
+    records: Key,
+    path: String,
+    kind: REG_VALUE_TYPE,
+    recorded: Option<String>,
+}
+
+impl Stored {
+    fn read() -> io::Result<Self> {
+        let environment = Key::create(ENVIRONMENT)?;
+        let records = Key::create(RECORD_KEY)?;
+        // A user with no PATH of their own gets the type Windows gives one.
+        let (path, kind) = environment
+            .text(PATH)?
+            .unwrap_or((String::new(), REG_EXPAND_SZ));
+        let recorded = records.text(RECORD)?.map(|(entry, _)| entry);
+        Ok(Self {
+            environment,
+            records,
+            path,
+            kind,
+            recorded,
+        })
+    }
+
+    fn write(&self, edit: &Edit) -> io::Result<()> {
+        self.write_path(&edit.path)?;
+        self.write_record(&edit.record)
+    }
+
+    /// Stores `path` as the same type, if it changed, and says so.
+    fn write_path(&self, path: &str) -> io::Result<()> {
+        if path == self.path {
+            return Ok(());
+        }
+        self.environment.set(PATH, self.kind, path)?;
+        broadcast();
+        Ok(())
+    }
+
+    /// Stores `record`, if it changed: the entry written, or that there is none.
+    fn write_record(&self, record: &Option<String>) -> io::Result<()> {
+        if *record == self.recorded {
+            return Ok(());
+        }
+        match record {
+            Some(entry) => self.records.set(RECORD, REG_SZ, entry),
+            None => self.records.delete(RECORD),
+        }
+    }
 }
 
 /// What an install does to `PATH` and to the record of the entry it wrote.
@@ -186,6 +232,23 @@ impl Key {
     /// The stored text of the string value `name` and its type, unexpanded,
     /// or `None` if there is no such value.
     fn text(&self, name: &str) -> io::Result<Option<(String, REG_VALUE_TYPE)>> {
+        let Some((data, kind)) = self.value(name)? else {
+            return Ok(None);
+        };
+        if kind != REG_SZ && kind != REG_EXPAND_SZ {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the registry value {name} has type {kind}, not a string; it was left unchanged"
+                ),
+            ));
+        }
+        decode(&data).map(|text| Some((text, kind)))
+    }
+
+    /// The stored bytes of the value `name` and its type, or `None` if there
+    /// is no such value.
+    fn value(&self, name: &str) -> io::Result<Option<(Vec<u8>, REG_VALUE_TYPE)>> {
         let name = wide(name);
         // Windows overwrites both whatever they start as.
         let mut kind = 0u32;
@@ -197,21 +260,7 @@ impl Key {
         check(status)?;
         let mut data = vec![0u8; size as usize];
         check(self.query(&name, &mut kind, data.as_mut_ptr(), &mut size))?;
-        if kind != REG_SZ && kind != REG_EXPAND_SZ {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "the registry value {} has type {kind}, not a string; it was left unchanged",
-                    String::from_utf16_lossy(&until_nul(name.into_iter()))
-                ),
-            ));
-        }
-        let units = data
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
-        let text = String::from_utf16(&until_nul(units))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        Ok(Some((text, kind)))
+        Ok(Some((data, kind)))
     }
 
     fn query(&self, name: &[u16], kind: &mut u32, data: *mut u8, size: &mut u32) -> WIN32_ERROR {
@@ -232,13 +281,18 @@ impl Key {
         })
     }
 
-    /// Records `entry` as the one the installer wrote, or that it wrote none.
-    fn record(&self, entry: Option<&str>) -> io::Result<()> {
-        match entry {
-            Some(entry) => self.set(RECORD, REG_SZ, entry),
-            None => check(unsafe { RegDeleteValueW(self.0, wide(RECORD).as_ptr()) }),
-        }
+    fn delete(&self, name: &str) -> io::Result<()> {
+        check(unsafe { RegDeleteValueW(self.0, wide(name).as_ptr()) })
     }
+}
+
+/// A string value's UTF-16 bytes as text, up to its terminator.
+fn decode(data: &[u8]) -> io::Result<String> {
+    let units = data
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+    String::from_utf16(&until_nul(units))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn check(status: WIN32_ERROR) -> io::Result<()> {
