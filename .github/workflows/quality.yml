@@ -1,0 +1,151 @@
+name: Quality
+
+# CRAP and mutation on the owner's own machines (docs/for-humans/quality-runners.md),
+# one platform each, in parallel:
+#
+#   Linux shared and Linux-only source   self-hosted, Linux,   X64, climon2-quality
+#   Windows-only source                  self-hosted, Windows, X64, climon2-quality
+#   macOS-only source                    self-hosted, macOS,   X64, climon2-quality
+#
+# The repository is public, so these jobs never run on pull_request: a fork's pull
+# request runs the workflow file from the fork, which could drop any guard written
+# here. They run on push instead, which only people with write access can do, and
+# GitHub shows each result on the pull request whose head is that commit.
+#
+# A job runs only while its platform is listed in the repository variable
+# CLIMON2_OWN_RUNNERS (for example "linux,windows,macos"), so a push never waits
+# for a machine that is not registered yet. Release qualification keeps running
+# on GitHub-hosted runners (check.yml, called by release.yml).
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "!LICENSE"
+      - "docs/for-humans/protocol/**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes its in-progress gates.
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TARGET_DIR: target/quality-run
+
+jobs:
+  base:
+    name: Select the changed-source mutation base
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # main mutates what this push changed; any other branch what it changes
+      # against main, as a pull request's gate did.
+      - id: base
+        env:
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+        run: |
+          if [[ "$REF" == refs/heads/main ]]; then
+            base="$BEFORE"
+            if [[ -z "$base" || "$base" == 0000000000000000000000000000000000000000 ]]; then
+              base=HEAD~1
+            fi
+          else
+            base="$(git merge-base origin/main HEAD)"
+          fi
+          echo "sha=$(git rev-parse "$base")" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux CRAP and mutation / own hardware
+    needs: base
+    if: contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
+    runs-on: [self-hosted, Linux, X64, climon2-quality]
+    timeout-minutes: 360
+    env:
+      CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: ./.github/actions/controlled-bash
+      - name: Set up pinned quality tools
+        run: cargo xtask setup-quality
+      - name: Qualify changed host source
+        run: |
+          started=$SECONDS
+          status=0
+          cargo xtask mutate || status=$?
+          echo "- Linux gate on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  windows:
+    name: Windows-only CRAP and mutation / own hardware
+    needs: base
+    if: contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
+    runs-on: [self-hosted, Windows, X64, climon2-quality]
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    # The runner's .env supplies CLIMON2_QUALITY_PYTHON, CLIMON2_NATIVE_MUTATION_WORKERS,
+    # CLIMON2_TEST_CONPTY_CACHE and the second account the cross-account test logs on
+    # as (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
+    env:
+      CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Set up pinned quality tools
+        run: cargo xtask setup-quality
+      - name: Qualify only Windows-exclusive source
+        run: |
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --native-only || status=$?
+          echo "- Windows gate on $(hostname), $(cmd //c ver | tr -d '\r' | grep .): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  macos:
+    name: macOS-only CRAP and mutation / own hardware
+    needs: base
+    if: contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
+    runs-on: [self-hosted, macOS, X64, climon2-quality]
+    timeout-minutes: 360
+    env:
+      CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      # The installer's tests build both slices of the universal payload.
+      - name: Install universal payload targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: ./.github/actions/controlled-bash
+      - name: Set up pinned quality tools
+        run: cargo xtask setup-quality
+      - name: Qualify only macOS-exclusive source
+        run: |
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --native-only || status=$?
+          echo "- macOS gate on $(hostname), $(sw_vers -productVersion) $(uname -m): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
