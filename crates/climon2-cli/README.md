@@ -43,11 +43,14 @@ the pseudoconsole closed, the full five-second grace passed and the session
 job ended a hidden-console child with `0xC000013A`. Without console handles,
 `exec`, `attach` and the session's client refuse to run; Ctrl+C during `kill`
 interrupts its client, and kill exits 130 with it; an ordinary `exec` whose
-client is missing exits 125 and stops its daemon; and an ordinary session
-that nobody attaches to within five seconds ends, while the `CLIMON2_CLI_HOLD`
-test hook holds `exec` before its client (#323). It needs the daemon binary
+client is missing exits 125 and stops its daemon. It needs the daemon binary
 built first (`cargo test -p climon2-daemon --test windows`), and the client
 binary and library (`cargo test -p climon2-client --test library_windows`).
+`tests/attach_deadline_windows.rs` (#323), with the same version folder,
+proves that an ordinary session nobody attaches to within five seconds ends,
+while the `CLIMON2_CLI_HOLD` test hook holds `exec` before its client. It is
+a test binary of its own so that it never runs beside `exec_windows.rs`'s
+kill tests.
 `tests/packaged_windows.rs` is the Windows smoke test
 (docs/for-humans/windows/qualification.md): in the harness's Windows Terminal model,
 `pwsh` runs `c2 exec pwsh`, a command, a detach, `c2 list` and `c2 attach`,

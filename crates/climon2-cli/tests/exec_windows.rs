@@ -14,9 +14,9 @@
 //! with; and an ordinary `exec` that cannot start its client stops its
 //! daemon. The packaged smoke test is in `packaged_windows.rs`.
 //!
-//! #323: an ordinary session nobody attaches to within five seconds ends;
-//! closing the host and `c2 kill` with attached clients are in
-//! `packaged_windows.rs`.
+//! #323: closing the host and `c2 kill` with attached clients are in
+//! `packaged_windows.rs`, and the five-second attach deadline in
+//! `attach_deadline_windows.rs`.
 //!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each `exec` runs outside both, through the harness
@@ -603,53 +603,3 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
     assert!(home.sessions().is_empty());
     assert!(install.daemon_stopped());
 }
-
-/// #323: an ordinary session nobody attaches to within five seconds of its
-/// start ends, command and all, while its CLI is held before starting the
-/// client (the `CLIMON2_CLI_HOLD` test hook).
-#[test]
-fn an_ordinary_session_nobody_attaches_to_within_five_seconds_ends() {
-    if climon2_test_term::rerun_outside(
-        "an_ordinary_session_nobody_attaches_to_within_five_seconds_ends",
-        Duration::from_secs(120),
-    ) {
-        return;
-    }
-    let (install, home) = (Install::new(&[]), Home::new());
-    let hold = home.work().join("release-client");
-    let mut command = CommandBuilder::new(install.cli());
-    command.args(["exec", "--"]);
-    command.args(WRITES_ITS_PID);
-    command.env("CLIMON2_HOME", home.home());
-    command.env("LOCALAPPDATA", home.0.path().join("local"));
-    command.env("CLIMON2_CLI_HOLD", &hold);
-    command.cwd(home.work());
-    let mut execing = Terminal::spawn(command, 24, 100).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !hold.with_extension("held").exists() {
-        assert!(Instant::now() < deadline, "{}", execing.screen());
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let [session] = home.sessions().try_into().unwrap();
-    let command = home.written_process("pid");
-
-    home.wait_until_ended(&install);
-    assert!(command.exit_code(Duration::from_secs(5)).is_some());
-    let started = SystemTime::UNIX_EPOCH + Duration::from_micros(session.daemon_start_time);
-    let lived = command.exit_time().duration_since(started).unwrap();
-    assert!(lived >= Duration::from_secs(5), "ended after {lived:?}");
-
-    fs::write(&hold, b"").unwrap();
-    let status = execing.wait_exit(Duration::from_secs(30)).unwrap();
-    assert_eq!(status, 125, "{}", execing.screen());
-}
-
-/// A command that writes its PID to `pid` in its working directory, then
-/// runs until it is ended.
-const WRITES_ITS_PID: &[&str] = &[
-    "powershell",
-    "-NoLogo",
-    "-NoProfile",
-    "-Command",
-    "Set-Content pid $PID; while ($true) { Start-Sleep 1 }",
-];

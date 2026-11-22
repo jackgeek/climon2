@@ -227,9 +227,11 @@ has their profiles. vim and Edit join `WIN-02` with their pinned downloads
 ([#328](https://github.com/jackgeek/climon2/issues/328)). Where only the Store
 build of `pwsh` is installed, which a session cannot start, the local runs of
 `WIN-01` use `powershell` in its place; CI requires the MSI build. In
-`crates/climon2-cli/tests/exec_windows.rs`, an ordinary session that nobody
-attaches to within five seconds ends, with `exec` held before it starts the
-client.
+`crates/climon2-cli/tests/attach_deadline_windows.rs`, an ordinary session
+that nobody attaches to within five seconds ends, with `exec` held before it
+starts the client. It is a test binary of its own because cargo runs test
+binaries one at a time: running beside the kill tests, it made them miss
+their ten-second deadline under the coverage build.
 
 `WIN-09` to `WIN-11` follow the
 [Windows platform and lifecycle contract](lifecycle.md). Ctrl+Break
