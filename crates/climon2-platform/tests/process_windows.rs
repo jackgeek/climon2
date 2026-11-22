@@ -31,14 +31,41 @@ fn micros(at: SystemTime) -> u64 {
     at.duration_since(UNIX_EPOCH).unwrap().as_micros() as u64
 }
 
+/// A child that is killed and reaped when dropped, so a test that fails
+/// before its own kill (as one does under a mutant) leaves no process behind
+/// holding the test's working directory.
+struct Running(Child);
+
+impl std::ops::Deref for Running {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Running {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// A command that runs until it is killed, so its PID stays its own.
-fn waiting_child() -> Child {
-    Command::new("cmd")
-        .args(["/d", "/c", "pause"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap()
+fn waiting_child() -> Running {
+    Running(
+        Command::new("cmd")
+            .args(["/d", "/c", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
 }
 
 fn metadata(pid: u32, start: u64) -> SessionMetadata {
@@ -143,8 +170,17 @@ fn a_process_the_caller_may_not_open_is_never_taken_for_a_gone_one() {
 
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(same.is_err());
-    // The creator's handle keeps full access.
-    unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+    drop(process);
+}
+
+/// The creator's handle to an unopenable process: it keeps full access, so
+/// dropping it ends the process even when the test failed first.
+struct Unopenable(OwnedHandle);
+
+impl Drop for Unopenable {
+    fn drop(&mut self) {
+        unsafe { TerminateProcess(self.0.as_raw_handle(), 1) };
+    }
 }
 
 /// Runs `work` on this thread as this process's user without
@@ -212,7 +248,7 @@ fn without_debug_privilege<T>(work: impl FnOnce() -> T) -> T {
 }
 
 /// `cmd /d /c pause` with an empty, protected DACL on its process object.
-fn unopenable_process() -> (u32, OwnedHandle) {
+fn unopenable_process() -> (u32, Unopenable) {
     let sddl: Vec<u16> = "D:P".encode_utf16().chain([0]).collect();
     let mut descriptor = ptr::null_mut();
     assert_ne!(
@@ -257,7 +293,8 @@ fn unopenable_process() -> (u32, OwnedHandle) {
         std::io::Error::last_os_error()
     );
     unsafe { CloseHandle(information.hThread) };
-    (information.dwProcessId, unsafe {
-        OwnedHandle::from_raw_handle(information.hProcess)
-    })
+    (
+        information.dwProcessId,
+        Unopenable(unsafe { OwnedHandle::from_raw_handle(information.hProcess) }),
+    )
 }
