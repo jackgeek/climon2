@@ -68,16 +68,19 @@ impl<'a> Watch<'a> {
 /// ready, so it is called again until the timeout has truly passed.
 pub fn wait(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<usize> {
     let deadline = Instant::now().checked_add(timeout);
-    let mut remaining = timeout;
     loop {
-        let ready = poll(watches, remaining)?;
-        remaining = deadline.map_or(remaining, |deadline| {
-            deadline.saturating_duration_since(Instant::now())
-        });
-        if ready != 0 || remaining.is_zero() {
+        let ready = poll(watches, remaining(deadline))?;
+        if ready != 0 || remaining(deadline).is_zero() {
             return Ok(ready);
         }
     }
+}
+
+/// What is left until `deadline`; a timeout too long to have one never ends.
+fn remaining(deadline: Option<Instant>) -> Duration {
+    deadline.map_or(Duration::MAX, |deadline| {
+        deadline.saturating_duration_since(Instant::now())
+    })
 }
 
 /// One `WSAPoll`, its timeout rounded up to whole milliseconds and saturating.
