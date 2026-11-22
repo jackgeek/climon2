@@ -138,7 +138,11 @@ it does not; the daemon is often ended that way in tests.
 **Cost.** When no registered Windows file changed, the gate exits before doing
 any mutation work. A release mutates every registered Windows file. That run
 is measured in the first implementation slice against a budget of 90 minutes;
-over budget, the files are split across parallel jobs.
+over budget, the files are split across parallel jobs. Its first measurement,
+on [#343](https://github.com/jackgeek/climon2/pull/343) with one registered
+Windows file and no mutation sites in it, took 8.5 minutes on `windows-2025`
+(11 minutes for the whole job). Every run of the Quality job writes its time
+to the job summary, and a release run compares it with the budget there.
 
 ## Facts only CI can show
 
