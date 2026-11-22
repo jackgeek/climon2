@@ -1,4 +1,4 @@
-//! The Windows hand-off (ADR 0002; docs/windows-lifecycle.md, "Hand-offs").
+//! The Windows hand-off (ADR 0002; docs/for-humans/windows/lifecycle.md, "Hand-offs").
 //! Windows cannot replace a running process, so the launcher starts the CLI,
 //! waits for it and exits with its raw 32-bit status. While it waits it shares
 //! the CLI's console: it survives Ctrl+C and Ctrl+Break, which the CLI handles,
@@ -15,7 +15,7 @@ pub(super) const CLI: &str = "climon2-cli.exe";
 
 /// How long a `current` that is missing or denied is retried: an installer
 /// renames a new `current` over the old one, and a reader can briefly find it
-/// missing (docs/windows-distribution.md).
+/// missing (docs/for-humans/windows/distribution.md).
 const CURRENT_RETRY: Duration = Duration::from_secs(1);
 const CURRENT_POLL: Duration = Duration::from_millis(10);
 

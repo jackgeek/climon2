@@ -1,4 +1,4 @@
-//! #316: daemon identity and liveness on Windows (docs/windows-lifecycle.md,
+//! #316: daemon identity and liveness on Windows (docs/for-humans/windows/lifecycle.md,
 //! "Identity and liveness"). A daemon is its PID plus its creation time, and
 //! only "no such process" or an exited process proves it gone; a process the
 //! caller may not open is never taken for a dead one.

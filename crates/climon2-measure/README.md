@@ -5,7 +5,7 @@ The test-only PERF-01 measurement harness
 measures how the monitor uses resources on the **exact candidate archive**,
 against standalone clients doing equivalent work, and records each platform's
 qualified library requirements. See the acceptance matrix's
-[PERF-01](../../docs/monitor-acceptance.md) workload.
+[PERF-01](../../docs/for-humans/behaviour/monitor/acceptance.md) workload.
 
 ```sh
 cargo xtask dist

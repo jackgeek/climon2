@@ -1,6 +1,6 @@
 //! The installer: it places the release beside it into a climon2 executable
 //! home. macOS and GNU/Linux share one implementation (`unix.rs`); Windows has
-//! its own (`windows.rs`, docs/windows-distribution.md).
+//! its own (`windows.rs`, docs/for-humans/windows/distribution.md).
 #[cfg(feature = "test-hooks")]
 #[cfg(unix)]
 mod hooks;

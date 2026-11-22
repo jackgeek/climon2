@@ -1,7 +1,7 @@
 //! #316: AF_UNIX stream sockets on Windows through socket2, with `WSAPoll`
 //! readiness (ADR 0003, "Windows I/O and transport"), and the connect, bind
 //! and delete error codes stale-socket cleanup rests on
-//! (docs/windows-quality.md, "Facts only CI can show").
+//! (docs/for-humans/windows/quality.md, "Facts only CI can show").
 #![cfg(windows)]
 use climon2_platform::{
     connection::{self, Interest},

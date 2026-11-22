@@ -1,6 +1,6 @@
 //! #316: the private descriptor denies a second, non-administrator account
 //! the runtime directory, and also a session log, a metadata file and the
-//! `logs` folder (docs/windows-quality.md, "Facts only CI can show").
+//! `logs` folder (docs/for-humans/windows/quality.md, "Facts only CI can show").
 //!
 //! CI's Windows jobs create that account and name it in
 //! `CLIMON2_SECOND_ACCOUNT` and `CLIMON2_SECOND_ACCOUNT_PASSWORD`. Without

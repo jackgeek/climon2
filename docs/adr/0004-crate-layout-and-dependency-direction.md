@@ -11,7 +11,7 @@ CLI execs its own version's monitor for `c2 monitor` and `c2 m`, as it execs the
 between executables of one release is not frozen. The client library's `cdylib`
 artifact, agreed in spec #73, is recorded below (#75).
 The monitor is the one exception to the daemon-only `climon2-vt` rule: the
-[#63 terminal contract](../protocol/terminal-integration.md) has it keep its own
+[#63 terminal contract](../for-humans/protocol/terminal-integration.md) has it keep its own
 `climon2-vt` models with read-only Rust views, which it does since #108, and it
 shares the documented normal-shell baseline from that crate. This adds no cross-release
 cell schema.

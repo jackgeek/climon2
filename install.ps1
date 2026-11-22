@@ -1,4 +1,4 @@
-# Installs climon2 on x86_64 Windows (docs/windows-distribution.md, "The
+# Installs climon2 on x86_64 Windows (docs/for-humans/windows/distribution.md, "The
 # download script"). Run it as
 #
 #     irm <release URL>/install.ps1 | iex

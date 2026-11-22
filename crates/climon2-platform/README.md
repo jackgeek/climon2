@@ -253,15 +253,16 @@ dispatch or shell-specific logic.
 - `Library` exists only validated: `requirements()`, `functions()` (a
   `Functions` table whose eleven entries cannot be absent) and `bootstrap()`
   for observers of the C ABI itself. The monitor (#106), the client
-  executable (#100), the Library-layer host and xtask's release checks load
-  through it. Environment variables such as `LD_PRELOAD`,
+  executable (#100, #101), the Library-layer host, xtask's release checks and
+  the PERF-01 harness (`climon2-measure`, to read requirements) load through
+  it. Environment variables such as `LD_PRELOAD`,
   `LD_AUDIT`, `LD_LIBRARY_PATH` and `GLIBC_TUNABLES` are neither cleared nor
   a reason to refuse.
 
 ## Windows
 
 Registered native files give the Windows bodies (#316; ADR 0003, "Windows
-I/O and transport"; docs/windows-lifecycle.md, "Identity and liveness"):
+I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness"):
 
 - `src/runtime/windows.rs`: `RuntimeDirectory::prepare` uses
   `%LOCALAPPDATA%\c2` as its root (created when missing and not checked;
@@ -293,7 +294,7 @@ I/O and transport"; docs/windows-lifecycle.md, "Identity and liveness"):
   for the instant; `columns` is the visible console window's width, or 80
   when stdout is not a console.
 
-For the session daemon and headless `exec` (#317; docs/windows-lifecycle.md,
+For the session daemon and headless `exec` (#317; docs/for-humans/windows/lifecycle.md,
 "Starting the daemon" and "Starting the command"):
 
 - `src/daemon/windows.rs`: `spawn` starts the daemon with one

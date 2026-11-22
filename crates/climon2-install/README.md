@@ -88,7 +88,7 @@ cargo test -p climon2-launcher -p climon2-install --features climon2-install/tes
 
 `install.exe [--dir <directory>] [--no-modify-path]` installs the release
 beside it into `%LOCALAPPDATA%\climon2` or the `--dir` home, as
-[Windows packaging and upgrades](../../docs/windows-distribution.md) specifies.
+[Windows packaging and upgrades](../../docs/for-humans/windows/distribution.md) specifies.
 Its code is in two registered Windows files, which the Windows quality gate
 holds to CRAP 5 and zero surviving mutants: `src/windows.rs` (options, the
 lock, staging, the version folder, the launcher and `current`) and

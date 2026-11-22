@@ -1,5 +1,5 @@
 //! The session's terminal on Windows (#317; ADR 0003, "Windows I/O and
-//! transport"; docs/windows-lifecycle.md, "Starting the command" and
+//! transport"; docs/for-humans/windows/lifecycle.md, "Starting the command" and
 //! "Session job and hang-up").
 //!
 //! The daemon hosts its command in a pseudoconsole of the pinned, bundled

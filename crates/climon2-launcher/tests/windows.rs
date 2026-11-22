@@ -1,4 +1,4 @@
-//! #315 / ADR 0002 / docs/windows-lifecycle.md: the real `c2.exe` hands off
+//! #315 / ADR 0002 / docs/for-humans/windows/lifecycle.md: the real `c2.exe` hands off
 //! to the current version's CLI by spawning it, waiting and exiting with its
 //! raw status, and keeps running through console events while the CLI does.
 //!
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(raw(exit), 7, "{}", String::from_utf8_lossy(&stderr));
     }
 
-    /// docs/windows-distribution.md: a reader can find `current` missing
+    /// docs/for-humans/windows/distribution.md: a reader can find `current` missing
     /// while an installer renames a new one over it.
     pub fn a_missing_current_is_retried() {
         replaced_later(&Layout::new(), |_| {}, |_| {});
@@ -680,7 +680,7 @@ mod tests {
         }
     }
 
-    /// docs/windows-lifecycle.md: the launcher handles Ctrl+C and Ctrl+Break
+    /// docs/for-humans/windows/lifecycle.md: the launcher handles Ctrl+C and Ctrl+Break
     /// with a handler routine, so it survives them, and the CLI still gets
     /// both, which an inherited ignore flag would stop for Ctrl+C.
     pub fn ctrl_c_and_ctrl_break_reach_the_cli_not_the_launcher() {

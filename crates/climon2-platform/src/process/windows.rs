@@ -1,4 +1,4 @@
-//! Daemon identity and liveness on Windows (#316; docs/windows-lifecycle.md,
+//! Daemon identity and liveness on Windows (#316; docs/for-humans/windows/lifecycle.md,
 //! "Identity and liveness"). A daemon is its PID plus its creation time from
 //! `GetProcessTimes`, in epoch microseconds as the frozen `daemon_start_time`
 //! (ADR 0005). Only "no such process" or an exited process proves it gone;

@@ -1,7 +1,7 @@
 #![cfg(windows)]
 //! The harness's Windows host (#320): `pwsh` in a pseudoconsole of the
 //! pinned ConPTY under the Windows Terminal model, with the job shape set
-//! separately (docs/windows-qualification.md, "Host models").
+//! separately (docs/for-humans/windows/qualification.md, "Host models").
 
 use climon2_test_term::{
     ConPty, HostModel, HostSettings, JobShape, Key, Modifiers, Options, PWSH_PROMPT, Terminal,

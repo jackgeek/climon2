@@ -1,4 +1,4 @@
-//! The user's `PATH` (docs/windows-distribution.md, "PATH"). The installer
+//! The user's `PATH` (docs/for-humans/windows/distribution.md, "PATH"). The installer
 //! reads the stored value of `HKCU\Environment\Path` without expanding it and
 //! writes it back as the same registry type, appending the executable home as
 //! one literal entry. It records the entry it wrote under

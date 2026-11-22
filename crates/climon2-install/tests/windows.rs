@@ -1,4 +1,4 @@
-//! #329 / docs/windows-distribution.md, "Installing" and "Upgrading": the
+//! #329 / docs/for-humans/windows/distribution.md, "Installing" and "Upgrading": the
 //! Windows installer places a release into an executable home, keeps one
 //! installer at a time, keeps, swaps or refuses a same-version folder, keeps a
 //! running launcher and adds the home to the user's PATH exactly once.
@@ -134,7 +134,7 @@ mod support {
     const KEY: &str = "CLIMON2_INSTALL_TEST_KEY";
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
     /// A version folder's files: the agreed archive layout without the monitor
-    /// (docs/windows-distribution.md, "The archive"; #327).
+    /// (docs/for-humans/windows/distribution.md, "The archive"; #327).
     pub const VERSION_FILES: [&str; 7] = [
         "climon2-cli.exe",
         "climon2-daemon.exe",

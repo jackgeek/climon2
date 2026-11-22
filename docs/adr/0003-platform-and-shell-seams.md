@@ -200,7 +200,7 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
 
 ## Windows lifecycle (agreed, not implemented)
 
-Decided in [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212) (owner, 2026-11-21), after measurements on a Windows 11 VM. The full contract and its exceptions are in [Windows platform and lifecycle contract](../windows-lifecycle.md).
+Decided in [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212) (owner, 2026-11-21), after measurements on a Windows 11 VM. The full contract and its exceptions are in [Windows platform and lifecycle contract](../for-humans/windows/lifecycle.md).
 
 - **Platform.** Windows 11 build 26100 or newer, documented and not checked at
   run time. Windows 10 is not supported.
@@ -226,7 +226,7 @@ Decided in [Define Windows platform support and lifecycle contract](https://gith
 
 Adding zsh, sh, pwsh, powershell or cmd is purely a test-harness change: a new shell profile. Known controlled-startup flags: bash `--norc --noprofile`; zsh `-f`; sh with `ENV` unset (macOS `/bin/sh` is bash 3.2 in POSIX mode, Ubuntu's is dash); pwsh and powershell `-NoProfile`; cmd `/D`.
 
-The Windows shell profiles, the host models and the scenarios they run are specified in [Windows host and shell qualification](../windows-qualification.md).
+The Windows shell profiles, the host models and the scenarios they run are specified in [Windows host and shell qualification](../for-humans/windows/qualification.md).
 
 ## Considered options
 
@@ -253,4 +253,4 @@ The Windows shell profiles, the host models and the scenarios they run are speci
 - Local full quality gates must pass for the exact release commit before
   tagging; this maintainer-owned check is not duplicated or certified by CI.
 - One release publishes both platform archives only after both native gates
-  pass; see [distribution](../distribution.md).
+  pass; see [distribution](../for-humans/distribution.md).

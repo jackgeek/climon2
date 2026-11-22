@@ -1,4 +1,4 @@
-//! Evaluation of one run's measurements (docs/monitor-acceptance.md,
+//! Evaluation of one run's measurements (docs/for-humans/behaviour/monitor/acceptance.md,
 //! PERF-01; owner decisions on #121, 2026-11-16): latency distributions
 //! against the 100 ms 99th-percentile targets, stalls of 250 ms or more for
 //! diagnosis, admission at default limits, and measured requirements against

@@ -91,7 +91,7 @@ fn assert_title_untouched(terminal: &Terminal) {
 
 /// The start of an OSC 7501 report.
 const OSC_7501: &[u8] = b"\x1b]7501;";
-/// The monitor's root OSC 7501 reports (docs/protocol/monitor-host).
+/// The monitor's root OSC 7501 reports (docs/for-humans/protocol/monitor-host).
 const BLOCKED: &[u8] = b"\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x1b\\";
 const WORKING: &[u8] = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
 const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
@@ -359,7 +359,7 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
 }
 
 /// One 500x200 session's mandatory allocation, as documented in
-/// docs/monitor-operational-limits.md: its 4,850,887-byte current model and
+/// docs/for-humans/behaviour/monitor/operational-limits.md: its 4,850,887-byte current model and
 /// the 12,115,200-byte history chunk that holds its recent page, beside its
 /// client library's 3,407,872-byte default share of the client's budget
 /// (#119), and beside them, in the aggregate budget only, the monitor's one
@@ -8178,10 +8178,12 @@ fn notifications_toast_once_per_episode_and_progress_never_does() {
     no_toast(&terminal);
     assert_eq!(bells(&terminal), 1);
 
-    headless(&package, &stepped("Done", &["exit 3"]), "finish");
-    glance(&mut terminal, STATUS, "Done");
+    // Running on any clock. Without the report, a release archive's daemon
+    // would see the title change and soon request attention (`settled`).
+    headless(&package, &working(&stepped("Done", &["exit 3"])), "finish");
+    glance(&mut terminal, RUNNING, "Done");
     terminal.send("\x1dsDone\r").unwrap();
-    top_row_is(&mut terminal, &controlled("Done", STATUS));
+    top_row_is(&mut terminal, &controlled("Done", RUNNING));
     step(&package, "Done", 1);
     let ended = session_top_row(
         usize::from(COLS),

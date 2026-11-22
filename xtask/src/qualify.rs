@@ -1,6 +1,6 @@
 //! `cargo xtask qualify`: release qualification (#122) of the exact
 //! candidate artifacts against the acceptance matrix
-//! (docs/monitor-acceptance.md).
+//! (docs/for-humans/behaviour/monitor/acceptance.md).
 //!
 //! `qualify run` makes one platform's evidence records: every scenario's
 //! required layers on this host, from the packaged tests against the
@@ -29,7 +29,7 @@ use std::{
     time::Instant,
 };
 
-/// A scenario's evidence layer (docs/monitor-acceptance.md, "Evidence
+/// A scenario's evidence layer (docs/for-humans/behaviour/monitor/acceptance.md, "Evidence
 /// policy").
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum Layer {
@@ -112,7 +112,7 @@ impl Platform {
     }
 }
 
-/// An evidence state (docs/monitor-acceptance.md, "Documentation and
+/// An evidence state (docs/for-humans/behaviour/monitor/acceptance.md, "Documentation and
 /// evidence records").
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum State {
@@ -151,7 +151,7 @@ impl State {
 /// the candidate's source tree.
 const DISPOSITIONS: &str = "qualification/dispositions.json";
 const MANUAL: &str = "qualification/manual.json";
-const MATRIX: &str = "docs/monitor-acceptance.md";
+const MATRIX: &str = "docs/for-humans/behaviour/monitor/acceptance.md";
 
 /// `qualify run`'s options.
 #[derive(Debug, Eq, PartialEq)]

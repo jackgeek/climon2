@@ -1,4 +1,4 @@
-//! The Windows installer (docs/windows-distribution.md, "The installer" and
+//! The Windows installer (docs/for-humans/windows/distribution.md, "The installer" and
 //! "Upgrading"). `install.exe [--dir <directory>] [--no-modify-path]` places
 //! the release beside it into an executable home, `%LOCALAPPDATA%\climon2`
 //! unless `--dir` names another, then adds that home to the user's `PATH`

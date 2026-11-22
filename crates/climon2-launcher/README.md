@@ -13,7 +13,7 @@ companions. Failures emit one `climon2: error: …` line and exit 125.
 
 Windows cannot exec, so `src/handoff/windows.rs` spawns the CLI with the same
 arguments, environment, cwd and handles, waits, and exits with its raw 32-bit
-status (#315, docs/windows-lifecycle.md). It retries a missing or denied
+status (#315, docs/for-humans/windows/lifecycle.md). It retries a missing or denied
 `current` for up to one second, handles Ctrl+C and Ctrl+Break with a handler
 routine, and on close, logoff or shutdown waits three seconds for the CLI
 before exiting 129. It declares its few kernel32 calls itself, so it stays
