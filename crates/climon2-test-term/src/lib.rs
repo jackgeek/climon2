@@ -47,5 +47,5 @@ pub use terminal::{Modes, Options, Terminal};
 #[cfg(windows)]
 pub use windows::{
     ConPty, Finished, HostModel, HostSettings, JobShape, Key, Modifiers, Outside, PWSH_PROMPT,
-    controlled_pwsh, pwsh,
+    controlled_pwsh, pwsh, relay_outside,
 };

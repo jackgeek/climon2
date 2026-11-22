@@ -4,8 +4,9 @@
 //! records. Without either bundled ConPTY file, and in a job the daemon
 //! cannot leave, `exec` exits 125 and leaves nothing running.
 //!
-//! cargo runs tests in a job that refuses breakaway, so each `exec` runs
-//! outside it, through the harness (`climon2_test_term::Outside`).
+//! cargo runs tests in a job that refuses breakaway, and so does the CI
+//! runner, so each `exec` runs outside both, through the harness
+//! (`climon2_test_term::Outside`, whose relay this binary declares).
 #![cfg(windows)]
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
@@ -23,6 +24,8 @@ use windows_sys::Win32::System::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
     },
 };
+
+climon2_test_term::outside_relay!();
 
 /// `0xC000013A`, `STATUS_CONTROL_C_EXIT`, at full width.
 const CONTROL_C_EXIT: &str = "0xc000013a";
