@@ -4,6 +4,8 @@ fn main() -> std::process::ExitCode {
             println!("{}", staged_probe(41));
             return std::process::ExitCode::SUCCESS;
         }
+        // Windows has no exec: its launcher spawns and waits.
+        #[cfg(unix)]
         Some("--staged-exec") => {
             // Like the CLI's client handoff: count, then replace the process image.
             println!("{}", staged_probe(41));
