@@ -461,6 +461,7 @@ fn assertions() -> Assertions {
         MONITOR,
         INTERACTIVE,
         NATIVE_UNIX,
+        NATIVE_WINDOWS,
         UNAVAILABLE,
         UNSET,
         VALUE,

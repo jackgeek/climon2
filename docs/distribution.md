@@ -16,6 +16,12 @@ Ubuntu baseline or compatibility with every Linux distribution.
 The Linux installer requires a filesystem supporting `renameat2` directory
 exchange. macOS executables retain universal slices and ad-hoc signing.
 
+Windows is not released yet. On an x86_64 Windows host `cargo xtask dist`
+builds its zip archive, but there is no Windows installer and the release
+does not publish the zip. Its archive, how it is built, and the agreed
+installer and upgrade rules are in
+[Windows packaging and upgrades](windows-distribution.md).
+
 `cargo xtask dist` builds only the shipped packages, in a private target
 directory, without test hooks or inherited instrumentation. It checks release
 versions and tags, verifies every executable's and the client library's
@@ -28,7 +34,7 @@ need no shared library beyond glibc's. Outputs go to `target/dist`:
 - `install.sh`, stamped with that exact version.
 - `SHA256SUMS`, covering both files.
 
-Each archive contains the installer `install`, launcher `climon2`, license,
+Each archive contains the installer `install`, launcher `c2`, license,
 README and `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}`
 plus the client library, `libclimon2_client.dylib` on macOS or
 `libclimon2_client.so` on Linux.
@@ -42,12 +48,11 @@ downloading. It verifies the selected archive with `shasum` on macOS or
 removal is macOS-only. Both platforms default to `$HOME/.local/share/climon2`;
 `--dir` overrides the executable home without changing shell profiles.
 
-Fresh installs and upgrades create `c2 -> climon2` in that home. Use `c2` as
-the command; `climon2` remains supported without warnings. An existing correct
-relative link is accepted, but any unrelated `c2` entry blocks installation
-before publication and is never overwritten. Link-creation errors leave
-`current` unchanged. The archive still contains the launcher as `climon2`;
-the installer creates the short command rather than requiring another payload.
+Fresh installs and upgrades place the launcher in that home as `c2`, the only
+command name; there is no `climon2` command. Every install replaces `c2`
+atomically. Nothing is migrated: a `c2 -> climon2` symlink left by a development
+install from before #303 is replaced by the launcher, and the `climon2` file it
+pointed to stays until you delete it.
 
 For manual Linux installation:
 

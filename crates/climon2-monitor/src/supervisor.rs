@@ -67,11 +67,16 @@ use climon2_core::{
     metadata::SessionMetadata,
     native,
 };
-use climon2_platform::library::{Failure, Functions};
+use climon2_platform::{
+    library::{Failure, Functions},
+    process,
+    waiting::{self, Interest, Watch},
+};
 use owner::StartupData;
 use queue::{Condition, Entry, Lane, Queue};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    os::fd::BorrowedFd,
     path::PathBuf,
     sync::{
         Arc,
@@ -85,7 +90,7 @@ use stream::Stream;
 
 /// How long one wait on the notification descriptors lasts before commands
 /// are read again.
-const TICK_MILLISECONDS: i32 = 20;
+const TICK: Duration = Duration::from_millis(20);
 
 /// Loads a release's validated client library: the one shared load of
 /// `climon2_platform::library::Loader` in the monitor.
@@ -1165,7 +1170,8 @@ impl State {
         let admission = &self.context.admission;
         Capacity {
             bytes: admission.total_bytes.saturating_sub(self.context.outside),
-            descriptors: descriptor_limit().saturating_sub(admission.descriptor_headroom.into()),
+            descriptors: process::descriptor_limit()
+                .saturating_sub(admission.descriptor_headroom.into()),
         }
     }
 
@@ -1501,12 +1507,9 @@ impl State {
             .iter()
             .filter(|(id, _)| !self.throttled(id))
             .filter_map(|(_, instance)| instance.phase.live()?.descriptor)
-            .map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                // Output only.
-                revents: Default::default(),
-            })
+            // SAFETY: a live instance's library keeps its notification
+            // descriptor open, and the table ends with this wait.
+            .map(|fd| Watch::new(unsafe { BorrowedFd::borrow_raw(fd) }, Interest::Read))
             .collect();
         wait(&mut table);
         let live: Vec<_> = self
@@ -1943,38 +1946,19 @@ fn waiting(condition: Option<Condition>) -> ClientEvent {
     }
 }
 
-/// The operating system's soft limit on this process's descriptors, read
-/// afresh so that a raised limit admits more. A limit that cannot be read
-/// reads as none left, so nothing more is admitted.
-fn descriptor_limit() -> u64 {
-    let mut limit = libc::rlimit {
-        rlim_cur: u64::MIN,
-        rlim_max: u64::MIN,
-    };
-    // SAFETY: getrlimit writes only `limit`.
-    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
-    limit.rlim_cur
-}
-
 /// A thread stack of `bytes`, saturating.
 fn stack(bytes: u64) -> usize {
     usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
-/// Waits one tick for any of `table`'s descriptors, or simply one tick.
-fn wait(table: &mut [libc::pollfd]) {
+/// Waits one tick for any of `table`'s descriptors, or simply one tick. A
+/// failed wait only ends the tick early.
+fn wait(table: &mut [Watch<'_>]) {
     if table.is_empty() {
-        thread::sleep(Duration::from_millis(TICK_MILLISECONDS as u64));
+        thread::sleep(TICK);
         return;
     }
-    // SAFETY: poll reads and updates exactly `table`'s entries.
-    unsafe {
-        libc::poll(
-            table.as_mut_ptr(),
-            table.len() as libc::nfds_t,
-            TICK_MILLISECONDS,
-        )
-    };
+    let _ = waiting::wait(table, TICK);
 }
 
 #[cfg(test)]

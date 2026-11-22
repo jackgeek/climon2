@@ -10,7 +10,10 @@ fn workflow(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../.github/workflows")
         .join(name);
-    fs::read_to_string(path).expect("read workflow")
+    // A Windows checkout may turn each line ending into CRLF.
+    fs::read_to_string(path)
+        .expect("read workflow")
+        .replace("\r\n", "\n")
 }
 
 /// The top-level `on:` block's trigger names.
@@ -170,4 +173,25 @@ fn evidence_records_are_artifacts_and_release_assets() {
 fn pull_requests_never_qualify() {
     assert!(!workflow("check.yml").contains("qualify"));
     assert!(!workflow("measure.yml").contains("qualify"));
+}
+
+/// #319: the Windows Dist job builds the zip on `windows-2025` on every run.
+/// Unlike the Windows Test and Quality jobs it does not wait for the Windows
+/// scope, so `CLIMON2_WINDOWS_TESTS=off` never skips it.
+#[test]
+fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
+    let check = workflow("check.yml");
+    let dist = job(&check, "windows-dist");
+    assert!(dist.contains(&"    runs-on: windows-2025"), "{dist:#?}");
+    assert!(
+        !dist
+            .iter()
+            .any(|line| line.starts_with("    needs:") || line.starts_with("    if:")),
+        "{dist:#?}"
+    );
+    assert!(dist.contains(&"        run: cargo xtask dist"), "{dist:#?}");
+    assert!(
+        dist.contains(&"          name: release-dist-windows-x86_64-msvc"),
+        "{dist:#?}"
+    );
 }

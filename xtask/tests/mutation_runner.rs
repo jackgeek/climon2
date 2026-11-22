@@ -127,6 +127,9 @@ impl Fixture {
             .current_dir(directory)
             .env("CLIMON2_MUTATION_CARGO", self.root().join("cargo"))
             .env("MUTATION_RUNNER_JOURNAL", self.journal())
+            // A gate runs these tests as part of a mutation baseline, with its own measured
+            // timeouts exported; only the timeouts a test writes may reach the runner.
+            .env_remove("CLIMON2_MUTATION_STAGE_TIMEOUTS")
             .envs(self.environment.iter().cloned());
         command
     }

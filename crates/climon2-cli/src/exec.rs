@@ -13,18 +13,14 @@ use climon2_core::{
 use climon2_platform::{
     daemon::{self, Readiness},
     logging::{LogFile, Role},
-    process::{self, Signal},
     runtime::RuntimeDirectory,
     terminal,
 };
 use std::{
     fs,
     io::{self, Write},
-    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
 };
 
 pub fn run(
@@ -268,7 +264,7 @@ impl Startup<'_> {
         tracing::debug!(session_id = %self.id, "handing off to version-matched client");
         #[cfg(feature = "test-hooks")]
         hold_handoff();
-        Err(Error::from(client.exec()))
+        Err(crate::native::exec_client(client))
     }
 
     fn written_metadata(&self) -> io::Result<SessionMetadata> {
@@ -322,6 +318,7 @@ struct Started<'a> {
 /// `CLIMON2_CLI_HOLD` file exists before the client starts.
 #[cfg(feature = "test-hooks")]
 fn hold_handoff() {
+    use std::{thread, time::Duration};
     let Some(release) = std::env::var_os("CLIMON2_CLI_HOLD").map(PathBuf::from) else {
         return;
     };
@@ -346,15 +343,6 @@ impl Started<'_> {
     }
 
     fn stop(&self) {
-        let _ = process::signal_group(self.pid, Signal::Terminate);
-        let deadline = Instant::now() + Duration::from_secs(6);
-        while deadline.checked_duration_since(Instant::now()).is_some() {
-            match process::try_wait(self.pid) {
-                Ok(None) => thread::sleep(Duration::from_millis(10)),
-                _ => return,
-            }
-        }
-        let _ = process::signal_group(self.pid, Signal::Kill);
-        let _ = process::wait(self.pid);
+        crate::native::stop_daemon(self.pid);
     }
 }

@@ -579,3 +579,54 @@ fn issue15_file_and_unsearchable_cwd_are_rejected() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(error.raw_os_error(), Some(libc::EACCES));
 }
+
+/// #312: the descriptor limit is the shell's `ulimit -n`, the soft limit.
+#[test]
+fn issue312_the_descriptor_limit_is_the_soft_limit() {
+    let output = Command::new("/bin/sh")
+        .args(["-c", "ulimit -n"])
+        .output()
+        .unwrap();
+    let shell = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(process::descriptor_limit().to_string(), shell.trim());
+}
+
+/// #312: only running out of descriptors, in the process or the system, is
+/// read as that.
+#[test]
+fn issue312_only_emfile_and_enfile_are_out_of_descriptors() {
+    use std::io::Error;
+    assert!(process::out_of_descriptors(&Error::from_raw_os_error(
+        libc::EMFILE
+    )));
+    assert!(process::out_of_descriptors(&Error::from_raw_os_error(
+        libc::ENFILE
+    )));
+    assert!(!process::out_of_descriptors(&Error::from_raw_os_error(
+        libc::EBADF
+    )));
+    assert!(!process::out_of_descriptors(&Error::other("full")));
+}
+
+/// #312: an immediate exit carries its code and skips exit handlers, so a
+/// buffered write is lost.
+#[test]
+fn issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing() {
+    const CHILD: &str = "CLIMON2_IMMEDIATE_EXIT_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let mut stdout = std::io::BufWriter::new(std::io::stdout());
+        write!(stdout, "lost").unwrap();
+        process::exit_immediately(125);
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("lost"));
+}

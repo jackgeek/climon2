@@ -64,7 +64,8 @@ with Command final, and for standalone Kill
 ([#98](https://github.com/jackgeek/climon2/issues/98)), and the
 [client executable](../../../GLOSSARY.md#sessions) drives that library for
 ordinary attach and kill ([#100](https://github.com/jackgeek/climon2/issues/100),
-[#101](https://github.com/jackgeek/climon2/issues/101)), as the
+[#101](https://github.com/jackgeek/climon2/issues/101); on Windows, kill
+only so far, [#318](https://github.com/jackgeek/climon2/issues/318)), as the
 [monitor](../../../GLOSSARY.md#sessions) does through the
 [native interface](../monitor-client/core-v1.md) for its sessions
 ([#73](https://github.com/jackgeek/climon2/issues/73)). The

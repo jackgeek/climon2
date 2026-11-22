@@ -11,10 +11,10 @@ use crate::{
 };
 use climon2_core::{SessionId, metadata::SessionMetadata, native};
 use climon2_platform::terminal::Signals;
-use std::{io, path::Path, ptr};
+use std::{io, path::Path, ptr, time::Duration};
 
 /// How long one wait for the library lasts before signals are checked again.
-const POLL_MS: i32 = 25;
+const POLL: Duration = Duration::from_millis(25);
 
 /// The Kill's answer: confirmed, or why not.
 type Answer = Result<(), Failure>;
@@ -79,7 +79,7 @@ fn answer(instance: &Embedded, signals: &Signals) -> io::Result<Option<Answer>> 
     while stream == Stream::Open {
         interrupted(signals)?;
         let mut keep = |record: &native::Record| answer = answered(record).or(answer.take());
-        stream = instance.turn(&mut keep, POLL_MS)?;
+        stream = instance.turn(&mut keep, POLL)?;
     }
     Ok(answer)
 }

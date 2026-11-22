@@ -15,6 +15,31 @@ replaces it with the CLI's own version's `climon2-monitor`. Usage errors
 (including a malformed session selector) are 2; climon2 failures are 125; daemon
 startup preserves 126/127.
 
+On Windows the CLI so far answers help, version and usage errors (#315) and
+runs `list` (#316), `exec --headless` (#317) and `kill` (#318) through the
+same general-log dispatch as Unix. Every other subcommand, ordinary `exec`
+included, fails with 125 from `src/windows.rs`, before touching the home,
+until its Windows seams exist; the others are behind `src/unix.rs`, which
+also holds `exec`'s Unix-only hand-off pieces (exec of the client, stopping
+a daemon). `src/client.rs` holds what `attach` and `kill` share: selecting
+one live session and the session version's client command.
+`tests/list_windows.rs` proves `list` with no sessions, the reclaim of a
+stale session whose daemon has exited, the sessions it keeps, and a live
+session listed to the width of a pinned-ConPTY console.
+`tests/exec_windows.rs` runs a version folder of the CLI, daemon and pinned
+ConPTY outside cargo's job (which refuses breakaway): a headless session is
+listed as detached with its daemon in no job and ends with its command,
+whose full status the daemon logs; the command sees the terminal identity
+and its session ID at 80x24; a missing ConPTY file or a job the daemon
+cannot leave is 125 with no daemon left; a command that cannot start is
+126. With the client executable and its library in the version folder too,
+`kill` of a headless session exits 0 once the session is cleaned up, after
+the pseudoconsole closed, the full five-second grace passed and the session
+job ended a hidden-console child with `0xC000013A`; the session's client,
+started directly, refuses ordinary attach. It needs the daemon binary built
+first (`cargo test -p climon2-daemon --test windows`), and the client binary
+and library (`cargo test -p climon2-client --test library_windows`).
+
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the
 whole `config.jsonc`, its `monitor` section included, then, unless headless,
@@ -69,7 +94,7 @@ Attach discovers live sessions and resolves an exact ID or unique prefix (1 to
 32 hex digits; none or several matches is 125). It then requires the daemon's
 `attach` and `client-startup-v1` capabilities, refuses self-attachment
 (`cannot attach to the current session`) and non-TTY use
-(`climon2 attach needs a terminal`), validates only the `client` configuration,
+(`c2 attach needs a terminal`), validates only the `client` configuration,
 and replaces the CLI with the version-matched client carrying an `attach`
 envelope, overwriting any inherited one.
 
@@ -143,8 +168,7 @@ its scenario table is in that crate's README.
 The monitor acceptance-matrix cases proven here are listed under
 [Specification mapping](#specification-mapping).
 
-The `monitor`/`m` hand-off is proven through the installed launcher, as `c2`
-and `climon2`, by `climon2-e2e` `tests/monitor.rs`:
+The `monitor`/`m` hand-off is proven through the installed launcher, `c2`, by `climon2-e2e` `tests/monitor.rs`:
 `installed_monitor_and_m_open_the_same_monitor` (ENT-01),
 `installed_monitor_arguments_are_a_usage_error` (derived argument refusal) and
 `missing_installed_monitor_fails_naming_its_version`.

@@ -18,7 +18,7 @@ consumption relationship.
 ```mermaid
 flowchart TB
     subgraph runtime["Shipped runtime"]
-        launcher["c2 / climon2<br/>same launcher executable"]
+        launcher["c2<br/>launcher executable"]
         subgraph version["Installed version v; versions coexist"]
             cli["climon2-cli<br/>CLI executable"]
             client["climon2-client<br/>client executable"]
@@ -51,53 +51,78 @@ flowchart TB
 `v` represents a [session](../GLOSSARY.md#sessions)'s installed version, not necessarily the current
 version selected by the launcher. The CLI starts a new session using its own
 version; [attachment](../GLOSSARY.md#attachment-and-control) and termination use the existing session's version.
-The installed `c2` command is a relative symlink to `climon2` in the same
-executable home. Both names consume the same current-version CLI through the
-unchanged launcher; `climon2` remains supported without deprecation warnings.
+The launcher is installed as `c2`, the only command name (#303); there is no
+`climon2` command.
 The installer is a release-payload executable, not a `c2 install` command.
 Installation relationships are outside this consumption diagram.
 
-## Windows (agreed, not implemented)
+## Windows (agreed, partly implemented)
 
 This diagram shows only what Windows changes in the diagram above: how the
-launcher reaches the CLI, and how the daemon reaches the session command
-through ConPTY, the Windows pseudoconsole. It omits the client, monitor and
-client library, whose Windows loading is undecided
-([#216](https://github.com/jackgeek/climon2/issues/216)). Arrows run from
-consumer to consumed artifact. Every arrow is dashed, because nothing here
-exists yet. The decisions are in
-[ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented).
+launcher reaches the CLI, how the CLI starts the daemon, how the daemon
+reaches the session command through ConPTY, the Windows pseudoconsole, and how
+the client and the monitor load the client library. How the CLI starts the
+client and the monitor is omitted. Arrows run from consumer to
+consumed artifact. Solid arrows exist: the launcher reaching the CLI
+([#315](https://github.com/jackgeek/climon2/issues/315)), the CLI starting
+the daemon, which hosts a headless session's command in the bundled ConPTY
+([#317](https://github.com/jackgeek/climon2/issues/317)), and the client loading
+the library beside it to end a session for `c2 kill`
+([#318](https://github.com/jackgeek/climon2/issues/318)). Every dashed arrow is
+planned. How each process starts is in the
+[Windows platform and lifecycle contract](windows-lifecycle.md). The decisions are in
+[ADR 0003](adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
+and, for the library,
+[#216](https://github.com/jackgeek/climon2/issues/216).
 
 ```mermaid
 flowchart TB
-    subgraph winruntime["Planned Windows runtime (x86_64 MSVC)"]
-        wlauncher["c2.exe / climon2.exe"]
+    subgraph winruntime["Windows runtime (x86_64 MSVC)"]
+        wlauncher["c2.exe"]
         subgraph wversion["%LOCALAPPDATA%\climon2\&lt;version&gt;"]
             wcli["climon2-cli.exe<br/>described above"]
             wdaemon["climon2-daemon.exe<br/>described above"]
+            wclient["climon2-client.exe<br/>described above"]
+            wmonitor["climon2-monitor.exe<br/>described above"]
+            wlibrary[["climon2_client.dll"]]
             conpty[["conpty.dll"]]
             openconsole["OpenConsole.exe"]
         end
         wcommand(["Session command"])
         inbox(["Inbox conhost.exe"])
 
-        wlauncher -.->|"spawns and waits for current version"| wcli
-        wdaemon -.->|"loads by full path from own folder"| conpty
-        conpty -.->|"starts from beside the DLL"| openconsole
-        openconsole -.->|"hosts the session pseudoconsole"| wcommand
-        wdaemon -.->|"creates in ConPTY and session job"| wcommand
-        conpty -.-x|"fallback refused: exec fails with 125"| inbox
+        wlauncher -->|"spawns and waits for current version; current"| wcli
+        wcli -->|"starts detached, outside every job; reads readiness"| wdaemon
+        wclient -->|"kill: loads the copy beside itself by exact path; current"| wlibrary
+        wmonitor -.->|"loads each session version's copy by exact path; never frees it"| wlibrary
+        wdaemon -->|"loads by full path from own folder"| conpty
+        conpty -->|"starts from beside the DLL"| openconsole
+        openconsole -->|"hosts the session pseudoconsole"| wcommand
+        wdaemon -->|"creates in ConPTY and session job"| wcommand
+        conpty --x|"fallback refused: exec fails with 125"| inbox
     end
 ```
 
 | Node | Purpose |
 |---|---|
-| `c2.exe` / `climon2.exe` | The frozen launcher. Windows cannot replace a process, so it starts the CLI and waits for it. `c2.exe` is a hard link or copy. |
-| `climon2-cli.exe`, `climon2-daemon.exe` | The same roles as on Unix. |
+| `c2.exe` | The frozen launcher, the only command name. Windows cannot replace a process, so it starts the CLI and waits for it. |
+| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. So far `climon2-cli.exe` runs `list`, `exec --headless`, whose daemon hosts the session, and `kill`, which starts the session version's `climon2-client.exe` and waits for it; every other subcommand fails with 125. The client runs only its kill mode so far. |
+| `climon2_client.dll` | The client library, the Windows build of the Rust cdylib above. It links the C runtime statically, as every Windows build does, imports only Windows system DLLs and exports only its bootstrap symbol. The loader never frees it and refuses it when Windows loaded another file for its path. |
 | `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
 | `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |
 | Session command | The program the session runs. |
 | Inbox `conhost.exe` | Windows' own console host. It is never used: if `OpenConsole.exe` is missing, `conpty.dll` would fall back to it, so the daemon checks both files and `exec` fails with 125. |
+
+**Current (#319):** the Windows release zip carries `c2.exe` and, in its
+version folder, `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`,
+`climon2_client.dll`, `conpty.dll` and `OpenConsole.exe`. `climon2-monitor.exe`
+is not in it until the monitor builds on Windows
+([#327](https://github.com/jackgeek/climon2/issues/327)), nor is the
+installer ([#329](https://github.com/jackgeek/climon2/issues/329)).
+`cargo xtask dist` checks that each file is x86-64 code of its kind and that
+none imports the Visual C++ runtime
+([Windows packaging](windows-distribution.md#how-it-is-built)). Packaging adds
+no relationship to the diagram.
 
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
@@ -116,7 +141,7 @@ payload. `cargo xtask measure` runs it on an exact candidate archive: it
 installs the archive with that archive's own installer, starts the measured
 sessions through the installed `climon2` with itself (its `workload` command)
 as their session command, measures the installed monitor against one
-installed `climon2 attach` per session on emulated host terminals, and loads
+installed `c2 attach` per session on emulated host terminals, and loads
 the candidate library through the shared loader only to read its embedded
 requirements. The [measurement workflow](../.github/workflows/measure.yml)
 runs it on release candidates and on manual dispatch.
@@ -285,8 +310,8 @@ packaged controlled-versions test runs this build's client executable from a
 ([decision on #97](https://github.com/jackgeek/climon2/issues/97#issuecomment-6892644920); [ADR 0004](adr/0004-crate-layout-and-dependency-direction.md)).
 
 **Current (#74):** every version folder ships the `climon2-monitor` executable,
-on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m`, or their `climon2`
-spellings, reach it through the launcher and the current version's CLI, which
+on macOS and x86-64 GNU/Linux. `c2 monitor` and `c2 m` reach it through
+the launcher and the current version's CLI, which
 execs its own version's monitor exactly as it execs a version-matched client,
 so the monitor is always the current version. That handoff between executables
 of one release is not frozen. Since #106 it discovers sessions and loads their

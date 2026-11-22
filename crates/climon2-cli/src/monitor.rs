@@ -1,4 +1,4 @@
-//! `climon2 monitor` and `climon2 m`: hand off to this version's monitor.
+//! `c2 monitor` and `c2 m`: hand off to this version's monitor.
 use crate::Error;
 use climon2_core::layout::VersionBinary;
 use std::{os::unix::process::CommandExt, process::Command};

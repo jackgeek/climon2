@@ -157,6 +157,7 @@ dependencies = [
  "tracing",
  "unicode-width",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -171,6 +172,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -296,13 +298,16 @@ version = "0.1.0"
 dependencies = [
  "climon2-core",
  "climon2-fixtures",
+ "climon2-test-term",
  "filetime",
  "libc",
+ "serde_json",
  "signal-hook 0.3.18",
  "socket2",
  "tempfile",
  "time",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -332,6 +337,7 @@ dependencies = [
  "portable-pty",
  "sha2",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1812,6 +1818,7 @@ dependencies = [
  "climon2-install",
  "climon2-platform",
  "climon2-second-release",
+ "climon2-test-term",
  "libc",
  "proc-macro2",
  "quote",

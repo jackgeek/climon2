@@ -31,7 +31,7 @@ impl Release {
         fs::create_dir_all(&assets).unwrap();
         let siblings = Path::new(env!("CARGO_BIN_EXE_xtask")).parent().unwrap();
         fs::copy(siblings.join("climon2-install"), payload.join("install")).unwrap();
-        fs::copy(siblings.join("climon2"), payload.join("climon2")).unwrap();
+        fs::copy(siblings.join("c2"), payload.join("c2")).unwrap();
         for binary in climon2_install::version_files() {
             let path = payload.join(version).join(binary);
             fs::write(&path, "#!/bin/sh\nprintf 'script-payload-ok\\n'\n").unwrap();
@@ -106,7 +106,7 @@ fn downloaded_script_installs_through_the_real_installer() {
             .trim(),
         env!("CARGO_PKG_VERSION")
     );
-    let output = Command::new(destination.join("climon2"))
+    let output = Command::new(destination.join("c2"))
         .arg("--version")
         .output()
         .unwrap();
@@ -159,5 +159,5 @@ fn downloaded_script_uses_the_installer_default_destination() {
             .trim(),
         env!("CARGO_PKG_VERSION")
     );
-    assert!(destination.join("climon2").is_file());
+    assert!(destination.join("c2").is_file());
 }

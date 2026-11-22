@@ -12,6 +12,9 @@ use std::{
     ptr,
 };
 
+/// dlopen, shared by both Unix platforms.
+pub(super) use super::unix::bootstrap;
+
 /// What a loadable client library is here.
 pub(super) const ARCHITECTURE: &str = "a Mach-O library with a slice for this process";
 

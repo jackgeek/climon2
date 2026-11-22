@@ -1,15 +1,15 @@
 use crate::{args::Options, startup::Failure};
 use climon2_core::{exit::ExitStatus, wire::CommandResult};
-use climon2_platform::{peer, process, runtime};
+use climon2_platform::{
+    peer, process, runtime,
+    waiting::{self, Interest, Watch},
+};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::{
     ffi::OsString,
     fs::File,
     io::{self, Read, Write},
-    os::{
-        fd::BorrowedFd,
-        unix::{net::UnixStream, process::CommandExt},
-    },
+    os::{fd::BorrowedFd, unix::process::CommandExt},
     path::PathBuf,
     process::Command,
     time::{Duration, Instant},
@@ -61,7 +61,8 @@ impl Pty {
                 .try_clone_to_owned()
                 .map_err(|_| Failure::own("cannot open terminal input"))?,
         ));
-        nonblocking(pty.fd()).map_err(|_| Failure::own("cannot configure command terminal"))?;
+        climon2_platform::pty::set_nonblocking(master)
+            .map_err(|_| Failure::own("cannot configure command terminal"))?;
         Ok(pty)
     }
 
@@ -102,16 +103,10 @@ impl Pty {
             std::thread::sleep(timeout);
             return;
         }
-        let mut descriptors = [libc::pollfd {
-            fd: self.fd(),
-            events: libc::POLLIN,
-            // Output-only.
-            revents: Default::default(),
-        }];
-        let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-        // An interrupted or failed poll only ends this wait early; the next read reports errors.
-        let count = descriptors.len() as libc::nfds_t;
-        unsafe { libc::poll(descriptors.as_mut_ptr(), count, milliseconds) };
+        // The master stays open while `self` holds it, so the borrow is valid.
+        let master = unsafe { BorrowedFd::borrow_raw(self.fd()) };
+        // An interrupted or failed wait only ends this wait early; the next read reports errors.
+        let _ = waiting::wait(&mut [Watch::new(master, Interest::Read)], timeout);
     }
     /// Only the session output pump calls this, while the terminal is open. Reading through
     /// the input duplicate adds no master handle that hanging up would have to close.
@@ -314,14 +309,6 @@ fn size(value: climon2_core::protocol::TerminalSize) -> PtySize {
     }
 }
 
-fn nonblocking(fd: i32) -> io::Result<()> {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 pub(crate) struct ExecListener {
     listener: runtime::SocketListener,
     path: PathBuf,
@@ -358,7 +345,7 @@ impl ExecListener {
         confirm_exec(&mut stream, self.deadline)
     }
 
-    fn accept(&self) -> Result<UnixStream, Failure> {
+    fn accept(&self) -> Result<runtime::SocketStream, Failure> {
         while !super::passed(self.deadline, Instant::now()) {
             if let Some(stream) = super::unless_would_block(peer::accept(&self.listener))
                 .map_err(|_| Failure::own("command startup connection failed"))?
@@ -385,14 +372,14 @@ fn exec(arguments: &[OsString]) -> io::Result<u8> {
     if arguments.len() < 4 {
         return Err(super::io_error("invalid command invocation"));
     }
-    let mut stream = UnixStream::connect(&arguments[0])?;
+    let mut stream = runtime::SocketStream::connect(&arguments[0])?;
     peer::authenticate(&stream)?;
     stream.write_all(&[0])?;
     execute(arguments, &mut stream)
 }
 
 /// Returns only when exec failed; success replaces this process.
-fn execute(arguments: &[OsString], stream: &mut UnixStream) -> io::Result<u8> {
+fn execute(arguments: &[OsString], stream: &mut runtime::SocketStream) -> io::Result<u8> {
     let error = command(arguments).exec();
     let code = launch_code(&error, std::path::Path::new(&arguments[2]));
     stream.write_all(&[code])?;
@@ -417,7 +404,7 @@ fn launch_code(error: &io::Error, cwd: &std::path::Path) -> u8 {
     126
 }
 
-fn confirm_exec(stream: &mut UnixStream, deadline: Instant) -> Result<(), Failure> {
+fn confirm_exec(stream: &mut runtime::SocketStream, deadline: Instant) -> Result<(), Failure> {
     let mut bytes = [u8::default(); 2];
     let mut length = 0;
     while !super::passed(deadline, Instant::now()) {
@@ -440,7 +427,7 @@ fn launched(code: u8) -> Result<(), Failure> {
 
 /// A 0-byte read is EOF: the helper's CLOEXEC connection closed.
 fn confirmation_read(
-    stream: &mut UnixStream,
+    stream: &mut runtime::SocketStream,
     bytes: &mut [u8; 2],
     length: &mut usize,
 ) -> io::Result<Option<u8>> {
@@ -470,23 +457,4 @@ fn trickle(bytes: &[u8]) -> &[u8] {
     }
     std::thread::sleep(std::time::Duration::from_millis(5));
     &bytes[..bytes.len().min(1)]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::nonblocking;
-    use std::os::fd::AsRawFd;
-
-    /// A read-only descriptor's status flags read as zero, which is not a failure.
-    #[test]
-    fn a_read_only_descriptor_becomes_nonblocking() {
-        let (reader, _writer) = std::io::pipe().unwrap();
-        let fd = reader.as_raw_fd();
-        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFL) }, libc::O_RDONLY);
-        nonblocking(fd).unwrap();
-        assert_eq!(
-            unsafe { libc::fcntl(fd, libc::F_GETFL) },
-            libc::O_RDONLY | libc::O_NONBLOCK
-        );
-    }
 }

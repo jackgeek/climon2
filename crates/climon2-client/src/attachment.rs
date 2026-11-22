@@ -17,14 +17,17 @@ use climon2_core::{
     protocol::TerminalSize,
 };
 use climon2_platform::terminal::Signals;
-use std::{collections::VecDeque, io, num::NonZeroU32, path::Path, slice};
+use std::{
+    collections::VecDeque, io, num::NonZeroU32, os::fd::BorrowedFd, path::Path, slice,
+    time::Duration,
+};
 
 /// The public ID of the instance's one Open; later requests follow it.
 const OPEN: u64 = 1;
 
 /// How long one wait for the Open's answer lasts before signals are
 /// checked again.
-const POLL_MS: i32 = 25;
+const POLL: Duration = Duration::from_millis(25);
 
 /// The only family ordinary attach requires.
 const CORE: &[u8] = b"daemon-wire-v1";
@@ -386,16 +389,18 @@ impl Attachment {
     }
 
     /// One round of waiting for the Open's answer: until the instance has
-    /// something or `POLL_MS` pass, then one delivery.
+    /// something or `POLL` pass, then one delivery.
     fn answer(&self, signals: &Signals) -> io::Result<Option<Vec<Event>>> {
         interrupted(signals)?;
-        self.instance.wait(POLL_MS)?;
+        self.instance.wait(POLL)?;
         answered(self.receive()?)
     }
 
     /// The descriptor that is readable while there is something to receive.
-    pub(crate) fn descriptor(&self) -> i32 {
-        self.instance.descriptor()
+    pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
+        // SAFETY: the library keeps the notification descriptor open while
+        // the instance's communication handle lives, as long as `self`.
+        unsafe { BorrowedFd::borrow_raw(self.instance.notification()) }
     }
 
     /// One delivery's events, none, or the end of the stream.

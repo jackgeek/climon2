@@ -2,9 +2,11 @@
 
 The runtime supports macOS 15+ on Apple Silicon and Intel, and x86_64
 GNU/Linux with an Ubuntu 24.04/glibc 2.39 release baseline. Arch Linux is a
-native development host. Windows (x86_64 MSVC, Windows 11) is specified, not
-implemented; its I/O and transport decisions are under
-[Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented). Each
+native development host. Windows (x86_64 MSVC, Windows 11 build 26100 or
+newer) is specified, not implemented; its I/O and transport decisions are under
+[Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented),
+and its process lifecycle under
+[Windows lifecycle](#windows-lifecycle-agreed-not-implemented). Each
 platform-specific concern is its own module, with platform-neutral function
 signatures and `#[cfg(target_os = …)]` bodies. There are no trait objects or
 runtime platform dispatch. Unsupported targets hit `compile_error!` inside
@@ -29,7 +31,7 @@ More seams may emerge after the first release. Everything else counts as platfor
 
 ## Transport
 
-Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 included (through socket2; the minimum build belongs to the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212)). Named pipes are not used, so session metadata keeps a socket path.
+Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 included (through socket2; build 26100 or newer, per the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212)). Named pipes are not used, so session metadata keeps a socket path.
 
 ## Linux implementation
 
@@ -99,8 +101,14 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   is 77 bytes plus the profile folder name, within AF_UNIX's 107 usable bytes.
   Over budget, `exec` fails with 125. Core's runtime layout takes the uid as
   optional, so Unix names do not change.
-- **Access control.** The `<hash8>` directory is created with a protected DACL
-  holding one ACE: the current user's SID, full control. Before each use it
+- **Access control.** The `<hash8>` directory is created with the private
+  descriptor (see Private files and folders): its owner is set explicitly to
+  the current user's SID, and its protected DACL holds one ACE, that SID with
+  full control. Setting the owner explicitly is an amendment from
+  [Define secure creation of Windows log and metadata files](https://github.com/jackgeek/climon2/issues/307):
+  an administrator's full token makes `BUILTIN\Administrators` the owner of
+  anything it creates without naming an owner, and the folder would then fail
+  the owner check (see *Why the owner is explicit* below). Before each use it
   must not be a reparse point, its owner must be that SID, and its DACL must be
   exactly that. Otherwise preparation fails with the Unix "unsafe runtime
   directory" error. The socket file inherits the DACL. Windows AF_UNIX has no
@@ -108,6 +116,70 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   weaker than Unix:** `SO_PEERCRED` rejects root, while a Windows
   administrator can bypass the DACL with `SeRestorePrivilege`. That is
   accepted, because an administrator can already read the daemon's memory.
+- **Private files and folders.** Decided in
+  [Define secure creation of Windows log and metadata files](https://github.com/jackgeek/climon2/issues/307)
+  (owner, 2026-11-21), after measurements on a Windows 11 VM. Windows has no
+  `O_NOFOLLOW` and no file modes, so `0700`, `0600` and `O_NOFOLLOW` map as
+  follows. Unix rules do not change.
+  - *Scope.* Every file climon2 creates: all logs, including the client
+    library's log at its caller's path; session metadata and its temporary
+    file; the monitor preference file and its temporary file. Every folder it
+    manages: `logs`, `logs\general`, `logs\<id>` and `sessions`. The climon2
+    home itself is treated as on Unix: created when missing, canonicalised and
+    not checked.
+  - *Private descriptor.* Each managed folder and created file gets an explicit
+    security descriptor at creation: owner set to the process token's user
+    SID, and a protected DACL with one ACE, that SID with full control
+    (inheritable on folders). SYSTEM and Administrators are not listed; an
+    administrator can still bypass the DACL, as accepted above.
+  - *Why the owner is explicit.* A new file or folder is owned by the SID its
+    descriptor names or, when it names none, by the creating token's default
+    owner. Inheritance never supplies the owner. Measured on 2026-11-22 with
+    [the owner probe](https://github.com/jackgeek/climon2/blob/0feb0122cb217396b715ea15c849ee2be6d61d12/probes/elevated-owner/probe.ps1)
+    ([CI run](https://github.com/jackgeek/climon2/actions/runs/45003024593)):
+    every administrator token at high integrity defaults to
+    `BUILTIN\Administrators`. That covers the elevated half of a UAC split
+    token, any administrator while UAC is off (as on the owner's Windows 11
+    VM), and the built-in Administrator (RID 500) that the `windows-2022` and
+    `windows-2025` runners use, whose token UAC does not filter. Only a
+    filtered, medium-integrity token defaults to its user. A descriptor that
+    carries a DACL but no owner still gets `BUILTIN\Administrators`. Setting
+    `nodefaultadminowner` ("System objects: Default owner for objects created
+    by members of the Administrators group") to 0 or 1 without a reboot
+    changed no fresh logon's default owner. With the owner named in the
+    descriptor, every token tested got its user's SID.
+  - *Final component.* Every create goes through one `climon2-platform` helper
+    that calls `CreateFileW` with `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT`
+    and the private descriptor. Plain std `create_new` is never used: it follows
+    a dangling symbolic link and creates the link's target, wherever that is.
+    With the flag, any existing name, including a dangling link, fails. Readers
+    follow links, as on Unix, relying on the private folders. Metadata and the
+    preference file are still published by renaming a temporary file, which
+    replaces a link at the destination rather than writing through it.
+  - *Parent folders.* Check, then use, as on Unix. Before each use a managed
+    folder must not be a reparse point of any tag (symbolic link, junction,
+    mount point, cloud placeholder), must be a directory, must be owned by the
+    user's SID and must hold exactly the private DACL. Folders above `logs` and
+    `sessions` are not checked. Handle-relative creation (`NtCreateFile` with
+    a root directory handle) was rejected: only the user and administrators can
+    write into an owner-only folder, which is the guarantee Unix relies on too.
+  - *Unsafe existing folders.* Refused without repair, with the Unix "unsafe
+    runtime directory" error naming the path and the problem. A folder made by
+    hand, or by an elevated tool, inherits the profile's ACL and is refused
+    until the user deletes it.
+  - *Client library log.* The final-component rule applies at the caller's
+    path; the caller's folder is not checked. A refusal is the existing
+    "log_path cannot be created as a new file" failure.
+  - *Evidence.* Tests in registered `windows.rs` files: a dangling file link
+    at the final name is refused and nothing appears at its target; an
+    existing file is refused; a junction or directory link standing in for
+    `logs` is refused and pruning leaves its target alone; a folder with the
+    inherited descriptor (owned by Administrators on the elevated CI runner)
+    and one with an extra ACE are each refused and left unrepaired; created
+    files and folders carry exactly the private descriptor; the client
+    library refuses a dangling link at its log path. Cross-account denial and
+    the log-privacy scenario are in the Windows quality and qualification
+    documents.
 - **Stale sockets.** The Unix rule applies: a NotFound or ConnectionRefused
   connect plus proven-dead daemon identity permits cleanup. A socket is
   recognised by its reparse tag `IO_REPARSE_TAG_AF_UNIX`, since std reports it
@@ -118,22 +190,43 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   `ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT` with processed input
   off, and `ReadConsoleInputW` supplies key characters and
   `WINDOW_BUFFER_SIZE_EVENT` resizes. Keys VT cannot express, such as
-  Ctrl+Break and Shift+Enter, are a documented limitation. Output enables
+  Shift+Enter, are a documented limitation. Ctrl+Break reaches the session
+  through a console control handler instead
+  ([Windows lifecycle](#windows-lifecycle-agreed-not-implemented)). Output enables
   `ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN` and the
   UTF-8 code page, and writes raw bytes with `WriteFile`, never splitting a
   UTF-8 character across writes (a pure `climon2-core` boundary function, used
   only on Windows). Every exit path restores both console modes and code pages.
 
+## Windows lifecycle (agreed, not implemented)
+
+Decided in [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212) (owner, 2026-11-21), after measurements on a Windows 11 VM. The full contract and its exceptions are in [Windows platform and lifecycle contract](../windows-lifecycle.md).
+
+- **Platform.** Windows 11 build 26100 or newer, documented and not checked at
+  run time. Windows 10 is not supported.
+- **Daemon spawn and detach.** A raw `CreateProcessW` with `DETACHED_PROCESS`
+  and, inside a job, `CREATE_BREAKAWAY_FROM_JOB`. If the daemon is still in a
+  job afterwards, `exec` exits 125; there is no fallback route.
+- **Hanging up.** One job object per session, allowing breakaway and killing
+  on close. Hang-up closes the pseudoconsole, waits the full five seconds, then
+  terminates the job with `0xC000013A`.
+- **Launcher hand-off.** Every Unix `exec` hand-off, including the monitor's,
+  becomes spawn and wait, passing the child's raw `u32` status through.
+- **Exit-status mapping.** Statuses are full-width; there is no
+  128 + signal on Windows.
+- **Process start time.** `GetProcessTimes` creation time in the frozen
+  `daemon_start_time`.
+
 ## Notes for future ports
 
 - **Windows peer check and runtime directory:** superseded by [Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented).
-- **Windows hang-up:** ClosePseudoConsole (which delivers CTRL_CLOSE_EVENT), then 5 s, then TerminateProcess. The daemon calls the bundled `conpty.dll` directly, not portable-pty. Timing belongs to the [Windows platform contract](https://github.com/jackgeek/climon2/issues/212).
-- **Windows launcher:** it can't `exec`, so it spawns the CLI, waits, exits with the child's code, and ignores Ctrl+C. Its contract freezes when Windows first ships (ADR 0002).
-- **Windows exit status:** the Exit frame's `code` must carry a raw `u32` code (for example `0xC000013A`); 128+signal is Unix-only. The post-hello protocol is version-specific (ADR 0001), so widening it later is cheap.
+- **Windows hang-up, launcher and exit status:** superseded by [Windows lifecycle](#windows-lifecycle-agreed-not-implemented). The launcher's contract freezes when Windows first ships (ADR 0002).
 
 ## Shell profiles
 
 Adding zsh, sh, pwsh, powershell or cmd is purely a test-harness change: a new shell profile. Known controlled-startup flags: bash `--norc --noprofile`; zsh `-f`; sh with `ENV` unset (macOS `/bin/sh` is bash 3.2 in POSIX mode, Ubuntu's is dash); pwsh and powershell `-NoProfile`; cmd `/D`.
+
+The Windows shell profiles, the host models and the scenarios they run are specified in [Windows host and shell qualification](../windows-qualification.md).
 
 ## Considered options
 

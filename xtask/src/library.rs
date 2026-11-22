@@ -207,7 +207,7 @@ mod tests {
         let scratch = scratch();
         let home = exact(scratch.path(), "exact", &[]);
         verify_architecture(&library(&home)).unwrap();
-        crate::dist::unhooked(&library(&home)).unwrap();
+        crate::release::unhooked(&library(&home)).unwrap();
         verify(&home, &version()).unwrap();
     }
 
@@ -232,7 +232,7 @@ mod tests {
             fs::copy(&built, &library).unwrap();
         }
         let library = home.client_library(&second);
-        crate::dist::unhooked(&library).unwrap();
+        crate::release::unhooked(&library).unwrap();
         verify(&home, &second).unwrap();
         let error = verify(&home, &version()).unwrap_err();
         assert!(error.to_string().contains("0.0.97"), "{error}");
@@ -244,7 +244,7 @@ mod tests {
     fn release_checks_reject_test_hook_markers() {
         let scratch = scratch();
         let home = exact(scratch.path(), "hooked", &["-DHOOK_MARKER"]);
-        let error = crate::dist::unhooked(&library(&home)).unwrap_err();
+        let error = crate::release::unhooked(&library(&home)).unwrap_err();
         assert!(error.to_string().contains("contains test hooks"), "{error}");
     }
 

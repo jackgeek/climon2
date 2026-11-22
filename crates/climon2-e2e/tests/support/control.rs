@@ -162,7 +162,7 @@ impl Session {
         clock: Option<&Path>,
     ) -> Self {
         let end = root.join("end");
-        let mut command = package.command("climon2");
+        let mut command = package.command("c2");
         if let Some(clock) = clock {
             command.env("CLIMON2_DAEMON_CLOCK", clock);
         }

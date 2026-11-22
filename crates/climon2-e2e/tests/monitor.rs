@@ -1,5 +1,5 @@
-//! Spec #73 / #74: the packaged monitor, reached as `c2 monitor`, `c2 m` or
-//! their `climon2` spellings through the installed launcher, driven through
+//! Spec #73 / #74: the packaged monitor, reached as `c2 monitor` or `c2 m`
+//! through the installed launcher, driven through
 //! real PTYs from outer shells with isolated homes (the Monitor layer), on
 //! macOS and Linux. Every scenario ends with `assert_clean()`.
 #![cfg(any(target_os = "macos", target_os = "linux"))]
@@ -34,7 +34,7 @@ const TITLE: &str = "OUTER-TITLE";
 const BEFORE: &[u8] = b"BEFORE-MONITOR\r\n";
 const DONE: &[u8] = b"OUTER-DONE=";
 const USAGE: &str = "climon2: error: usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m\r\n";
-const NO_TERMINAL: &str = "climon2: error: climon2 monitor needs a terminal\r\n";
+const NO_TERMINAL: &str = "climon2: error: c2 monitor needs a terminal\r\n";
 /// Three bracketed pastes with the default prefix: one holding prefix+x, one
 /// after a typed prefix and followed by a typed x, and one holding the prefix
 /// alone, followed by a typed x.
@@ -158,7 +158,7 @@ fn refusal(terminal: &mut Terminal) -> String {
 #[test]
 fn installed_monitor_arguments_are_a_usage_error() {
     let package = Package::new();
-    for command in ["c2 monitor extra", "climon2 m --help", "c2 mon"] {
+    for command in ["c2 monitor extra", "c2 m --help", "c2 mon"] {
         let mut terminal = outer(&package, command);
         assert_eq!(refusal(&mut terminal), USAGE);
         assert_released(&package, &mut terminal, 2);
@@ -178,7 +178,7 @@ fn missing_installed_monitor_fails_naming_its_version() {
             .join("climon2-monitor"),
     )
     .unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     let diagnostic = refusal(&mut terminal);
     assert!(
         diagnostic.starts_with(&format!(
@@ -201,7 +201,7 @@ fn installed_monitor_refuses_a_non_terminal_stdin_or_stdout() {
     let stdout = package.isolation.home().join("monitor stdout");
     for command in [
         "c2 monitor < /dev/null".to_owned(),
-        format!("climon2 m > {}", quote(&stdout)),
+        format!("c2 m > {}", quote(&stdout)),
     ] {
         let mut terminal = outer(&package, &command);
         assert_eq!(refusal(&mut terminal), NO_TERMINAL);
@@ -220,7 +220,7 @@ fn installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys() {
     for (config, expected) in [
         (
             r#"{"client": {"escape_prefix": null}}"#,
-            "climon2: error: config.jsonc is invalid: client.escape_prefix may not be null for climon2 monitor (logs: ",
+            "climon2: error: config.jsonc is invalid: client.escape_prefix may not be null for c2 monitor (logs: ",
         ),
         (
             r#"{"client": {"take_control_key": "Ctrl+\n"}}"#,
@@ -228,7 +228,7 @@ fn installed_monitor_refuses_a_null_escape_prefix_and_invalid_keys() {
         ),
     ] {
         fs::write(config_file(&package), config).unwrap();
-        let mut terminal = outer(&package, "climon2 monitor");
+        let mut terminal = outer(&package, "c2 monitor");
         let diagnostic = refusal(&mut terminal);
         assert!(diagnostic.starts_with(expected), "{diagnostic:?}");
         assert_released(&package, &mut terminal, 125);
@@ -306,7 +306,7 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
     let package = Package::new();
     let config = config_file(&package);
     fs::create_dir(&config).unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     let diagnostic = refusal(&mut terminal);
     assert!(
         diagnostic.starts_with("climon2: error: cannot read config.jsonc: "),
@@ -346,7 +346,7 @@ fn installed_monitor_refuses_every_invalid_configuration_before_the_terminal_cha
         ),
     ] {
         fs::write(&config, text).unwrap();
-        let mut terminal = outer(&package, "climon2 monitor");
+        let mut terminal = outer(&package, "c2 monitor");
         let diagnostic = refusal(&mut terminal);
         assert!(
             diagnostic.starts_with(&format!("climon2: error: {expected}")),
@@ -420,7 +420,7 @@ fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model()
     ] {
         let text = memory(limits);
         fs::write(&config, &text).unwrap();
-        let mut terminal = outer(&package, "climon2 monitor");
+        let mut terminal = outer(&package, "c2 monitor");
         let diagnostic = refusal(&mut terminal);
         assert!(
             diagnostic.starts_with(&format!(
@@ -431,7 +431,7 @@ fn installed_monitor_refuses_limits_that_cannot_hold_the_largest_session_model()
         assert_released(&package, &mut terminal, 125);
     }
     fs::write(&config, memory([WITH_PARSER, MODEL_AND_PAGE, PAGE, PAGE])).unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     terminal.send(b"\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
@@ -449,7 +449,7 @@ fn installed_monitor_without_key_hints_shows_none_and_still_exits() {
         r#"{"monitor": {"show_key_hints": false, "future": null}, "scrollback": {"max_rows": "many"}, "future": []}"#,
     )
     .unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     assert_eq!(terminal.screen(), empty_monitor(ROWS, COLS, &[EMPTY]));
     terminal.send(b"\x1dx").unwrap();
@@ -470,7 +470,7 @@ fn editing_the_configuration_while_the_monitor_runs_changes_nothing() {
         r#"{"client": {"escape_prefix": "Ctrl+B"}, "monitor": {"show_key_hints": false}}"#,
     )
     .unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     assert_eq!(terminal.screen(), empty_monitor(ROWS, COLS, &[EMPTY]));
     fs::write(
@@ -553,7 +553,7 @@ fn installed_monitor_logs_its_effective_configuration() {
         r#"{"client": {"take_control_key": null}, "monitor": {"bell": false, "limits": {"history": {"max_rows": 200}, "retry": {"cap_ms": 40000}}}}"#,
     )
     .unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     terminal.send(b"\x1dx").unwrap();
     assert_released(&package, &mut terminal, 0);
@@ -806,9 +806,8 @@ fn monitor_process(package: &Package) -> (i32, String) {
     processes.into_iter().next().unwrap()
 }
 
-/// ENT-01 (Monitor layer): from an installed release, `c2 monitor`, `c2 m`,
-/// `climon2 monitor` and `climon2 m` all open the same monitor through the
-/// launcher, the CLI and the version's installed `climon2-monitor`: one
+/// ENT-01 (Monitor layer): from an installed release, `c2 monitor` and
+/// `c2 m` open the same monitor through the launcher, the CLI and the version's installed `climon2-monitor`: one
 /// permanent top row above the explicit empty state, whose hint names the
 /// default prefix. Prefix+x exits 0 and releases the host even split across
 /// reads: the monitor has read the prefix alone before x is typed.
@@ -823,7 +822,7 @@ fn installed_monitor_and_m_open_the_same_monitor() {
         .join(VERSION)
         .join("climon2-monitor");
     let expected = expected_screen(ROWS, COLS, "Ctrl+]");
-    for command in ["c2 monitor", "c2 m", "climon2 monitor", "climon2 m"] {
+    for command in ["c2 monitor", "c2 m"] {
         let mut terminal = outer(&package, command);
         opened(&mut terminal);
         let (monitor, executable) = monitor_process(&package);
@@ -850,7 +849,7 @@ fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
         r#"{"client": {"escape_prefix": "Ctrl+B", "take_control_key": null}}"#,
     )
     .unwrap();
-    let mut ignoring = outer(&package, "climon2 monitor");
+    let mut ignoring = outer(&package, "c2 monitor");
     opened(&mut ignoring);
     assert_eq!(ignoring.screen(), expected_screen(ROWS, COLS, "Ctrl+B"));
     let monitor = monitor_process(&package).0;
@@ -858,7 +857,7 @@ fn installed_monitor_hints_and_exits_with_the_configured_prefix() {
     kill(Pid::from_raw(monitor), Signal::SIGTERM)
         .expect("the monitor still runs after reading Ctrl+C and the default prefix+x");
     assert_released(&package, &mut ignoring, 143);
-    let mut exiting = outer(&package, "climon2 monitor");
+    let mut exiting = outer(&package, "c2 monitor");
     opened(&mut exiting);
     exiting.send(b"\x02x").unwrap();
     assert_released(&package, &mut exiting, 0);
@@ -905,7 +904,7 @@ fn read_alone(terminal: &mut Terminal, monitor: i32, bytes: &[u8]) {
 fn pastes_never_exit_or_leave_a_pending_prefix() {
     let package = Package::new();
     without_introduction(&package);
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     let monitor = monitor_process(&package).0;
     read_alone(&mut terminal, monitor, PASTES);
@@ -928,7 +927,7 @@ fn signals_release_the_host_with_signal_style_status() {
         (Signal::SIGTERM, 143),
         (Signal::SIGHUP, 129),
     ] {
-        let mut terminal = outer(&package, "climon2 monitor");
+        let mut terminal = outer(&package, "c2 monitor");
         opened(&mut terminal);
         kill(Pid::from_raw(monitor_process(&package).0), signal).unwrap();
         terminal
@@ -949,7 +948,7 @@ fn signals_release_the_host_with_signal_style_status() {
 fn resizing_the_host_redraws_the_monitor_at_the_new_size() {
     let package = Package::new();
     without_introduction(&package);
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened(&mut terminal);
     for (rows, cols) in [(12, 50), (40, 160)] {
         terminal.resize(rows, cols).unwrap();
@@ -992,7 +991,7 @@ fn debug_hook_render_failure_restores_the_host_before_its_diagnostic() {
         return;
     }
     let package = Package::new();
-    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=draw climon2 monitor");
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=draw c2 monitor");
     assert_diagnosed_after_release(
         &mut terminal,
         "climon2: error: injected draw failure (logs: ",
@@ -1019,14 +1018,15 @@ fn assert_diagnosed_after_release(terminal: &mut Terminal, diagnostic: &str) {
 /// monitor at once instead of spinning: it leaves its alternate screen and
 /// restores the baseline and exact termios, then prints one diagnostic, and
 /// exits with the climon2 error code. Only hook-enabled debug siblings inject
-/// it, by giving the kernel no descriptor table to poll (EFAULT).
+/// it, by failing the wait as the kernel fails one given no descriptor table
+/// (EFAULT).
 #[test]
 fn debug_hook_input_wait_failure_restores_the_host_before_its_diagnostic() {
     if env::var_os("CLIMON2_E2E_ARCHIVE").is_some() {
         return;
     }
     let package = Package::new();
-    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=poll climon2 monitor");
+    let mut terminal = outer(&package, "CLIMON2_MONITOR_FAULT=poll c2 monitor");
     assert_diagnosed_after_release(
         &mut terminal,
         "climon2: error: cannot wait for host input: Bad address (os error 14) (logs: ",
@@ -1060,10 +1060,7 @@ fn a_hung_up_host_input_releases_the_host_before_its_diagnostic() {
     let package = Package::new();
     without_introduction(&package);
     let input = InputTerminal::open(ROWS, COLS).unwrap();
-    let mut terminal = outer(
-        &package,
-        &format!("climon2 monitor < {}", quote(input.path())),
-    );
+    let mut terminal = outer(&package, &format!("c2 monitor < {}", quote(input.path())));
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
     input.hang_up();
     assert_closed_host_terminal(&package, &mut terminal);
@@ -1090,7 +1087,7 @@ fn host_input_failing_with_eio_releases_the_host_before_its_diagnostic() {
     let mut terminal = outer(
         &package,
         "trap '' TTIN TTOU; set -m; exec 3>&2 2>/dev/null; \
-         climon2 monitor 2>&3 3>&- & wait $!; s=$?; set +m; exec 3>&-; \
+         c2 monitor 2>&3 3>&- & wait $!; s=$?; set +m; exec 3>&-; \
          r=$(stty -g); stty -echo; IFS= read -r _; stty \"$r\"; (exit $s)",
     );
     terminal.wait_for_text(EMPTY, TIMEOUT).unwrap();
@@ -1104,7 +1101,7 @@ fn host_input_failing_with_eio_releases_the_host_before_its_diagnostic() {
 fn installed_monitor_logs_content_free_records_to_its_general_log() {
     let package = Package::new();
     without_introduction(&package);
-    let mut terminal = outer(&package, "CLIMON2_LOG=trace climon2 monitor");
+    let mut terminal = outer(&package, "CLIMON2_LOG=trace c2 monitor");
     opened(&mut terminal);
     terminal.send("typed-secret-not-for-logs-5e1").unwrap();
     terminal.send(b"\x1dx").unwrap();
@@ -1138,13 +1135,13 @@ fn the_key_introduction_opens_at_every_start_until_dont_show_again_is_saved() {
     .unwrap();
     let empty = expected_screen(ROWS, COLS, "Ctrl+B");
     let introduction = overlaid(&empty, &key_introduction("Ctrl+B", false, None));
-    let mut first = outer(&package, "climon2 monitor");
+    let mut first = outer(&package, "c2 monitor");
     opened_on(&mut first, &introduction);
     first.send(b"\r").unwrap();
     shows(&mut first, &empty);
     first.send(b"\x02x").unwrap();
     assert_released(&package, &mut first, 0);
-    let mut again = outer(&package, "climon2 monitor");
+    let mut again = outer(&package, "c2 monitor");
     opened_on(&mut again, &introduction);
     again.send(b"\x02x").unwrap();
     assert_released(&package, &mut again, 0);
@@ -1168,7 +1165,7 @@ fn the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_sav
         r#"{"monitor": {"show_key_hints": false}}"#,
     )
     .unwrap();
-    let mut hidden = outer(&package, "climon2 monitor");
+    let mut hidden = outer(&package, "c2 monitor");
     let quiet = empty_monitor(ROWS, COLS, &[EMPTY]);
     opened_on(&mut hidden, &quiet);
     hidden.send(b"\x1d?").unwrap();
@@ -1190,7 +1187,7 @@ fn the_key_introduction_opens_on_prefix_question_mark_whatever_hints_and_the_sav
     fs::remove_file(config_file(&package)).unwrap();
     let later = r#"{"version":2,"suppress_key_introduction":true,"tips":{"seen":["x"]}}"#;
     fs::write(preferences_file(&package), later).unwrap();
-    let mut suppressed = outer(&package, "climon2 monitor");
+    let mut suppressed = outer(&package, "c2 monitor");
     let empty = expected_screen(ROWS, COLS, "Ctrl+]");
     opened_on(&mut suppressed, &empty);
     suppressed.send(b"\x1d?").unwrap();
@@ -1230,7 +1227,7 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     let empty = expected_screen(ROWS, COLS, "Ctrl+]");
     let introduction = overlaid(&empty, &key_introduction("Ctrl+]", false, None));
     let checked = overlaid(&empty, &key_introduction("Ctrl+]", true, None));
-    let mut first = outer(&package, "umask 000; climon2 monitor");
+    let mut first = outer(&package, "umask 000; c2 monitor");
     opened_on(&mut first, &introduction);
     let interrupted = temporary_file(&package);
     fs::write(
@@ -1249,7 +1246,7 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
 
     let old = package.isolation.home().join("old preferences");
     fs::hard_link(preferences_file(&package), &old).unwrap();
-    let mut second = outer(&package, "umask 000; climon2 monitor");
+    let mut second = outer(&package, "umask 000; c2 monitor");
     opened_on(&mut second, &empty);
     second.send(b"\x1d?").unwrap();
     shows(&mut second, &checked);
@@ -1260,7 +1257,7 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     second.send(b"\x1dx").unwrap();
     assert_released(&package, &mut second, 0);
 
-    let mut third = outer(&package, "climon2 monitor");
+    let mut third = outer(&package, "c2 monitor");
     opened_on(&mut third, &introduction);
     third.send(b" ").unwrap();
     shows(&mut third, &checked);
@@ -1271,7 +1268,7 @@ fn dont_show_again_is_saved_privately_and_atomically_per_home_and_reversible() {
     let other = package.isolation.home().join("other home");
     let mut elsewhere = outer(
         &package,
-        &format!("CLIMON2_HOME={} climon2 monitor", quote(&other)),
+        &format!("CLIMON2_HOME={} c2 monitor", quote(&other)),
     );
     opened_on(&mut elsewhere, &introduction);
     elsewhere.send(b"\x1dx").unwrap();
@@ -1309,7 +1306,7 @@ fn saving_removes_temporary_files_that_ended_processes_left_behind() {
         fs::write(path, "left by a save interrupted before its rename\n").unwrap();
     }
     let empty = expected_screen(ROWS, COLS, "Ctrl+]");
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened_on(
         &mut terminal,
         &overlaid(&empty, &key_introduction("Ctrl+]", false, None)),
@@ -1349,7 +1346,7 @@ fn an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction(
         ),
     ] {
         fs::write(preferences_file(&package), text).unwrap();
-        let mut terminal = outer(&package, "climon2 monitor");
+        let mut terminal = outer(&package, "c2 monitor");
         opened_on(
             &mut terminal,
             &overlaid(&empty, &key_introduction("Ctrl+]", false, Some(reason))),
@@ -1371,7 +1368,7 @@ fn an_unreadable_or_malformed_preference_file_shows_why_beside_the_introduction(
     }
     fs::remove_file(preferences_file(&package)).unwrap();
     fs::create_dir(preferences_file(&package)).unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     let unreadable = "cannot read monitor-preferences.json: Is a directory (os error 21)";
     opened_on(
         &mut terminal,
@@ -1405,7 +1402,7 @@ fn without_key_hints_the_empty_state_shows_problems_with_the_saved_choice() {
     let reason =
         "monitor-preferences.json is malformed: missing field `version` at line 1 column 34";
     let diagnosed = empty_monitor(ROWS, COLS, &[EMPTY, reason]);
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened_on(&mut terminal, &diagnosed);
     terminal.send(b"\x1d?").unwrap();
     shows(
@@ -1454,7 +1451,7 @@ fn a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing() {
     let package = Package::new();
     let empty = expected_screen(ROWS, COLS, "Ctrl+]");
     let introduction = overlaid(&empty, &key_introduction("Ctrl+]", false, None));
-    let mut blocked = outer(&package, "climon2 monitor");
+    let mut blocked = outer(&package, "c2 monitor");
     opened_on(&mut blocked, &introduction);
     let temporary = temporary_file(&package);
     fs::create_dir(&temporary).unwrap();
@@ -1469,13 +1466,13 @@ fn a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing() {
         monitor_logs(&package).contains(&format!("monitor preference not saved problem={exists}"))
     );
     fs::remove_dir(&temporary).unwrap();
-    let mut again = outer(&package, "climon2 monitor");
+    let mut again = outer(&package, "c2 monitor");
     opened_on(&mut again, &introduction);
     again.send(b"\x1dx").unwrap();
     assert_released(&package, &mut again, 0);
 
     fs::create_dir(preferences_file(&package)).unwrap();
-    let mut replaced = outer(&package, "climon2 monitor");
+    let mut replaced = outer(&package, "c2 monitor");
     let unreadable = "cannot read monitor-preferences.json: Is a directory (os error 21)";
     opened_on(
         &mut replaced,
@@ -1513,7 +1510,7 @@ const INERT: &[u8] = b"\x03xsj?\t\x7f\x1ds\x1dj\x1dd\x1d \x1d\r\x1d\x1d\x1b[I\x1
 fn the_key_introduction_is_modal_and_prefix_x_still_exits_from_it() {
     let package = Package::new();
     let empty = expected_screen(ROWS, COLS, "Ctrl+]");
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened_on(
         &mut terminal,
         &overlaid(&empty, &key_introduction("Ctrl+]", false, None)),
@@ -1548,7 +1545,7 @@ fn with_escape_as_the_prefix_escape_cannot_close_the_key_introduction_and_prefix
         r#"{"client": {"escape_prefix": "Ctrl+["}, "monitor": {"show_key_hints": false}}"#,
     )
     .unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     let quiet = empty_monitor(ROWS, COLS, &[EMPTY]);
     opened_on(&mut terminal, &quiet);
     terminal.send(b"\x1b?").unwrap();
@@ -1585,7 +1582,7 @@ fn with_enter_as_the_prefix_a_doubled_enter_continues_from_the_key_introduction(
         r#"{"client": {"escape_prefix": "Ctrl+M"}}"#,
     )
     .unwrap();
-    let mut terminal = outer(&package, "climon2 monitor");
+    let mut terminal = outer(&package, "c2 monitor");
     opened_on(
         &mut terminal,
         &overlaid(
@@ -5062,7 +5059,9 @@ fn a_failed_acquisition_keeps_the_selection_and_redirects_no_input() {
     other.wait_for_text("RAW SAID", TIMEOUT).unwrap();
     assert!(terminal.row(0).starts_with(TIMED_OUT));
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, &format!("║{RUNNING:<12} Alpha"));
+    // Taken's row may be Disconnected or already retried: its status
+    // column's width is not settled here.
+    listed_with(&terminal, RUNNING, "Alpha");
     enter_on(&mut terminal, "Alpha");
     first_row_starts(&terminal, "RAW");
     terminal.send("z").unwrap();
@@ -6032,7 +6031,9 @@ fn a_disconnect_discards_a_pending_prefix() {
     });
     read_alone(&mut terminal, monitor, b"x");
     terminal.send("\x1ds").unwrap();
-    shows_row(&mut terminal, &format!("║{RUNNING:<12} Other"));
+    // Gone's row is Disconnected until its passive retry fails, then
+    // Unavailable, one column narrower: either may be listed by now.
+    listed_with(&terminal, RUNNING, "Other");
     enter_on(&mut terminal, "Other");
     ready_at(&mut terminal, "Other", RUNNING, "29 120");
     terminal.send("y").unwrap();
@@ -6067,7 +6068,7 @@ fn requests_by_turn(ear: &Ear, id: &str) -> Vec<Vec<u8>> {
 }
 
 /// How many client instances the monitor `pid` made for session `id`: its
-/// library logs, apart from any other process's, such as `climon2 kill`'s.
+/// library logs, apart from any other process's, such as `c2 kill`'s.
 fn instances(package: &Package, id: &str, pid: i32) -> usize {
     let infix = format!("-{pid}-");
     let logs = library_logs(package, id);
@@ -6235,7 +6236,7 @@ fn a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect() {
 /// read-only under exactly `Reconnecting...` while retries run, then, once
 /// discovery proves its daemon gone, under `Session no longer exists`,
 /// which its top row's error slot also says, and retries stop. A wheel
-/// notch scrolls the read-only history. `climon2 kill` from another
+/// notch scrolls the read-only history. `c2 kill` from another
 /// terminal ends Ended, which stays listed Failed with its signal; Enter
 /// selects it read-only with no terminal content, the monitor never having
 /// controlled it, and it is never retried. A session created then still
@@ -8177,10 +8178,12 @@ fn notifications_toast_once_per_episode_and_progress_never_does() {
     no_toast(&terminal);
     assert_eq!(bells(&terminal), 1);
 
-    headless(&package, &stepped("Done", &["exit 3"]), "finish");
-    glance(&mut terminal, STATUS, "Done");
+    // Running on any clock. Without the report, a release archive's daemon
+    // would see the title change and soon request attention (`settled`).
+    headless(&package, &working(&stepped("Done", &["exit 3"])), "finish");
+    glance(&mut terminal, RUNNING, "Done");
     terminal.send("\x1dsDone\r").unwrap();
-    top_row_is(&mut terminal, &controlled("Done", STATUS));
+    top_row_is(&mut terminal, &controlled("Done", RUNNING));
     step(&package, "Done", 1);
     let ended = session_top_row(
         usize::from(COLS),

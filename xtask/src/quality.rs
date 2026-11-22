@@ -16,7 +16,24 @@ use std::{
 };
 
 const CRAPPER: &str = "6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d";
-const MUTATOR: &str = "a5a0cb803b66e0cdb8bf471b3b08af701d424a41";
+/// The owner's fork of unclebob/mutator: upstream a5a0cb80 plus its Windows fixes. A typed
+/// test command's `$NAME` is expanded past cmd.exe, a timed-out command's tree is killed,
+/// worker trees past the 260-character path limit are deleted, and a mutant of a CRLF
+/// source is written byte for byte.
+const MUTATOR: &str = "7dc09821d8ab5d077a90fbc4e9ad8c3613a9ea49";
+/// Each pinned quality tool, the repository it is cloned from, and its revision.
+const TOOLS: [(&str, &str, &str); 2] = [
+    (
+        "crapper",
+        "https://github.com/unclebob/crapper.git",
+        CRAPPER,
+    ),
+    (
+        "mutator",
+        "https://github.com/jackgeek/mutator.git",
+        MUTATOR,
+    ),
+];
 const LLVM_COV: &str = "0.9.1";
 /// Full-host mutation workers, and so the suites the mutation-load measurement runs at once;
 /// 8 leaves room for another agent's tests on the shared development host.
@@ -33,7 +50,7 @@ const MUTATION_TIMEOUT_FACTOR: &str = "10";
 const STAGE_TIMEOUTS: &str = "target/mutation-stage-timeouts.json";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";
-const SHIPPED: &[&str] = &[
+pub(crate) const SHIPPED: &[&str] = &[
     "crates/climon2-launcher/src",
     "crates/climon2-core/src",
     "crates/climon2-platform/src",
@@ -45,7 +62,41 @@ const SHIPPED: &[&str] = &[
     "crates/climon2-monitor/src",
     "crates/climon2-vt/src",
 ];
-const TEST_COMMAND: &str = r#""$CLIMON2_MUTATION_PYTHON" tools/test-mutation.py"#;
+/// The test runs that make up the workspace suite on Windows, where only part of the
+/// workspace builds so far: as the Windows Test job runs them.
+const WINDOWS_SUITE: &[&[&str]] = &[
+    &["-p", "climon2-core", "-p", "climon2-vt"],
+    &[
+        "-p",
+        "climon2-platform",
+        "--lib",
+        "--test",
+        "home_windows",
+        "--test",
+        "private_windows",
+        "--test",
+        "cross_account_windows",
+        "--test",
+        "presentation_windows",
+        "--test",
+        "connection_windows",
+        "--test",
+        "runtime_windows",
+        "--test",
+        "process_windows",
+        "--test",
+        "pty_windows",
+        "--test",
+        "notifier_windows",
+        "--test",
+        "native_path_windows",
+    ],
+    // Builds the daemon binary, which the CLI's exec tests start.
+    &["-p", "climon2-daemon", "--test", "windows"],
+    // Builds the client binary and library, which the CLI's kill tests start.
+    &["-p", "climon2-client", "--test", "library_windows"],
+    &["-p", "climon2-launcher", "-p", "climon2-cli"],
+];
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Scope {
@@ -296,12 +347,11 @@ fn verify_checkout(path: &Path, revision: &str) -> io::Result<()> {
 pub fn setup(root: &Path) -> io::Result<()> {
     let tools = tool_root(root);
     fs::create_dir_all(&tools)?;
-    for (name, revision) in [("crapper", CRAPPER), ("mutator", MUTATOR)] {
+    for (name, repository, revision) in TOOLS {
         let destination = tools.join(name);
         if !destination.try_exists()? {
             run(Command::new("git")
-                .args(["clone", "--quiet", "--no-checkout"])
-                .arg(format!("https://github.com/unclebob/{name}.git"))
+                .args(["clone", "--quiet", "--no-checkout", repository])
                 .arg(&destination))?;
             run(Command::new("git")
                 .arg("-C")
@@ -319,7 +369,7 @@ pub fn setup(root: &Path) -> io::Result<()> {
     if !environment.try_exists()? {
         run(Command::new(python).args(["-m", "venv"]).arg(&environment))?;
     }
-    run(Command::new(environment.join("bin/python"))
+    run(Command::new(venv_python(root))
         .args(["-m", "pip", "install", "--disable-pip-version-check", "-r"])
         .arg(root.join("tools/quality-requirements.txt"))
         .arg(tools.join("crapper"))
@@ -353,19 +403,29 @@ fn verify_llvm_cov() -> io::Result<()> {
 /// Fails unless the pinned quality tools are installed; run once before using [`tool`].
 fn verify_tools(root: &Path) -> io::Result<()> {
     let tools = tool_root(root);
-    if !tools.join("venv/bin/python").is_file() {
+    if !venv_python(root).is_file() {
         return Err(io::Error::other(
             "quality tools are missing; run cargo xtask setup-quality",
         ));
     }
-    for (package, revision) in [("crapper", CRAPPER), ("mutator", MUTATOR)] {
+    for (package, _, revision) in TOOLS {
         verify_checkout(&tools.join(package), revision)?;
     }
     Ok(())
 }
 
+/// The pinned tools' Python, in the virtual environment's layout on this platform.
+fn venv_python(root: &Path) -> PathBuf {
+    let environment = tool_root(root).join("venv");
+    if cfg!(windows) {
+        environment.join("Scripts").join("python.exe")
+    } else {
+        environment.join("bin").join("python")
+    }
+}
+
 fn tool(root: &Path, name: &str) -> Command {
-    let mut command = Command::new(tool_root(root).join("venv/bin/python"));
+    let mut command = Command::new(venv_python(root));
     command.args(["-m", name]).current_dir(root);
     command
 }
@@ -378,15 +438,44 @@ fn own_targets(command: &mut Command) -> &mut Command {
         .env_remove("CARGO_BUILD_BUILD_DIR")
 }
 
-fn mutation_command(root: &Path) -> Command {
+fn mutation_command(root: &Path) -> io::Result<Command> {
     let mut command = tool(root, "mutator");
     own_targets(&mut command)
-        .env(
-            "CLIMON2_MUTATION_PYTHON",
-            tool_root(root).join("venv/bin/python"),
-        )
-        .args(["--test-command", TEST_COMMAND])
+        .args(["--test-command", &test_command(&venv_python(root))?])
         .args(["--timeout-factor", MUTATION_TIMEOUT_FACTOR]);
+    Ok(command)
+}
+
+/// The mutator's typed test command, with the Python path already in it, so no shell
+/// (sh, or cmd.exe on Windows) is left to expand a variable. Both shells keep a
+/// double-quoted path whole unless it holds a character they expand there.
+fn test_command(python: &Path) -> io::Result<String> {
+    let python = python.to_string_lossy();
+    if python.contains(['"', '$', '`', '%']) {
+        return Err(io::Error::other(format!(
+            "the quality tools' Python path cannot be quoted for a shell: {python}"
+        )));
+    }
+    Ok(format!(r#""{python}" tools/test-mutation.py"#))
+}
+
+/// The suite the gate runs, as `cargo test` argument lists: the whole workspace, except on
+/// Windows.
+const SUITE: &[&[&str]] = if cfg!(windows) {
+    WINDOWS_SUITE
+} else {
+    &[&["--workspace"]]
+};
+
+/// Names the suite to the quality scripts when it is only part of the workspace; without
+/// it they test the whole workspace.
+fn suite_environment(command: &mut Command) -> &mut Command {
+    if SUITE != [["--workspace"]] {
+        command.env(
+            "CLIMON2_MUTATION_SUITE",
+            serde_json::to_string(SUITE).expect("the suite serializes"),
+        );
+    }
     command
 }
 
@@ -538,20 +627,42 @@ fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
     source_paths(root, &[sources.stdout])
 }
 
-fn native_source_os(path: &Path) -> Option<&'static str> {
+pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
     match path.to_str() {
         Some("crates/climon2-platform/src/process/linux.rs")
         | Some("crates/climon2-platform/src/peer/linux.rs")
         | Some("crates/climon2-platform/src/runtime/linux.rs")
         | Some("crates/climon2-platform/src/library/linux.rs")
+        | Some("crates/climon2-platform/src/notifier/linux.rs")
+        | Some("crates/climon2-platform/src/connection/linux.rs")
         | Some("crates/climon2-install/src/platform/linux.rs")
         | Some("crates/climon2-client/src/library/linux.rs") => Some("linux"),
         Some("crates/climon2-platform/src/process/macos.rs")
         | Some("crates/climon2-platform/src/peer/macos.rs")
         | Some("crates/climon2-platform/src/runtime/macos.rs")
         | Some("crates/climon2-platform/src/library/macos.rs")
-        | Some("crates/climon2-install/src/platform/macos.rs")
-        | Some("crates/climon2-client/src/library/macos.rs") => Some("macos"),
+        | Some("crates/climon2-platform/src/notifier/macos.rs")
+        | Some("crates/climon2-platform/src/connection/macos.rs")
+        | Some("crates/climon2-install/src/platform/macos.rs") => Some("macos"),
+        Some("crates/climon2-platform/src/home/windows.rs")
+        | Some("crates/climon2-platform/src/private/windows.rs")
+        | Some("crates/climon2-launcher/src/handoff/windows.rs")
+        | Some("crates/climon2-cli/src/windows.rs")
+        | Some("crates/climon2-platform/src/process/windows.rs")
+        | Some("crates/climon2-platform/src/runtime/windows.rs")
+        | Some("crates/climon2-platform/src/waiting/windows.rs")
+        | Some("crates/climon2-platform/src/presentation/windows.rs")
+        | Some("crates/climon2-platform/src/peer/windows.rs")
+        | Some("crates/climon2-platform/src/terminal/windows.rs")
+        | Some("crates/climon2-platform/src/logging/windows.rs")
+        | Some("crates/climon2-platform/src/daemon/windows.rs")
+        | Some("crates/climon2-platform/src/pty/windows.rs")
+        | Some("crates/climon2-daemon/src/pty/windows.rs")
+        | Some("crates/climon2-platform/src/library/windows.rs")
+        | Some("crates/climon2-platform/src/notifier/windows.rs")
+        | Some("crates/climon2-platform/src/connection/windows.rs")
+        | Some("crates/climon2-platform/src/native_path/windows.rs")
+        | Some("crates/climon2-client/src/windows.rs") => Some("windows"),
         _ => None,
     }
 }
@@ -670,13 +781,25 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     }
     verify_llvm_cov()?;
     verify_tools(root)?;
+    if scope == Scope::Native && cfg!(windows) {
+        // The Windows tooling has no history behind it (docs/windows-quality.md): prove
+        // mutants really run and killed processes keep coverage before trusting either.
+        sentinel(root)?;
+        killed_coverage_probe(root)?;
+    }
     let report = root.join("target/coverage/rust/lcov.info");
     fs::create_dir_all(report.parent().expect("report directory"))?;
     if report.try_exists()? {
         fs::remove_file(&report)?;
     }
     let coverage = Coverage::prepare(root, &root.join("target/coverage-build"))?;
-    run(coverage.cargo().args(["test", "--workspace", "--locked"]))?;
+    for selection in SUITE {
+        run(coverage
+            .cargo()
+            .arg("test")
+            .args(*selection)
+            .arg("--locked"))?;
+    }
     coverage.report(&report)?;
     if fs::metadata(&report)?.len() == 0 {
         return Err(io::Error::other("coverage report is empty"));
@@ -689,10 +812,12 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     // Unloaded and warm: before the load rounds that rehearse them and any mutation worker.
     let stage_timeouts = root.join(STAGE_TIMEOUTS);
     let paths: Vec<_> = targets.iter().map(|target| &target.path).collect();
-    run(own_targets(&mut python_script(root, "test-mutation.py"))
-        .arg(MUTATION_TIMEOUT_FACTOR)
-        .arg(&stage_timeouts)
-        .args(paths))?;
+    run(
+        suite_environment(own_targets(&mut python_script(root, "test-mutation.py")))
+            .arg(MUTATION_TIMEOUT_FACTOR)
+            .arg(&stage_timeouts)
+            .args(paths),
+    )?;
     if let Some(rounds) = scope.load_rounds() {
         run(python_script(root, "check-mutation-load.py")
             .args([
@@ -723,8 +848,8 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
 /// Its workers apply `stage_timeouts`, measured for at least every target.
 fn mutate(root: &Path, workers: &str, run_plan: RunPlan, stage_timeouts: &Path) -> io::Result<()> {
     clear_mutation_history(root)?;
-    let mut mutation = mutation_command(root);
-    mutation
+    let mut mutation = mutation_command(root)?;
+    suite_environment(&mut mutation)
         .env("CLIMON2_MUTATION_STAGE_TIMEOUTS", stage_timeouts)
         .args([
             "--use-existing-coverage",
@@ -757,7 +882,7 @@ fn joined(lines: &BTreeSet<usize>) -> String {
 
 /// A repository quality script, run by the pinned tools' Python with the workspace and Cargo.
 fn python_script(root: &Path, script: &str) -> Command {
-    let mut command = Command::new(tool_root(root).join("venv/bin/python"));
+    let mut command = Command::new(venv_python(root));
     command
         .arg(root.join("tools").join(script))
         .arg(root)
@@ -767,7 +892,11 @@ fn python_script(root: &Path, script: &str) -> Command {
 }
 
 fn verify_worker_baseline(root: &Path, sources: &[PathBuf]) -> io::Result<()> {
-    run(own_targets(&mut python_script(root, "check-mutation-workspace.py")).args(sources))
+    run(suite_environment(own_targets(&mut python_script(
+        root,
+        "check-mutation-workspace.py",
+    )))
+    .args(sources))
 }
 
 pub fn probe(root: &Path) -> io::Result<()> {
@@ -775,7 +904,7 @@ pub fn probe(root: &Path) -> io::Result<()> {
     let observations = scratch.path().join("observations");
     let forbidden = scratch.path().join("shared-target-must-not-be-used");
     verify_tools(root)?;
-    let mut command = mutation_command(root);
+    let mut command = mutation_command(root)?;
     command
         .current_dir(scratch.path())
         .env("CLIMON2_MUTATION_OBSERVATIONS", &observations)
@@ -796,35 +925,115 @@ pub fn probe(root: &Path) -> io::Result<()> {
 }
 
 fn probe_workspace(root: &Path) -> io::Result<tempfile::TempDir> {
+    let scratch = fixture_workspace(
+        root,
+        "mutation-isolation",
+        &[
+            "Cargo.toml",
+            "Cargo.lock",
+            "core/Cargo.toml",
+            "core/src/lib.rs",
+            "cli/Cargo.toml",
+            "cli/src/main.rs",
+            "cli/tests/binary.rs",
+        ],
+    )?;
+    fs::create_dir(scratch.path().join("observations"))?;
+    Ok(scratch)
+}
+
+/// A scratch copy of `files` of the fixture workspace `fixture`, with the mutation test
+/// runner, under `target/` (out of `tests/`, where the mutator would skip every source).
+fn fixture_workspace(root: &Path, fixture: &str, files: &[&str]) -> io::Result<tempfile::TempDir> {
     fs::create_dir_all(root.join("target"))?;
     let scratch = tempfile::Builder::new()
-        .prefix("mutation-isolation-")
+        .prefix(&format!("{fixture}-"))
         .tempdir_in(root.join("target"))?;
-    for relative in [
-        "Cargo.toml",
-        "Cargo.lock",
-        "core/Cargo.toml",
-        "core/src/lib.rs",
-        "cli/Cargo.toml",
-        "cli/src/main.rs",
-        "cli/tests/binary.rs",
-    ] {
+    for relative in files {
         let destination = scratch.path().join(relative);
         fs::create_dir_all(destination.parent().expect("fixture parent"))?;
         fs::copy(
-            root.join("xtask/tests/fixtures/mutation-isolation")
+            root.join("xtask/tests/fixtures")
+                .join(fixture)
                 .join(relative),
             destination,
         )?;
     }
-    let observations = scratch.path().join("observations");
-    fs::create_dir(&observations)?;
     fs::create_dir(scratch.path().join("tools"))?;
     fs::copy(
         root.join("tools/test-mutation.py"),
         scratch.path().join("tools/test-mutation.py"),
     )?;
     Ok(scratch)
+}
+
+/// `cargo xtask mutation-probe`: the sentinel, then real-binary worker isolation.
+pub fn mutation_probe(root: &Path) -> io::Result<()> {
+    sentinel(root)?;
+    probe(root)
+}
+
+/// The sentinel's site log: its checked mutant killed and its unchecked one surviving.
+const SENTINEL_OUTCOMES: [&str; 2] = [
+    "KILLED    src/lib.rs:6 + -> -",
+    "SURVIVED  src/lib.rs:10 + -> -",
+];
+
+/// Fails unless the mutator, through the gate's own test command, kills the one mutant the
+/// sentinel fixture's test checks and lets the unchecked one survive. A mutant that cannot
+/// start counts as killed, so a gate whose tests never ran would otherwise pass.
+pub fn sentinel(root: &Path) -> io::Result<()> {
+    verify_tools(root)?;
+    let scratch = fixture_workspace(
+        root,
+        "mutation-sentinel",
+        &[
+            "Cargo.toml",
+            "Cargo.lock",
+            "src/lib.rs",
+            "tests/sentinel.rs",
+        ],
+    )?;
+    let mut command = mutation_command(root)?;
+    let output = command
+        .current_dir(scratch.path())
+        .args([
+            "--no-coverage",
+            "--mutate-all",
+            "--max-workers",
+            "2",
+            "src/lib.rs",
+        ])
+        .output()?;
+    sentinel_verdict(
+        output.status.code(),
+        &String::from_utf8_lossy(&output.stdout),
+    )
+    .map_err(|error| {
+        io::Error::other(format!(
+            "{error}\n{command:?}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    })?;
+    eprintln!(
+        "Verified the sentinel: its checked mutant was killed and its unchecked one survived."
+    );
+    Ok(())
+}
+
+/// The mutator reports a survivor with status 3; the site log must name exactly the
+/// sentinel's two outcomes.
+fn sentinel_verdict(status: Option<i32>, log: &str) -> io::Result<()> {
+    let outcomes: Vec<_> = log
+        .lines()
+        .filter(|line| line.contains("src/lib.rs:"))
+        .collect();
+    if status == Some(3) && outcomes == SENTINEL_OUTCOMES {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "the sentinel must end with status 3 and {SENTINEL_OUTCOMES:?}; got status {status:?} and {outcomes:?}"
+    )))
 }
 
 fn audit_observations(observations: &Path) -> io::Result<()> {
@@ -855,6 +1064,35 @@ pub(crate) fn coverage_command(root: &Path, build: &Path) -> Command {
     command
 }
 
+/// Fails unless a process killed mid-run (`TerminateProcess` on Windows, SIGKILL elsewhere)
+/// keeps its coverage counters: the mutation-isolation fixture's instrumented CLI counts its
+/// probe once and is killed, and that count must reach the report. Tests often end the
+/// daemon that way.
+pub fn killed_coverage_probe(root: &Path) -> io::Result<()> {
+    let scratch = probe_workspace(root)?;
+    let workspace = scratch.path();
+    let build = workspace.join("target/instrumented");
+    let coverage = Coverage::prepare(workspace, &build)?;
+    run(coverage
+        .cargo()
+        .args(["build", "--locked", "--package", "isolation-cli"]))?;
+    let binary = build
+        .join("debug")
+        .join(format!("isolation-cli{}", env::consts::EXE_SUFFIX));
+    prove_killed_profile(&binary, coverage.profile())?;
+    let report = workspace.join("target/coverage/rust/lcov.info");
+    fs::create_dir_all(report.parent().expect("report directory"))?;
+    coverage.report(&report)?;
+    let count = staged_count(&report)?;
+    if count != 1 {
+        return Err(io::Error::other(format!(
+            "a killed instrumented process must keep its one coverage hit, got {count}"
+        )));
+    }
+    eprintln!("Verified that a killed process keeps its coverage counters.");
+    Ok(())
+}
+
 fn staged_count(report: &Path) -> io::Result<u64> {
     let text = fs::read_to_string(report)?;
     let rows: Vec<_> = text
@@ -879,6 +1117,7 @@ fn staged_count(report: &Path) -> io::Result<u64> {
 }
 
 /// #31/#33: installer-built binaries contribute coverage and the pinned gates reject defects.
+#[cfg(unix)]
 pub fn tooling_probe(root: &Path) -> io::Result<()> {
     verify_llvm_cov()?;
     verify_tools(root)?;
@@ -922,7 +1161,10 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
             "exec-replaced staged binary returned the wrong observation",
         ));
     }
-    prove_killed_profile(&staged, profile)?;
+    prove_killed_profile(
+        &staged.join(env!("CARGO_PKG_VERSION")).join("climon2-cli"),
+        profile,
+    )?;
     export()?;
     let count = staged_count(&report)?;
     if count != 3 {
@@ -938,12 +1180,15 @@ pub fn tooling_probe(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn prove_killed_profile(staged: &Path, profile: &str) -> io::Result<()> {
+/// Runs the instrumented probe `binary` until it has counted its probe, then kills it
+/// (SIGKILL; `TerminateProcess` on Windows), so its counters reach `profile` only if they
+/// were written as they changed.
+fn prove_killed_profile(binary: &Path, profile: &str) -> io::Result<()> {
     use std::{
         io::{BufRead, BufReader},
         process::Stdio,
     };
-    let mut child = Command::new(staged.join(env!("CARGO_PKG_VERSION")).join("climon2-cli"))
+    let mut child = Command::new(binary)
         .arg("--staged-kill")
         .env("LLVM_PROFILE_FILE", profile)
         .stdout(Stdio::piped())
@@ -962,10 +1207,11 @@ fn prove_killed_profile(staged: &Path, profile: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<PathBuf> {
     let payload = workspace.join("payload");
     fs::create_dir(&payload)?;
-    fs::copy(build.join("debug/isolation-cli"), payload.join("climon2"))?;
+    fs::copy(build.join("debug/isolation-cli"), payload.join("c2"))?;
     for name in climon2_install::version_files() {
         let path = climon2_install::cargo_output(&payload, &name);
         fs::create_dir_all(path.parent().expect("payload file directory"))?;
@@ -977,6 +1223,7 @@ fn install_instrumented_probe(workspace: &Path, build: &Path) -> io::Result<Path
     Ok(destination)
 }
 
+#[cfg(unix)]
 fn prove_crapper(root: &Path, workspace: &Path) -> io::Result<()> {
     run(tool(root, "crapper").current_dir(workspace).args([
         "--use-existing-coverage",
@@ -1011,6 +1258,7 @@ fn prove_crapper(root: &Path, workspace: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn prove_rejection(
     root: &Path,
     workspace: &Path,
@@ -1042,6 +1290,7 @@ fn prove_rejection(
     fs::remove_file(excessive)
 }
 
+#[cfg(unix)]
 fn prove_covered_mutations(root: &Path, workspace: &Path, observations: &Path) -> io::Result<()> {
     run(Command::new("git")
         .current_dir(workspace)
@@ -1071,7 +1320,7 @@ fn prove_covered_mutations(root: &Path, workspace: &Path, observations: &Path) -
     text.push('\n');
     fs::write(source, text)?;
     for mode in ["--changed", "--mutate-all"] {
-        run(mutation_command(root)
+        run(mutation_command(root)?
             .current_dir(workspace)
             .env("CLIMON2_MUTATION_OBSERVATIONS", observations)
             .args([
@@ -1147,6 +1396,48 @@ fn verify_observation(text: &str) -> io::Result<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mutator's site log and summary for the sentinel, as it prints them.
+    fn sentinel_log(checked: &str, unchecked: &str) -> String {
+        format!(
+            "{checked:<9} src/lib.rs:6 + -> -\n{unchecked:<9} src/lib.rs:10 + -> -\n\
+             Function  Namespace          Killed  Survived\n"
+        )
+    }
+
+    #[test]
+    fn the_sentinel_passes_only_with_its_checked_mutant_killed_and_its_unchecked_one_alive() {
+        sentinel_verdict(Some(3), &sentinel_log("KILLED", "SURVIVED")).unwrap();
+        // Every mutant failing to start scores as killed, and the run as a pass.
+        let error = sentinel_verdict(Some(0), &sentinel_log("KILLED", "KILLED")).unwrap_err();
+        assert!(error.to_string().contains("got status Some(0)"), "{error}");
+        sentinel_verdict(Some(3), &sentinel_log("SURVIVED", "SURVIVED")).unwrap_err();
+        sentinel_verdict(Some(3), "SURVIVED  src/lib.rs:10 + -> -\n").unwrap_err();
+        sentinel_verdict(Some(2), "").unwrap_err();
+    }
+
+    #[test]
+    fn the_test_command_names_the_python_path_itself() {
+        assert_eq!(
+            test_command(Path::new("/work/.metrics/tools/venv/bin/python")).unwrap(),
+            r#""/work/.metrics/tools/venv/bin/python" tools/test-mutation.py"#
+        );
+        assert_eq!(
+            test_command(Path::new(
+                r"D:\a\climon2\.metrics\tools\venv\Scripts\python.exe"
+            ))
+            .unwrap(),
+            r#""D:\a\climon2\.metrics\tools\venv\Scripts\python.exe" tools/test-mutation.py"#
+        );
+        for path in [
+            "/a$HOME/python",
+            "/a\"b/python",
+            r"C:\%TEMP%\python.exe",
+            "/a`x`/python",
+        ] {
+            test_command(Path::new(path)).unwrap_err();
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1986,6 +2277,22 @@ No selected line holds a mutation site; nothing to mutate.
                 cfg!(target_os = "macos"),
             ),
             (
+                "crates/climon2-platform/src/notifier/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/notifier/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
+                "crates/climon2-platform/src/connection/linux.rs",
+                cfg!(target_os = "linux"),
+            ),
+            (
+                "crates/climon2-platform/src/connection/macos.rs",
+                cfg!(target_os = "macos"),
+            ),
+            (
                 "crates/climon2-install/src/platform/linux.rs",
                 cfg!(target_os = "linux"),
             ),
@@ -1997,10 +2304,64 @@ No selected line holds a mutation site; nothing to mutate.
                 "crates/climon2-client/src/library/linux.rs",
                 cfg!(target_os = "linux"),
             ),
+            ("crates/climon2-platform/src/home/windows.rs", cfg!(windows)),
             (
-                "crates/climon2-client/src/library/macos.rs",
-                cfg!(target_os = "macos"),
+                "crates/climon2-platform/src/private/windows.rs",
+                cfg!(windows),
             ),
+            (
+                "crates/climon2-launcher/src/handoff/windows.rs",
+                cfg!(windows),
+            ),
+            ("crates/climon2-cli/src/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/presentation/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/waiting/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/runtime/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/process/windows.rs",
+                cfg!(windows),
+            ),
+            ("crates/climon2-platform/src/peer/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/terminal/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/logging/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/daemon/windows.rs",
+                cfg!(windows),
+            ),
+            ("crates/climon2-platform/src/pty/windows.rs", cfg!(windows)),
+            ("crates/climon2-daemon/src/pty/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/library/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/notifier/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/connection/windows.rs",
+                cfg!(windows),
+            ),
+            (
+                "crates/climon2-platform/src/native_path/windows.rs",
+                cfg!(windows),
+            ),
+            ("crates/climon2-client/src/windows.rs", cfg!(windows)),
         ];
         for (path, _) in sources {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();

@@ -1,9 +1,12 @@
 //! PID identity, exact wait status and terminal-session leave policy.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("process identity, hangup and exit seams require macOS or Linux");
+pub use native::*;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use unix::*;
+use unix as native;
+
+#[cfg(windows)]
+#[path = "process/windows.rs"]
+mod native;
 
 #[cfg(target_os = "linux")]
 #[path = "process/linux.rs"]
@@ -306,6 +309,31 @@ mod unix {
             Some(status) => Ok(status),
             None => wait(leader),
         }
+    }
+
+    /// The operating system's soft limit on this process's descriptors, read
+    /// afresh so that a raised limit admits more. A limit that cannot be read
+    /// reads as none left, so nothing more is admitted.
+    pub fn descriptor_limit() -> u64 {
+        let mut limit = libc::rlimit {
+            rlim_cur: u64::MIN,
+            rlim_max: u64::MIN,
+        };
+        // SAFETY: getrlimit writes only `limit`.
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) };
+        limit.rlim_cur
+    }
+
+    /// The process or the system ran out of descriptors.
+    pub fn out_of_descriptors(error: &io::Error) -> bool {
+        matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE))
+    }
+
+    /// Ends the process with `code` at once: no exit handlers and no
+    /// flushing, so whatever must be seen is flushed first.
+    pub fn exit_immediately(code: i32) -> ! {
+        // SAFETY: `_exit` only ends the process.
+        unsafe { libc::_exit(code) }
     }
 
     #[cfg(test)]

@@ -1,6 +1,6 @@
 # climon2-install
 
-The macOS and GNU/Linux installer is shipped as `install` beside `climon2` and the release's
+The macOS and GNU/Linux installer is shipped as `install` beside the launcher `c2` and the release's
 `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}` executables
 and client library (`libclimon2_client.dylib` on macOS, `libclimon2_client.so`
 on Linux). The client library is published atomically with the rest of its
@@ -8,8 +8,8 @@ version.
 
 `install [--dir <directory>]` defaults to `$HOME/.local/share/climon2`.
 It prints a shell-quoted `export PATH=…` hint only when the canonical destination
-is absent from PATH. It creates the relative symlink `c2 -> climon2` in the
-executable home on fresh installs and upgrades; both commands remain supported.
+is absent from PATH. It installs the launcher as `c2`, the only command name (#303); `LAUNCHER`
+is that file name.
 It never changes shell profiles or signing/quarantine attributes. Errors produce one
 `climon2: error: …` line on stderr and status 125.
 
@@ -18,7 +18,7 @@ It never changes shell profiles or signing/quarantine attributes. Errors produce
 - `Payload::from_directory(directory, version)` validates a release payload.
 - `Payload::beside_installer()` resolves the running installer's canonical path
   and uses the compiled package version.
-- `Payload::from_siblings(directory, version)` reads `climon2`, `climon2-cli`,
+- `Payload::from_siblings(directory, version)` reads `c2`, `climon2-cli`,
   `climon2-daemon`, `climon2-client` and `climon2-monitor` directly from one
   Cargo output directory, and the client library from its `deps/`
   subdirectory. Packaged tests can therefore install the exact instrumented
@@ -49,12 +49,9 @@ The launcher is always replaced atomically,
 including on an identical reinstall, per #21.19. Other versions are retained.
 The atomic `current` replacement is the final publication.
 
-Before publishing a version or replacing the launcher, the installer creates
-`c2` or accepts an existing symlink whose target is exactly `climon2`. Other entries,
-including absolute or differently targeted symlinks, are left untouched and
-reported with their conflicting path. A link-creation failure aborts installation
-without switching `current`. Release payload filenames and executable-home paths
-are unchanged.
+Nothing is migrated. A `c2 -> climon2` symlink from an install before #303 is
+replaced by the launcher like any other `c2`; the `climon2` it named is left in
+place.
 
 ## Interruption and concurrency
 
@@ -69,7 +66,7 @@ This is process-interruption recovery, not a power-loss durability guarantee.
 Only the compile-time `test-hooks` feature enables
 `CLIMON2_TEST_INSTALL_FAULT=fail:<boundary>` or `crash:<boundary>`.
 Boundaries are `copy-<file>` after each version file is staged (for example
-`copy-climon2-cli`), `version-staged`, `short-command`, `version-published`, and
+`copy-climon2-cli`), `version-staged`, `version-published`, and
 `launcher-published`; crash exits 86 without Rust cleanup. Production builds do
 not contain these hooks.
 

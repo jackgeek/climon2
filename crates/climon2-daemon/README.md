@@ -1,8 +1,20 @@
 # climon2-daemon
 
-Real session daemon library with a thin executable on macOS and Linux; no client
-implementation or descriptor passing. The daemon owns the VT engine, bounded
-scrollback, terminal restoration and live presentation.
+Real session daemon library with a thin executable on macOS, Linux and
+Windows; no client implementation or descriptor passing. The daemon owns the
+VT engine, bounded scrollback, terminal restoration and live presentation.
+
+On Windows (#317) the PTY is `src/pty/windows.rs`, a registered native file
+over `climon2-platform`'s `pty` seam: the command runs in a pseudoconsole of
+the bundled ConPTY, `conpty.dll` loaded from the daemon's own folder beside
+`OpenConsole.exe` (either missing fails startup with 125), inside a session
+job. `TERM`, `COLORTERM` and `CLIMON2_SESSION_ID` are set in the daemon's
+environment first. A command that cannot start is 126; there is no exec
+helper or startup socket. The command's end comes from its leader's handle,
+its status is kept in full and logged as `command exited status=0x...`, and
+`--readiness-fd` is the inherited pipe's handle value. `tests/windows.rs`
+checks the binary's own answers; `climon2-cli`'s `tests/exec_windows.rs`
+runs it as `exec` does.
 
 ## CLI-to-daemon API
 
@@ -82,9 +94,9 @@ architecture test is claimed.
 The daemon owns the session's virtual terminal (`climon2-vt`, ADR 0007). Every
 loop iteration reads at most 32 KiB from the PTY and feeds it to the VT, whether
 or not any client is attached; a slow or absent client never stops the command's
-output. Between iterations the loop waits up to 2 ms for PTY readability (poll,
-no read). The VT's terminal replies go to the PTY; its filtered live output goes
-to the controller only.
+output. Between iterations the loop waits up to 2 ms for PTY readability (the
+platform waiting seam, no read). The VT's terminal replies go to the PTY; its
+filtered live output goes to the controller only.
 
 Authenticated connections use core's typed protocol messages and connection
 states. Incremental nonblocking decoding enforces an absolute two-second hello
@@ -122,7 +134,7 @@ ending between frames just closes. Frames read before the end are still
 served, so a peer may send Leave and half-close.
 
 A monitor Open registers a **passive monitor connection**. It is not an
-attachment: the leave policy and the hello `state` (so `climon2 list`'s
+attachment: the leave policy and the hello `state` (so `c2 list`'s
 STATE and CLIENTS) never count it, and registering never acquires control,
 though the registration may inherit it (see below).
 Open selects the requested families this daemon supports (required ones must
