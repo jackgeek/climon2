@@ -214,6 +214,13 @@ specifies under "Private files and folders". No exception is recorded.
 | `WIN-10` | Full-width statuses | `0xC000013A`, `259` and `0xFFFFFFFF` pass unchanged through the launcher, the CLI and the client |
 | `WIN-11` | Long working directory | `exec` from a working directory over 260 characters exits 126 |
 
+`WIN-07`, `WIN-10` and `WIN-11` are built
+([#322](https://github.com/jackgeek/climon2/issues/322)). `WIN-07` and
+`WIN-11` run headless `exec` through the relay; `WIN-10` runs ordinary `exec`
+through the launcher in the Windows Terminal model. `WIN-11` gives the CLI its
+working directory through a test hook, because Windows cannot start a
+program in a directory that long either.
+
 `WIN-09` to `WIN-11` follow the
 [Windows platform and lifecycle contract](lifecycle.md). Ctrl+Break
 has no VS Code model scenario: that host delivers nothing for it, a documented

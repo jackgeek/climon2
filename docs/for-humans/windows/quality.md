@@ -56,6 +56,9 @@ matter most:
   `crates/climon2-platform/src/native_path/windows.rs`, the client library's
   loading, notification and waker, sends and native paths
   ([#318](https://github.com/jackgeek/climon2/issues/318));
+  `crates/climon2-platform/src/command/windows.rs`, which resolves the
+  session's command and builds its command line
+  ([#322](https://github.com/jackgeek/climon2/issues/322));
   `crates/climon2-platform/src/handoff/windows.rs`, the CLI's spawn-and-wait
   hand-off to the client ([#321](https://github.com/jackgeek/climon2/issues/321),
   which also gave `terminal/windows.rs` the client's console and

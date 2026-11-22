@@ -9,8 +9,11 @@ over `climon2-platform`'s `pty` seam: the command runs in a pseudoconsole of
 the bundled ConPTY, `conpty.dll` loaded from the daemon's own folder beside
 `OpenConsole.exe` (either missing fails startup with 125), inside a session
 job. `TERM`, `COLORTERM` and `CLIMON2_SESSION_ID` are set in the daemon's
-environment first. A command that cannot start is 126; there is no exec
-helper or startup socket. The command's end comes from its leader's handle,
+environment first. The command is resolved through the session's `PATH`
+and `PATHEXT` by `climon2-platform`'s `command` seam (#322): one not found is
+127, as on Unix, and one that cannot start, a refused batch argument or an
+unusable working directory, such as one over 260 characters, is 126; there
+is no exec helper or startup socket. The command's end comes from its leader's handle,
 its status is kept in full and logged as `command exited status=0x...`, and
 `--readiness-fd` is the inherited pipe's handle value. `tests/windows.rs`
 checks the binary's own answers; `climon2-cli`'s `tests/exec_windows.rs`
