@@ -27,6 +27,10 @@ libc = "0.2.191"
 [target.'cfg(windows)'.dependencies]
 climon2-test-term = { path = "../crates/climon2-test-term" }
 
+# The Windows dist's tests check its archive against what the installer installs.
+[target.'cfg(windows)'.dev-dependencies]
+climon2-install = { path = "../crates/climon2-install" }
+
 # The fixtures' stand-ins are Unix programs.
 [target.'cfg(unix)'.dev-dependencies]
 climon2-fixtures = { path = "../crates/climon2-fixtures" }

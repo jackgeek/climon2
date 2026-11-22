@@ -1,3 +1,5 @@
+//! The Unix installer's contract (#21/#24/#33); the Windows one is in `tests/windows.rs`.
+#![cfg(unix)]
 mod support;
 
 use std::fs;

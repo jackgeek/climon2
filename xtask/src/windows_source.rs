@@ -23,12 +23,17 @@ use syn::{
 
 /// Paths outside the registered Windows files whose changes run the Windows
 /// jobs regardless of the switch: the harness's Windows host and its tests,
-/// the pinned downloads, the workflows and xtask's quality code, including
-/// what the Windows gate builds xtask from and its probes' fixtures.
+/// the installer's Windows tests, the Windows dist and download script whose
+/// zip the Archive job tests, the pinned downloads, the workflows and xtask's
+/// quality code, including what the Windows gate builds xtask from and its
+/// probes' fixtures.
 const WINDOWS_TRIGGERS: &[&str] = &[
     ".github/",
+    "crates/climon2-install/tests/archive_windows.rs",
+    "crates/climon2-install/tests/windows.rs",
     "crates/climon2-test-term/src/windows",
     "crates/climon2-test-term/tests/windows_host.rs",
+    "install.ps1",
     "pins/",
     "tools/",
     "xtask/Cargo.toml",
@@ -36,6 +41,7 @@ const WINDOWS_TRIGGERS: &[&str] = &[
     "xtask/src/main.rs",
     "xtask/src/mutation_plan.rs",
     "xtask/src/quality.rs",
+    "xtask/src/windows_dist.rs",
     "xtask/src/windows_source.rs",
     "xtask/tests/fixtures/mutation-isolation/",
     "xtask/tests/fixtures/mutation-sentinel/",
@@ -273,6 +279,12 @@ mod tests {
             "crates/climon2-test-term/src/windows.rs",
             "crates/climon2-test-term/src/windows/host.rs",
             "crates/climon2-test-term/tests/windows_host.rs",
+            "crates/climon2-install/src/windows.rs",
+            "crates/climon2-install/src/user_path/windows.rs",
+            "crates/climon2-install/tests/windows.rs",
+            "crates/climon2-install/tests/archive_windows.rs",
+            "install.ps1",
+            "xtask/src/windows_dist.rs",
             "pins/conpty.txt",
             ".github/workflows/check.yml",
             ".github/actions/controlled-bash/action.yml",
@@ -294,6 +306,9 @@ mod tests {
             "crates/climon2-test-term/src/terminal.rs",
             "crates/climon2-test-term/tests/received.rs",
             "crates/climon2-platform/src/runtime/linux.rs",
+            "crates/climon2-install/src/unix.rs",
+            "crates/climon2-install/tests/install.rs",
+            "install.sh",
             "xtask/src/dist.rs",
             "README.md",
             "x.github/workflows/check.yml",

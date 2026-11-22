@@ -28,22 +28,27 @@ use std::{
 const TARGET: &str = "x86_64-pc-windows-msvc";
 const SUFFIX: &str = "windows-x86_64-msvc";
 /// The packages a Windows release builds so far, each with its binary: the
-/// launcher, then the version folder's programs. The installer joins them
-/// with #329 and the monitor with #327.
+/// launcher, the installer, then the version folder's programs. The monitor
+/// joins them with #327.
 const PACKAGES: &[(&str, &str)] = &[
     ("climon2-launcher", "c2"),
+    ("climon2-install", "climon2-install"),
     ("climon2-cli", "climon2-cli"),
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
 ];
 /// The notice for the ConPTY files, shipped beside them.
 const NOTICE: &str = "pins/THIRD-PARTY-NOTICES.txt";
+/// The download script, published beside the zip with this release's version.
+const SCRIPT: &str = "install.ps1";
 
 /// Where a shipped file comes from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Source {
     /// This release's build of a climon2 package.
     Built,
+    /// This release's build of the installer, which ships as `install.exe`.
+    Installer,
     /// The pinned ConPTY package.
     ConPty,
     /// A checked-in file, by its path in the workspace.
@@ -78,9 +83,12 @@ impl Shipped {
 fn shipped(version: &str) -> Vec<Shipped> {
     let program = |path: String, source| Shipped::new(path, source, Some(Kind::Executable));
     let library = |path: String, source| Shipped::new(path, source, Some(Kind::Library));
-    let (launcher, programs) = PACKAGES.split_first().expect("the launcher");
+    let [launcher, _installer, programs @ ..] = PACKAGES else {
+        unreachable!("the launcher and the installer come first")
+    };
     let mut files = vec![
         program(format!("{}.exe", launcher.1), Source::Built),
+        program("install.exe".into(), Source::Installer),
         Shipped::new("LICENSE".into(), Source::Workspace("LICENSE"), None),
         Shipped::new("README.md".into(), Source::Workspace("README.md"), None),
     ];
@@ -114,6 +122,7 @@ impl Sources {
     fn of(&self, file: &Shipped) -> PathBuf {
         match file.source {
             Source::Built => self.built.join(file.name()),
+            Source::Installer => self.built.join("climon2-install.exe"),
             Source::ConPty => self.conpty.join(file.name()),
             Source::Workspace(path) => self.workspace.join(path),
         }
@@ -142,13 +151,16 @@ pub fn run(root: &Path) -> io::Result<()> {
     verify_library(&scratch.path().join(&name), version)?;
     let archive = zip(scratch.path(), &name, &files)?;
     let archive_name = format!("{name}.zip");
+    let script = stamped_script(&fs::read_to_string(root.join(SCRIPT))?, version)?;
+    fs::write(scratch.path().join(SCRIPT), &script)?;
     fs::write(
         scratch.path().join("SHA256SUMS"),
-        checksum_line(&archive_name, &fs::read(&archive)?),
+        checksum_line(&archive_name, &fs::read(&archive)?)
+            + &checksum_line(SCRIPT, script.as_bytes()),
     )?;
     let destination = root.join("target/dist");
     fs::create_dir_all(&destination)?;
-    for file in [archive_name.as_str(), "SHA256SUMS"] {
+    for file in [archive_name.as_str(), SCRIPT, "SHA256SUMS"] {
         fs::rename(scratch.path().join(file), destination.join(file))?;
     }
     eprintln!("Release artifacts: {}", destination.display());
@@ -161,7 +173,7 @@ fn lay_out(sources: &Sources, payload: &Path, files: &[Shipped]) -> io::Result<(
         let destination = payload.join(&file.path);
         fs::create_dir_all(destination.parent().expect("inside the payload"))?;
         fs::copy(sources.of(file), &destination)?;
-        if file.source == Source::Built {
+        if matches!(file.source, Source::Built | Source::Installer) {
             release::unhooked(&destination)?;
         }
         if let Some(kind) = file.kind {
@@ -268,6 +280,29 @@ fn checksum_line(name: &str, contents: &[u8]) -> String {
     format!("{:x}  {name}\n", Sha256::digest(contents))
 }
 
+/// `install.ps1` with `version` in its one `$Version` assignment.
+fn stamped_script(template: &str, version: &str) -> io::Result<String> {
+    let mut found = 0;
+    let mut output = String::new();
+    for line in template.lines() {
+        let assignment = line.trim_start();
+        if assignment.starts_with("$Version = ") {
+            let indent = &line[..line.len() - assignment.len()];
+            output.push_str(&format!("{indent}$Version = '{version}'"));
+            found += 1;
+        } else {
+            output.push_str(line);
+        }
+        output.push('\n');
+    }
+    if found != 1 {
+        return Err(io::Error::other(format!(
+            "{SCRIPT} must contain one $Version assignment"
+        )));
+    }
+    Ok(output)
+}
+
 /// A tool Windows ships in System32, by absolute path.
 fn system_tool(name: &str) -> PathBuf {
     let root = env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
@@ -278,8 +313,8 @@ fn system_tool(name: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// docs/windows-distribution.md, "The archive", with `install.exe` and
-    /// the monitor still to come (#329, #327).
+    /// docs/windows-distribution.md, "The archive", with the monitor still
+    /// to come (#327).
     #[test]
     fn the_archive_holds_the_agreed_files_and_no_debug_symbols() {
         let files = shipped("1.2.3");
@@ -288,6 +323,7 @@ mod tests {
             paths,
             [
                 "c2.exe",
+                "install.exe",
                 "LICENSE",
                 "README.md",
                 "1.2.3/climon2-cli.exe",
@@ -304,9 +340,41 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                program, None, None, program, program, program, library, library, program, None
+                program, program, None, None, program, program, program, library, library, program,
+                None
             ]
         );
+        assert_eq!(files[1].source, Source::Installer);
+    }
+
+    /// The installer installs exactly the version folder the archive holds.
+    #[test]
+    fn the_installer_takes_every_file_of_the_version_folder() {
+        let files = shipped("1.2.3");
+        let folder: Vec<_> = files
+            .iter()
+            .filter_map(|file| file.path.strip_prefix("1.2.3/"))
+            .collect();
+        assert_eq!(folder, climon2_install::version_files());
+    }
+
+    #[test]
+    fn the_download_script_is_stamped_with_the_release_version() {
+        let template = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(SCRIPT),
+        )
+        .unwrap();
+        let stamped = stamped_script(&template, "1.2.3").unwrap();
+        assert!(stamped.contains("\n    $Version = '1.2.3'\n"), "{stamped}");
+        assert_eq!(stamped.lines().count(), template.lines().count());
+        for broken in ["no assignment\n", "$Version = '1'\n  $Version = '2'\n"] {
+            assert_eq!(
+                stamped_script(broken, "1.2.3").unwrap_err().to_string(),
+                "install.ps1 must contain one $Version assignment"
+            );
+        }
     }
 
     /// The archive folder for `files`, with each file's path as its contents.
