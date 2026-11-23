@@ -2,8 +2,8 @@
 //! failures are connection-fatal codes; an identifiable request with a
 //! well-formed but unsupported value is left to the daemon.
 use climon2_core::wire::{
-    ControlRecord, Counter, Families, FatalCode, Focus, Frame, Mode, Open, Request, Requested,
-    SetViewing,
+    Break, ControlRecord, Counter, Families, FatalCode, Focus, Frame, Mode, Open, Request,
+    Requested, SetViewing,
 };
 use support::{counter, families, geometry, ids};
 
@@ -14,6 +14,7 @@ const SET_VIEWING: u8 = 0x35;
 const LEAVE: u8 = 0x37;
 const KILL: u8 = 0x38;
 const FOCUS: u8 = 0x39;
+const BREAK: u8 = 0x3a;
 
 fn request(code: u8, body: impl AsRef<[u8]>) -> Result<Request, FatalCode> {
     Request::from_frame(&Frame::new(code, body.as_ref().to_vec()))
@@ -348,11 +349,38 @@ fn requests_are_identified_by_type_and_direction() {
             "{code:#x}"
         );
     }
-    for code in [0x00, 0x01, 0x10, 0x2f, 0x3a, 0x3f, 0x4e, 0x7f, 0xff] {
+    for code in [0x00, 0x01, 0x10, 0x2f, 0x3b, 0x3f, 0x4e, 0x7f, 0xff] {
         assert_eq!(
             request(code, leave),
             Err(FatalCode::UnknownMessageType),
             "{code:#x}"
+        );
+    }
+}
+
+/// Break `0x3a` (`break-v1`, #326) names the authority alone, like Ready and
+/// Acknowledge, and encodes its members in that order.
+#[test]
+fn break_names_the_authority_alone() {
+    let body = r#"{"request_id":"9","period":"2","restoration_id":"3"}"#;
+    let expected = Break {
+        request_id: counter(9),
+        authority: ids(2, 3),
+    };
+    assert_eq!(request(BREAK, body), Ok(Request::Break(expected)));
+    assert_eq!(
+        expected.to_frame(),
+        Frame::new(BREAK, body.as_bytes().to_vec())
+    );
+    assert_eq!(Request::Break(expected).request_id(), counter(9));
+    for body in [
+        r#"{"request_id":"9","period":"2"}"#,
+        r#"{"request_id":"9","period":"2","restoration_id":"3","focused":true}"#,
+    ] {
+        assert_eq!(
+            request(BREAK, body),
+            Err(FatalCode::InvalidRecord),
+            "{body}"
         );
     }
 }

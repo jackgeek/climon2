@@ -4,13 +4,13 @@
 //! text and the codec cannot drift apart. The same examples seed the member
 //! strictness sweeps (COM-02).
 use climon2_core::wire::{
-    Acknowledge, Acquire, ActualGeometry, Available, CommandFinal, CommandResult, ControlGranted,
-    ControlRecord, ControlRevoked, Display, Error, FatalCode, FatalError, Focus, FocusBytes, Frame,
-    GrantReason, InitialMetadata, Input, Kill, Leave, Mode, Notification, NotificationSource, Open,
-    OperationalCode, Outcome, Progress, ProgressChanged, ProgressState, Ready, Rejection, Request,
-    Requested, Resize, Response, RestorationBegin, RestorationComplete, RevocationReason,
-    ServerMessage, SetViewing, Status, StatusChanged, StatusState, Success, TitleChanged,
-    read_frame, write_frame,
+    Acknowledge, Acquire, ActualGeometry, Available, Break, CommandFinal, CommandResult,
+    ControlGranted, ControlRecord, ControlRevoked, Display, Error, FatalCode, FatalError, Focus,
+    FocusBytes, Frame, GrantReason, InitialMetadata, Input, Kill, Leave, Mode, Notification,
+    NotificationSource, Open, OperationalCode, Outcome, Progress, ProgressChanged, ProgressState,
+    Ready, Rejection, Request, Requested, Resize, Response, RestorationBegin, RestorationComplete,
+    RevocationReason, ServerMessage, SetViewing, Status, StatusChanged, StatusState, Success,
+    TitleChanged, read_frame, write_frame,
 };
 use climon2_core::{
     hello::{
@@ -154,6 +154,49 @@ fn published_focus_examples_round_trip_byte_identically() {
             error: Error {
                 code: OperationalCode::UnsupportedCapability.into(),
                 message: "focus-v1 was not selected".into(),
+            },
+            known_final: None,
+        }),
+    };
+    assert_eq!(
+        ServerMessage::from_frame(&frame),
+        Ok(ServerMessage::Response(expected.clone()))
+    );
+    assert_eq!(expected.to_frame(), frame);
+}
+
+/// DOC-01: Break `0x3a` (#326) and its accepted and rejected Responses.
+#[test]
+fn published_break_examples_round_trip_byte_identically() {
+    let [request, accepted, rejected]: [String; 3] =
+        page_examples("request-break.md").try_into().unwrap();
+
+    let frame = Frame::new(0x3a, request.into_bytes());
+    let expected = Break {
+        request_id: counter(9),
+        authority: ids(2, 3),
+    };
+    assert_eq!(Request::from_frame(&frame), Ok(Request::Break(expected)));
+    assert_eq!(expected.to_frame(), frame);
+
+    let frame = Frame::new(0x40, accepted.into_bytes());
+    let expected = Response {
+        request_id: counter(9),
+        outcome: Outcome::Ok(Success::BreakSent {}),
+    };
+    assert_eq!(
+        ServerMessage::from_frame(&frame),
+        Ok(ServerMessage::Response(expected.clone()))
+    );
+    assert_eq!(expected.to_frame(), frame);
+
+    let frame = Frame::new(0x40, rejected.into_bytes());
+    let expected = Response {
+        request_id: counter(9),
+        outcome: Outcome::Rejected(Rejection {
+            error: Error {
+                code: OperationalCode::UnsupportedCapability.into(),
+                message: "break-v1 was not selected".into(),
             },
             known_final: None,
         }),
@@ -434,7 +477,7 @@ fn published_hello_reply_examples_decode_and_the_encoded_ones_round_trip() {
 fn decode(code: u8, body: &str) -> Result<(), FatalCode> {
     let frame = Frame::new(code, body.as_bytes().to_vec());
     match code {
-        0x30..=0x39 => Request::from_frame(&frame).map(drop),
+        0x30..=0x3a => Request::from_frame(&frame).map(drop),
         _ => ServerMessage::from_frame(&frame).map(drop),
     }
 }
@@ -445,7 +488,7 @@ fn ok(result: &str) -> String {
 
 /// Every daemon wire page that publishes JSON examples, with the type of each
 /// example in page order. The frozen hello pages have their own tests.
-const JSON_PAGES: [(&str, &[u8]); 22] = [
+const JSON_PAGES: [(&str, &[u8]); 23] = [
     ("request-open.md", &[0x30]),
     ("request-resize.md", &[0x32]),
     ("request-acquire.md", &[0x33]),
@@ -455,6 +498,7 @@ const JSON_PAGES: [(&str, &[u8]); 22] = [
     ("request-leave.md", &[0x37]),
     ("request-kill.md", &[0x38]),
     ("request-focus.md", &[0x39, 0x40, 0x40]),
+    ("request-break.md", &[0x3a, 0x40, 0x40]),
     ("response.md", &[0x40]),
     ("event-initial-metadata.md", &[0x41]),
     ("event-title-changed.md", &[0x42]),
@@ -676,9 +720,10 @@ fn string_members_accept_only_json_strings() {
 
 /// Every documented `kind`: the success results, a rejection's known final
 /// result, a Kill's partial termination and the command results.
-const KINDS: [&str; 13] = [
+const KINDS: [&str; 14] = [
     "acknowledgement",
     "acquired",
+    "break_sent",
     "exit",
     "focus",
     "input_accepted",
@@ -782,7 +827,9 @@ fn only_requests_and_responses_carry_request_ids() {
     }
     assert_eq!(
         correlated,
-        BTreeSet::from([0x30, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x40]),
+        BTreeSet::from([
+            0x30, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x40
+        ]),
         "every JSON request and the Response"
     );
 }
@@ -829,9 +876,9 @@ fn every_period_and_restoration_id_is_a_counter_at_both_bounds() {
     assert_eq!(
         carriers,
         BTreeSet::from([
-            0x32, 0x34, 0x35, 0x36, 0x39, 0x40, 0x46, 0x47, 0x48, 0x4a, 0x4b
+            0x32, 0x34, 0x35, 0x36, 0x39, 0x3a, 0x40, 0x46, 0x47, 0x48, 0x4a, 0x4b
         ]),
-        "Resize, Ready, Set viewing, Acknowledge, Focus, the Acquire and Ready results, \
+        "Resize, Ready, Set viewing, Acknowledge, Focus, Break, the Acquire and Ready results, \
          Control granted and revoked, Restoration begin and complete, and Geometry"
     );
 }

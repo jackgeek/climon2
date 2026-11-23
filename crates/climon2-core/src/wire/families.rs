@@ -22,9 +22,12 @@ pub enum Family {
     ProgressV1,
     /// Optional non-user application focus.
     FocusV1,
+    /// Ctrl+Break for the command's console, which only Windows sessions
+    /// advertise (#326).
+    BreakV1,
 }
 
-const FAMILIES: [(Family, &str); 7] = [
+const FAMILIES: [(Family, &str); 8] = [
     (Family::DaemonWireV1, "daemon-wire-v1"),
     (Family::MonitorV1, "monitor-v1"),
     (Family::TitleV1, "title-v1"),
@@ -32,6 +35,7 @@ const FAMILIES: [(Family, &str); 7] = [
     (Family::NotificationV1, "notification-v1"),
     (Family::ProgressV1, "progress-v1"),
     (Family::FocusV1, "focus-v1"),
+    (Family::BreakV1, "break-v1"),
 ];
 
 impl Family {

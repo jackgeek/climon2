@@ -1,4 +1,4 @@
-//! Requests: client to session daemon, types `0x30` through `0x39`.
+//! Requests: client to session daemon, types `0x30` through `0x3a`.
 use super::{
     AuthorityIds, Counter, Families, FatalCode, Frame, Geometry, Input, Requested,
     record::{self, ControlRecord, Decoder, by_name, flat_authority, nullable},
@@ -249,6 +249,25 @@ flat_authority!(
     }
 );
 
+/// Break `0x3a`: Ctrl+Break for the command's console, which needs
+/// `break-v1` (#326). It names the authority alone and is never Input.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(from = "BreakFields", into = "BreakFields")]
+pub struct Break {
+    pub request_id: Counter,
+    pub authority: AuthorityIds,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BreakFields {
+    request_id: Counter,
+    period: Counter,
+    restoration_id: Counter,
+}
+
+flat_authority!(Break, BreakFields { request_id });
+
 impl ControlRecord for Open {
     const CODE: u8 = 0x30;
 }
@@ -285,6 +304,10 @@ impl ControlRecord for Focus {
     const CODE: u8 = 0x39;
 }
 
+impl ControlRecord for Break {
+    const CODE: u8 = 0x3a;
+}
+
 /// Every request the session daemon decodes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Request {
@@ -298,9 +321,10 @@ pub enum Request {
     Leave(Leave),
     Kill(Kill),
     Focus(Focus),
+    Break(Break),
 }
 
-const DECODERS: [(u8, Decoder<Request>); 10] = [
+const DECODERS: [(u8, Decoder<Request>); 11] = [
     (Open::CODE, |body| record::decode(body).map(Request::Open)),
     (Input::CODE, |body| Input::decode(body).map(Request::Input)),
     (Resize::CODE, |body| {
@@ -319,6 +343,7 @@ const DECODERS: [(u8, Decoder<Request>); 10] = [
     (Leave::CODE, |body| record::decode(body).map(Request::Leave)),
     (Kill::CODE, |body| record::decode(body).map(Request::Kill)),
     (Focus::CODE, |body| record::decode(body).map(Request::Focus)),
+    (Break::CODE, |body| record::decode(body).map(Request::Break)),
 ];
 
 impl Request {
@@ -339,7 +364,8 @@ impl Request {
         | Self::Acknowledge(Acknowledge { request_id, .. })
         | Self::Leave(Leave { request_id })
         | Self::Kill(Kill { request_id, .. })
-        | Self::Focus(Focus { request_id, .. })) = self;
+        | Self::Focus(Focus { request_id, .. })
+        | Self::Break(Break { request_id, .. })) = self;
         *request_id
     }
 }
