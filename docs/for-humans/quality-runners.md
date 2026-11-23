@@ -184,7 +184,7 @@ Options, or `sudo pmset -c sleep 0`), or a job waits until it wakes.
 
 The Linux gate and the Windows gate run on the same PC, the Windows one
 inside the VM, and they run at the same time. So the workflow limits their
-mutation workers, set in `quality.yml`: four on Linux, three on Windows.
+mutation workers, set in `quality.yml`: four on Linux, two on Windows.
 
 How many is a trade-off. With 6 workers each, with 2 build jobs and 2 test
 threads per worker, end-to-end tests missed their deadlines on both gates.
@@ -194,18 +194,22 @@ So on 2026-11-23 the owner asked to raise the workers until tests start to
 fail, then back off a little. Three workers passed on both gates at once
 on 2026-11-23, finishing the Linux gate in 1 h 50 min and the Windows gate
 in 1 h 8 min. But the Windows VM's 16 GB ran critically low on memory while
-they did, so only the slower Linux gate stepped up to four. Windows stays at
-three unless the VM gets more memory.
+they did, so only the slower Linux gate stepped up to four. Then, with Linux
+at four, the Windows gate's load still made the Linux gate's coverage-stage
+timing tests fail twice running (an 8 MiB flood with a 15 s deadline took
+29 s), so Windows went down to two.
 
 Each worker builds and tests the workspace on its own.
 `CLIMON2_MUTATION_WORKER_JOBS`, also set in `quality.yml`, gives its Cargo 4
 build jobs and 4 test threads. The gate measures its stage timeouts under
 the same limit.
 
-The rest of the gate, such as its own coverage build and test run, gets 8
-build jobs and 8 test threads (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`).
-Without that limit, one gate's baseline test run used every thread its
-machine has, and the other gate's timing tests failed while it ran.
+The rest of the gate, such as its own coverage build and test run, gets 4
+build jobs and 4 test threads (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`).
+Without a limit, one gate's baseline test run used every thread its machine
+has, and the other gate's timing tests failed while it ran. At 8, the Linux
+gate's coverage-stage timing tests still failed while the Windows gate built
+and tested at the same time, so on 2026-11-23 the owner chose 4.
 
 Each worker also has its own target folder. On Windows, one with debug info
 nears 8.4 GB, and 6 of them filled the VM's disk. So every gate builds its
