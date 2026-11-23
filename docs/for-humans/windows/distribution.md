@@ -1,18 +1,19 @@
-# Windows packaging and upgrades (agreed, partly implemented)
+# Windows packaging and upgrades
 
 This document says what a Windows release of climon2 contains, how it is
 installed, and what an upgrade may and may not touch. It is for contributors.
-So far the launcher's retry of [`current`](#current)
+All of it is built except [publishing](#releases) the archive with a release,
+which is [#330](https://github.com/jackgeek/climon2/issues/330): the
+launcher's retry of [`current`](#current)
 ([#315](https://github.com/jackgeek/climon2/issues/315)),
 [the archive](#the-archive) with its Dist job
 ([#319](https://github.com/jackgeek/climon2/issues/319)), and
 [`install.exe`](#the-installer) and [`install.ps1`](#the-download-script)
 with the Archive job that tests them
-([#329](https://github.com/jackgeek/climon2/issues/329)) are built, but not
-publishing. It was agreed in
+([#329](https://github.com/jackgeek/climon2/issues/329)). It was agreed in
 [Define Windows packaging and upgrade contract](https://github.com/jackgeek/climon2/issues/215)
 and is the specification the Windows port implements. The macOS and Linux
-equivalent, which is built, is [Release distribution](distribution.md).
+equivalent, which is built, is [Release distribution](../distribution.md).
 
 It does not cover the monitor or the client library on Windows, which
 [Define Windows monitor library and specification integration](https://github.com/jackgeek/climon2/issues/216)
@@ -68,6 +69,7 @@ README.md
 <version>\climon2-cli.exe
 <version>\climon2-daemon.exe
 <version>\climon2-client.exe
+<version>\climon2-monitor.exe
 <version>\climon2_client.dll
 <version>\conpty.dll
 <version>\OpenConsole.exe
