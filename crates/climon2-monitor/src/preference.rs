@@ -8,12 +8,11 @@ use climon2_core::{
     layout::HomeLayout,
     preferences::{FILE_NAME, MonitorPreferences},
 };
-use climon2_platform::process;
+use climon2_platform::{private, process};
 use std::{
     ffi::{OsStr, OsString},
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Write},
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -135,14 +134,11 @@ fn ended(pid: u32) -> bool {
     matches!(process::start_time(pid), Ok(None))
 }
 
-/// A new file, readable and writable by its owner alone whatever the umask;
-/// an existing file or link at `path` is refused.
+/// A new private file: on Unix readable and writable by its owner alone
+/// whatever the umask, on Windows with the private descriptor; an existing
+/// file or link at `path` is refused.
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut file = private::create_private_file(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }

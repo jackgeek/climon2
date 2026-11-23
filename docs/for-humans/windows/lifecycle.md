@@ -19,7 +19,10 @@ to the client for `exec`, `attach` and `kill` and the client's console (see
 [#321](https://github.com/jackgeek/climon2/issues/321)), and command
 resolution, quoting and the launch failure statuses (see
 [Command resolution and arguments](#command-resolution-and-arguments);
-[#322](https://github.com/jackgeek/climon2/issues/322)). Ctrl+C reaches the
+[#322](https://github.com/jackgeek/climon2/issues/322)), and closing the
+host, the leave policy and the statuses clients exit with after a hang-up (see
+[Session job and hang-up](#session-job-and-hang-up);
+[#323](https://github.com/jackgeek/climon2/issues/323)). Ctrl+C reaches the
 session as byte `0x03`; Ctrl+Break is not passed on yet
 ([#326](https://github.com/jackgeek/climon2/issues/326)). It was
 agreed in
@@ -146,6 +149,16 @@ five-second kill of console processes after `CTRL_CLOSE_EVENT` races the
 grace; either way the processes are gone after about five seconds, and
 scenarios assert outcomes, never which mechanism won.
 
+When the host closes while a client is attached, the client, the CLI and the
+launcher end with 129 (see [Hand-offs](#hand-offs)). The daemon is not on the
+host's console, so it only loses the client, and the
+[leave policy](../../../GLOSSARY.md) applies as on Unix: an ordinary session
+whose last client is lost hangs up and ends, a headless one keeps running, and
+a session already detached is untouched. An ordinary session that nobody
+attaches to within five seconds of its start ends the same way. After
+`c2 kill`, every attached client exits with the leader's status at its full
+32 bits, which the CLI and the launcher pass on unchanged.
+
 The Store build of `pwsh` is in the session job, but the processes it starts
 are in no job. Those on the session's console still end at step 1. A program
 it starts detached from the console (hidden, in its own window, or a GUI app)
@@ -216,6 +229,9 @@ runs. Every exit path, a panic included, restores both modes and both code
 pages. A Ctrl+C that reaches the client as `CTRL_C_EVENT`, as it does in kill
 mode, where the console is not raw, ends the client with 130, as SIGINT does
 on Unix; the CLI waiting for it then exits 130 too.
+
+The client ends itself with `TerminateProcess` and its full 32-bit status,
+for the reason the launcher does (see [Hand-offs](#hand-offs)).
 
 ## Ctrl+C and Ctrl+Break
 

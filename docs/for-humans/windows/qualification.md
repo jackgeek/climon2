@@ -251,6 +251,25 @@ through the launcher in the Windows Terminal model. `WIN-11` gives the CLI its
 working directory through a test hook, because Windows cannot start a
 program in a directory that long either.
 
+Built so far ([#323](https://github.com/jackgeek/climon2/issues/323)):
+`WIN-01` under the Windows Terminal model and `WIN-02` for the three shells,
+in `crates/climon2-cli/tests/packaged_windows.rs` beside the smoke test.
+`WIN-01` closes the host of an attached ordinary session (the client exits 129
+and the session ends), of a client attached to a headless session (the session
+keeps running and reattaches) and of a shell that a session was detached from
+(the session survives and reattaches). `WIN-02` attaches two clients to a
+session of each shell and runs `c2 kill`: both exit with `0xC000013A`. The
+`powershell` and `cmd.exe` start-ups are the test file's own until the harness
+has their profiles. vim and Edit join `WIN-02` with their pinned downloads
+([#328](https://github.com/jackgeek/climon2/issues/328)). Where only the Store
+build of `pwsh` is installed, which a session cannot start, the local runs of
+`WIN-01` use `powershell` in its place; CI requires the MSI build. In
+`crates/climon2-cli/tests/attach_deadline_windows.rs`, an ordinary session
+that nobody attaches to within five seconds ends, with `exec` held before it
+starts the client. It is a test binary of its own because cargo runs test
+binaries one at a time: running beside the kill tests, it made them miss
+their ten-second deadline under the coverage build.
+
 `WIN-09` to `WIN-11` follow the
 [Windows platform and lifecycle contract](lifecycle.md). Ctrl+Break
 has no VS Code model scenario: that host delivers nothing for it, a documented
@@ -301,6 +320,15 @@ inside its sessions run under `pwsh`; the shell subset above does not apply.
 
 A scenario that cannot pass on Windows needs an explicit, documented decision,
 as the exceptions above have.
+
+Built so far ([#327](https://github.com/jackgeek/climon2/issues/327)): the
+CLI's `tests/monitor_windows.rs` runs the monitor's Windows scenarios against
+the packaged product: the console refusals, listing, switching and input
+routing, resize, toasts with the bell and the host attention reports,
+prefix+j, exit and console close leaving sessions running, and a stalled
+library load. Each terminal-facing one runs under both host models. The
+Unix monitor, client-library and headless `exec` suites themselves do not
+build on Windows yet.
 
 ## Manual checklist
 

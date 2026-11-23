@@ -69,14 +69,13 @@ use climon2_core::{
 };
 use climon2_platform::{
     library::{Failure, Functions},
-    process,
-    waiting::{self, Interest, Watch},
+    notifier, process,
+    waiting::{self, Watch},
 };
 use owner::StartupData;
 use queue::{Condition, Entry, Lane, Queue};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    os::fd::BorrowedFd,
     path::PathBuf,
     sync::{
         Arc,
@@ -1509,7 +1508,7 @@ impl State {
             .filter_map(|(_, instance)| instance.phase.live()?.descriptor)
             // SAFETY: a live instance's library keeps its notification
             // descriptor open, and the table ends with this wait.
-            .map(|fd| Watch::new(unsafe { BorrowedFd::borrow_raw(fd) }, Interest::Read))
+            .map(|descriptor| unsafe { notifier::watch_raised(descriptor) })
             .collect();
         wait(&mut table);
         let live: Vec<_> = self
@@ -2190,8 +2189,8 @@ mod tests {
     struct Fake {
         id: [u8; 16],
         script: Script,
-        /// The notification pipe: the read end is lent, the write end signals.
-        pipe: [i32; 2],
+        /// The notification descriptor: raised while items may wait.
+        notifier: climon2_platform::notifier::Notifier,
         state: Mutex<State>,
         terminal: Terminal,
     }
@@ -2203,8 +2202,7 @@ mod tests {
 
         fn push(&self, item: Item) {
             self.state().queue.push_back(item);
-            // SAFETY: one byte from a live buffer to the fake's own pipe.
-            unsafe { libc::write(self.pipe[1], [1u8].as_ptr().cast(), 1) };
+            self.notifier.set(true);
         }
     }
 
@@ -2277,17 +2275,10 @@ mod tests {
         if let Some(code) = script.create_fails {
             return failure(code, b"refused", b"create refused");
         }
-        let mut pipe = [0; 2];
-        // SAFETY: a two-descriptor output array.
-        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
-        for descriptor in pipe {
-            // SAFETY: the fake's own new descriptors.
-            unsafe { libc::fcntl(descriptor, libc::F_SETFL, libc::O_NONBLOCK) };
-        }
         let fake = Box::into_raw(Box::new(Fake {
             id,
             script,
-            pipe,
+            notifier: climon2_platform::notifier::Notifier::new().unwrap(),
             state: Mutex::default(),
             terminal: Terminal {
                 generation: GENERATION,
@@ -2665,11 +2656,7 @@ mod tests {
                 out.terminal = &fake.terminal;
             }
             None => {
-                let mut byte = [0u8; 64];
-                // SAFETY: reads into a live buffer from the fake's own pipe.
-                while unsafe { libc::read(fake.pipe[0], byte.as_mut_ptr().cast(), byte.len()) } > 0
-                {
-                }
+                fake.notifier.set(false);
                 out.kind = native::EMPTY;
             }
         }
@@ -2723,7 +2710,7 @@ mod tests {
             );
             (-1, call)
         } else {
-            (fake.pipe[0], success())
+            (fake.notifier.descriptor(), success())
         };
         // SAFETY: the supervisor passes an output integer.
         unsafe { *out = descriptor };

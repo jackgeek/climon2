@@ -317,3 +317,40 @@ fn running_out_of_sockets_or_handles_is_out_of_descriptors() {
     )));
     assert!(!out_of_descriptors(&Error::other("no OS error")));
 }
+
+/// #327: Windows has no soft limit on a process's handles, only the kernel's
+/// per-process handle table of 2^24 entries, so the monitor's admission
+/// counts against that.
+#[test]
+fn the_descriptor_limit_is_the_per_process_handle_table() {
+    assert_eq!(process::descriptor_limit(), 16_777_216);
+}
+
+/// Set in a copy of this test binary that must end at once with a status.
+const EXIT_NOW: &str = "CLIMON2_TEST_EXIT_IMMEDIATELY";
+
+/// #327: the monitor's fail-stop ends the process at once with its status,
+/// all 32 bits of it, whatever the process's other threads are doing.
+#[test]
+fn exit_immediately_ends_the_process_with_its_status() {
+    if let Some(code) = std::env::var_os(EXIT_NOW) {
+        let code: i32 = code.to_str().unwrap().parse().unwrap();
+        // A thread that would hold an orderly exit back.
+        std::thread::spawn(|| std::thread::sleep(Duration::MAX));
+        process::exit_immediately(code);
+    }
+    for code in [7, -1073741510] {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "exit_immediately_ends_the_process_with_its_status",
+                "--nocapture",
+            ])
+            .env(EXIT_NOW, code.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(code));
+    }
+}

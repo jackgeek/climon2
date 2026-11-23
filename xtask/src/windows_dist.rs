@@ -27,15 +27,15 @@ use std::{
 
 const TARGET: &str = "x86_64-pc-windows-msvc";
 const SUFFIX: &str = "windows-x86_64-msvc";
-/// The packages a Windows release builds so far, each with its binary: the
-/// launcher, the installer, then the version folder's programs. The monitor
-/// joins them with #327.
+/// The packages a Windows release builds, each with its binary: the
+/// launcher, the installer, then the version folder's programs.
 const PACKAGES: &[(&str, &str)] = &[
     ("climon2-launcher", "c2"),
     ("climon2-install", "climon2-install"),
     ("climon2-cli", "climon2-cli"),
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
+    ("climon2-monitor", "climon2-monitor"),
 ];
 /// The notice for the ConPTY files, shipped beside them.
 const NOTICE: &str = "pins/THIRD-PARTY-NOTICES.txt";
@@ -313,8 +313,7 @@ fn system_tool(name: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// docs/for-humans/windows/distribution.md, "The archive", with the monitor still
-    /// to come (#327).
+    /// docs/for-humans/windows/distribution.md, "The archive".
     #[test]
     fn the_archive_holds_the_agreed_files_and_no_debug_symbols() {
         let files = shipped("1.2.3");
@@ -329,6 +328,7 @@ mod tests {
                 "1.2.3/climon2-cli.exe",
                 "1.2.3/climon2-daemon.exe",
                 "1.2.3/climon2-client.exe",
+                "1.2.3/climon2-monitor.exe",
                 "1.2.3/climon2_client.dll",
                 "1.2.3/conpty.dll",
                 "1.2.3/OpenConsole.exe",
@@ -340,8 +340,8 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                program, program, None, None, program, program, program, library, library, program,
-                None
+                program, program, None, None, program, program, program, program, library, library,
+                program, None
             ]
         );
         assert_eq!(files[1].source, Source::Installer);
