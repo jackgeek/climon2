@@ -72,14 +72,14 @@ jobs:
     timeout-minutes: 360
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
-      # The Linux and Windows gates share the owner's PC; one mutation worker
-      # each, so the two gates do not starve each other's timing tests (owner
-      # decision, 2026-11-23, docs/for-humans/quality-runners.md).
-      CLIMON2_MUTATION_WORKERS: "1"
-      # The one worker's Cargo gets the whole gate's 8 build jobs and 8 test threads.
-      CLIMON2_MUTATION_WORKER_JOBS: "8"
-      # The whole gate, its own baseline included, gets 8 build jobs and 8 test
-      # threads, so the two gates together use at most half the PC's 32 threads.
+      # The Linux and Windows gates share the owner's PC. One worker left it
+      # mostly idle, so the owner asked to raise workers until tests fail, then
+      # back off (2026-11-23, docs/for-humans/quality-runners.md).
+      CLIMON2_MUTATION_WORKERS: "3"
+      # Each worker's Cargo gets 4 build jobs and 4 test threads.
+      CLIMON2_MUTATION_WORKER_JOBS: "4"
+      # The rest of the gate, such as its own baseline, gets 8 build jobs and 8
+      # test threads.
       CARGO_BUILD_JOBS: "8"
       RUST_TEST_THREADS: "8"
     steps:
@@ -118,12 +118,12 @@ jobs:
     # (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
-      # Shares the owner's PC with the Linux gate; one mutation worker each.
-      CLIMON2_NATIVE_MUTATION_WORKERS: "1"
-      # The one worker's Cargo gets the whole gate's 8 build jobs and 8 test threads.
-      CLIMON2_MUTATION_WORKER_JOBS: "8"
-      # The whole gate, its own baseline included, gets 8 build jobs and 8 test
-      # threads, so the two gates together use at most half the PC's 32 threads.
+      # Shares the owner's PC with the Linux gate; the same workers as it.
+      CLIMON2_NATIVE_MUTATION_WORKERS: "3"
+      # Each worker's Cargo gets 4 build jobs and 4 test threads.
+      CLIMON2_MUTATION_WORKER_JOBS: "4"
+      # The rest of the gate, such as its own baseline, gets 8 build jobs and 8
+      # test threads.
       CARGO_BUILD_JOBS: "8"
       RUST_TEST_THREADS: "8"
     steps:
