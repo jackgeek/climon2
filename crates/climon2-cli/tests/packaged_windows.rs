@@ -137,11 +137,21 @@ fn built(root: &Path) -> PathBuf {
             file.display()
         );
     }
-    fs::copy(&launcher, root.join("c2.exe")).unwrap();
+    place(&launcher, &root.join("c2.exe"));
     for file in shipped {
-        fs::copy(&file, version.join(file.file_name().unwrap())).unwrap();
+        place(&file, &version.join(file.file_name().unwrap()));
     }
     root.to_owned()
+}
+
+/// Puts a built file into a test install as a hard link, so Windows Defender
+/// scans it once, not on each install's first launch, which under the coverage
+/// build pushed daemon start-up past its five-second deadline. A copy where a
+/// link cannot be made, such as across volumes.
+fn place(from: &Path, to: &Path) {
+    if fs::hard_link(from, to).is_err() {
+        fs::copy(from, to).unwrap();
+    }
 }
 
 /// A climon2 home and runtime root of its own. Dropping it ends every daemon
