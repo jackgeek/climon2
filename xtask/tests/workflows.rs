@@ -300,13 +300,13 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
             "{name} must clear leftover mutation workers"
         );
     }
-    // The Linux and Windows gates share the owner's PC: 6 workers each
-    // (owner decision, 2026-11-22).
-    assert!(job(&quality, "linux").contains(&"      CLIMON2_MUTATION_WORKERS: \"6\""));
-    assert!(job(&quality, "windows").contains(&"      CLIMON2_NATIVE_MUTATION_WORKERS: \"6\""));
-    // Each worker gets 2 Cargo build jobs and 2 test threads (owner decision, 2026-11-22).
+    // The Linux and Windows gates share the owner's PC: one mutation worker each
+    // (owner decision, 2026-11-23).
+    assert!(job(&quality, "linux").contains(&"      CLIMON2_MUTATION_WORKERS: \"1\""));
+    assert!(job(&quality, "windows").contains(&"      CLIMON2_NATIVE_MUTATION_WORKERS: \"1\""));
     for name in ["linux", "windows"] {
-        assert!(job(&quality, name).contains(&"      CLIMON2_MUTATION_WORKER_JOBS: \"2\""));
+        // The one worker's Cargo gets the whole gate's 8 build jobs and 8 test threads.
+        assert!(job(&quality, name).contains(&"      CLIMON2_MUTATION_WORKER_JOBS: \"8\""));
         // And the whole gate, its own baseline included, 8 of each, so the two gates
         // together stay within half the PC's 32 threads.
         assert!(job(&quality, name).contains(&"      CARGO_BUILD_JOBS: \"8\""));
