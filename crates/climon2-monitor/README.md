@@ -34,7 +34,8 @@ scheduling (#120). Every string the monitor shows is in [On-screen strings](#on-
 4. One configuration snapshot is read, `ConfigSource::monitor()`: the
    `client` bindings with their defaults, refusing a null
    `client.escape_prefix`, and the `monitor` section (`show_key_hints`, `bell`
-   and `monitor.limits` with the ranges and rules the README lists). Nothing
+   and `monitor.limits` with the ranges and rules the
+   [configuration guide](../../docs/for-humans/guide/configuration.md) lists). Nothing
    reads the file again, so editing it changes nothing until the next start.
    Its limits must then hold one session's mandatory allocation at the
    largest geometry a session can have, `climon2-vt`'s `Geometry::LARGEST`

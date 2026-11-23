@@ -1,8 +1,8 @@
 # climon2 documentation
 
-Everything about climon2 written for people to read: how it is released, how
-it behaves, the protocols between its programs, how its code is arranged, and
-how it is being ported to Windows.
+Everything about climon2 written for people to read: how to use it, how to
+work on it, how it is released, how it behaves, the protocols between its
+programs, how its code is arranged, and how it is being ported to Windows.
 Architecture decisions live in [`docs/adr/`](../adr/) and agent instructions in
 [`docs/agents/`](../agents/), outside this tree.
 
@@ -32,6 +32,8 @@ line saying how much of it is implemented, and links the issue that settled it.
 
 | Document or folder | Purpose |
 |---|---|
+| [guide/](guide/README.md) | How to install, use and configure climon2. |
+| [development.md](development.md) | How to build, test, check and release climon2. |
 | [distribution.md](distribution.md) | Supported platforms, release archives and how a release is built. |
 | [behaviour/](behaviour/README.md) | Specifications of what sessions and the monitor do. |
 | [protocol/](protocol/README.md) | The interfaces between climon2's programs, for plugin and client authors. |
