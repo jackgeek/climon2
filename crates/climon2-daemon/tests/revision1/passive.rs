@@ -484,7 +484,7 @@ fn revision1_traffic_that_breaks_the_rules_is_connection_fatal() {
         (vec![0, 0, 0, 0], "invalid_frame_length"),
         (vec![0, 0x10, 0, 1], "frame_too_large"),
         (raw_frame(0x41, b"{}"), "wrong_direction"),
-        (raw_frame(0x3a, b"{}"), "unknown_message_type"),
+        (raw_frame(0x3b, b"{}"), "unknown_message_type"),
         (
             raw_frame(0x10, br#"{"cols":80,"rows":24}"#),
             "unknown_message_type",
