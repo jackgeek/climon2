@@ -289,15 +289,22 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   manual-reset event with `WaitForMultipleObjects` (#321); one wait watches
   sockets or events, never both. `Watch::idle()` keeps a slot that is never
   ready, as on Unix. A Windows wait can return up to a clock tick early with
-  nothing ready, so `wait` waits again until the timeout has passed.
+  nothing ready, so `wait` waits again until the timeout has passed. One
+  `WaitForMultipleObjects` takes at most 64 events, so a wait on more watches
+  the first 64, and any event already signalled, beyond them too, ends it at
+  once (#327, the monitor's instances).
 - `src/process/windows.rs`: `start_time`, `is_same_process` and
   `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
   time in epoch microseconds. Only "no such process"
   (`ERROR_INVALID_PARAMETER`) or a process that has exited while its object
   is still held reads as gone; any other failure, such as access denied, is
-  an error and never evidence of death. `exit(status)` ends the process at
-  once with all 32 bits of `status`, through `TerminateProcess` (#323), as
-  the client exits; on Unix it exits with the status's low eight bits.
+  an error and never evidence of death. `descriptor_limit` is the kernel's
+  per-process handle table, 2^24 entries, as Windows has no soft limit.
+  `exit(status)` ends the process at once with all 32 bits of `status`,
+  through `TerminateProcess` (#323), as the client exits; on Unix it exits
+  with the status's low eight bits. `exit_immediately` also ends it with
+  `TerminateProcess` and all 32 bits (#327); on Unix it is `_exit`, which
+  skips exit handlers.
 - `src/presentation/windows.rs`: `local_datetime` uses the system's offset
   for the instant; `columns` is the visible console window's width, or 80
   when stdout is not a console.
@@ -327,7 +334,8 @@ For the session daemon and headless `exec` (#317; docs/for-humans/windows/lifecy
   input through one thread each and a bounded channel; `output_ended` is
   `ERROR_BROKEN_PIPE`. `try_wait` reads the leader's handle; `close`, `end`
   (the job terminated with `0xC000013A`, then the leader's status) and
-  `finish` are hang-up's steps.
+  `finish` are hang-up's steps. The output thread drops the pseudoconsole's
+  start-up negotiation from the start of the output (#325).
 - `src/command/windows.rs` (#322; docs/for-humans/windows/lifecycle.md,
   "Command resolution and arguments"), a module only Windows has:
   `search(command, cwd, path, pathext)` finds the file a command names, in

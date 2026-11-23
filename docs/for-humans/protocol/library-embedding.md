@@ -176,7 +176,9 @@ the failure classification and the event notification exist since
 executable for `c2 kill`. `cargo xtask dist`'s checks arrive with the release
 zip ([#319](https://github.com/jackgeek/climon2/issues/319)), and the
 monitor's wait with the monitor on Windows
-([#327](https://github.com/jackgeek/climon2/issues/327)). Every Windows build
+([#327](https://github.com/jackgeek/climon2/issues/327)): one wait takes the
+first 64 events, and any instance already signalled, beyond them too, ends it
+at once. Every Windows build
 links the C runtime statically, and tests check that the built library
 exports only its bootstrap and imports only system DLLs.
 
@@ -246,8 +248,10 @@ because a load cannot be cancelled: `deadlines.load_ms` is diagnostic only. A
 load still running past it is logged and shown on the rows waiting for it as
 `library loading slowly`, and is never aborted (owner decision on
 [#120](https://github.com/jackgeek/climon2/issues/120), implemented there).
-On Windows the loader lock serializes loads in the same way (agreed, not
-implemented). On glibc that lock (its TLS lock) is also taken by every new
+On Windows the loader lock serializes loads in the same way
+([#327](https://github.com/jackgeek/climon2/issues/327)): a Windows test holds
+a release's library with an oplock, so its load does not return, and the
+monitor stays responsive and logs the load as slow. On glibc that lock (its TLS lock) is also taken by every new
 thread, so while
 a load is stalled no new client or discovery probe can start, even for a
 release already loaded; clients already running continue. Whether the

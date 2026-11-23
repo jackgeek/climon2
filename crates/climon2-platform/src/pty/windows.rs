@@ -21,6 +21,11 @@
 //! short-lived helper with no console of its own attaches to the leader's
 //! console and generates `CTRL_BREAK_EVENT` there (#326; lifecycle.md,
 //! "Ctrl+C and Ctrl+Break").
+//!
+//! The pseudoconsole starts its output with its own negotiation with a host
+//! (#325, `WIN-08`). The daemon is no host and answers none of it, so the
+//! output thread drops it: a session's clients, and the terminal model that
+//! restores their screens, see only the command's own output.
 use crate::command::Launch;
 use std::{
     cell::RefCell,
@@ -510,12 +515,56 @@ fn exit_code(process: &OwnedHandle) -> io::Result<u32> {
 /// ended the output, until that or until nothing receives.
 fn pump_output(source: &PipeReader, chunks: &SyncSender<io::Result<Vec<u8>>>) {
     let mut buffer = vec![u8::default(); CHUNK];
+    let mut start_up = StartUp::default();
     while forward(
-        read(source, &mut buffer).map(|count| buffer[..count].to_vec()),
+        read(source, &mut buffer).map(|count| start_up.filter(&buffer[..count])),
         chunks,
     )
     .is_some()
     {}
+}
+
+/// The sequences a pseudoconsole starts its output with: it asks its host
+/// for the window position report and the device attributes, and turns on
+/// focus reporting and win32-input-mode.
+const NEGOTIATION: [&[u8]; 4] = [b"\x1b[1t", b"\x1b[c", b"\x1b[?1004h", b"\x1b[?9001h"];
+
+/// Drops the negotiation from the start of the output. Output that may
+/// still be the start of a negotiation sequence is held for the next read;
+/// from the first other byte on, everything passes unchanged.
+#[derive(Default)]
+struct StartUp {
+    /// Output held while it may still be the start of a sequence.
+    held: Vec<u8>,
+    /// Whether the command's own output began.
+    began: bool,
+}
+
+impl StartUp {
+    fn filter(&mut self, read: &[u8]) -> Vec<u8> {
+        if self.began {
+            return read.to_vec();
+        }
+        let output = [self.held.as_slice(), read].concat();
+        let rest = after_negotiation(&output);
+        if NEGOTIATION
+            .iter()
+            .any(|sequence| sequence.starts_with(rest))
+        {
+            self.held = rest.to_vec();
+            return Vec::new();
+        }
+        self.began = true;
+        rest.to_vec()
+    }
+}
+
+/// `output` after the whole negotiation sequences it starts with.
+fn after_negotiation(output: &[u8]) -> &[u8] {
+    NEGOTIATION
+        .iter()
+        .find_map(|sequence| output.strip_prefix(*sequence))
+        .map_or(output, after_negotiation)
 }
 
 /// Sends `chunk`; `None` once nothing receives or the chunk was the error
@@ -770,6 +819,36 @@ mod tests {
         );
         assert_eq!(line(&[r"plain\path"]), r"plain\path");
         assert_eq!(line(&[] as &[&str]), "");
+    }
+
+    /// Each read through one filter, and what it passed of each.
+    fn filtered(reads: &[&[u8]]) -> Vec<Vec<u8>> {
+        let mut start_up = StartUp::default();
+        reads.iter().map(|read| start_up.filter(read)).collect()
+    }
+
+    #[test]
+    fn the_start_up_negotiation_is_dropped_and_the_output_after_it_kept() {
+        let negotiation = b"\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h";
+        assert_eq!(
+            filtered(&[&[negotiation.as_slice(), b"\x1b[?7lhi"].concat()]),
+            [b"\x1b[?7lhi".to_vec()]
+        );
+        // A sequence split across reads is held until it is whole.
+        let one_by_one: Vec<&[u8]> = negotiation.chunks(1).collect();
+        let passed = filtered(&[one_by_one.as_slice(), &[b"x"]].concat());
+        assert!(passed[..negotiation.len()].iter().all(Vec::is_empty));
+        assert_eq!(passed[negotiation.len()], b"x");
+        // The start of another sequence is held, then passed whole.
+        assert_eq!(
+            filtered(&[b"\x1b[c\x1b[", b"?25l", b"\x1b[c"]),
+            [Vec::new(), b"\x1b[?25l".to_vec(), b"\x1b[c".to_vec()]
+        );
+        // Once the command's output began, a negotiation sequence is its own.
+        assert_eq!(
+            filtered(&[b"a", b"\x1b[?1004h"]),
+            [b"a".to_vec(), b"\x1b[?1004h".to_vec()]
+        );
     }
 
     #[test]

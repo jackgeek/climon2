@@ -59,6 +59,8 @@ pub enum Key {
     /// The Break key, pressed with Ctrl: Windows reports Ctrl+Break as
     /// `VK_CANCEL` (0x03) with scan code 0x46, typing ETX (0x03).
     Break,
+    /// A function key, F1 to F12.
+    F(u8),
 }
 
 /// Control-key state bits of a console key record.
@@ -91,6 +93,18 @@ const fn enhanced(vk: u16, scan: u16) -> Physical {
     }
 }
 
+/// F1 to F12: virtual keys 0x70 to 0x7B; scan codes 0x3B to 0x44, then
+/// 0x57 and 0x58.
+fn function(number: u8) -> Physical {
+    let index = u16::from(number - 1);
+    let scan = if number <= 10 {
+        0x3B + index
+    } else {
+        0x57 + index - 10
+    };
+    key(0x70 + index, scan)
+}
+
 const SHIFT: Physical = key(0x10, 0x2A);
 const CTRL: Physical = key(0x11, 0x1D);
 const ALT: Physical = key(0x12, 0x38);
@@ -115,6 +129,8 @@ impl Key {
             Self::Home => (enhanced(0x24, 0x47), false, 0),
             Self::End => (enhanced(0x23, 0x4F), false, 0),
             Self::Break => (key(0x03, 0x46), false, 0),
+            Self::F(number @ 1..=12) => (function(number), false, 0),
+            Self::F(_) => return None,
         })
     }
 }
@@ -273,6 +289,7 @@ pub(crate) fn vt(key: Key, modifiers: Modifiers, application_cursor: bool) -> Ve
         // VT has no Break: a plain-VT host such as the VS Code terminal
         // sends nothing for it.
         Key::Break => return Vec::new(),
+        Key::F(number) => return function_vt(number, modifiers),
         Key::Tab if modifiers.shift => b"\x1b[Z".to_vec(),
         Key::Tab => b"\t".to_vec(),
         Key::Enter => b"\r".to_vec(),
@@ -289,6 +306,33 @@ pub(crate) fn vt(key: Key, modifiers: Modifiers, application_cursor: bool) -> Ve
         [b"\x1b".as_slice(), &plain].concat()
     } else {
         plain
+    }
+}
+
+/// A function key as xterm sends it: F1 to F4 as SS3 `P` to `S`, or
+/// `CSI 1 ; m P` to `S` with modifiers; F5 to F12 as `CSI n ~`, or
+/// `CSI n ; m ~`. Nothing for any other number.
+fn function_vt(number: u8, modifiers: Modifiers) -> Vec<u8> {
+    const CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
+    let modifier = modifiers.parameter();
+    match number {
+        1..=4 => {
+            let last = char::from(b"PQRS"[usize::from(number - 1)]);
+            if modifier > 1 {
+                format!("\x1b[1;{modifier}{last}").into_bytes()
+            } else {
+                format!("\x1bO{last}").into_bytes()
+            }
+        }
+        5..=12 => {
+            let code = CODES[usize::from(number - 5)];
+            if modifier > 1 {
+                format!("\x1b[{code};{modifier}~").into_bytes()
+            } else {
+                format!("\x1b[{code}~").into_bytes()
+            }
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -430,6 +474,24 @@ mod tests {
         assert_eq!(vt(Key::Tab, Modifiers::SHIFT, false), b"\x1b[Z");
         assert_eq!(vt(Key::Backspace, Modifiers::NONE, false), b"\x7f");
         assert_eq!(vt(Key::Char('é'), Modifiers::NONE, false), "é".as_bytes());
+        assert_eq!(vt(Key::F(1), Modifiers::NONE, true), b"\x1bOP");
+        assert_eq!(vt(Key::F(4), Modifiers::SHIFT, false), b"\x1b[1;2S");
+        assert_eq!(vt(Key::F(5), Modifiers::NONE, false), b"\x1b[15~");
+        assert_eq!(vt(Key::F(12), Modifiers::CTRL, false), b"\x1b[24;5~");
+        assert!(vt(Key::F(13), Modifiers::NONE, false).is_empty());
+    }
+
+    #[test]
+    fn function_keys_are_plain_keys_that_type_nothing() {
+        assert_eq!(
+            text(win32(Key::F(1), Modifiers::NONE)),
+            "\x1b[112;59;0;1;0;1_\x1b[112;59;0;0;0;1_"
+        );
+        assert_eq!(
+            text(win32(Key::F(12), Modifiers::NONE)),
+            "\x1b[123;88;0;1;0;1_\x1b[123;88;0;0;0;1_"
+        );
+        assert!(win32(Key::F(0), Modifiers::NONE).is_empty());
     }
 
     #[test]

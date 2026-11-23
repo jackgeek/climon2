@@ -112,8 +112,9 @@ cannot discharge the gate. Qualify actual runtime behavior on x86-64 GNU/Linux
 [Linux decision](https://github.com/jackgeek/climon2/issues/125) added Linux.
 Cross-compilation alone proves no runtime support.
 
-Windows (agreed, not implemented,
-[#216](https://github.com/jackgeek/climon2/issues/216)): the monitor and the
+Windows (agreed, partly implemented,
+[#216](https://github.com/jackgeek/climon2/issues/216),
+[#327](https://github.com/jackgeek/climon2/issues/327)): the monitor and the
 client library are full peers in the first Windows release, so x86-64 Windows
 MSVC on `windows-2025` becomes a fourth qualified platform. Every monitor,
 client-library and headless `exec` scenario runs in the Windows Test job, and

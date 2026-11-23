@@ -1,5 +1,6 @@
 """Check specification declarations, never production runtime conformance."""
 
+import os
 import pathlib
 import re
 import subprocess
@@ -11,27 +12,75 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
 
 
+def write_examples(directory):
+    """The layout check, the examples, and each C snippet of the pages as a
+    function body of its own, in `directory`."""
+    sources = [HERE / "layout.c", HERE / "examples.c"]
+    for page in sorted(HERE.glob("*.md")):
+        for index, snippet in enumerate(
+            re.findall(r"```c\n(.*?)```", page.read_text(encoding="utf-8"), re.S)
+        ):
+            source = pathlib.Path(directory) / f"{page.stem}-{index}.c"
+            source.write_text(
+                '#include "client-v1.h"\n#include <string.h>\n'
+                "cm1_call example(const cm1_interface *api,\n"
+                "cm1_communication *communication, uint64_t generation,\n"
+                "uint64_t period, uint64_t restoration_id,\n"
+                "const cm1_record *record) {\n"
+                "(void)api; (void)communication; (void)generation;\n"
+                "(void)period; (void)restoration_id; (void)record;\n"
+                + snippet
+                + "\n}\n"
+            )
+            sources.append(source)
+    return sources
+
+
+def msvc_environment():
+    """The environment of the newest Visual C++ x64 toolset, from vcvars64."""
+    vswhere = (
+        pathlib.Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    )
+    installation = subprocess.run(
+        [
+            str(vswhere), "-latest", "-products", "*", "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property", "installationPath",
+        ],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    vcvars = pathlib.Path(installation) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat"
+    listing = subprocess.run(
+        f'"{vcvars}" >nul && set', shell=True,
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return dict(line.split("=", 1) for line in listing.splitlines() if "=" in line)
+
+
 class NativeDeclarations(unittest.TestCase):
-    def test_c_declarations_and_examples(self):
-        sources = [HERE / "layout.c", HERE / "examples.c"]
+    @unittest.skipUnless(sys.platform == "win32", "MSVC is checked on Windows")
+    def test_msvc_declarations_and_examples(self):
+        """Native revision 1 under the Microsoft x64 convention (#327): the
+        layout check, the examples and the snippets compile with MSVC."""
+        environment = msvc_environment()
+        # C4210 calls a block-scope function declaration, which is standard
+        # C11 and which request-create.md's snippet uses, an extension.
         with tempfile.TemporaryDirectory(prefix="climon2-native-docs-") as directory:
-            for page in sorted(HERE.glob("*.md")):
-                for index, snippet in enumerate(
-                    re.findall(r"```c\n(.*?)```", page.read_text(), re.S)
-                ):
-                    source = pathlib.Path(directory) / f"{page.stem}-{index}.c"
-                    source.write_text(
-                        '#include "client-v1.h"\n#include <string.h>\n'
-                        "cm1_call example(const cm1_interface *api,\n"
-                        "cm1_communication *communication, uint64_t generation,\n"
-                        "uint64_t period, uint64_t restoration_id,\n"
-                        "const cm1_record *record) {\n"
-                        "(void)api; (void)communication; (void)generation;\n"
-                        "(void)period; (void)restoration_id; (void)record;\n"
-                        + snippet
-                        + "\n}\n"
-                    )
-                    sources.append(source)
+            for source in write_examples(directory):
+                result = subprocess.run(
+                    [
+                        "cl", "/nologo", "/std:c11", "/W4", "/WX", "/wd4210", "/Zs",
+                        "/I", str(HERE), str(source),
+                    ],
+                    capture_output=True, text=True, check=False,
+                    env=environment, shell=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_c_declarations_and_examples(self):
+        with tempfile.TemporaryDirectory(prefix="climon2-native-docs-") as directory:
+            sources = write_examples(directory)
             checks = [(None, sources)]
             for target, system in (
                 ("arm64-apple-macos11", "darwin"),

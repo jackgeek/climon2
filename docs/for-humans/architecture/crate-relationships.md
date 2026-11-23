@@ -238,6 +238,13 @@ Windows wait and the CLI's spawn-and-wait hand-off are bodies inside
 product in the harness's Windows host through its existing `dev` edge to
 `climon2-test-term`.
 
+**Current (#327):** the edges are unchanged. `climon2-monitor` builds on
+Windows with its existing edges: its host input, notification waits, native
+paths, preference file and fail-stop exit go through `climon2-platform`'s
+seams, whose Windows bodies hold the Windows code. The CLI's Windows monitor
+tests drive the packaged product through its existing `dev` edge to
+`climon2-test-term`, whose Windows host gains the VS Code model.
+
 **Current (#323):** the harness's edge to the CLI now holds on Windows too, so
 the CLI's Windows tests build it with `test-hooks`, as Unix tests do: they hold
 `exec` before it starts the client. With it, the CLI's own `dev` edge to itself from #322 is

@@ -90,7 +90,11 @@ scenarios use it:
 
 Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
 Windows Terminal model and the job-shape setting, in `climon2-test-term`'s
-Windows host. The VS Code model is not. A real host's shell answers Ctrl+C, so
+Windows host. The VS Code model's creation flags, plain VT keys and close
+were added for the monitor's scenarios
+([#327](https://github.com/jackgeek/climon2/issues/327)); its key table and
+the rest of its qualification are
+[#325](https://github.com/jackgeek/climon2/issues/325)'s. A real host's shell answers Ctrl+C, so
 the harness clears any instruction to ignore Ctrl+C that the test process
 inherited before it starts the shell; otherwise the shell would inherit it
 too.
@@ -279,6 +283,37 @@ as `0x03`. `timeout`, which keeps the default handler, ends with
 has no VS Code model scenario: that host delivers nothing for it, a documented
 limitation.
 
+Built so far ([#325](https://github.com/jackgeek/climon2/issues/325)):
+`WIN-04`, `WIN-05`, `WIN-08` and the VS Code model's subset, in
+`crates/climon2-cli/tests/host_models_windows.rs`. Its session program reads
+its console as a full-screen program does, with VT input on and nothing
+processed, and records every byte it reads.
+
+- `WIN-04` presses the arrows, Home, End, F1, F4, F5, F12, Alt+x, Ctrl+Right,
+  Ctrl+A and Ctrl+C under each model. Each arrives as the bytes xterm sends,
+  Ctrl+C as `0x03`.
+- Under each model, the host's focus reports reach a session once it turns
+  focus reporting on, as `CSI O` and `CSI I`, and not before. The console
+  never makes them focus records in VT input mode, so the client passes them
+  on as typed bytes (see
+  [Client console](lifecycle.md#client-console)).
+- `WIN-08` runs a session under each model and finds none of ConPTY's
+  start-up sequences in what the host received since `exec`. The host's own
+  pseudoconsole passes on the client's "focus reporting off" and turns it
+  straight back on for itself; the scenario leaves that pair out. The same
+  run resizes the host and sees the new size in the session.
+- `WIN-05` pipes into `exec` and `attach`, and sends their output to a file:
+  each exits 125 with the error a missing terminal gives.
+- The VS Code subset closes the host of an ordinary session's client, which
+  ends the session; closes the host of a headless session's client, after
+  which the session runs on and a new host's `attach` restores its screen;
+  and detaches, reattaches and runs `c2 kill`, which ends the client.
+
+`WIN-06` is `exec_exits_125_when_a_bundled_conpty_file_is_missing` in
+`crates/climon2-cli/tests/exec_windows.rs`. The key table's encodings are
+`climon2-test-term`'s, and its own tests check them against the
+win32-input-mode specification and xterm.
+
 ### Monitor and client-library scenarios
 
 Every scenario in the [monitor acceptance matrix](../behaviour/monitor/acceptance.md),
@@ -293,6 +328,15 @@ inside its sessions run under `pwsh`; the shell subset above does not apply.
 
 A scenario that cannot pass on Windows needs an explicit, documented decision,
 as the exceptions above have.
+
+Built so far ([#327](https://github.com/jackgeek/climon2/issues/327)): the
+CLI's `tests/monitor_windows.rs` runs the monitor's Windows scenarios against
+the packaged product: the console refusals, listing, switching and input
+routing, resize, toasts with the bell and the host attention reports,
+prefix+j, exit and console close leaving sessions running, and a stalled
+library load. Each terminal-facing one runs under both host models. The
+Unix monitor, client-library and headless `exec` suites themselves do not
+build on Windows yet.
 
 ## Manual checklist
 

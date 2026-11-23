@@ -263,6 +263,42 @@ mod unix {
         error.raw_os_error() == Some(libc::EIO)
     }
 
+    /// A terminal read, a lost terminal reading as a hang-up: like EOF, 0
+    /// bytes.
+    fn read_terminal(terminal: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
+        terminal.read(bytes).or_else(|error| {
+            if hung_up(&error) {
+                return Ok(0);
+            }
+            Err(error)
+        })
+    }
+
+    /// The terminal's input while the monitor reads it, after its wait slot
+    /// is ready. Reading 0 bytes means the terminal hung up.
+    pub struct Input(File);
+
+    impl Input {
+        pub fn new(terminal: File) -> io::Result<Self> {
+            Ok(Self(terminal))
+        }
+
+        /// The wait slot that is ready while input waits.
+        pub fn watch_input(&self) -> Watch<'_> {
+            Watch::new(self.0.as_fd(), Interest::Read)
+        }
+
+        pub fn size(&self) -> io::Result<TerminalSize> {
+            size(&self.0)
+        }
+    }
+
+    impl Read for Input {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            read_terminal(&mut self.0, bytes)
+        }
+    }
+
     /// The terminal while a client bridges it: input read and output written
     /// without blocking, each with the wait slot that is ready when it can
     /// make progress. Reading 0 bytes means the terminal hung up.
@@ -301,12 +337,7 @@ mod unix {
     impl Read for Bridged {
         /// A lost terminal reads as a hang-up error; like EOF it is a silent HUP.
         fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            self.input.read(bytes).or_else(|error| {
-                if hung_up(&error) {
-                    return Ok(0);
-                }
-                Err(error)
-            })
+            read_terminal(&mut self.input, bytes)
         }
     }
 
@@ -317,6 +348,21 @@ mod unix {
 
         fn flush(&mut self) -> io::Result<()> {
             self.output.flush()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::io;
+
+        /// EXT-03 (Monitor layer): a terminal read failing with EIO, as Linux
+        /// fails it while hanging a terminal up, is a hang-up; any other
+        /// failure is not.
+        #[test]
+        fn only_eio_is_a_hang_up() {
+            assert!(super::hung_up(&io::Error::from_raw_os_error(libc::EIO)));
+            assert!(!super::hung_up(&io::Error::from_raw_os_error(libc::EBADF)));
+            assert!(!super::hung_up(&io::Error::other("no OS error")));
         }
     }
 }

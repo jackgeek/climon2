@@ -30,13 +30,13 @@ const LOCK: &str = "install.lock";
 const STAGE: &str = ".climon2-install-stage";
 const USAGE: &str = "usage: install [--dir <directory>] [--no-modify-path]";
 
-/// Every file of a version folder, in installation order. The monitor joins
-/// them with #327.
+/// Every file of a version folder, in installation order.
 pub fn version_files() -> Vec<String> {
     [
         "climon2-cli.exe",
         "climon2-daemon.exe",
         "climon2-client.exe",
+        "climon2-monitor.exe",
     ]
     .map(str::to_owned)
     .into_iter()

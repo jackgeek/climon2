@@ -487,6 +487,8 @@ fn the_command_sees_the_terminal_identity_and_its_session_at_the_fallback_size()
     assert_eq!(numbers, ["24", "80"], "{seen}");
 }
 
+/// `WIN-06`: with `conpty.dll` or `OpenConsole.exe` missing from the version
+/// folder, `exec` exits 125 and starts no session.
 #[test]
 fn exec_exits_125_when_a_bundled_conpty_file_is_missing() {
     for missing in ["conpty.dll", "OpenConsole.exe"] {

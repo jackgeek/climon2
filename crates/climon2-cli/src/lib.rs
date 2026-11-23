@@ -5,7 +5,6 @@ mod client;
 mod exec;
 mod kill;
 pub mod list;
-#[cfg(unix)]
 mod monitor;
 #[cfg(unix)]
 #[path = "unix.rs"]

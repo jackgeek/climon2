@@ -11,10 +11,9 @@ use climon2_core::{
     native::{self, Bytes, Created, Request, RequestArgs},
     wire::Guid,
 };
-use climon2_platform::library::Functions;
+use climon2_platform::{library::Functions, native_path};
 use std::{
     mem::MaybeUninit,
-    os::unix::ffi::OsStrExt,
     path::Path,
     ptr,
     sync::mpsc::{Receiver, Sender},
@@ -152,7 +151,7 @@ impl StartupData {
         let id = &metadata.session_id;
         let log = climon2_platform::logging::library_log(context.home.root(), id, generation)?;
         let guid: Guid = id.as_str().parse().map_err(std::io::Error::other)?;
-        let path = |path: &Path| path.as_os_str().as_bytes().to_vec();
+        let path = |path: &Path| native_path::encode(path);
         let (take_control_enabled, take_control_byte) = context
             .take_control
             .map_or(Default::default(), |key| (1, key.byte()));
@@ -178,7 +177,7 @@ impl StartupData {
 
     fn native(&self) -> native::Startup {
         let path = |data: &[u8]| native::Path {
-            encoding: native::NATIVE_UNIX,
+            encoding: native_path::ENCODING,
             reserved: 0,
             bytes: bytes(data),
         };
