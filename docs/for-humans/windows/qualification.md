@@ -1,10 +1,21 @@
-# Windows host and shell qualification (agreed, partly implemented)
+# Windows host and shell qualification
 
 This document says what must be shown before a Windows release of climon2 can
 be published: which terminals and shells are tested, which scenarios run, and
-what a person checks by hand. It is for contributors. Only parts of the test
-harness are built so far, and the sections that describe them say which. It
-was agreed in
+what a person checks by hand. It is for contributors. Built: both
+[host models](#host-models) and the job shapes, the `pwsh`
+[shell profile](#shell-profiles), the smoke test, nested sessions and
+self-attach, the Windows-only scenarios except `WIN-09` and vim and Edit's
+part of `WIN-02`, and the monitor's Windows scenarios. Not built yet:
+Ctrl+Break's `WIN-09` ([#326](https://github.com/jackgeek/climon2/issues/326));
+the `powershell` and `cmd.exe` profiles, the
+[full-screen apps](#full-screen-apps) and the
+[session suites](#existing-scenarios) on Windows
+([#328](https://github.com/jackgeek/climon2/issues/328)); the monitor
+acceptance matrix's own suites on Windows; and recording these scenarios and
+the manual checklist in release qualification
+([#330](https://github.com/jackgeek/climon2/issues/330)). The sections below
+say which parts are built. It was agreed in
 [Define Windows host and shell qualification](https://github.com/jackgeek/climon2/issues/213)
 and is the specification the Windows port implements.
 
@@ -92,9 +103,10 @@ Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
 Windows Terminal model and the job-shape setting, in `climon2-test-term`'s
 Windows host. The VS Code model's creation flags, plain VT keys and close
 were added for the monitor's scenarios
-([#327](https://github.com/jackgeek/climon2/issues/327)); its key table and
-the rest of its qualification are
-[#325](https://github.com/jackgeek/climon2/issues/325)'s. A real host's shell answers Ctrl+C, so
+([#327](https://github.com/jackgeek/climon2/issues/327)), and its key table
+and its scenarios with
+[#325](https://github.com/jackgeek/climon2/issues/325) (see
+[Windows-only scenarios](#windows-only-scenarios)). A real host's shell answers Ctrl+C, so
 the harness clears any instruction to ignore Ctrl+C that the test process
 inherited before it starts the shell; otherwise the shell would inherit it
 too.
@@ -143,7 +155,8 @@ the CI runner. Only the manual checklist covers it.
 
 Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
 `pwsh` profile. `CLIMON2_TEST_PWSH` may name another absolute path for local
-runs.
+runs. The `powershell` and `cmd.exe` profiles are
+[#328](https://github.com/jackgeek/climon2/issues/328)'s.
 
 ## Full-screen apps
 
@@ -158,7 +171,8 @@ against a SHA-256 kept in the repository, and run by absolute path:
 
 Each app's scenarios: enter it, edit, detach, reattach and see the screen
 restored, resize, quit and see the main screen restored. Edit takes the place
-`less` has on Unix.
+`less` has on Unix. None of this is built yet
+([#328](https://github.com/jackgeek/climon2/issues/328)).
 
 ## Automated scenarios
 
@@ -226,7 +240,9 @@ argument and typed-input secrets appear in no log. On Windows it also asserts
 that every log file, metadata file and managed folder the run produced carries
 the private descriptor and is not a reparse point, as
 [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport)
-specifies under "Private files and folders". No exception is recorded.
+specifies under "Private files and folders". No exception is recorded. Log
+privacy's Windows form is not built yet
+([#328](https://github.com/jackgeek/climon2/issues/328)).
 
 ### Windows-only scenarios
 
