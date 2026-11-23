@@ -183,8 +183,8 @@ Options, or `sudo pmset -c sleep 0`), or a job waits until it wakes.
 ## Sharing the PC
 
 The Linux gate and the Windows gate run on the same PC, the Windows one
-inside the VM, and they run at the same time. So the workflow runs each of
-them with four mutation workers, set in `quality.yml`.
+inside the VM, and they run at the same time. So the workflow limits their
+mutation workers, set in `quality.yml`: four on Linux, three on Windows.
 
 How many is a trade-off. With 6 workers each, with 2 build jobs and 2 test
 threads per worker, end-to-end tests missed their deadlines on both gates.
@@ -193,7 +193,9 @@ spends most of its time waiting on its tests' processes, pipes and timeouts.
 So on 2026-11-23 the owner asked to raise the workers until tests start to
 fail, then back off a little. Three workers passed on both gates at once
 on 2026-11-23, finishing the Linux gate in 1 h 50 min and the Windows gate
-in 1 h 8 min, so the next step is four.
+in 1 h 8 min. But the Windows VM's 16 GB ran critically low on memory while
+they did, so only the slower Linux gate stepped up to four. Windows stays at
+three unless the VM gets more memory.
 
 Each worker builds and tests the workspace on its own.
 `CLIMON2_MUTATION_WORKER_JOBS`, also set in `quality.yml`, gives its Cargo 4
