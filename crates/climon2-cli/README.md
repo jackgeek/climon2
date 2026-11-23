@@ -92,6 +92,12 @@ clients of a `pwsh`, `powershell` or `cmd.exe` session both exit with
 `0xC000013A`. It installs the zip `CLIMON2_E2E_ARCHIVE` names, as the Windows Test job does, or
 else this build's binaries in the same layout, which also needs the launcher
 (`cargo test -p climon2-launcher`).
+`tests/host_models_windows.rs` (#325) installs the product the same way and
+drives it under both host models: the key table and the host's focus reports
+reach a session as the bytes a terminal sends, ConPTY's start-up negotiation
+never reaches the host, a resize reaches the session, `exec` and `attach`
+refuse a redirected stdin or stdout, and under the VS Code model closing the
+host, `c2 kill`, detach and reattach behave as under Windows Terminal.
 
 The `test-hooks` feature adds `CLIMON2_CLI_HOLD` (the client hand-off waits
 for a file) and `CLIMON2_CLI_CWD` (it stands in for the working directory the
