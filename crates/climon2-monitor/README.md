@@ -1,8 +1,8 @@
 # climon2-monitor
 
 The [monitor](../../GLOSSARY.md#sessions) executable, `climon2-monitor`, ships in
-every version folder beside the CLI, client and daemon, on macOS and x86-64
-GNU/Linux. Users reach it as `c2 monitor` or `c2 m`: the launcher runs the current version's CLI, which execs its own
+every version folder beside the CLI, client and daemon, on macOS, x86-64
+GNU/Linux and x86-64 Windows (#327). Users reach it as `c2 monitor` or `c2 m`: the launcher runs the current version's CLI, which execs its own
 version's monitor with no arguments or envelope. That handoff between
 executables of one release is not frozen. The library boundary is
 `run() -> Result<u32, Error>`; the thin main prints `climon2: error: …` for an
@@ -57,6 +57,17 @@ scheduling (#120). Every string the monitor shows is in [On-screen strings](#on-
 
 Every failure prints one escaped line, with the general-log suffix once that log
 exists, and exits 125 before raw mode, the alternate screen or any OSC output.
+
+On Windows the monitor has no host rules of its own. Its host input is the
+platform terminal seam's `Input`, which there is the client's bridged
+console: raw mode, UTF-8 key-down input, window-size records as resizes, and
+close, logoff or shutdown as a hang-up that ends it with 129. Its
+notification waits watch each instance's event, 64 at a time, and every live
+instance is still drained each tick; startup paths cross the native
+interface as UTF-16LE (`CM1_NATIVE_WINDOWS`); the preference file gets the
+private descriptor; and the descriptor limit admission counts against is
+the 2^24-entry handle table. `cargo test -p climon2-monitor` passes on
+Windows; the CLI's `tests/monitor_windows.rs` drives the packaged monitor.
 
 ## Host terminal and screen
 

@@ -133,12 +133,13 @@ mod support {
     /// The environment variable naming the installer's registry key.
     const KEY: &str = "CLIMON2_INSTALL_TEST_KEY";
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-    /// A version folder's files: the agreed archive layout without the monitor
-    /// (docs/for-humans/windows/distribution.md, "The archive"; #327).
-    pub const VERSION_FILES: [&str; 7] = [
+    /// A version folder's files: the agreed archive layout
+    /// (docs/for-humans/windows/distribution.md, "The archive").
+    pub const VERSION_FILES: [&str; 8] = [
         "climon2-cli.exe",
         "climon2-daemon.exe",
         "climon2-client.exe",
+        "climon2-monitor.exe",
         "climon2_client.dll",
         "conpty.dll",
         "OpenConsole.exe",

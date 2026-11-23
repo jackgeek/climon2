@@ -301,6 +301,11 @@ unsafe extern "system" fn console_event(event: u32) -> BOOL {
     1
 }
 
+/// The console's input while the monitor reads it (#327): the client's
+/// bridge, whose input thread also sees resizes. The monitor writes its
+/// output itself, so the bridge's output thread stays idle.
+pub type Input = Bridged;
+
 /// The console while a client bridges it: input read and output written
 /// without blocking, each with the wait slot that is ready when it can make
 /// progress. Reading 0 bytes means the console hung up.

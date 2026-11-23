@@ -19,6 +19,10 @@ use windows_sys::Win32::{
     },
 };
 
+/// The most handles one process can hold: the kernel's per-process handle
+/// table, 2^24 entries. Windows has no soft limit below it.
+const HANDLE_LIMIT: u64 = 1 << 24;
+
 /// 100-nanosecond intervals from 1601-01-01, where FILETIME counts from, to
 /// the Unix epoch.
 const UNIX_EPOCH_INTERVALS: u64 = 116_444_736_000_000_000;
@@ -113,4 +117,19 @@ pub fn exit(status: u32) -> ! {
 pub fn out_of_descriptors(error: &io::Error) -> bool {
     const TOO_MANY_OPEN_FILES: i32 = ERROR_TOO_MANY_OPEN_FILES as i32;
     matches!(error.raw_os_error(), Some(WSAEMFILE | TOO_MANY_OPEN_FILES))
+}
+
+/// The limit the monitor's admission counts descriptors against: Windows
+/// has no per-process soft limit to read, only the handle table's size.
+pub fn descriptor_limit() -> u64 {
+    HANDLE_LIMIT
+}
+
+/// Ends the process with `code` at once, all 32 bits of it: no exit
+/// handlers, no flushing and no waiting for other threads, so whatever must
+/// be seen is flushed first.
+pub fn exit_immediately(code: i32) -> ! {
+    // SAFETY: this process's own pseudo-handle; the call does not return.
+    unsafe { TerminateProcess(GetCurrentProcess(), code as u32) };
+    unreachable!("TerminateProcess on this process returned")
 }

@@ -90,7 +90,11 @@ scenarios use it:
 
 Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
 Windows Terminal model and the job-shape setting, in `climon2-test-term`'s
-Windows host. The VS Code model is not. A real host's shell answers Ctrl+C, so
+Windows host. The VS Code model's creation flags, plain VT keys and close
+were added for the monitor's scenarios
+([#327](https://github.com/jackgeek/climon2/issues/327)); its key table and
+the rest of its qualification are
+[#325](https://github.com/jackgeek/climon2/issues/325)'s. A real host's shell answers Ctrl+C, so
 the harness clears any instruction to ignore Ctrl+C that the test process
 inherited before it starts the shell; otherwise the shell would inherit it
 too.
@@ -285,6 +289,15 @@ inside its sessions run under `pwsh`; the shell subset above does not apply.
 
 A scenario that cannot pass on Windows needs an explicit, documented decision,
 as the exceptions above have.
+
+Built so far ([#327](https://github.com/jackgeek/climon2/issues/327)): the
+CLI's `tests/monitor_windows.rs` runs the monitor's Windows scenarios against
+the packaged product: the console refusals, listing, switching and input
+routing, resize, toasts with the bell and the host attention reports,
+prefix+j, exit and console close leaving sessions running, and a stalled
+library load. Each terminal-facing one runs under both host models. The
+Unix monitor, client-library and headless `exec` suites themselves do not
+build on Windows yet.
 
 ## Manual checklist
 

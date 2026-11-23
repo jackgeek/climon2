@@ -17,6 +17,7 @@ use windows_sys::Win32::{
     Networking::WinSock::{
         POLLRDNORM, POLLWRNORM, SOCKET_ERROR, WSAGetLastError, WSAPOLLFD, WSAPoll,
     },
+    System::SystemServices::MAXIMUM_WAIT_OBJECTS,
     System::Threading::{INFINITE, WaitForMultipleObjects, WaitForSingleObject},
 };
 
@@ -190,9 +191,16 @@ fn poll(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<usize> {
 }
 
 /// One `WaitForMultipleObjects` over the event slots, its timeout cut to
-/// whole milliseconds and saturating, then which of them are signalled.
+/// whole milliseconds and saturating, then which of them are signalled. One
+/// wait takes at most `MAXIMUM_WAIT_OBJECTS` (64) events, so it watches the
+/// first 64; any slot already signalled, beyond them too, ends it at once.
 fn wait_events(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<usize> {
-    let handles: Vec<HANDLE> = watches.iter().filter_map(Watch::handle).collect();
+    let signalled = looked(watches);
+    if signalled > 0 {
+        return Ok(signalled);
+    }
+    let mut handles: Vec<HANDLE> = watches.iter().filter_map(Watch::handle).collect();
+    handles.truncate(MAXIMUM_WAIT_OBJECTS as usize);
     let milliseconds = u32::try_from(timeout.as_millis()).unwrap_or(INFINITE);
     // SAFETY: `handles` holds `handles.len()` open events, which the caller
     // borrowed for the wait; FALSE waits for any one of them.
@@ -201,11 +209,16 @@ fn wait_events(watches: &mut [Watch<'_>], timeout: Duration) -> io::Result<usize
     if waited == WAIT_FAILED {
         return Err(io::Error::last_os_error());
     }
-    Ok(watches
+    Ok(looked(watches))
+}
+
+/// How many event slots are signalled now, each recorded.
+fn looked(watches: &mut [Watch<'_>]) -> usize {
+    watches
         .iter_mut()
         .filter_map(Watch::look)
         .filter(|&signalled| signalled)
-        .count())
+        .count()
 }
 
 #[cfg(test)]
@@ -291,6 +304,18 @@ mod tests {
         assert_ne!(unsafe { SetEvent(event.as_raw_handle()) }, 0);
     }
 
+    /// Readiness is what the last wait reported, so an event watch reports
+    /// nothing before its first wait, even when the event is already set.
+    #[test]
+    fn an_event_watch_is_not_ready_before_any_wait() {
+        let signalled = event();
+        set(&signalled);
+
+        let watch = Watch::event(signalled.as_handle());
+
+        assert!(!watch.ready() && !watch.readable());
+    }
+
     #[test]
     fn a_clear_event_waits_out_the_timeout() {
         let clear = event();
@@ -365,6 +390,66 @@ mod tests {
         let error = wait(&mut watches, Duration::from_secs(5)).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// The CPU time this thread has used, user and kernel.
+    fn thread_cpu() -> Duration {
+        use windows_sys::Win32::{
+            Foundation::FILETIME,
+            System::Threading::{GetCurrentThread, GetThreadTimes},
+        };
+        let mut times = [FILETIME::default(); 4];
+        let [created, exited, kernel, user] = &mut times;
+        // SAFETY: this thread's pseudo-handle; the call writes four FILETIMEs.
+        assert_ne!(
+            unsafe { GetThreadTimes(GetCurrentThread(), created, exited, kernel, user) },
+            0
+        );
+        let ticks =
+            |time: &FILETIME| u64::from(time.dwHighDateTime) << 32 | u64::from(time.dwLowDateTime);
+        Duration::from_nanos((ticks(&times[2]) + ticks(&times[3])) * 100)
+    }
+
+    /// #327: the monitor watches every live instance's event, which can be
+    /// more than the 64 one Windows wait accepts. The wait covers the first
+    /// 64; one beyond them already signalled ends it at once.
+    #[test]
+    fn an_event_beyond_the_first_sixty_four_already_signalled_ends_the_wait() {
+        let events: Vec<_> = (0..70).map(|_| event()).collect();
+        set(&events[69]);
+
+        let started = Instant::now();
+        let mut watches: Vec<_> = events.iter().map(|e| Watch::event(e.as_handle())).collect();
+        let ready = wait(&mut watches, Duration::from_secs(30)).unwrap();
+
+        assert_eq!(ready, 1);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(watches[69].ready() && !watches[0].ready() && !watches[63].ready());
+    }
+
+    /// More than 64 clear events wait out the timeout rather than fail, and
+    /// one of the first 64 signalled during the wait ends it.
+    #[test]
+    fn more_than_sixty_four_events_wait_on_the_first_sixty_four() {
+        let events: Vec<_> = (0..65).map(|_| std::sync::Arc::new(event())).collect();
+        let timeout = Duration::from_millis(300);
+        let (started, cpu) = (Instant::now(), thread_cpu());
+        let mut watches: Vec<_> = events.iter().map(|e| Watch::event(e.as_handle())).collect();
+        assert_eq!(wait(&mut watches, timeout).unwrap(), 0);
+        assert!(started.elapsed() >= timeout, "{:?}", started.elapsed());
+        // It slept: looking again and again would spend the whole wait.
+        assert!(thread_cpu() - cpu < timeout / 3, "{:?}", thread_cpu() - cpu);
+
+        let setter = events[63].clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            set(&setter);
+        });
+        let started = Instant::now();
+        assert_eq!(wait(&mut watches, Duration::from_secs(30)).unwrap(), 1);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(watches[63].ready() && !watches[64].ready());
+        thread.join().unwrap();
     }
 
     #[test]

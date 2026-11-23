@@ -16,11 +16,11 @@ replaces it with the CLI's own version's `climon2-monitor`. Usage errors
 startup preserves 126/127.
 
 On Windows the CLI answers help, version and usage errors (#315) and runs
-`list` (#316), `exec` (#317, #321), `attach` (#321) and `kill` (#318, #321)
-through the same general-log dispatch as Unix; `monitor` fails with 125 from
-`src/windows.rs`, before touching the home, until the monitor builds there
-(#327). Windows cannot replace a process, so where Unix execs the client
-(`src/unix.rs`) the Windows CLI starts it and waits, by the launcher's rules,
+`list` (#316), `exec` (#317, #321), `attach` (#321), `kill` (#318, #321) and
+`monitor` (#327) through the same general-log dispatch as Unix. Windows cannot
+replace a process, so where Unix execs the client or the monitor
+(`src/unix.rs`; `src/monitor.rs` is shared and hands off through
+`exec_client`) the Windows CLI starts it and waits, by the launcher's rules,
 through `climon2-platform`'s `handoff` seam: Ctrl+C and Ctrl+Break are the
 client's, a close waits three seconds for the client and then exits 129, and
 the CLI exits with the client's raw status. `kill` keeps the same console
@@ -60,6 +60,23 @@ proves that an ordinary session nobody attaches to within five seconds ends,
 while the `CLIMON2_CLI_HOLD` test hook holds `exec` before its client. It is
 a test binary of its own so that it never runs beside `exec_windows.rs`'s
 kill tests.
+`tests/monitor_windows.rs` drives the monitor on Windows (#327): without
+console handles `c2 monitor` and `c2 m` refuse to start, and a missing
+`climon2-monitor.exe` fails naming its version. From `pwsh`, with sessions
+running `pwsh` scripts, the monitor lists them, the selector switches
+between them, typed keys (Ctrl+C as `0x03`) reach only the selected one,
+a resize redraws the monitor and resizes the selected session, a session
+needing attention is toasted with one bell, the host hears only the
+monitor's own attention reports, prefix+j jumps to it, and prefix+x exits 0
+leaving every session running. Each of these runs under both the Windows
+Terminal and the VS Code host models. Closing the console ends the monitor
+and leaves sessions running, and a library load held by an oplock leaves
+the monitor responsive until it completes. It needs the monitor binary
+built first (`cargo test -p climon2-monitor`). `CLIMON2_TEST_SESSION_SHELL`
+names another shell for the sessions, for a machine whose only PowerShell 7
+is the Store build, which Windows will not start inside a session's job.
+`tests/support/mod.rs` holds the packaged layout, home and `pwsh` profile
+it shares with the smoke test.
 `tests/packaged_windows.rs` is the Windows smoke test
 (docs/for-humans/windows/qualification.md): in the harness's Windows Terminal model,
 `pwsh` runs `c2 exec pwsh`, a command, a detach, `c2 list` and `c2 attach`,

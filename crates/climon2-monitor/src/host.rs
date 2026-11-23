@@ -2,14 +2,13 @@
 //! seam: termios and signals there, the monitor's own modes here.
 use climon2_core::protocol::TerminalSize;
 use climon2_platform::{
-    terminal::{self, RawModeGuard, Signals},
-    waiting::{self, Interest, Watch},
+    terminal::{self, Input, RawModeGuard, Signals},
+    waiting,
 };
 use climon2_vt::Presentation;
 use std::{
     fs::File,
     io::{self, Read, Write},
-    os::fd::AsFd,
     time::Duration,
 };
 
@@ -55,7 +54,7 @@ pub(crate) enum Event<'a> {
 pub(crate) struct Host {
     _raw: RawModeGuard,
     signals: Signals,
-    input: File,
+    input: Input,
     /// A presentation that never entered an alternate screen: its release is
     /// exactly the documented normal-shell baseline.
     baseline: Presentation,
@@ -75,13 +74,13 @@ impl Host {
         Ok((host, size))
     }
 
-    fn owning(input: File, size: TerminalSize) -> io::Result<Self> {
+    fn owning(terminal: File, size: TerminalSize) -> io::Result<Self> {
         let signals = Signals::client()?;
-        let raw = RawModeGuard::new(&input)?;
+        let raw = RawModeGuard::new(&terminal)?;
         Ok(Self {
             _raw: raw,
             signals,
-            input,
+            input: Input::new(terminal)?,
             baseline: Presentation::new(size.cols, size.rows),
             buffer: [0u8; READ_BYTES],
             signalled: false,
@@ -110,22 +109,27 @@ impl Host {
             return Ok(Event::End(Ending::Signal(signal)));
         }
         if self.signals.take_resize() {
-            return terminal::size(&self.input).map(Event::Resize);
+            return self.input.size().map(Event::Resize);
         }
         self.input()
     }
 
+    /// Input a ready wait slot did not hold after all, as a Windows console
+    /// slot may not, is idle.
     fn input(&mut self) -> io::Result<Event<'_>> {
         if !self.readable()? {
             return Ok(Event::Idle);
         }
-        self.read().map(Event::Input)
+        match self.read() {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Event::Idle),
+            read => read.map(Event::Input),
+        }
     }
 
     /// Waits one tick for input. A wait that a signal interrupts finds none,
     /// and the caller checks signals before waiting again.
     fn readable(&self) -> io::Result<bool> {
-        let mut watches = [Watch::new(self.input.as_fd(), Interest::Read)];
+        let mut watches = [self.input.watch_input()];
         #[cfg(feature = "test-hooks")]
         if let Err(error) = crate::hooks::wait_failure() {
             return interrupted(error);
@@ -137,7 +141,7 @@ impl Host {
     }
 
     fn read(&mut self) -> io::Result<&[u8]> {
-        let count = self.input.read(&mut self.buffer).or_else(end_on_eio)?;
+        let count = self.input.read(&mut self.buffer)?;
         match &self.buffer[..count] {
             [] => Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -159,35 +163,9 @@ fn interrupted(error: io::Error) -> io::Result<bool> {
     ))
 }
 
-/// A host terminal that hangs up ends its input, but Linux fails reads with
-/// EIO while it is still hanging the terminal up, so a read failing with EIO
-/// is the end of host input too. Any other failure stays as it is.
-fn end_on_eio(error: io::Error) -> io::Result<usize> {
-    if terminal::hung_up(&error) {
-        return Ok(0);
-    }
-    Err(error)
-}
-
 /// The monitor owns the host output: nothing else writes to stdout.
 pub(crate) fn write_host(bytes: &[u8]) -> io::Result<()> {
     let mut output = io::stdout().lock();
     output.write_all(bytes)?;
     output.flush()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{end_on_eio, io};
-
-    /// EXT-03 (Monitor layer): a host input read failing with EIO, as Linux
-    /// fails it while hanging a terminal up, ends host input; any other
-    /// failure keeps its error.
-    #[test]
-    fn only_eio_ends_host_input() {
-        let ended = end_on_eio(io::Error::from_raw_os_error(libc::EIO));
-        assert_eq!(ended.unwrap(), 0);
-        let failed = end_on_eio(io::Error::from_raw_os_error(libc::EBADF));
-        assert_eq!(failed.unwrap_err().raw_os_error(), Some(libc::EBADF));
-    }
 }

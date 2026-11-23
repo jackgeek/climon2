@@ -2,10 +2,9 @@
 //! this and need no home (#315); `list` (#316), `exec` (#317, #321),
 //! `attach` (#321) and `kill` (#318, #321) run as on Unix, except that each
 //! hand-off to a client is spawn and wait (docs/for-humans/windows/lifecycle.md,
-//! "Hand-offs"). The monitor fails as the CLI's own error, without touching
-//! the home, until its Windows seams exist (#327). A batch file's argument
-//! that `cmd.exe` cannot represent is a usage error, also answered before the
-//! home is touched (#322).
+//! "Hand-offs"), and so is the hand-off to the monitor (#327). A batch file's
+//! argument that `cmd.exe` cannot represent is a usage error, answered before
+//! the home is touched (#322).
 use crate::{Error, Handoff, Work};
 use climon2_core::cli::CommandArgs;
 use climon2_platform::{
@@ -44,10 +43,7 @@ fn run_handoff(handoff: Handoff) -> Result<u32, Error> {
     match handoff {
         Handoff::Attach(selector) => crate::logged(|home, _, _| crate::attach::run(home, selector)),
         Handoff::Kill(selector) => crate::logged(|home, _, _| kill(home, &selector)),
-        Handoff::Monitor => Err(Error::new(
-            125,
-            "this command is not supported on Windows yet",
-        )),
+        Handoff::Monitor => crate::logged(|_, _, _| crate::monitor::run()),
     }
 }
 

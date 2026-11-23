@@ -118,6 +118,37 @@ fn closing_the_pseudoconsole_ends_pwsh_with_the_close_status() {
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0xC000_013A);
 }
 
+/// The VS Code model sends plain VT keys, so Shift+Enter arrives as Enter
+/// alone, and closes by ending the shell with status 1 once the
+/// pseudoconsole is closed.
+#[test]
+fn the_vs_code_model_types_plain_vt_and_closes_by_ending_the_shell() {
+    let vs_code = HostSettings {
+        model: HostModel::VsCode,
+        job: JobShape::None,
+    };
+    let Some(mut terminal) = shell(vs_code) else {
+        return;
+    };
+    run(
+        &mut terminal,
+        "'rea' + 'ding'; $k = [Console]::ReadKey($true); 'KEY=' + $k.Key + '+' + $k.Modifiers",
+    );
+    terminal.wait_for_text("reading", TIMEOUT).unwrap();
+    terminal.press(Key::Enter, Modifiers::SHIFT).unwrap();
+    terminal.wait_for_text("KEY=Enter+", TIMEOUT).unwrap();
+    assert!(
+        !terminal.screen().contains("KEY=Enter+Shift"),
+        "{}",
+        terminal.screen()
+    );
+    terminal.close();
+    terminal.close();
+    let status = terminal.wait_exit(TIMEOUT).unwrap();
+    // The shell may end on the close event before it is ended.
+    assert!([1, 0xC000_013A].contains(&status), "{status:#x}");
+}
+
 #[test]
 fn an_exit_status_passes_through_in_full() {
     let Some(mut terminal) = shell(HostSettings::default()) else {

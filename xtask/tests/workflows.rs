@@ -217,6 +217,24 @@ fn the_windows_test_job_runs_the_smoke_test_on_the_dist_zip() {
     );
 }
 
+/// #327: the Windows Test job builds and tests the monitor before the CLI's
+/// tests start it, and checks the native interface's declarations and
+/// examples with MSVC.
+#[test]
+fn the_windows_test_job_tests_the_monitor_and_checks_the_native_interface_with_msvc() {
+    let check = workflow("check.yml");
+    let test = job(&check, "windows-test");
+    let line = |text: &str| {
+        test.iter()
+            .position(|line| line.contains(text))
+            .unwrap_or_else(|| panic!("no {text:?} in {test:#?}"))
+    };
+    assert!(
+        line("cargo test --locked -p climon2-monitor") < line("-p climon2-launcher -p climon2-cli")
+    );
+    line("monitor-client/check.py NativeDeclarations.test_msvc_declarations_and_examples");
+}
+
 /// #329: the Windows Archive job tests the exact zip the Windows Dist job
 /// built, when the Windows scope says the Windows jobs run. Its tests may
 /// change the real user PATH, which only that throwaway runner allows.
