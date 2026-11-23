@@ -326,9 +326,9 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
     for name in ["linux", "windows"] {
         // Each worker's Cargo gets 4 build jobs and 4 test threads.
         assert!(job(&quality, name).contains(&"      CLIMON2_MUTATION_WORKER_JOBS: \"4\""));
-        // And the rest of the gate, its own baseline included, 8 of each.
-        assert!(job(&quality, name).contains(&"      CARGO_BUILD_JOBS: \"8\""));
-        assert!(job(&quality, name).contains(&"      RUST_TEST_THREADS: \"8\""));
+        // And the rest of the gate, its own baseline included, 4 of each.
+        assert!(job(&quality, name).contains(&"      CARGO_BUILD_JOBS: \"4\""));
+        assert!(job(&quality, name).contains(&"      RUST_TEST_THREADS: \"4\""));
     }
     for workflow_name in ["check.yml", "release.yml", "measure.yml"] {
         assert!(
