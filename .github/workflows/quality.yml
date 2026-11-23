@@ -78,10 +78,11 @@ jobs:
       CLIMON2_MUTATION_WORKERS: "4"
       # Each worker's Cargo gets 4 build jobs and 4 test threads.
       CLIMON2_MUTATION_WORKER_JOBS: "4"
-      # The rest of the gate, such as its own baseline, gets 8 build jobs and 8
-      # test threads.
-      CARGO_BUILD_JOBS: "8"
-      RUST_TEST_THREADS: "8"
+      # The rest of the gate, such as its own baseline, gets 4 build jobs and 4
+      # test threads: at 8, the two gates' baselines together made timing tests
+      # miss their deadlines (owner decision, 2026-11-23).
+      CARGO_BUILD_JOBS: "4"
+      RUST_TEST_THREADS: "4"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,10 +125,11 @@ jobs:
       CLIMON2_NATIVE_MUTATION_WORKERS: "2"
       # Each worker's Cargo gets 4 build jobs and 4 test threads.
       CLIMON2_MUTATION_WORKER_JOBS: "4"
-      # The rest of the gate, such as its own baseline, gets 8 build jobs and 8
-      # test threads.
-      CARGO_BUILD_JOBS: "8"
-      RUST_TEST_THREADS: "8"
+      # The rest of the gate, such as its own baseline, gets 4 build jobs and 4
+      # test threads: at 8, the two gates' baselines together made timing tests
+      # miss their deadlines (owner decision, 2026-11-23).
+      CARGO_BUILD_JOBS: "4"
+      RUST_TEST_THREADS: "4"
     steps:
       - uses: actions/checkout@v4
         with:

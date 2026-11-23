@@ -204,10 +204,12 @@ Each worker builds and tests the workspace on its own.
 build jobs and 4 test threads. The gate measures its stage timeouts under
 the same limit.
 
-The rest of the gate, such as its own coverage build and test run, gets 8
-build jobs and 8 test threads (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`).
-Without that limit, one gate's baseline test run used every thread its
-machine has, and the other gate's timing tests failed while it ran.
+The rest of the gate, such as its own coverage build and test run, gets 4
+build jobs and 4 test threads (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`).
+Without a limit, one gate's baseline test run used every thread its machine
+has, and the other gate's timing tests failed while it ran. At 8, the Linux
+gate's coverage-stage timing tests still failed while the Windows gate built
+and tested at the same time, so on 2026-11-23 the owner chose 4.
 
 Each worker also has its own target folder. On Windows, one with debug info
 nears 8.4 GB, and 6 of them filled the VM's disk. So every gate builds its
