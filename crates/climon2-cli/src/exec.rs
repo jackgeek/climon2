@@ -132,7 +132,7 @@ impl Startup<'_> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
         let metadata = home.join("sessions").join(format!("{id}.pty"));
         let size = terminal_size();
-        let cwd = std::env::current_dir().map_err(|error| Error::new(126, error))?;
+        let cwd = working_directory().map_err(|error| Error::new(126, error))?;
         Ok(Startup {
             home,
             layout,
@@ -312,6 +312,17 @@ struct Started<'a> {
     pid: u32,
     metadata: &'a Path,
     socket: &'a Path,
+}
+
+/// The working directory the session's command starts in: this CLI's. Test
+/// hook: `CLIMON2_CLI_CWD` stands in for one no process can be started in,
+/// such as one over 260 characters on Windows.
+fn working_directory() -> io::Result<PathBuf> {
+    #[cfg(feature = "test-hooks")]
+    if let Some(cwd) = std::env::var_os("CLIMON2_CLI_CWD") {
+        return Ok(PathBuf::from(cwd));
+    }
+    std::env::current_dir()
 }
 
 /// Test hook: announces `<CLIMON2_CLI_HOLD>.held`, then waits until the

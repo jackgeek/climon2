@@ -16,15 +16,15 @@ hangs the session up through the client and its library (see
 [#318](https://github.com/jackgeek/climon2/issues/318)), and the CLI's hand-offs
 to the client for `exec`, `attach` and `kill` and the client's console (see
 [Hand-offs](#hand-offs) and [Client console](#client-console);
-[#321](https://github.com/jackgeek/climon2/issues/321)), and closing the
+[#321](https://github.com/jackgeek/climon2/issues/321)), and command
+resolution, quoting and the launch failure statuses (see
+[Command resolution and arguments](#command-resolution-and-arguments);
+[#322](https://github.com/jackgeek/climon2/issues/322)), and closing the
 host, the leave policy and the statuses clients exit with after a hang-up (see
 [Session job and hang-up](#session-job-and-hang-up);
 [#323](https://github.com/jackgeek/climon2/issues/323)). Ctrl+C reaches the
 session as byte `0x03`; Ctrl+Break is not passed on yet
-([#326](https://github.com/jackgeek/climon2/issues/326)). Command resolution
-is not built yet: the command line's first token is resolved by
-`CreateProcessW` itself, and any command that cannot start makes `exec` exit
-126. It was
+([#326](https://github.com/jackgeek/climon2/issues/326)). It was
 agreed in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 using the VM measurements from
@@ -113,13 +113,18 @@ process:
   cannot reach the command. The command inherits that environment and gets
   the session's working directory.
 - The first command-line token is the command as typed; the application name
-  is the resolved absolute path. The program sees `argv[0]` as typed, as on
-  Unix.
+  is the resolved absolute path (see
+  [Command resolution and arguments](#command-resolution-and-arguments)). The
+  program sees `argv[0]` as typed, as on Unix. A batch file's program is
+  `cmd.exe`, which is given the script's resolved path.
 
 A working directory over 260 characters cannot be used: `CreateProcessW` fails
 with error 267 under every long-path setting, as for a missing directory. The
 daemon reports it as Unix reports an unusable working directory, and `exec`
 exits 126 with "command cannot be executed". There is no separate pre-check.
+Windows cannot start `c2` itself in such a directory either, so the scenario
+gives the CLI that working directory through its `CLIMON2_CLI_CWD` test hook,
+which only test builds contain.
 
 ## Session job and hang-up
 
@@ -252,15 +257,39 @@ a Unix zombie awaits its parent, so that daemon is gone too.
 
 climon2 resolves the command itself: each `PATH` directory in order, and in
 each the extensions of `PATHEXT` in order. The current directory is not
-searched. Rust std is not used for this: it ignores `PATHEXT` and searches its
-own folder and the system folders first. A command not found exits 127, as on
-Unix.
+searched, and neither is a relative `PATH` entry, such as `.` or an empty one,
+which would name it. Rust std is not used for this: it ignores `PATHEXT` and
+searches its own folder and the system folders first. The daemon resolves
+with the session's `PATH` and `PATHEXT`, which it inherits from `exec`.
+
+- A name that has an extension, such as `node.exe`, is tried as typed before
+  the `PATHEXT` extensions are added. A name without one is never tried bare,
+  so `npm` finds `npm.cmd`, not the extensionless shell script beside it.
+- Quotes around a `PATH` entry are removed, as `cmd.exe` removes them.
+- Without `PATHEXT`, or with an empty one, the extensions are `cmd.exe`'s
+  own: `.COM;.EXE;.BAT;.CMD`.
+- A command naming a folder or drive (holding `\`, `/` or `:`) is not looked
+  up on `PATH`; it is found from the session's working directory, with the
+  same extensions.
+- Only a file counts; a folder with a matching name is passed over.
+
+A command not found exits 127, as on Unix. A file that is found but cannot be
+started, such as one that is not a program, exits 126 with "command cannot be
+executed".
 
 Arguments are quoted by the MSVC C runtime rules. `.bat` and `.cmd` commands
-run through `cmd.exe /e:ON /v:OFF /d /c "…"` with Rust std 1.96.0's batch
-escaping. An argument that `cmd.exe` cannot safely represent (one std refuses:
-CR, LF or NUL, or a script path containing `"` or ending in `\`) is a usage
-error: `exec` exits 2 before starting the daemon.
+run through `cmd.exe /e:ON /v:OFF /d /c "…"`, with `cmd.exe` taken from the
+system folder and the resolved script path in quotes, using Rust std 1.96.0's
+batch escaping: an argument holding anything but letters, digits and
+``#$*+-./:?@\_``, or ending in `\`, or empty, is quoted; inside it a quote
+doubles, and `%` becomes `%%cd:~,%`, which `cmd.exe` expands back to `%`, so
+no variable is expanded. std also refuses a script path containing `"` or
+ending in `\`; a resolved file's path can do neither. An argument that
+`cmd.exe` cannot pass unchanged (one holding CR, LF or NUL) is a usage error:
+`exec` resolves the command as the daemon will and exits 2, without touching
+the climon2 home or starting the daemon. Should the daemon still meet one, it
+reports the command as one that cannot be executed (126), because the
+readiness report carries only 125, 126 and 127.
 
 ## Self-attach and nested sessions
 

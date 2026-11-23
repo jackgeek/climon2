@@ -240,9 +240,19 @@ product in the harness's Windows host through its existing `dev` edge to
 
 **Current (#323):** the harness's edge to the CLI now holds on Windows too, so
 the CLI's Windows tests build it with `test-hooks`, as Unix tests do: they hold
-`exec` before it starts the client. No other edge changes. The client's
+`exec` before it starts the client. With it, the CLI's own `dev` edge to itself from #322 is
+no longer needed, but it is harmless and stays. No other edge changes. The client's
 full-width exit status on Windows is a body inside `climon2-platform`'s
 process seam.
+
+**Current (#322):** `climon2-cli` has a Windows-only `dev` edge to itself,
+which no diagram shows because it neither leaves a shipped crate nor touches a
+development one. It exists only to build the CLI's `test-hooks` feature into
+the CLI that its own Windows tests run, as `climon2-test-term` does on Unix,
+where the harness consumes the CLI; on Windows the harness did not until
+#323. Command
+resolution and batch-file quoting are a body inside `climon2-platform`'s seams
+that the CLI and the daemon already consume, not another crate or edge.
 
 **Current (#121):** `climon2-measure` is the test-only PERF-01 measurement
 harness that `cargo xtask measure` runs (by Cargo, not as a dependency, so

@@ -24,7 +24,10 @@ through the same general-log dispatch as Unix; `monitor` fails with 125 from
 through `climon2-platform`'s `handoff` seam: Ctrl+C and Ctrl+Break are the
 client's, a close waits three seconds for the client and then exits 129, and
 the CLI exits with the client's raw status. `kill` keeps the same console
-rules while it waits. An ordinary `exec` that cannot start its client ends
+rules while it waits. Before `exec` touches the home it resolves the command
+as the daemon will (`climon2-platform`'s `command` seam, #322); a `.bat` or
+`.cmd` command with an argument `cmd.exe` cannot pass unchanged (CR, LF or
+NUL) is a usage error, 2, and nothing starts. An ordinary `exec` that cannot start its client ends
 the daemon it started (`daemon::stop`), as Unix stops it with signals.
 `src/client.rs` holds what `attach` and `kill` share: selecting one live
 session and the session version's client command.
@@ -36,8 +39,14 @@ ConPTY outside cargo's job (which refuses breakaway): a headless session is
 listed as detached with its daemon in no job and ends with its command,
 whose full status the daemon logs; the command sees the terminal identity
 and its session ID at 80x24; a missing ConPTY file or a job the daemon
-cannot leave is 125 with no daemon left; a command that cannot start is
-126. With the client executable and its library in the version folder too,
+cannot leave is 125 with no daemon left. With `PATH` and `PATHEXT` of its
+own (#322), the command resolves through the `PATH` folders in order and the
+`PATHEXT` extensions in order (`WIN-07`); a missing command is 127 even when
+the working directory holds it; a file on `PATH` that is not a program is
+126; a batch argument with a line break is 2 with no home created, while a
+program takes it; and a working directory over 260 characters, given through
+the `CLIMON2_CLI_CWD` test hook because Windows cannot start the CLI there, is
+126 with no daemon left (`WIN-11`). With the client executable and its library in the version folder too,
 `kill` of a headless session exits 0 once the session is cleaned up, after
 the pseudoconsole closed, the full five-second grace passed and the session
 job ended a hidden-console child with `0xC000013A`. Without console handles,
@@ -54,7 +63,9 @@ kill tests.
 `tests/packaged_windows.rs` is the Windows smoke test
 (docs/for-humans/windows/qualification.md): in the harness's Windows Terminal model,
 `pwsh` runs `c2 exec pwsh`, a command, a detach, `c2 list` and `c2 attach`,
-which restores the session's screen, and `exit 7` reaches the outer shell.
+which restores the session's screen, and `exit 7` reaches the outer shell;
+and `0xC000013A`, `259` and `0xFFFFFFFF` from an ordinary `exec` pass through
+the client, the CLI and `c2.exe` unchanged (`WIN-10`, #322).
 The same file holds `WIN-01` and `WIN-02` (#323): closing the host of an
 attached ordinary session ends the client with 129 and then the session;
 closing the host of a client attached to a headless session leaves the
@@ -64,6 +75,11 @@ clients of a `pwsh`, `powershell` or `cmd.exe` session both exit with
 `0xC000013A`. It installs the zip `CLIMON2_E2E_ARCHIVE` names, as the Windows Test job does, or
 else this build's binaries in the same layout, which also needs the launcher
 (`cargo test -p climon2-launcher`).
+
+The `test-hooks` feature adds `CLIMON2_CLI_HOLD` (the client hand-off waits
+for a file) and `CLIMON2_CLI_CWD` (it stands in for the working directory the
+session's command starts in). On Unix `climon2-test-term` enables it; on
+Windows the CLI's dev-dependency on itself does. Release builds never do.
 
 Home is resolved, created and canonicalized once. Common dispatch opens the
 general log and prunes old logs before any command. Exec reads and validates the

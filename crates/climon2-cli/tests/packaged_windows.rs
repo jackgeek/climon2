@@ -825,3 +825,29 @@ fn a_detached_session_survives_its_host_closing_and_reattaches() {
     assert_eq!(again.wait_exit(TIMEOUT).unwrap(), 7, "{}", again.screen());
     home.wait_until_ended(&session);
 }
+/// #322, `WIN-10`: a command's full 32-bit status, including 259, which
+/// Windows also reports for a process still running, passes unchanged
+/// through the client, the CLI and the launcher.
+#[test]
+fn full_width_statuses_pass_through_the_client_the_cli_and_the_launcher() {
+    if rerun_outside(
+        "full_width_statuses_pass_through_the_client_the_cli_and_the_launcher",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let (package, home) = (Package::new(), Home::new());
+    for status in [0xC000_013A_u32, 259, 0xFFFF_FFFF] {
+        let mut command = CommandBuilder::new(package.launcher());
+        // cmd.exe takes the status as a signed 32-bit number.
+        let exit = format!("exit {}", status as i32);
+        command.args(["exec", "cmd", "/d", "/c", &exit]);
+        command.env("CLIMON2_HOME", home.home());
+        command.env("LOCALAPPDATA", home.local());
+        let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+        let ended = terminal
+            .wait_exit(TIMEOUT)
+            .unwrap_or_else(|error| panic!("{error}\nLOGS:\n{}", home.logs()));
+        assert_eq!(ended, status, "{status:#x}: {}", terminal.screen());
+    }
+}

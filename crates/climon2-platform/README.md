@@ -3,8 +3,8 @@
 Shared macOS, Linux and Windows seams (ADR 0003). `home`, `private`,
 `logging`, `runtime`, `connection`, `waiting`, `process` (identity and `exit`),
 `presentation`, `peer`, `daemon`, `pty`, `terminal`, `library`, `notifier`
-and `native_path` build on Windows, and `handoff` exists only there (see
-[Windows](#windows)). Neutral contracts remain in `climon2-core`. No runtime
+and `native_path` build on Windows, and `handoff` and `command` exist only
+there (see [Windows](#windows)). Neutral contracts remain in `climon2-core`. No runtime
 dispatch or shell-specific logic.
 
 ## Runtime and peers
@@ -321,13 +321,31 @@ For the session daemon and headless `exec` (#317; docs/for-humans/windows/lifecy
   folder without `OpenConsole.exe`. `open` creates the session job
   (`BREAKAWAY_OK` and `KILL_ON_JOB_CLOSE`) and the pseudoconsole;
   `Opened::start` sets the given variables in this process, clears an
-  inherited "ignore Ctrl+C", starts the command with one `CreateProcessW`
-  carrying the pseudoconsole and the job, inheritance off and null standard
-  handles, and releases the pseudoconsole. `Hosted` reads output and writes
+  inherited "ignore Ctrl+C", starts a `command::Launch` with one
+  `CreateProcessW` carrying the pseudoconsole and the job, inheritance off
+  and null standard handles, and releases the pseudoconsole. `Hosted` reads output and writes
   input through one thread each and a bounded channel; `output_ended` is
   `ERROR_BROKEN_PIPE`. `try_wait` reads the leader's handle; `close`, `end`
   (the job terminated with `0xC000013A`, then the leader's status) and
   `finish` are hang-up's steps.
+- `src/command/windows.rs` (#322; docs/for-humans/windows/lifecycle.md,
+  "Command resolution and arguments"), a module only Windows has:
+  `search(command, cwd, path, pathext)` finds the file a command names, in
+  each absolute `PATH` folder in order and in each the `PATHEXT` extensions
+  in order (`.COM;.EXE;.BAT;.CMD` when unset or empty), never the current
+  directory or a relative entry; a name with an extension is tried as typed
+  first; a command holding `\`, `/` or `:` is found from `cwd` instead.
+  `launch(command, arguments, cwd)` searches with this process's `PATH` and
+  `PATHEXT` and returns the `Launch` `CreateProcessW` gets: the resolved path
+  as the application and the command as typed, then the arguments, quoted by
+  the C runtime's rules; or, for a `.bat` or `.cmd`, the system folder's
+  `cmd.exe` given `/e:ON /v:OFF /d /c ""<script>" <arguments>"` with Rust std
+  1.96.0's batch escaping. It refuses with `Refusal::NotFound`, or
+  `Refusal::Unrepresentable` for a batch argument holding CR, LF or NUL.
+  `tests/command_windows.rs` checks the search order and refusals, and runs a
+  corpus of `cmd.exe`'s special characters through a real `.cmd` in the
+  pinned ConPTY: `cmd.exe` gets the command line std gives it, and the
+  arguments reach the program the script runs unchanged.
 - `src/peer/windows.rs`: `accept` and `authenticate` check nothing: Windows
   AF_UNIX has no peer credentials, and the private runtime directory keeps
   other users out.
