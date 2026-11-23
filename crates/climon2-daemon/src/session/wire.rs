@@ -493,10 +493,16 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             let code = OperationalCode::UnsupportedCapability;
             return self.reject(id, request.request_id, code, BREAK_NOT_SELECTED);
         }
+        self.authorized_break(id, request);
+    }
+
+    /// A selected Break, which only a Windows daemon can receive, once its
+    /// authority is checked.
+    fn authorized_break(&mut self, id: u64, request: Break) {
         let needs = (request.authority, Needs::Readiness);
-        if self.authorized(id, request.request_id, needs).is_none() {
+        let Some(_) = self.authorized(id, request.request_id, needs) else {
             return;
-        }
+        };
         let sent = (self.pty.send_break())
             .map(|()| Success::BreakSent {})
             .map_err(|_| OperationalCode::IoError);
