@@ -6,13 +6,24 @@
 //! Windows work. The daemon resolves the command through the session's
 //! `PATH` and `PATHEXT` (#322), and `CreateProcessW` reports a command that
 //! cannot start, so there is no exec helper and no startup socket as on Unix.
+//!
+//! Ctrl+Break reaches the command's console through the daemon's own
+//! executable, started as a short-lived helper with `--break-console` and
+//! the leader's PID (#326).
 use crate::{args::Options, startup::Failure};
-use climon2_core::{protocol::TerminalSize, session::TERMINAL_IDENTITY, wire::CommandResult};
+use climon2_core::{
+    protocol::TerminalSize,
+    session::TERMINAL_IDENTITY,
+    wire::{CommandResult, Family},
+};
 use climon2_platform::{
     command::{self, Refusal},
     pty::{self, ConPty, Hosted},
 };
-use std::{ffi::OsString, io, path::PathBuf, time::Duration};
+use std::{ffi::OsString, io, path::PathBuf, process::Command, time::Duration};
+
+/// Windows has Ctrl+Break, so hello advertises `break-v1`.
+pub(crate) const BREAK: Option<Family> = Some(Family::BreakV1);
 
 pub(crate) struct Pty {
     hosted: Hosted,
@@ -42,6 +53,15 @@ impl Pty {
 
     pub fn resize(&self, value: TerminalSize) -> io::Result<()> {
         self.hosted.resize(value.rows, value.cols)
+    }
+
+    /// Starts the helper that gives the command's console Ctrl+Break.
+    pub fn send_break(&mut self) -> io::Result<()> {
+        let mut helper = Command::new(std::env::current_exe()?);
+        helper.arg("--break-console");
+        self.hosted
+            .send_break(&mut helper)
+            .inspect_err(|error| tracing::error!(%error, "the Ctrl+Break helper cannot start"))
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -157,4 +177,19 @@ impl ExecListener {
 /// Unix's exec helper; nothing starts the daemon this way on Windows.
 pub fn exec_command(_arguments: &[OsString]) -> u8 {
     125
+}
+
+/// The Ctrl+Break helper: `arguments` is the leader's PID alone. It exits 0
+/// once the event was generated, and 125, as an invalid invocation does,
+/// when it was not.
+pub fn break_command(arguments: &[OsString]) -> u8 {
+    let [leader] = arguments else {
+        return 125;
+    };
+    let generated = leader
+        .to_str()
+        .and_then(|leader| leader.parse().ok())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+        .and_then(pty::break_console);
+    generated.map_or(125, |()| 0)
 }
