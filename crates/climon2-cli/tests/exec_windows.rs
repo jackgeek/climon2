@@ -30,7 +30,7 @@ use portable_pty::CommandBuilder;
 use std::{
     fs,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
@@ -87,7 +87,7 @@ impl Install {
         ] {
             let name = from.file_name().unwrap();
             if !left_out.iter().any(|left| name == *left) {
-                fs::copy(&from, install.version().join(name)).unwrap();
+                place(&from, &install.version().join(name));
             }
         }
         install
@@ -338,6 +338,16 @@ const HELD: &[&str] = &[
     "-Command",
     "while (-not (Test-Path release)) { Start-Sleep -Milliseconds 50 }; exit -1073741510",
 ];
+
+/// Puts a built file into a test install as a hard link, so Windows Defender
+/// scans it once, not on each install's first launch, which under the coverage
+/// build pushed daemon start-up past its five-second deadline. A copy where a
+/// link cannot be made, such as across volumes.
+fn place(from: &Path, to: &Path) {
+    if fs::hard_link(from, to).is_err() {
+        fs::copy(from, to).unwrap();
+    }
+}
 
 fn session_id(finished: &Finished) -> String {
     assert_eq!(finished.status, 0, "{finished:?}");
@@ -616,7 +626,7 @@ fn kill_hangs_up_waits_the_full_grace_ends_the_job_and_exits_0_once_cleaned_up()
         "{killed:?}"
     );
     assert!(home.sessions().is_empty(), "kill confirmed before cleanup");
-    assert!(!std::path::Path::new(session.socket_path.as_str()).exists());
+    assert!(!Path::new(session.socket_path.as_str()).exists());
     // The pseudoconsole's close spares the child; the job's end does not.
     assert_eq!(child.exit_code(Duration::ZERO), Some(0xC000_013A));
     let grace = child.exit_time().duration_since(started).unwrap();
@@ -633,7 +643,7 @@ fn kill_hangs_up_waits_the_full_grace_ends_the_job_and_exits_0_once_cleaned_up()
 fn exec_attach_and_the_client_need_a_console() {
     let (install, home) = (Install::new(&[]), Home::new());
     let id = session_id(&home.exec(&install, HELD));
-    let run = |program: &std::path::Path, arguments: &[&str]| {
+    let run = |program: &Path, arguments: &[&str]| {
         Command::new(program)
             .args(arguments)
             .env("CLIMON2_HOME", home.home())
