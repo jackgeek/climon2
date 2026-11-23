@@ -1,7 +1,8 @@
 # climon2
 
-Run any terminal command in a managed session, detach from it and reattach
-later, end it deliberately, or list live sessions:
+climon2 runs a terminal command inside a **session** that lives on its own.
+You can leave a session (detach) and come back to it later (attach). You can
+also end a session on purpose, or list the sessions that are still running:
 
 ```sh
 c2 exec bash --noprofile --norc
@@ -14,8 +15,12 @@ c2 list --json
 c2 monitor
 ```
 
-Every command has a single-letter shortcut that behaves exactly like its full
-name, and `-h` is short for `--headless`:
+Each session runs in a background process called the **session daemon**. The
+terminal you work in connects to it as a **client**. Several clients can
+connect to one session.
+
+Every command has a one-letter shortcut that works exactly like the full name.
+`-h` is short for `--headless`:
 
 | Command | Shortcut |
 | --- | --- |
@@ -33,154 +38,198 @@ c2 l --json
 c2 m
 ```
 
-Help is `c2 --help`; `-h` belongs to `exec`.
+For help, run `c2 --help`. `-h` is taken by `exec`.
 
-`c2` is the only command name; there is no `climon2` command. The product is
-still climon2: version output, the `climon2: error:` diagnostic prefix,
-configuration and data paths and environment variables keep that name.
+The command is called `c2`. There is no `climon2` command. The product is
+still called climon2, so that name appears in the version output, in error
+messages (`climon2: error:`), and in config paths, data paths and environment
+variables.
 
-The command keeps its arguments, working directory and environment, except that
-it always sees `TERM=xterm-256color` and `COLORTERM=truecolor`. Its exit status
-becomes the exit status of every client attached when it finishes. Nested
-sessions are supported. Session data defaults to `~/.climon2`; set
-`CLIMON2_HOME` to override it.
+Your command keeps its arguments, working directory and environment. The one
+change is that it always sees `TERM=xterm-256color` and
+`COLORTERM=truecolor`. When the command ends, every client still attached
+exits with the command's exit status. You can run sessions inside sessions.
+Session data lives in `~/.climon2` by default. Set `CLIMON2_HOME` to use
+another folder; this folder is the **climon2 home**.
 
-The [documentation index](docs/for-humans/README.md) lists every document
-written for people to read.
-The [protocol reference](docs/for-humans/protocol/README.md) explains the daemon
-handshake and wire protocol, the in-process monitor-client interface and the
-monitor's reports to its host, for client and future plugin authors.
-It distinguishes implemented behavior from agreed plans and unresolved details.
-The [session status, attention, and activity mechanics](docs/for-humans/behaviour/session-status.md)
-include both daemon state machines and the monitor's ordering/recovery behavior;
-the daemon implements them (#91, #92, #98), and so does the monitor (#107,
-#114, #115, #116).
-The agreed [monitor acceptance criteria](docs/for-humans/behaviour/monitor/acceptance.md) define
-the required real-monitor, packaged-library and measured evidence. Each
-crate's README maps the scenarios it covers to their tests; a mapped test is
-not release qualification evidence.
+More documents:
+
+- The [documentation index](docs/for-humans/README.md) lists every document
+  written for people to read.
+- The [protocol reference](docs/for-humans/protocol/README.md) is for people
+  who write clients and, later, plugins. It covers how a client greets the
+  daemon and the messages they exchange. It also covers the monitor's
+  in-process client interface and the reports the monitor sends to the
+  terminal it runs in. It marks what is built, what is agreed but not built,
+  and what is still open.
+- [Session status, attention, and activity](docs/for-humans/behaviour/session-status.md)
+  explains how the daemon tracks each session's state, and how the monitor
+  orders events and recovers from failures. Both the daemon and the monitor
+  now do all of this.
+- The [monitor acceptance criteria](docs/for-humans/behaviour/monitor/acceptance.md)
+  say what proof a release needs: tests against a real monitor, tests of the
+  packaged library, and measurements. Each crate's README maps these
+  scenarios to its tests. A test listed there is not, on its own, proof that a
+  release is ready.
 
 ## Sessions
 
-`exec` starts the command and attaches to it.
+`exec` starts your command and attaches you to it.
 
-**Headless sessions.** `c2 exec --headless <command> [args...]` (or `c2 x -h`) starts the
-command in a [headless session](GLOSSARY.md#sessions) without attaching to it.
-It needs no terminal, so scripts and CI can start background work and target it
-later:
+**Headless sessions.** `c2 exec --headless <command> [args...]` (or
+`c2 x -h`) starts the command in a [headless session](GLOSSARY.md#sessions):
+one you are not attached to. It needs no terminal, so scripts and CI can start
+work in the background and come back to it later:
 
 ```sh
 id=$(c2 exec --headless ./long-build.sh)
 c2 attach "$id"
 ```
 
-Like `exec`, it validates the whole configuration first. It returns only once
-the session is running: it then prints the full lowercase session ID and a
-newline on stdout and exits 0. Creation failures keep `exec`'s statuses and
-diagnostics: 127 when the command is not found, 126 when it cannot be executed,
-and 125 for climon2 failures such as invalid configuration. If the ID cannot be
-written to stdout, the session keeps running and the status is still 0;
-`c2 list` shows it. The command's later exit status belongs to the session, not
-to this CLI. The session starts at the size of the terminal on stdin, or 80x24
-without one; after that, the controlling client sets its size as for any
-session. `--` still separates climon2's options from the command:
+Like `exec`, it checks the whole config file first. It returns only once the
+session is running. Then it prints the full session ID, in lowercase, plus a
+newline, and exits 0.
+
+If the session cannot start, you get the same statuses and messages as `exec`:
+
+- 127: the command was not found.
+- 126: the command could not be run.
+- 125: climon2 itself failed, for example because of a bad config file.
+
+If the ID cannot be written to stdout, the session still runs and the status
+is still 0. `c2 list` will show it. The command's own exit status later
+belongs to the session, not to this `c2` call.
+
+The session starts at the size of the terminal on stdin, or 80x24 if there is
+none. After that, the client in control sets its size, as in any session.
+`--` still separates climon2's options from your command:
 `c2 exec -- --headless` runs a command named `--headless`.
 
-A headless session survives with zero clients: from the start, after a
-deliberate detach and after a client is lost unexpectedly. It ends only when its
-command exits or it is killed with `c2 kill`. `c2 list` shows it as
+A headless session keeps running with no clients at all. That is true from
+the start, after you detach, and after a client is lost by accident. It ends
+only when its command exits or you run `c2 kill`. `c2 list` shows it as
 `detached` whenever no client is attached.
 
-**Detach** with the escape prefix, Ctrl+], then `d`. The session keeps running
-with no idle timeout, and the client exits 0 after printing
-`climon2: detached from session <id>; reattach with: c2 attach <id>` to
-stderr. Ctrl+] Ctrl+] sends one Ctrl+] to the command; Ctrl+] followed by any
-other key sends both. A lone Ctrl+] waits for the next key, without a timeout.
-Every other key, including Ctrl+C and Ctrl+D, goes to the command. No binding
-is interpreted inside a bracketed paste.
+**Detach** by pressing the **escape prefix**, Ctrl+], then `d`. The session
+keeps running, with no time limit. The client prints this to stderr and
+exits 0:
+
+`climon2: detached from session <id>; reattach with: c2 attach <id>`
+
+Other keys after the prefix:
+
+- Ctrl+] Ctrl+] sends one Ctrl+] to your command.
+- Ctrl+] then any other key sends both keys.
+- A lone Ctrl+] waits for the next key, for as long as it takes.
+
+Every other key goes to your command, including Ctrl+C and Ctrl+D. Inside a
+bracketed paste (text your terminal marks as pasted), no key binding works.
 
 **Attach** with `c2 attach <session>`. It needs a terminal on stdin and
-stdout, and takes control immediately. `<session>` is a full session ID or a
-unique prefix of at least 1 hex digit, case-insensitive, with or without
-hyphens, matching a live session. A malformed `<session>` is a usage error (2).
-No match, or more than one, fails with 125; an ambiguous prefix lists every
-matching ID. Attaching to the session you are running inside is refused.
+stdout, and takes control at once. `<session>` is a full session ID, or the
+start of one that matches just one live session. The start can be a single hex
+digit. Case and hyphens do not matter.
 
-On every attach or takeover, climon2 first scrolls the visible terminal into its
-native scrollback. It then restores the session's retained history, screen,
-cursor, modes and title, including the normal screen behind a full-screen
-application. A `[climon2: older session scrollback was discarded]` line marks
-history that was dropped to stay within `scrollback.max_rows`.
+- A badly formed `<session>` is a usage error (status 2).
+- No match, or more than one, fails with 125. If the start of an ID matches
+  more than one session, every match is listed.
+- You cannot attach to the session you are running inside.
 
-**Several clients** can attach to one session. One of them, the controller,
-drives the session's input and size. The others show a placeholder and receive
-no session output:
+Each time you attach or take control, climon2 first pushes what is on your
+screen up into your terminal's own scrollback. Then it redraws the session: its
+saved history, screen, cursor, modes and title. If a full-screen app is
+running, the normal screen behind it comes back too. A
+`[climon2: older session scrollback was discarded]` line marks where old
+history was dropped to stay under `scrollback.max_rows`.
+
+**Several clients** can attach to one session. One of them, the
+**controller**, sends input and sets the session's size. The others show this
+placeholder and get no session output:
 
 ```text
 This session is being viewed elsewhere.
 Press Ctrl+T to take control
 ```
 
-Press the take-control key (Ctrl+T) in a placeholder to take control; with
-`take_control_key` set to `null` the placeholder shows only its first line. Other
-keys typed in a placeholder are discarded, and the escape prefix still detaches.
-Ctrl+T reaches the command normally while you are in control. The most recent
-attach or takeover always wins, without a prompt. When the controller leaves,
-control returns to the most recently controlling client that is still attached.
+Press the take-control key (Ctrl+T) in a placeholder to take control. If
+`take_control_key` is `null`, the placeholder shows only its first line. Other
+keys typed in a placeholder are thrown away, and the escape prefix still
+detaches. When you are in control, Ctrl+T goes to your command as usual.
 
-**Leave policy**:
+The latest attach or takeover always wins, with no prompt. When the controller
+leaves, control goes back to the client that had it most recently and is still
+attached.
 
-- While another client remains attached, the session continues.
-- When the last client detaches, the session runs until its command exits or it
+**What happens when clients leave:**
+
+- If another client is still attached, the session goes on.
+- If the last client detaches, the session runs until its command exits or it
   is killed.
-- When the last client leaves any other way (terminal closed, client crashed,
-  connection lost), an ordinary session ends at once: its terminal is hung up
-  and remaining jobs are killed after five seconds. There is no reconnection
-  grace. A headless session keeps running instead. A client also counts as lost
-  if its terminal accepts no output for five seconds, falls more than 16 MiB
-  behind, or does not finish restoring within 30 seconds plus one second per
-  4 MiB restored.
-- An ordinary session that no client attaches to within five seconds of starting
-  ends. If its command exits sooner, the exit is kept for that first client
-  until then. A headless session has no such window.
+- If the last client leaves any other way (terminal closed, client crashed,
+  connection lost), an ordinary session ends at once. Its terminal is hung up,
+  and any jobs still running are killed five seconds later. There is no grace
+  period to reconnect. A headless session keeps running instead.
+- A client also counts as lost if any of these happen:
+  - its terminal takes no output for five seconds;
+  - it falls more than 16 MiB behind;
+  - it does not finish redrawing the session within 30 seconds, plus one
+    second for each 4 MiB redrawn.
+- An ordinary session ends if no client attaches within five seconds of its
+  start. If its command exits before then, the exit is held for that first
+  client until the five seconds are up. Headless sessions have no such limit.
 - When the command exits, every attached client exits with its status.
-- A monitor watching a session keeps it alive through succession. When the
-  controller leaves, by detaching or any other way, and no other client is
-  attached, control passes to the monitor that started watching most
-  recently, which becomes an attached client in the background, without
-  resizing the session or typing into it. The rules above then apply only
-  when no monitor is left watching. Watching alone is not attaching, so it
-  does not stop the five-second rule for a starting session, and a session
-  being killed passes control to no one. (The monitor watches every live
-  session this way, #106.)
+- A [monitor](#monitor) watching a session keeps it alive by taking over.
+  If the controller leaves, in any way, and no other client is attached,
+  control passes to the monitor that started watching most recently. That
+  monitor becomes an attached client in the background. It does not resize
+  the session or type into it. The rules above apply only once no monitor is
+  watching. Watching is not the same as attaching. So it does not stop a new
+  session from ending under the five-second rule. And a session that is being
+  killed passes control to no one. (The monitor watches every live session
+  this way.)
 
-**Kill** one session with `c2 kill <session>` (same selector rules), whether
-or not clients are attached. It needs no terminal and prints nothing. The
-session hangs up its terminal and always waits the full five-second grace
-before killing any remaining jobs, so a kill normally takes about five seconds.
-It exits 0 once the command has ended and the session is cleaned up, or 125 if
-that is not confirmed within 10 seconds. Attached clients exit with the
-command's status, normally signal-derived. On Linux, as when a terminal window
-closes, a command reading the terminal can see it close before the hang-up
-signal arrives and end with its own status instead.
+**Kill** a session with `c2 kill <session>`. It picks the session the same way
+`attach` does, and works whether or not clients are attached. It needs no
+terminal and prints nothing.
 
-When a client's view of a session ends (detach, exit, kill or takeover by
-another client), climon2 returns its terminal to a normal shell state: it ends
-any synchronized update, leaves the alternate screen only if it entered it,
-resets margins and the origin, insert and new-line modes, turns autowrap on,
-turns off mouse, focus, bracketed-paste, application cursor-key and keypad
-modes, shows the cursor in its default style, and resets the rendition. Terminal
-settings (termios) are restored exactly.
+The session hangs up its terminal, then always waits the full five seconds
+before it kills any jobs left. So a kill usually takes about five seconds.
+`c2 kill` exits 0 once the command has ended and the session is cleaned up. It
+exits 125 if that is not confirmed within 10 seconds. Attached clients exit
+with the command's status, which usually comes from the signal. On Linux, as
+when you close a terminal window, a command that reads the terminal may see it
+close before the hang-up signal arrives. It then ends with its own status
+instead.
 
-Exit statuses: 0 for a confirmed detach or kill, or a created headless session;
-the command's own status when it finishes while the client is attached; 2 for
-usage errors; 125 for climon2 failures; 126 and 127 when `exec` cannot start the
-command; 128 + signal when the client is terminated by a signal; 129 when the
-client's terminal goes away.
+When a client stops showing a session (detach, exit, kill, or another client
+taking over), climon2 puts your terminal back in a normal shell state. It:
+
+- ends any synchronized update;
+- leaves the alternate screen, but only if it entered it;
+- resets margins, the origin, and the insert and new-line modes;
+- turns autowrap on;
+- turns off mouse, focus, bracketed-paste, application cursor-key and keypad
+  modes;
+- shows the cursor in its default style and resets text colours and styles.
+
+Terminal settings (termios) are restored exactly.
+
+**Exit statuses:**
+
+| Status | Meaning |
+| --- | --- |
+| 0 | Detach or kill confirmed, or headless session created |
+| The command's own | The command finished while the client was attached |
+| 2 | Usage error |
+| 125 | climon2 failed |
+| 126, 127 | `exec` could not start the command |
+| 128 + signal | The client was ended by a signal |
+| 129 | The client's terminal went away |
 
 ## Configuration
 
-climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
+climon2 reads an optional `<climon2 home>/config.jsonc`. These are the
+defaults:
 
 ```jsonc
 {
@@ -267,185 +316,254 @@ climon2 reads an optional `<climon2 home>/config.jsonc`. These are the defaults:
 }
 ```
 
-- The format is JSON with `//` and `/* */` comments and trailing commas.
-  Comments act as whitespace: they separate tokens but never join them, so
-  `1/* c */0000` is malformed, not `10000`.
-- A missing file, object or field means the default. Unknown fields are ignored.
-- Keys are `Ctrl+A` to `Ctrl+Z`, `Ctrl+[`, `Ctrl+\`, `Ctrl+]`, `Ctrl+^`,
-  `Ctrl+_` and `Ctrl+Space`; `null` disables a binding. `take_control_key`
-  cannot be `Ctrl+[` (Escape), and the two bindings cannot be the same key.
-- With `escape_prefix` set to `null` there is no detach key; closing the last
-  client then ends the session.
-- `scrollback.max_rows` (0 to 100000, default 10000) is the number of
-  normal-screen history rows a session retains for restoration. It is fixed
-  when the session starts; attaching never changes it. 0 disables retained
-  history, but the screen is still restored.
-- `monitor.show_key_hints` (default true) hides the [monitor](#monitor)'s
-  implicit key hints when false, never a binding or application text: in its
-  empty state, top row, placeholder, selector footer and toasts.
-  False also keeps the key introduction from opening at startup; the escape
-  prefix followed by `?` still opens it, and your **Don't show again** choice
-  is kept apart and never changes this setting.
-- `monitor.bell` (default true): false keeps toasts from ringing the host
-  bell, never hiding a toast or the host attention reports.
-- `monitor.limits` holds the [operational limits](docs/for-humans/behaviour/monitor/operational-limits.md),
-  in bytes, milliseconds (`_ms`) or counts. The monitor validates and reports
-  them and enforces most of them (#106 to #120); the operational limits'
-  status says which it does not enforce yet. Its `history.max_rows` is the monitor's own
-  local history and never changes `scrollback.max_rows`. Each is an integer:
-  - 1 to 3600000 for durations, but 1 to 50 for `ui.client_quantum_ms` and
-    `ui.background_quantum_ms`;
-  - 200 to 100000 for `history.max_rows`, 1 to 120 for `ui.fps`, 0 to 50 for
-    `retry.jitter_percent`, and 0 or more for `resources.max_workers_per_client`;
-  - at least 1 for every other budget, ceiling or count, up to 4294967295 for
-    counts and for `transfer.chunk_bytes` and the `payload` `_bytes` ceilings
-    other than `assembly_bytes`, or 18446744073709551615 for the other byte
-    budgets.
-- The limits must also agree with each other:
-  - `memory.client_bytes`, `history_bytes_total` and `queue_bytes_total`, the
-    `resources.stack_bytes` and `release_bytes` reservations, and each monitor
-    byte budget that no smaller total contains (`transfer.drain_payload_bytes`,
-    `discovery.batch_bytes`, `discovery.metadata_file_bytes` and
-    `ui.search_bytes`) fit `memory.total_bytes`; `history_bytes_per_session`
-    fits both `history_bytes_total` and `client_bytes`;
-  - `queues.request_bytes` and `event_bytes` each fit both
-    `memory.queue_bytes_total` and `memory.client_bytes`;
-  - `payload.assembly_bytes` and `assembly_records` limit the daemon's
-    notification assembly, not the monitor's memory, so no monitor total
-    contains them;
-  - `queues.progress_bytes` is less than `event_bytes`, and `progress_records`
-    less than `event_records`, leaving room for ordinary work;
-  - `transfer.chunk_bytes` fits `queues.request_bytes`, the ordinary event
-    capacity (`event_bytes` minus `progress_bytes`) and
-    `transfer.drain_payload_bytes`; `payload.metadata_record_bytes` fits
-    `progress_bytes`, that ordinary capacity and `drain_payload_bytes`;
-  - `ui.client_quantum_ms` fits `ui.background_quantum_ms`, and
-    `retry.initial_ms` fits `retry.cap_ms`.
-- `memory.client_bytes` is split between a session's client library and
-  its terminal model in the monitor: the library gets its request and event
-  queues, one wire frame and its 1048576-byte instance allocation (3407872
-  bytes by default), which must fit `client_bytes`, and the model the rest.
-- The monitor also refuses limits too small for one session's terminal model
-  at the largest session size, 500x200 (`exec` does not check this):
-  `memory.client_bytes` must hold its current model and the history holding
-  its recent page, 16966087 bytes together, beside the library's share
-  (20373959 bytes by default), `memory.total_bytes` those and the monitor's
-  one shared parser (22471111 bytes by default), and
-  `memory.history_bytes_total` and `history_bytes_per_session` that history,
-  12115200 bytes. The refusal names the first limit to raise. Limits that
-  only just pass admit such a session, but restoring it beside its current
-  model needs at least 33932174 bytes in the model's share of a client's
-  budget (36029326 in the total, with the parser, and the library's share
-  beside both), and the monitor will restore it whenever the session's size
-  changes.
+**The file format.** It is JSON that also allows `//` and `/* */` comments
+and trailing commas. A comment counts as a space: it can split two tokens but
+never joins them. So `1/* c */0000` is an error, not `10000`.
 
-`exec` validates the whole file before starting the session. `attach`
-validates only `client`; the monitor validates `client` and `monitor`, and
-refuses a null `escape_prefix`. `list` and `kill` do not read the file. Any
-error, including malformed JSONC, duplicate keys, wrong types, `null` for a
-setting that cannot be disabled, invalid keys, conflicting bindings,
-out-of-range values, limits that disagree and, for the monitor, limits too
-small for its terminal model, exits 125 before anything starts.
-The file is read once per command; there is no environment override,
-auto-creation or live reload.
+**Missing and unknown settings.** A missing file, object or field means the
+default. Fields climon2 does not know are ignored.
+
+**Keys.** A key setting can be `Ctrl+A` to `Ctrl+Z`, `Ctrl+[`, `Ctrl+\`,
+`Ctrl+]`, `Ctrl+^`, `Ctrl+_` or `Ctrl+Space`. `null` turns the binding off.
+`take_control_key` cannot be `Ctrl+[` (that is Escape), and the two bindings
+cannot be the same key. If `escape_prefix` is `null`, there is no detach key,
+so closing the last client ends the session.
+
+**Scrollback.** `scrollback.max_rows` (0 to 100000, default 10000) is how many
+rows of normal-screen history a session keeps for redrawing. It is set when the
+session starts; attaching never changes it. 0 keeps no history, but the screen
+itself is still redrawn.
+
+**Key hints.** When `monitor.show_key_hints` (default true) is false, the
+[monitor](#monitor) hides the key hints it adds on its own. It never hides a
+binding or text from an app. Hints appear in the empty screen, the top row,
+the placeholder, the session list footer and toasts. False also stops the key
+introduction from opening at start-up. The escape prefix then `?` still opens
+it. Your **Don't show again** choice is stored apart from this setting and
+never changes it.
+
+**Bell.** When `monitor.bell` (default true) is false, toasts do not ring
+your terminal's bell. Toasts and the monitor's attention reports to your
+terminal still appear.
+
+**Monitor limits.** `monitor.limits` holds the
+[operational limits](docs/for-humans/behaviour/monitor/operational-limits.md):
+sizes in bytes, times in milliseconds (`_ms`), and counts. The monitor checks
+and reports all of them, and enforces most. That document says which ones it
+does not enforce yet. `history.max_rows` here is the monitor's own history; it
+never changes `scrollback.max_rows`.
+
+Each limit is a whole number in this range:
+
+- Times: 1 to 3600000. But `ui.client_quantum_ms` and
+  `ui.background_quantum_ms` are 1 to 50.
+- `history.max_rows`: 200 to 100000. `ui.fps`: 1 to 120.
+  `retry.jitter_percent`: 0 to 50. `resources.max_workers_per_client`: 0 or
+  more.
+- Everything else: at least 1. The upper bound is 4294967295 for counts, for
+  `transfer.chunk_bytes`, and for the `payload` byte limits other than
+  `assembly_bytes`. Other byte limits go up to 18446744073709551615.
+
+The limits must also fit together:
+
+- These must each fit inside `memory.total_bytes`: `memory.client_bytes`,
+  `history_bytes_total`, `queue_bytes_total`, the `resources.stack_bytes` and
+  `release_bytes` reserves, and every monitor byte limit not already inside a
+  smaller total (`transfer.drain_payload_bytes`, `discovery.batch_bytes`,
+  `discovery.metadata_file_bytes` and `ui.search_bytes`).
+- `history_bytes_per_session` must fit inside both `history_bytes_total` and
+  `client_bytes`.
+- `queues.request_bytes` and `event_bytes` must each fit inside both
+  `memory.queue_bytes_total` and `memory.client_bytes`.
+- `payload.assembly_bytes` and `assembly_records` limit how the daemon builds
+  notifications. They are not monitor memory, so no monitor total includes
+  them.
+- `queues.progress_bytes` must be less than `event_bytes`, and
+  `progress_records` less than `event_records`. This leaves room for normal
+  work.
+- `transfer.chunk_bytes` must fit inside `queues.request_bytes`, inside the
+  normal event space (`event_bytes` minus `progress_bytes`), and inside
+  `transfer.drain_payload_bytes`. `payload.metadata_record_bytes` must fit
+  inside `progress_bytes`, that normal event space, and
+  `drain_payload_bytes`.
+- `ui.client_quantum_ms` must not be more than `ui.background_quantum_ms`, and
+  `retry.initial_ms` not more than `retry.cap_ms`.
+
+`memory.client_bytes` is shared, per session, between the client library and
+the monitor's copy of the session's terminal (its **terminal model**). The
+library's share is its request and event queues, one wire frame, and its
+1048576-byte instance memory. That is 3407872 bytes by default, and it must fit
+inside `client_bytes`. The terminal model gets the rest.
+
+The monitor also refuses limits too small for one session's terminal model at
+the largest session size, 500x200. (`exec` does not check this.) Such a model
+needs 16966087 bytes for its current screen plus the history that holds its
+latest page. So:
+
+- `memory.client_bytes` must hold that plus the library's share (20373959
+  bytes by default).
+- `memory.total_bytes` must hold all that plus the monitor's one shared parser
+  (22471111 bytes by default).
+- `memory.history_bytes_total` and `history_bytes_per_session` must hold that
+  history: 12115200 bytes.
+
+The error names the first limit to raise. Limits that only just pass will let
+such a session in. But to redraw it next to its current model, the model's
+share of a client's memory needs at least 33932174 bytes (36029326 in the total
+with the parser, plus the library's share). The monitor redraws whenever the
+session changes size.
+
+**Who reads what.** `exec` checks the whole file before it starts the session.
+`attach` checks only `client`. The monitor checks `client` and `monitor`, and
+refuses a `null` `escape_prefix`. `list` and `kill` do not read the file.
+
+Any error exits 125 before anything starts. Errors include: bad JSONC,
+repeated keys, wrong types, `null` for a setting that cannot be turned off,
+bad key names, two bindings on one key, values out of range, limits that do
+not fit together, and, for the monitor, limits too small for its terminal
+model.
+
+Each command reads the file once. There is no environment variable to
+override it, it is never created for you, and changes are not picked up while
+a command runs.
 
 ### Monitor behavior
 
-The [agreed terminal integration](docs/for-humans/protocol/terminal-integration.md) provides
-interactive terminal input/rendering, internal normal-screen history, one top
-status row, and explicit control/restoration gates. The [monitor](#monitor)
-implements them (#108 to #112) and treats pasted shortcuts as data. It reads the
-configuration above once, before changing terminal state. Null takeover is
-allowed because selector confirmation can acquire control. Lowercase prefix+s
-opens the selector, prefix+x exits, and **prefix+j** jumps to the most recent
-currently connected session needing attention, not necessarily a toast's session.
-Prefix+? opens the [key introduction/help dialog](docs/for-humans/behaviour/monitor/selector.md#key-introduction-and-help).
-Uppercase J is unknown literal input; bracketed pasted shortcuts remain data.
+The [monitor](#monitor) follows the
+[agreed terminal integration](docs/for-humans/protocol/terminal-integration.md).
+That covers keyboard input and drawing, its own history of each session's
+normal screen, one status row at the top, and clear rules for when it takes
+control and when it restores your terminal. The monitor does all of this.
 
-Needs-attention toasts hint the actual configured prefix plus lowercase j
-and describe a dynamic most-recent jump, unless `monitor.show_key_hints` is false.
+It reads the config file once, before it touches your terminal. It allows a
+`null` take-control key, because choosing a session in the session list can
+take control instead.
 
-Help opened over the selector keeps the selector's search and highlight
-and returns to them when it closes, without acquiring or acknowledging
-anything (#113).
+Keys, each pressed after the escape prefix, in lowercase:
 
-`monitor.bell` false suppresses the explicit host bell, not
-toasts or OSC 7501 reports; host settings govern actual audibility.
-The [selector specification](docs/for-humans/behaviour/monitor/selector.md) records the accepted
-layout, read-only disconnected/final history selection and animated toasts.
-The later [lifecycle specification](docs/for-humans/behaviour/monitor/lifecycle.md) adds
-default-Cancel Delete confirmation pinned to immutable session identity
-(implemented by #117), and the recovery below (implemented by #116).
-Removal waits for definitive termination and local instance cleanup/join,
-dismisses only for this run, and never acquires a fallback session or re-adds
-the dismissed GUID in the same run. No connected revoked-cache inspection route
-or prefix+h/prefix+r binding is added. Disconnected read-only cache overlays
-exactly `Reconnecting...` during scheduled/active automatic passive recovery.
-Recoverable transport/startup failures (including missing libraries) and safe
-worker panics use exponential backoff; permanent rejection/invalid configuration
-stop it. Replacement instances wait for old cleanup/join; no indeterminate
-input/request/Kill is replayed. The monitor remains open through empty/all-final
-states and preserves selection identity without automatic replacement takeover.
+- `s` opens the session list (the **selector**).
+- `x` exits.
+- `j` jumps to the most recent connected session that needs attention. This
+  may not be the session a toast was about.
+- `?` opens the
+  [key introduction and help dialog](docs/for-humans/behaviour/monitor/selector.md#key-introduction-and-help).
 
-Prefix+x and catchable signals coordinate concurrent shutdown of every
-owned instance (implemented by #118). Accepted Leave, connection closure, final outcome, cleanup and
-join are separate evidence. Restore host state and clear root attention before
-diagnostics; stalled cleanup uses bounded whole-process failure, never a false
-detach/join claim or thread kill. The agreed
-[operational limits](docs/for-humans/behaviour/monitor/operational-limits.md) define the
-`monitor.limits` budgets, deadlines and evidence; the monitor enforces most
-of them (#119, #120), and that document's status lists what it does not.
-Under pressure, local history shrinks to its newest captured
-page, never disappears entirely; resource-blocked sessions remain visible
-(#119, #120). No general session-survival or native-crash isolation
-is added.
-Explicit exit succeeds only after required Leave outcomes, local cleanup/
-joins and host restoration succeed, never with the selected command's status.
-Fatal monitor errors, required Leave failure/uncertainty, incomplete cleanup or
-restoration failure use 125; a catchable signal uses signal-style status only
-after successful cleanup. Session-local command/client failures alone do not
-poison a later clean monitor exit.
-The monitor also generates its own
-[OSC 7501 aggregate attention reports](docs/for-humans/protocol/README.md#monitor-to-host-status-and-bell),
-never raw session-sequence passthrough.
+An uppercase `J` is not a key binding; it is passed on as plain input. Pasted
+shortcuts are always treated as text.
+
+A **toast** is a short pop-up notice. When a session needs attention, its
+toast shows your actual prefix plus `j`, and says it jumps to the most recent
+such session. It shows no hint when `monitor.show_key_hints` is false.
+
+If you open help over the selector, the selector keeps its search and
+highlight. Closing help takes you back to them. Help never takes control or
+marks anything as seen.
+
+`monitor.bell` false stops the monitor ringing your terminal's bell. Toasts
+and OSC 7501 reports still happen. Whether you hear a bell is up to your
+terminal's own settings.
+
+The [selector specification](docs/for-humans/behaviour/monitor/selector.md)
+covers the layout, read-only viewing of history from disconnected or finished
+sessions, and animated toasts.
+
+The later [lifecycle specification](docs/for-humans/behaviour/monitor/lifecycle.md)
+covers deleting sessions and recovering from failures. The monitor does both.
+
+**Deleting a session.** Delete asks you to confirm, with Cancel as the
+default. The confirmation is tied to that exact session, so it cannot hit a
+different one. Removal waits until the session has truly ended and the
+monitor has cleaned up its own copy. A removed session stays hidden for the
+rest of this run only. The monitor never switches you to another session in
+its place, and never brings back the removed session's ID in the same run.
+There is no way to look at a connected session's cache after it is revoked,
+and there are no prefix+`h` or prefix+`r` keys.
+
+**Recovering from failures.** While the monitor tries to reconnect on its
+own, a disconnected session's read-only view shows exactly
+`Reconnecting...`. Failures it can recover from are retried, waiting longer
+each time (exponential backoff). These include connection and start-up
+failures, such as a missing library, and worker crashes it can safely survive.
+A permanent refusal or a bad config file stops the retries. A new connection
+waits for the old one to be fully cleaned up. The monitor never resends input,
+requests or kills when it does not know whether they arrived. It stays open
+when there are no sessions or all of them have finished. It keeps the same
+session selected, and never takes control of a replacement on its own.
+
+**Shutting down.** Prefix+`x` and catchable signals shut down every session
+connection the monitor owns, all at once. The monitor checks each step on its
+own: the daemon accepted the leave, the connection closed, the final result
+arrived, cleanup finished, and the worker thread ended. It restores your
+terminal and clears its attention report before it prints any error. If
+cleanup stalls, the whole process fails within a time limit. It never falsely
+claims a detach or a finished thread, and never kills a thread.
+
+The agreed
+[operational limits](docs/for-humans/behaviour/monitor/operational-limits.md)
+set the `monitor.limits` budgets and deadlines, and say how to prove them.
+The monitor enforces most of them, and that document lists the ones it does
+not. When memory is short, a session's local history shrinks to its newest
+page but never vanishes. Sessions held back by resource limits stay visible.
+The monitor does not try to keep sessions alive in general, and does not
+isolate crashes in native code.
+
+**Exit status.** Exiting on purpose succeeds (0) only once all required leave
+steps, cleanup and terminal restore have succeeded. The monitor never exits
+with the selected command's status. It exits 125 for a fatal monitor error, a
+leave that failed or whose result is unknown, unfinished cleanup, or a failed
+restore. A catchable signal gives a signal-style status, but only after
+cleanup succeeds. A command or client failing in one session does not spoil a
+later clean exit.
+
+The monitor also sends your terminal its own
+[OSC 7501 attention reports](docs/for-humans/protocol/README.md#monitor-to-host-status-and-bell),
+which sum up all sessions. It never passes on a session's raw escape
+sequences.
 
 ## Listing
 
-`c2 list` shows live sessions, newest first, with the columns SESSION,
-CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS. STATE is `starting`,
-`attached`, `detached`, `terminating`, or `unknown` for a session that does not
-report it. A headless session is never `starting`: it is `detached` whenever no
-client is attached. CLIENTS counts attached clients, or shows `-` when unknown. A
-monitor watching a session without attaching to it (a passive monitor
-connection) is not an attachment: it never counts in CLIENTS or changes STATE
-until it takes control or inherits it (see the leave policy), when it counts
-as an attached client.
+`c2 list` shows live sessions, newest first, in these columns: SESSION,
+CREATED, VERSION, STATE, CLIENTS, COMMAND and ARGS.
 
-`c2 list --json` prints an array of session metadata objects. Each has a
+- STATE is `starting`, `attached`, `detached` or `terminating`. It is
+  `unknown` for a session that does not report it. A headless session is never
+  `starting`: it is `detached` whenever no client is attached.
+- CLIENTS counts attached clients, or shows `-` when unknown.
+
+A monitor can watch a session without attaching to it (a **passive**
+connection). That does not count as attaching. It never adds to CLIENTS or
+changes STATE until the monitor takes control or inherits it (see
+[what happens when clients leave](#sessions)). From then on it counts as an
+attached client.
+
+`c2 list --json` prints an array of objects, one per session. Each has a
 `state` key holding `{"lifecycle": …, "attachments": …, "controlled": …}`, or
 `null` when the session does not report a valid state.
 
 Each session is attached and killed through the client of its own climon2
-version, which must still be installed. Older sessions that do not support an
-operation fail with 125 and are left undisturbed. `list` needs no client.
+version, so that version must still be installed. Older sessions that do not
+support an action fail with 125 and are left alone. `list` needs no client.
 
 ## Monitor
 
-`c2 monitor`, or `c2 m`, opens the monitor: one terminal that tracks
-every live session. It takes no arguments (any is a usage error, 2) and needs a
-terminal on stdin and stdout. The launcher always runs the current version's
-monitor, on macOS and x86-64 GNU/Linux alike. Before your terminal changes, it
-reads `config.jsonc` once: your `client.escape_prefix` and
-`client.take_control_key` settings and their defaults, and the `monitor`
-section (see [Configuration](#configuration)). It refuses a `null` escape
-prefix, the only way to reach its actions. Startup errors, any invalid setting
-included, are reported, with status 125, before your terminal changes. Editing
-the file while the monitor runs changes nothing.
+`c2 monitor`, or `c2 m`, opens the **monitor**: one terminal that keeps track
+of every live session. It takes no arguments (any argument is a usage error,
+status 2), and needs a terminal on stdin and stdout. It always runs the
+monitor from the current version, on macOS and x86-64 GNU/Linux alike.
 
-The monitor discovers live sessions continuously and gives each one a passive
-client (#106). On its own alternate screen it shows one permanent top row and,
-while there are no sessions, an empty state whose key hint names your escape
-prefix; with `monitor.show_key_hints` false only `No sessions to show.` remains:
+Before it touches your terminal, it reads `config.jsonc` once. It uses your
+`client.escape_prefix` and `client.take_control_key` settings (or their
+defaults) and the `monitor` section (see [Configuration](#configuration)). It
+refuses a `null` escape prefix, because that prefix is the only way to reach
+its actions. Start-up errors, including bad settings, are reported with status
+125 before your terminal changes. Editing the file while the monitor runs has
+no effect.
+
+The monitor keeps finding live sessions and gives each one a passive
+connection. It uses its own alternate screen, with one top row that is always
+there. While there are no sessions, it shows an empty screen with a key hint
+that names your escape prefix. With `monitor.show_key_hints` false, only
+`No sessions to show.` remains:
 
 ```text
 No session selected
@@ -453,21 +571,26 @@ No session selected
                      Press Ctrl+] then x to exit.
 ```
 
-The escape prefix followed by `x` exits with status 0; any other key is
-discarded, and Ctrl+C is a key, not an exit. Pasted text is never a key: a
-paste holding the prefix and `x` does not exit, and a paste cancels a pending
-prefix. SIGINT, SIGTERM and SIGHUP leave the same way with status 128 + signal.
-Resizing repaints the screen at the new size without blanking it. If your
-terminal hangs up or can no longer be read, the monitor leaves with status 125.
-On every exit the monitor returns your terminal to the normal shell state
-described for clients above, restores its settings (termios) exactly and never
-changes its title; only then does it print any error, with status 125. It logs
-to the general log in the climon2 home, including its effective
-configuration as JSON, never your input.
+**Exiting.** The escape prefix then `x` exits with status 0. Any other key is
+ignored, and Ctrl+C is just a key, not a way out. Pasted text is never a key:
+pasting the prefix and `x` does not exit, and a paste cancels a prefix you have
+started. SIGINT, SIGTERM and SIGHUP exit the same way, with status
+128 + signal. If your terminal hangs up or can no longer be read, the monitor
+exits with 125.
 
-Until you turn it off, the monitor starts with its key introduction over the
-empty state, listing its keys with your escape prefix and the session list's
-own keys (on macOS, Delete is shown as `Del (fn+⌫)`):
+Resizing redraws the screen at the new size without blanking it.
+
+Every time it exits, the monitor puts your terminal back in the normal shell
+state described for clients above. It restores terminal settings (termios)
+exactly and never changes your terminal's title. Only after that does it print
+any error, with status 125.
+
+It writes to the general log in the climon2 home, including its settings in
+effect as JSON. It never logs what you type.
+
+**The key introduction.** Until you turn it off, the monitor starts by showing
+its keys over the empty screen, using your escape prefix. It also lists the
+session list's own keys. (On macOS, Delete is shown as `Del (fn+⌫)`.)
 
 ```text
 ┌ Keys ───────────────────────────────────────────────────┐
@@ -493,94 +616,112 @@ own keys (on macOS, Delete is shown as `Del (fn+⌫)`):
 └─────────────────────────────────────────────────────────┘
 ```
 
-Enter continues to the empty state. Space checks **Don't show again**, or
-clears it again, and saves your choice at once: while it is checked, later
-starts with the same climon2 home open on the empty state. The introduction
-also stays closed while `monitor.show_key_hints` is false. Whatever either
-says, the escape prefix followed by `?` opens the same dialog as help,
-showing your saved choice; doing so while it is open changes nothing. The
-dialog takes every other key and any paste, and none of them does anything
-else; the escape prefix followed by `x` still exits. The escape prefix pressed
-twice reaches the dialog as that key, so with `Ctrl+M` (Enter) as the prefix,
-Enter Enter continues. While the dialog is open, the escape prefix followed by
-`s` does nothing; once it is closed, it opens the session list (#106, #113).
-The escape prefix followed by `j` closes the dialog and jumps to the session
-needing attention (#114). A bare Escape closes the dialog when the next key arrives
-(#109), except with `Ctrl+[` as the prefix: then it never can, because Escape
-is the prefix.
+- Enter goes on to the empty screen.
+- Space ticks **Don't show again**, or unticks it, and saves your choice at
+  once. While it is ticked, later starts with the same climon2 home go straight
+  to the empty screen. The introduction also stays closed while
+  `monitor.show_key_hints` is false.
+- Whatever those say, the escape prefix then `?` opens the same dialog as
+  help, showing your saved choice. Doing this while it is already open does
+  nothing.
+- The dialog takes every other key and any paste, and none of them does
+  anything else. The escape prefix then `x` still exits.
+- Pressing the escape prefix twice sends that key to the dialog. So with
+  `Ctrl+M` (Enter) as the prefix, Enter Enter continues.
+- While the dialog is open, the escape prefix then `s` does nothing. Once it
+  is closed, it opens the session list.
+- The escape prefix then `j` closes the dialog and jumps to the session that
+  needs attention.
+- A bare Escape closes the dialog when the next key arrives. The exception is
+  when `Ctrl+[` is the prefix: then Escape is the prefix, so it cannot close
+  the dialog.
 
-The choice lives in `<climon2 home>/monitor-preferences.json`, apart from
-`config.jsonc`: `{"version":1,"suppress_key_introduction":true}`. Every
-release reads it, whatever its version, ignoring fields it does not know. The
-monitor writes it only when you change the box, as a new file readable only by
-you (`monitor-preferences.json.<pid>.tmp`) renamed over the old one; before
-that, it removes any such file that a monitor no longer running left behind,
-interrupted before its rename. If the file cannot be read or is malformed, the
-introduction opens with the reason under its unchecked box (with key hints
-off, the empty state shows the reason instead), and the file is left as it is
-until you change the box. If a save fails, the dialog says why under the box,
-which keeps showing the saved choice; with key hints off, the empty state says
-so too. The general log records these problems and each saved choice.
+**Where the choice is saved.** It lives in
+`<climon2 home>/monitor-preferences.json`, apart from `config.jsonc`:
+`{"version":1,"suppress_key_introduction":true}`. Every release reads it,
+whatever its version, and ignores fields it does not know.
+
+The monitor writes it only when you change the box. It writes a new file that
+only you can read (`monitor-preferences.json.<pid>.tmp`), then renames it over
+the old one. Before that, it deletes any such temporary file left by a monitor
+that stopped before its rename and is no longer running.
+
+If the file cannot be read or is broken, the introduction opens and shows why
+under its unticked box. (With key hints off, the empty screen shows the reason
+instead.) The file is left as it is until you change the box. If saving fails,
+the dialog says why under the box, and the box keeps showing the saved choice.
+With key hints off, the empty screen says so too. The general log records
+these problems and every saved choice.
 
 ## Terminal compatibility
 
-The session daemon keeps its own virtual terminal for each session, built on
-Alacritty's `alacritty_terminal` 0.26.0. It answers the command's terminal
-queries itself and never asks your terminal anything. `TERM=xterm-256color` and
-`COLORTERM=truecolor` describe the subset of xterm that climon2 qualifies, not
-complete xterm compatibility; they replace any inherited values.
+The session daemon keeps its own copy of each session's terminal, built on
+Alacritty's `alacritty_terminal` 0.26.0. It answers your command's questions
+about the terminal itself, and never asks your real terminal anything.
+`TERM=xterm-256color` and `COLORTERM=truecolor` describe the part of xterm
+that climon2 is tested against, not all of xterm. They replace any values your
+command would otherwise inherit.
 
-Interactive shells are qualified on GNU bash 5.x only; macOS `/bin/bash` 3.2 is
+Interactive shells are tested on GNU bash 5.x only. macOS `/bin/bash` 3.2 is
 not supported for interactive sessions. `install.sh` still runs under
 `/bin/bash`.
 
 ## Limitations
 
-- **Keyboard input is legacy only.** Kitty keyboard and modifyOtherKeys
-  requests are stripped, and application-keypad fidelity is not guaranteed.
-- **Unmarked pastes look like typing.** Only bracketed pastes are exempt from
-  bindings, so an unbracketed paste containing Ctrl+] or Ctrl+T can trigger them.
-- **Bindings hide keys from applications.** The escape prefix is always
-  intercepted (press it twice to send it), and the take-control key is
-  intercepted in the placeholder. Rebind or disable them in the configuration.
-- **Duplicates on reattach.** Every attach resends all retained history, so
-  native scrollback can hold copies of it.
-- **Not restored on attach:** scroll region, tab stops, character sets, palette
-  changes, keyboard-protocol modes and hyperlinks. Your terminal's own title is
-  not restored on exit; it keeps the session's title (default
-  `c2 exec <command> <args...>`).
-- **Saved cursor on the alternate screen.** A restoration taken while an
-  application is on the alternate screen sets the normal screen's saved cursor
-  to its current cursor. They usually match, but can differ after a resize while
-  hidden.
-- **Live output is filtered.** Terminal queries are answered by climon2 or
-  stripped. OSC 52 clipboard access, palette changes, every other OSC sequence
-  (such as OSC 7 and shell-integration marks) and DCS, APC, PM and SOS strings
-  are stripped. Hyperlinks (OSC 8) appear as plain text. Titles have control
-  characters percent-encoded. Control strings and CSI sequences over 4096 bytes
-  are dropped.
-- **Session size is 2 to 500 columns by 1 to 200 rows.** On a larger terminal
-  the session occupies the top-left corner, drawn from the daemon's screen
-  rather than forwarded unchanged; the scroll region is not carried across a
-  switch between the two. Terminals narrower than 2 columns are unsupported.
-- **Only direct self-attachment is detected.** Other cycles, such as attaching
-  each of two sessions inside the other, are your responsibility.
-- **Unexpected loss restores little.** If the session daemon disappears, the
-  client can only reset rendition, cursor visibility, mouse, focus,
-  bracketed-paste, cursor-key and keypad modes and synchronized output before
-  restoring termios. It cannot leave the alternate screen or restore other
-  terminal state.
-- **Combining marks are unbounded.** Alacritty 0.26.0 stores a cell's combining
-  marks without a limit, so a stream of them grows daemon memory. Qualification
-  evidence for other Alacritty revisions does not apply to 0.26.0.
+- **Only basic keyboard input.** Requests for the Kitty keyboard protocol or
+  modifyOtherKeys are removed. Application keypad keys may not come through
+  exactly.
+- **Unmarked pastes look like typing.** Only bracketed pastes skip key
+  bindings. A paste that is not bracketed and contains Ctrl+] or Ctrl+T can
+  trigger them.
+- **Bindings hide keys from apps.** The escape prefix is always caught (press
+  it twice to send it). The take-control key is caught in the placeholder. You
+  can change or turn off both in the config file.
+- **Repeats on reattach.** Every attach sends all saved history again, so your
+  terminal's scrollback can hold copies of it.
+- **Not restored on attach:** scroll region, tab stops, character sets,
+  colour palette changes, keyboard protocol modes and hyperlinks. Your
+  terminal's own title is not restored when you leave. It keeps the session's
+  title (by default `c2 exec <command> <args...>`).
+- **Saved cursor on the alternate screen.** If a session is redrawn while an
+  app is on the alternate screen, the normal screen's saved cursor is set to
+  the current cursor. They usually match, but can differ after a resize while
+  that screen was hidden.
+- **Live output is filtered.** climon2 either answers terminal queries or
+  removes them. It removes OSC 52 clipboard access, palette changes, every
+  other OSC sequence (such as OSC 7 and shell-integration marks), and DCS,
+  APC, PM and SOS strings. Hyperlinks (OSC 8) show as plain text. Control
+  characters in titles are percent-encoded. Control strings and CSI sequences
+  longer than 4096 bytes are dropped.
+- **Session size is 2 to 500 columns by 1 to 200 rows.** On a bigger terminal
+  the session sits in the top-left corner. It is drawn from the daemon's copy
+  of the screen instead of being passed straight through. The scroll region is
+  not kept when switching between the two. Terminals under 2 columns wide are
+  not supported.
+- **Only attaching to yourself directly is caught.** Other loops, such as two
+  sessions each attached inside the other, are up to you to avoid.
+- **Little is restored after a crash.** If the session daemon vanishes, the
+  client can only reset text styles, cursor visibility, mouse, focus,
+  bracketed-paste, cursor-key and keypad modes, and synchronized output, then
+  restore termios. It cannot leave the alternate screen or restore anything
+  else.
+- **Combining marks have no limit.** Alacritty 0.26.0 stores a cell's
+  combining marks without a cap, so a stream of them makes the daemon use more
+  and more memory. Test results for other Alacritty versions do not apply to
+  0.26.0.
 
 ## Install
 
-Supports **macOS 15 or newer** on Apple Silicon and Intel, and **x86_64
-GNU/Linux** with glibc 2.39 or newer, qualified on Ubuntu 24.04. macOS binaries
-are universal and ad-hoc signed, without Developer ID signing or notarisation.
-Arch Linux is supported for native development; musl and Linux arm64 are not
-qualified. See [distribution](docs/for-humans/distribution.md) for platform archives.
+climon2 runs on:
+
+- **macOS 15 or newer**, on Apple Silicon and Intel. The macOS programs are
+  universal and ad-hoc signed. They are not signed with a Developer ID or
+  notarised.
+- **x86_64 GNU/Linux** with glibc 2.39 or newer, tested on Ubuntu 24.04.
+
+Arch Linux is supported for development. musl and Linux arm64 are not tested.
+See [distribution](docs/for-humans/distribution.md) for the archives for each
+platform.
 
 Latest release:
 
@@ -588,33 +729,37 @@ Latest release:
 curl -fsSL https://github.com/jackgeek/climon2/releases/latest/download/install.sh | /bin/bash
 ```
 
-Pinned release (replace `0.1.0` with the published version):
+A specific release (replace `0.1.0` with the version you want):
 
 ```sh
 curl -fsSL https://github.com/jackgeek/climon2/releases/download/v0.1.0/install.sh | /bin/bash
 ```
 
-Each published script downloads only its stamped version and checks its SHA-256
-checksum before running the installer. To choose another executable home:
+Each script downloads only its own version and checks its SHA-256 checksum
+before it runs the installer.
+
+The programs go in the **executable home**, `~/.local/share/climon2` by
+default. To pick another folder:
 
 ```sh
 curl -fsSL https://github.com/jackgeek/climon2/releases/latest/download/install.sh |
   /bin/bash -s -- --dir "$HOME/tools/climon2"
 ```
 
-The default executable home is `~/.local/share/climon2`. Add it to PATH:
+Add the executable home to your PATH:
 
 ```sh
 export PATH="$HOME/.local/share/climon2:$PATH"
 ```
 
-The installer prints a matching hint for custom destinations and never modifies
-shell startup files. Upgrades preserve existing version folders and live sessions.
-Every install replaces `c2`, the launcher, in the executable home.
-There is no `sudo` or Homebrew installation step.
+For a custom folder, the installer prints the matching line. It never edits
+your shell start-up files. Upgrades keep the existing version folders and
+running sessions. Every install replaces `c2`, the launcher, in the executable
+home. You do not need `sudo` or Homebrew.
 
-For macOS browser downloads, verify `SHA256SUMS`, extract the archive, then remove
-quarantine from the extracted directory before running its installer:
+If you download on macOS with a browser, check `SHA256SUMS`, unpack the
+archive, then remove the quarantine flag from the unpacked folder before you
+run its installer:
 
 ```sh
 shasum -a 256 -c SHA256SUMS
@@ -623,27 +768,33 @@ xattr -dr com.apple.quarantine climon2-0.1.0-macos-universal
 ./climon2-0.1.0-macos-universal/install
 ```
 
-For Linux manual installation, use the `linux-x86_64-gnu` archive and
-`sha256sum`; there is no quarantine-removal step. Linux requires procfs and a
-filesystem supporting `renameat2` directory exchange at the installation path.
-Processes sharing a climon2 home must share the same PID namespace; sharing
-session metadata across containers or PID namespaces is not supported.
+To install by hand on Linux, use the `linux-x86_64-gnu` archive and
+`sha256sum`. There is no quarantine step. Linux needs procfs, and a file
+system at the install path that can swap two folders with `renameat2`.
+Processes that share a climon2 home must share the same PID namespace. Sharing
+session data across containers or PID namespaces is not supported.
 
 ## Diagnostics
 
-Operational failures use status 125 and identify a log file. Logs contain climon2 diagnostics,
-not terminal content, command arguments or environment values. Release logging
-defaults to INFO; `CLIMON2_LOG` accepts a tracing filter. Session logs are capped
-at 8 MiB each; every client invocation writes its own session log; inactive session
-logs older than seven days are pruned.
+When climon2 itself fails, it exits 125 and names a log file. Logs hold
+climon2's own messages. They never hold what is on the terminal, command
+arguments or environment values.
+
+- Release builds log at INFO level. `CLIMON2_LOG` takes a tracing filter to
+  change that.
+- Each session log is capped at 8 MiB.
+- Every client run writes its own session log.
+- Logs of finished sessions older than seven days are deleted.
 
 ## Development and releases
 
-See the [executable and dynamic-library relationships](https://github.com/jackgeek/climon2/blob/main/docs/for-humans/architecture/runtime-artifacts.md)
-for the current runtime and client library, test tooling, and the monitor's
-loading of client libraries.
-See the [workspace crate diagram](https://github.com/jackgeek/climon2/blob/main/docs/for-humans/architecture/crate-relationships.md)
-for consumption relationships between climon2 crates, including test tooling.
+Two diagrams show how the code fits together:
+
+- [Executables and dynamic libraries](https://github.com/jackgeek/climon2/blob/main/docs/for-humans/architecture/runtime-artifacts.md)
+  shows the programs that run, the client library, the test tools, and how the
+  monitor loads client libraries.
+- The [workspace crate diagram](https://github.com/jackgeek/climon2/blob/main/docs/for-humans/architecture/crate-relationships.md)
+  shows which climon2 crates use which, including test tools.
 
 ```sh
 cargo test --workspace --locked
@@ -657,156 +808,216 @@ cargo xtask install
 cargo xtask install --dir "$HOME/tools/climon2"
 ```
 
-Development needs the pinned Rust toolchain, a C compiler and libclang,
-ShellCheck, Python 3.11 or newer, GNU bash 5.x, vim and less. Interactive tests
-use `CLIMON2_TEST_BASH`, then platform defaults: Homebrew bash on macOS, or
-`/bin/bash` and `/usr/bin/bash` on Linux. macOS `/bin/bash` 3.2 is not used for
-interactive qualification. A missing bash 5 fails in CI and is a reported local
-skip; use `CLIMON2_TEST_BASH=/usr/bin/bash` on Arch Linux. `install.sh` remains
-compatible with macOS `/bin/bash` 3.2.
+### What you need
 
-On arm64 macOS, install both Rust targets before running workspace tests,
-`dist` or `install`: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+- The pinned Rust toolchain, a C compiler and libclang.
+- ShellCheck, Python 3.11 or newer, GNU bash 5.x, vim and less.
 
-CI runs full runtime, real-terminal and packaged tests on Linux, and on both
-macOS architectures while the repository variable `CLIMON2_MACOS_TESTS` is
-`on`; otherwise macOS only builds its release archive. Windows runs neutral
-contracts only. The agreed
-[Windows host and shell qualification](docs/for-humans/windows/qualification.md) says what a
-Windows release will have to pass,
-[Windows quality and CI qualification](docs/for-humans/windows/quality.md) says how CI will
-check it, and the
-[Windows platform and lifecycle contract](docs/for-humans/windows/lifecycle.md) says how its
-processes will start, run and end. Shared and Linux-specific
-CRAP/mutation run on the dedicated Linux development host, with 8 mutation
-workers. CI does not repeat those quality checks.
+Interactive tests use `CLIMON2_TEST_BASH` if set. Otherwise they look for
+Homebrew bash on macOS, or `/bin/bash` and `/usr/bin/bash` on Linux. macOS
+`/bin/bash` 3.2 is not used for these tests. If bash 5 is missing, CI fails;
+locally the tests are skipped and the skip is reported. On Arch Linux, use
+`CLIMON2_TEST_BASH=/usr/bin/bash`. `install.sh` still works with macOS
+`/bin/bash` 3.2.
 
-The macOS CI quality job, which also needs `CLIMON2_MACOS_TESTS` on, uses
-`cargo xtask mutate --native-only`: CRAP scores
-only registered macOS-exclusive source, and mutation selects changed files
-within that set. Shared-only changes skip that quality run; release tags use
-`--native-only --mutate-all` to qualify every macOS-exclusive file. Coverage
-still executes the workspace to exercise real callers, and mutation still
-requires the unchanged full-workspace worker baseline. Native CI parallelism
-follows available CPUs, capped at 16.
+On arm64 macOS, add both Rust targets before you run workspace tests, `dist`
+or `install`:
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 
-`xtask check` runs formatting, strict clippy, unit/integration/installer-built
-packaged tests, ShellCheck, append-only metadata fixtures, instrumentation and
-worker-isolation proofs, coverage-backed CRAP <= 5 on every shipped function and
-zero-survivor mutation. It has two tiers:
+### What CI runs
 
-- The **ticket gate**, `cargo xtask check`, runs one mutation-load round and
-  mutates only the functions the diff adds or changes. A function, `const` or
-  `static` is changed when it is new, or when no base item with the same path
-  (for example `<Pty as Drop>::drop` or `outer::inner`) has the same tokens.
-  Whitespace, comments and doc comments do not count, so moved or
-  doc-only-edited functions are not mutated. Nested items are compared on their
-  own, including those in const and static initializers; an item keeps every
-  line its own code is on. An edited impl or trait header (generics, bounds,
-  where clause, self type, trait path or attributes) or an enclosing module's
-  attributes change every item inside. Renamed files compare against their
-  old path; added, copied and untracked files are mutated whole. Test-only
-  code is skipped. One mutator run takes every file with a selected mutation
-  site, so the full-workspace baseline runs once. Its `--lines` applies to
-  every file, so it is the union of the lines that hold each file's selected
-  sites, found with the mutator's test-free `--scan`. A file may therefore
-  also mutate a site at a line number another file selected: a safe superset,
-  never less.
-  `cargo xtask check --print-mutation-plan` prints this selection and exits.
-- The **full gate**, `cargo xtask check --full`, runs five load rounds and
-  mutates whole changed files. Run it once before a feature branch merges to
+On Linux, CI runs the full runtime tests, real-terminal tests and tests of the
+packaged build. It runs them on both macOS architectures too, but only while
+the repository variable `CLIMON2_MACOS_TESTS` is `on`. Otherwise macOS only
+builds its release archive. Windows runs only the tests that do not depend on
+a platform.
+
+Three agreed documents describe Windows support to come:
+
+- [Windows host and shell qualification](docs/for-humans/windows/qualification.md)
+  says what a Windows release will have to pass.
+- [Windows quality and CI qualification](docs/for-humans/windows/quality.md)
+  says how CI will check it.
+- The [Windows platform and lifecycle contract](docs/for-humans/windows/lifecycle.md)
+  says how its processes will start, run and end.
+
+Two quality checks run on a dedicated Linux development machine, not in CI:
+
+- **CRAP**, a score that combines a function's complexity with how much of it
+  the tests cover.
+- **Mutation testing**, which makes small changes (**mutants**) to the code
+  and checks that some test fails for each one. A mutant no test catches is a
+  **survivor**.
+
+That machine runs them for shared and Linux-only code, with 8 mutation
+workers.
+
+The macOS quality job in CI also needs `CLIMON2_MACOS_TESTS` on. It runs
+`cargo xtask mutate --native-only`. CRAP scores only the source files
+registered as macOS-only, and mutation picks the changed files among them.
+Changes to shared code alone skip this job. Release tags use
+`--native-only --mutate-all` to check every macOS-only file. Coverage still
+runs the whole workspace, so real callers are exercised. Mutation still needs
+the unchanged whole workspace to pass first in a worker. Native CI uses as
+many CPUs as it has, up to 16.
+
+### The quality gate
+
+`xtask check` runs: formatting, strict clippy, unit, integration and
+packaged tests (built by the installer), ShellCheck, append-only metadata
+fixtures, proofs that instrumentation and worker isolation work, a CRAP score
+of 5 or less on every shipped function (using coverage), and mutation testing
+with no survivors.
+
+It comes in two levels:
+
+- The **ticket gate**, `cargo xtask check`, measures load once (see below) and
+  mutates only the functions your change adds or edits.
+  - A function, `const` or `static` counts as changed if it is new, or if the
+    base has no item with the same path and the same tokens. A path looks like
+    `<Pty as Drop>::drop` or `outer::inner`.
+  - Whitespace, comments and doc comments do not count. So functions that only
+    moved, or only had their docs edited, are not mutated.
+  - Nested items are compared on their own, including those inside `const` and
+    `static` values. An item owns every line its own code is on.
+  - Editing an impl or trait header (generics, bounds, where clause, self type,
+    trait path or attributes), or the attributes of the module around it,
+    changes every item inside.
+  - Renamed files are compared with their old path. Added, copied and
+    untracked files are mutated whole. Test-only code is skipped.
+  - One mutation run covers every file with a chosen site, so the whole
+    workspace baseline runs only once. Its `--lines` option applies to every
+    file, so it gets all the lines that hold chosen sites in any file. These are
+    found with the mutator's `--scan`, which runs no tests. A file may then
+    also mutate a site on a line number chosen for another file. That is safe:
+    it only ever mutates more, never less.
+  - `cargo xtask check --print-mutation-plan` prints this choice and exits.
+- The **full gate**, `cargo xtask check --full`, measures load five times and
+  mutates whole changed files. Run it once before a feature branch merges into
   `main`, with `CLIMON2_MUTATION_BASE=origin/main`.
 
-`--mutate-all` mutates every shipped file whole in either tier.
-`cargo xtask mutate` keeps whole-file selection and does not measure load.
+`--mutate-all` mutates every shipped file whole, at either level.
+`cargo xtask mutate` also mutates whole files, and does not measure load.
 
-Its tests, like `cargo xtask test`, first run the monitor's build test alone,
-proving its plain binary carries no test hooks, before the workspace tests
-build it with hooks at the same path.
-The unchanged workspace must pass in a real mutation overlay before mutation;
-worker infrastructure failures cannot count as killed mutants.
-Each mutant first runs workspace library tests, then its crate's integration
-tests. A failing stage stops immediately; every mutant that passes both still
-runs the full workspace before it can count as a survivor. The unchanged
-baseline always runs the full workspace. After coverage, with no load
-running, the gate times each earlier stage of every target once in the warm
-`target/mutation-tests` build and writes their **stage timeouts** (10 times
-each unloaded run, at least 2 s) to `target/mutation-stage-timeouts.json`. A
-mutant builds each earlier stage, then runs its tests under that stage's
-timeout; a stage that outlives it kills the run's whole process group, so the
-mutant counts as killed, as with the mutator's timeout. A test that hangs a
-mutant's library stage therefore frees its worker in seconds instead of after
-10 full-workspace runs. The full workspace has no stage timeout: the mutator's
-timeout for the whole run (10 times the unchanged full-workspace run, at least
-2 s) still bounds it.
-Both tiers then measure mutation load before mutating, even when no changed
-shipped source needs mutation. The measurement times one unloaded
-full-workspace run in the warm build, then runs its rounds (one for the ticket
-gate, five for the full gate) of 8 suites at once, each in a private copy of
-the warm build (copy-on-write where supported). Each suite rehearses a
-mutant's run on the unchanged workspace: in a session of its own, the earlier
-stages in order, each under its stage timeout, then the full workspace, all
-within the mutator's timeout. A suite fails the measurement if any stage has a
-failing test or outlives its timeout, because the mutator would count either
-outcome as a killed mutant and hide a survivor. A failure under load is a test
-defect; nothing is retried. The measurement stops after the failing round and
-names each failing test and test target with the number of suites it failed
-in, and the timeout each killed suite reached. It then lists their logs. Logs
-from every run remain in a unique directory under `target/flake-logs/`. Worker
-builds are removed afterward, and the next measurement removes any that a
-killed one left.
-Workers receive private copies of
-its warm build artifacts (copy-on-write where supported), rather than
-rebuilding dependencies from scratch for every changed file.
-`CLIMON2_MUTATION_BASE` selects the changed-source comparison (default `HEAD`).
-Both tiers compare against the merge base of that revision and `HEAD`, so a base
-such as `origin/main` that has moved on does not bring in its own changes.
-For committed work, set it to the target branch or merge base, for example
+**Build check.** Like `cargo xtask test`, the gate's tests first run the
+monitor's build test alone. This proves the plain monitor binary has no test
+hooks. Only then do the workspace tests build it with hooks at the same path.
+
+**How a mutant is tested.** The unchanged workspace must pass inside a real
+mutation copy before mutation starts. A worker that breaks for its own reasons
+can never count as a caught mutant. Each mutant runs in stages:
+
+1. the workspace library tests;
+2. its own crate's integration tests;
+3. the whole workspace.
+
+A failing stage stops the run at once. A mutant that passes the first two
+stages still runs the whole workspace before it can count as a survivor. The
+unchanged baseline always runs the whole workspace.
+
+**Stage time limits.** After coverage, with nothing else running, the gate
+times each of the first two stages for every target once, in the warm
+`target/mutation-tests` build. It writes the **stage time limits** (10 times
+each run, at least 2 s) to `target/mutation-stage-timeouts.json`. A mutant
+builds each of those stages, then runs its tests under that stage's limit. If
+a stage runs past it, the whole process group is killed and the mutant counts
+as caught, the same as with the mutator's own time limit. So a test that hangs
+a mutant's library stage frees its worker in seconds, not after 10 whole
+workspace runs. The whole-workspace stage has no stage limit. The mutator's
+limit for the whole run (10 times the unchanged whole-workspace run, at least
+2 s) still applies.
+
+**Load measurement.** Both levels measure how tests behave under load before
+mutating, even when no changed shipped code needs mutating. The gate first
+times one whole-workspace run with nothing else running, in the warm build.
+Then it runs its rounds (one for the ticket gate, five for the full gate). Each
+round runs 8 suites at once, each in its own copy of the warm build
+(copy-on-write where the file system supports it). Each suite acts out a
+mutant's run on the unchanged workspace, in its own session: the first two
+stages in order, each under its stage limit, then the whole workspace, all
+inside the mutator's limit.
+
+A suite fails if any stage has a failing test or runs past its limit. Either
+result would count a mutant as caught and hide a survivor. A failure under
+load is a bug in the tests, so nothing is retried. The measurement stops after
+the failing round. It names each failing test and test target, how many suites
+each failed in, and the limit each killed suite hit. Then it lists their logs.
+Logs from every run stay in their own folder under `target/flake-logs/`.
+Worker builds are deleted afterwards. The next measurement deletes any left by
+one that was killed.
+
+Workers get their own copies of the warm build (copy-on-write where
+supported). They do not rebuild dependencies from scratch for each changed
+file.
+
+**Choosing the base.** `CLIMON2_MUTATION_BASE` sets what the changes are
+compared with (default `HEAD`). Both levels compare with the merge base of
+that revision and `HEAD`. So a base like `origin/main` that has moved on does
+not pull in its own changes. For committed work, set it to the target branch
+or the merge base, for example
 `CLIMON2_MUTATION_BASE=origin/main cargo xtask check --full`.
-Native implementations must live in registered source files; shared files
-must not hide macOS-only bodies that Linux cannot qualify.
 
-`xtask dist` requires an **arm64 macOS host** with both Rust macOS targets, or
-an **x86_64 GNU/Linux host**. macOS builds retain deployment target 15.0,
-universal slices and signature checks. Linux builds verify native ELF
-executables; published Linux artifacts are built on Ubuntu 24.04, not Arch,
-to establish the glibc baseline. Both builds isolate unhooked packages and
-write their native archive, stamped `install.sh` and `SHA256SUMS` to
-`target/dist/`. Each version folder also holds the client library,
-`libclimon2_client.dylib` on macOS or `libclimon2_client.so` on Linux, which
-must export only its bootstrap and describe exactly the archive's version; the
-Linux library must also have no soname, RPATH or RUNPATH and need only glibc's
-libraries. `release-check` applies these library checks to the local
-per-package release build too.
-Set `CLIMON2_E2E_ARCHIVE` to that archive to test it unchanged.
+Code for one platform must live in source files registered for that platform.
+Shared files must not hide macOS-only code that Linux cannot check.
+
+### Building release archives
+
+`xtask dist` needs either an **arm64 macOS host** with both Rust macOS
+targets, or an **x86_64 GNU/Linux host**.
+
+- macOS builds keep deployment target 15.0, universal binaries and signature
+  checks.
+- Linux builds check that the programs are native ELF files. Published Linux
+  builds are made on Ubuntu 24.04, not Arch, to set the lowest glibc version
+  they need.
+
+Both builds keep the packages without test hooks apart. They write the
+platform's archive, a stamped `install.sh` and `SHA256SUMS` to `target/dist/`.
+Each version folder also holds the client library: `libclimon2_client.dylib`
+on macOS or `libclimon2_client.so` on Linux. It must export only its start-up
+function and report exactly the archive's version. The Linux library must also
+have no soname, RPATH or RUNPATH, and need only glibc's libraries.
+`release-check` runs these library checks on the local per-package release
+build too. Set `CLIMON2_E2E_ARCHIVE` to the archive to test it as it is.
+
 On an **x86_64 Windows host**, `xtask dist` builds the Windows zip, the
-download script `install.ps1` and their `SHA256SUMS` instead, with the pinned
-ConPTY files; it fails if any shipped program or library imports the Visual
-C++ runtime. The zip's `install.exe` installs it, but it is not published
-yet; see [Windows packaging and upgrades](docs/for-humans/windows/distribution.md).
+download script `install.ps1`, and their `SHA256SUMS` instead, with the pinned
+ConPTY files. It fails if any shipped program or library needs the Visual C++
+runtime. The zip's `install.exe` installs it, but it is not published yet. See
+[Windows packaging and upgrades](docs/for-humans/windows/distribution.md).
 
-`xtask install` builds and verifies the same production payload as `dist`, then
-runs its installer without creating an archive. It has the same host and build
-requirements as `dist`. The default executable home is `~/.local/share/climon2`;
-`--dir <directory>` selects another destination. The installer preserves other
-versions and prints a PATH hint when needed; shell startup files are unchanged.
+`xtask install` builds and checks the same release files as `dist`, then runs
+the installer without making an archive. It needs the same host and tools as
+`dist`. It installs to `~/.local/share/climon2` by default; `--dir <directory>`
+picks another folder. It keeps other versions and prints a PATH hint when
+needed. It does not touch shell start-up files.
 
-A release requires a local `cargo xtask check --full --mutate-all` pass for the exact
-release commit; this is the maintainer's responsibility, not a duplicated CI
-job. A `v<workspace version>` tag runs full macOS-only mutation and the native
-runtime/archive gates (on macOS only while `CLIMON2_MACOS_TESTS` is on), then
-[release qualification](docs/for-humans/distribution.md#release-qualification)
-of the exact archives on all three platforms, whatever that variable says. The same final
-macOS archive must pass both architectures, and the Linux archive must pass
-Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
-before one GitHub Release and provenance attestation are published.
-`-rc.N` tags are prereleases. Starting with the second published release, actual
-previous-release compatibility is mandatory; the first release invents none.
+### Releasing
 
-**Intel runner availability is a release blocker.** If `macos-15-intel` retires,
-a replacement native Intel macOS 15+ runner must pass the same artifact tests.
-An unavailable runner or arm64-only success does not establish Intel support.
+Before a release, the maintainer must run
+`cargo xtask check --full --mutate-all` locally on the exact release commit and
+see it pass. CI does not repeat it.
+
+A `v<workspace version>` tag runs:
+
+1. full macOS-only mutation, and the native runtime and archive checks (on
+   macOS only while `CLIMON2_MACOS_TESTS` is on);
+2. [release qualification](docs/for-humans/distribution.md#release-qualification)
+   of the exact archives on all three platforms, whatever that variable says.
+
+The same final macOS archive must pass on both architectures. The Linux
+archive must pass on Ubuntu 24.04, under bash 5, with vim and less. Both
+platforms must pass before one GitHub Release and its provenance attestation
+are published.
+
+`-rc.N` tags are prereleases. From the second published release on, it must
+work with the release before it. The first release has nothing to be
+compatible with.
+
+**No Intel runner, no release.** If GitHub retires the `macos-15-intel`
+runner, a new native Intel macOS 15+ runner must pass the same archive tests.
+A missing runner, or passing on arm64 alone, does not prove Intel support.
 
 ## License
 
-climon2 is open source software licensed under the [MIT License](LICENSE).
+climon2 is open source software under the [MIT License](LICENSE).
