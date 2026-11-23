@@ -304,6 +304,18 @@ mod tests {
         assert_ne!(unsafe { SetEvent(event.as_raw_handle()) }, 0);
     }
 
+    /// Readiness is what the last wait reported, so an event watch reports
+    /// nothing before its first wait, even when the event is already set.
+    #[test]
+    fn an_event_watch_is_not_ready_before_any_wait() {
+        let signalled = event();
+        set(&signalled);
+
+        let watch = Watch::event(signalled.as_handle());
+
+        assert!(!watch.ready() && !watch.readable());
+    }
+
     #[test]
     fn a_clear_event_waits_out_the_timeout() {
         let clear = event();
