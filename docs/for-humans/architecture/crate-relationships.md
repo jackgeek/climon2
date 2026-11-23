@@ -139,8 +139,9 @@ Linux support adds native bodies inside `climon2-platform`, not another
 workspace crate or runtime dependency edge. The test harness consumes those
 same Unix seams on Linux and macOS; Linux's ownership exec adapter is a
 test-only executable of the existing harness crate. On Windows the harness
-builds with `core` alone: its edges to the CLI, client, daemon, installer,
-monitor and `platform` are Unix-only until those crates build on Windows. Its
+builds with `core` and the CLI alone: its edges to the client, daemon,
+installer, monitor and `platform` are Unix-only until those crates build on
+Windows. Its
 Windows host (#320) is described in
 [Windows host and shell qualification](../windows/qualification.md#host-models).
 On Windows, `platform`'s tests consume the harness too, to host commands in
@@ -244,11 +245,19 @@ seams, whose Windows bodies hold the Windows code. The CLI's Windows monitor
 tests drive the packaged product through its existing `dev` edge to
 `climon2-test-term`, whose Windows host gains the VS Code model.
 
+**Current (#323):** the harness's edge to the CLI now holds on Windows too, so
+the CLI's Windows tests build it with `test-hooks`, as Unix tests do: they hold
+`exec` before it starts the client. With it, the CLI's own `dev` edge to itself from #322 is
+no longer needed, but it is harmless and stays. No other edge changes. The client's
+full-width exit status on Windows is a body inside `climon2-platform`'s
+process seam.
+
 **Current (#322):** `climon2-cli` has a Windows-only `dev` edge to itself,
 which no diagram shows because it neither leaves a shipped crate nor touches a
 development one. It exists only to build the CLI's `test-hooks` feature into
 the CLI that its own Windows tests run, as `climon2-test-term` does on Unix,
-where the harness consumes the CLI; on Windows the harness does not. Command
+where the harness consumes the CLI; on Windows the harness did not until
+#323. Command
 resolution and batch-file quoting are a body inside `climon2-platform`'s seams
 that the CLI and the daemon already consume, not another crate or edge.
 

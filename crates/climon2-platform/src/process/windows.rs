@@ -101,6 +101,17 @@ fn epoch_micros(time: FILETIME) -> io::Result<u64> {
         .ok_or_else(|| io::Error::other("process created before the Unix epoch"))
 }
 
+/// Ends this process at once with all 32 bits of `status` (#323;
+/// docs/for-humans/windows/lifecycle.md, "Client console"), without flushing
+/// std's standard output. Not `std::process::exit`, which sets the status
+/// only after unloading the process's libraries: a close event arriving
+/// meanwhile replaces it with `STATUS_CONTROL_C_EXIT`.
+pub fn exit(status: u32) -> ! {
+    // SAFETY: this process's own pseudo-handle.
+    unsafe { TerminateProcess(GetCurrentProcess(), status) };
+    std::process::exit(status as i32)
+}
+
 /// The process ran out of sockets (Winsock's `WSAEMFILE`) or of file
 /// handles (`ERROR_TOO_MANY_OPEN_FILES`).
 pub fn out_of_descriptors(error: &io::Error) -> bool {

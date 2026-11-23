@@ -1,7 +1,7 @@
 # climon2-platform
 
 Shared macOS, Linux and Windows seams (ADR 0003). `home`, `private`,
-`logging`, `runtime`, `connection`, `waiting`, `process` (identity only),
+`logging`, `runtime`, `connection`, `waiting`, `process` (identity and `exit`),
 `presentation`, `peer`, `daemon`, `pty`, `terminal`, `library`, `notifier`
 and `native_path` build on Windows, and `handoff` and `command` exist only
 there (see [Windows](#windows)). Neutral contracts remain in `climon2-core`. No runtime
@@ -299,9 +299,12 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   (`ERROR_INVALID_PARAMETER`) or a process that has exited while its object
   is still held reads as gone; any other failure, such as access denied, is
   an error and never evidence of death. `descriptor_limit` is the kernel's
-  per-process handle table, 2^24 entries, as Windows has no soft limit;
-  `exit_immediately` ends the process with `TerminateProcess`, all 32 bits
-  of its status (#327).
+  per-process handle table, 2^24 entries, as Windows has no soft limit.
+  `exit(status)` ends the process at once with all 32 bits of `status`,
+  through `TerminateProcess` (#323), as the client exits; on Unix it exits
+  with the status's low eight bits. `exit_immediately` also ends it with
+  `TerminateProcess` and all 32 bits (#327); on Unix it is `_exit`, which
+  skips exit handlers.
 - `src/presentation/windows.rs`: `local_datetime` uses the system's offset
   for the instant; `columns` is the visible console window's width, or 80
   when stdout is not a console.

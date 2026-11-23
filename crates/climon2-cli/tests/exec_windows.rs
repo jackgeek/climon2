@@ -19,6 +19,10 @@
 //! a working directory over 260 characters, 126; and a batch file's argument
 //! `cmd.exe` cannot represent exits 2 before anything starts.
 //!
+//! #323: closing the host and `c2 kill` with attached clients are in
+//! `packaged_windows.rs`, and the five-second attach deadline in
+//! `attach_deadline_windows.rs`.
+//!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).
@@ -30,17 +34,22 @@ use portable_pty::CommandBuilder;
 use std::{
     fs,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
 use windows_sys::Win32::{
-    Foundation::{FILETIME, WAIT_OBJECT_0},
+    Foundation::{FILETIME, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
     System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
         JobObjects::IsProcessInJob,
         Threading::{
             GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+            WaitForSingleObject,
         },
     },
 };
@@ -87,7 +96,7 @@ impl Install {
         ] {
             let name = from.file_name().unwrap();
             if !left_out.iter().any(|left| name == *left) {
-                fs::copy(&from, install.version().join(name)).unwrap();
+                place(&from, &install.version().join(name));
             }
         }
         install
@@ -294,6 +303,17 @@ impl Drop for Held {
     }
 }
 
+/// Ends every process still running from the install's folder, such as a
+/// daemon whose session's metadata a failed test never saw written, and the
+/// CLI still waiting on it.
+impl Drop for Install {
+    fn drop(&mut self) {
+        for pid in processes_under(self.0.path()) {
+            terminate(pid);
+        }
+    }
+}
+
 impl Drop for Home {
     fn drop(&mut self) {
         for session in self.sessions() {
@@ -318,6 +338,52 @@ fn terminate(pid: u32) {
     }
 }
 
+/// The running processes whose executable is in `folder`.
+fn processes_under(folder: &Path) -> Vec<u32> {
+    // Canonical, so a short (8.3) temporary folder matches the long image path.
+    let folder = fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
+    let folder = comparable(&format!("{}\\", folder.display()));
+    // Taking a snapshot has no preconditions.
+    let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if raw == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+    // A new handle nothing else owns.
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap(),
+        ..PROCESSENTRY32W::default()
+    };
+    let mut pids = Vec::new();
+    // The snapshot is open and `entry` names its own size.
+    let mut more = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    while more {
+        if image(entry.th32ProcessID).is_some_and(|path| path.starts_with(&folder)) {
+            pids.push(entry.th32ProcessID);
+        }
+        // As for the first entry.
+        more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    }
+    pids
+}
+
+/// The path of process `pid`'s executable, if it can be read.
+fn image(pid: u32) -> Option<String> {
+    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    let mut buffer = vec![0u16; 32_768];
+    let mut length = u32::try_from(buffer.len()).unwrap();
+    // The handle is open with query access; `length` is the buffer's size.
+    let read = unsafe {
+        QueryFullProcessImageNameW(process.as_raw_handle(), 0, buffer.as_mut_ptr(), &mut length)
+    };
+    (read != 0).then(|| comparable(&String::from_utf16_lossy(&buffer[..length as usize])))
+}
+
+/// A path as compared above: without the `\\?\` prefix, in lower case.
+fn comparable(path: &str) -> String {
+    path.trim_start_matches(r"\\?\").to_lowercase()
+}
+
 fn in_any_job(pid: u32) -> bool {
     let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION).expect("open the daemon");
     let mut in_job = 1;
@@ -338,6 +404,16 @@ const HELD: &[&str] = &[
     "-Command",
     "while (-not (Test-Path release)) { Start-Sleep -Milliseconds 50 }; exit -1073741510",
 ];
+
+/// Puts a built file into a test install as a hard link, so Windows Defender
+/// scans it once, not on each install's first launch, which under the coverage
+/// build pushed daemon start-up past its five-second deadline. A copy where a
+/// link cannot be made, such as across volumes.
+fn place(from: &Path, to: &Path) {
+    if fs::hard_link(from, to).is_err() {
+        fs::copy(from, to).unwrap();
+    }
+}
 
 fn session_id(finished: &Finished) -> String {
     assert_eq!(finished.status, 0, "{finished:?}");
@@ -365,6 +441,18 @@ fn a_headless_session_runs_detached_until_its_command_exits_with_its_full_status
         "{log}"
     );
     assert!(home.sessions().is_empty());
+}
+
+/// The tests' own clean-up: an install, once dropped, leaves nothing it
+/// started running, even a daemon its home no longer knows about.
+#[test]
+fn dropping_an_install_ends_every_process_still_running_from_it() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    session_id(&home.exec(&install, HELD));
+    let [session] = home.sessions().try_into().unwrap();
+    let daemon = Held::open(session.daemon_pid);
+    drop(install);
+    assert!(daemon.exit_code(Duration::from_secs(10)).is_some());
 }
 
 #[test]
@@ -614,7 +702,7 @@ fn kill_hangs_up_waits_the_full_grace_ends_the_job_and_exits_0_once_cleaned_up()
         "{killed:?}"
     );
     assert!(home.sessions().is_empty(), "kill confirmed before cleanup");
-    assert!(!std::path::Path::new(session.socket_path.as_str()).exists());
+    assert!(!Path::new(session.socket_path.as_str()).exists());
     // The pseudoconsole's close spares the child; the job's end does not.
     assert_eq!(child.exit_code(Duration::ZERO), Some(0xC000_013A));
     let grace = child.exit_time().duration_since(started).unwrap();
@@ -631,7 +719,7 @@ fn kill_hangs_up_waits_the_full_grace_ends_the_job_and_exits_0_once_cleaned_up()
 fn exec_attach_and_the_client_need_a_console() {
     let (install, home) = (Install::new(&[]), Home::new());
     let id = session_id(&home.exec(&install, HELD));
-    let run = |program: &std::path::Path, arguments: &[&str]| {
+    let run = |program: &Path, arguments: &[&str]| {
         Command::new(program)
             .args(arguments)
             .env("CLIMON2_HOME", home.home())

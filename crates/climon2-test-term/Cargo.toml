@@ -15,8 +15,8 @@ portable-pty = { version = "0.9.0", default-features = false }
 sha2 = "0.10"
 tempfile = "3"
 
-# The product crates and the Unix PTY host build only on Unix so far; the
-# Windows host (src/windows.rs) needs none of them.
+# The product crates with their test hooks, for the Unix PTY host and its
+# suites. The Windows host (src/windows.rs) needs none of them.
 [target.'cfg(unix)'.dependencies]
 climon2-cli = { path = "../climon2-cli", features = ["test-hooks"] }
 climon2-client = { path = "../climon2-client", features = ["test-hooks"] }
@@ -26,7 +26,10 @@ climon2-monitor = { path = "../climon2-monitor", features = ["test-hooks"] }
 nix = { version = "0.31", features = ["signal", "process", "term", "fs", "user"] }
 climon2-platform = { version = "0.1.0", path = "../climon2-platform" }
 
+# Windows: only the CLI's test hooks, for the hand-off hold
+# (CLIMON2_CLI_HOLD) that the Windows exec tests use.
 [target.'cfg(windows)'.dependencies]
+climon2-cli = { path = "../climon2-cli", features = ["test-hooks"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

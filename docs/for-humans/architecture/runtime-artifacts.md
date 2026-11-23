@@ -141,6 +141,13 @@ in `install.exe`, which copies the release into the executable home, replaces
 this consumption diagram, so packaging and installing add no relationship to
 it.
 
+**Current (#323):** closing the host, losing the last client and `c2 kill`
+add no artifact or relationship. `climon2-client.exe` now exits with the
+session's status at its full 32 bits, so after `c2 kill` an attached client,
+the CLI waiting for it and `c2.exe` all exit with the command's close status,
+such as `0xC000013A`
+([Windows platform and lifecycle contract](../windows/lifecycle.md#session-job-and-hang-up)).
+
 For workspace crate consumption, see the [crate diagram](crate-relationships.md).
 
 `climon2-test-term` builds `climon2-test-owned` as test tooling on Linux and
