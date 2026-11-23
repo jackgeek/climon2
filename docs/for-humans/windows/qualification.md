@@ -201,6 +201,19 @@ In the shell subset, each shell is both the outer shell that runs `c2` and the
 shell inside the session. The Windows
 [smoke test](../../../GLOSSARY.md) is `pwsh` started from `pwsh`.
 
+Built so far ([#328](https://github.com/jackgeek/climon2/issues/328)): the
+shell subset, in `crates/climon2-cli/tests/shells_windows.rs`, under the
+Windows Terminal model. From `powershell`, and from `cmd.exe`, `c2 exec`
+starts the same shell, which shows its prompt and runs a command. A child's
+exit status reaches it. Ctrl+C interrupts a running `ping` and the shell
+takes input again. A detach gives the outer shell 0, and `c2 attach` restores
+the session's screen. `exit 7` gives the outer shell 7. Then `c2 kill` of a
+second session gives the outer shell `0xC000013A`, the measured close
+status, which both shells show as `-1073741510`. The test waits for `ping`'s
+English `Reply from` before Ctrl+C, as the CI runner is English. Keys typed
+while an attaching client starts may not reach the session, so after
+`c2 attach` it retypes a line until the session shows it.
+
 ### Existing scenarios
 
 The session suites, `packaged.rs` and `continuity.rs` in

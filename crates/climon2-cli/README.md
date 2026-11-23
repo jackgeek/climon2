@@ -115,6 +115,11 @@ resize, saves and quits to the shell's restored main screen; and `c2 kill` of
 a session running either ends its client with `0xC000013A`. vim's own
 scenarios are ignored until the owner decides how long the client holds a
 lone Escape. Like `sessions_windows.rs`, it stays out of each mutant's run.
+`tests/shells_windows.rs` (#328) runs the shell subset: from Windows
+PowerShell 5.1 and from `cmd.exe`, a session of the same shell starts, runs a
+command, passes a child's status, is interrupted by Ctrl+C, detaches,
+reattaches restored, and gives the outer shell 7 on `exit 7` and
+`0xC000013A` when killed. It too stays out of each mutant's run.
 
 The `test-hooks` feature adds `CLIMON2_CLI_HOLD` (the client hand-off waits
 for a file) and `CLIMON2_CLI_CWD` (it stands in for the working directory the
