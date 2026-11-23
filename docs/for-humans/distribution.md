@@ -132,7 +132,10 @@ candidate archives against the [acceptance matrix](behaviour/monitor/acceptance.
 ([#122](https://github.com/jackgeek/climon2/issues/122)). Its `qualify` jobs
 run natively on `ubuntu-24.04` (x86-64 GNU/Linux), `macos-15` (arm64) and
 `macos-15-intel` (x86_64), always, whatever `CLIMON2_MACOS_TESTS` says (owner
-decision on #122); pull requests never qualify. Each job runs
+decision on #122), and on `windows-2025` for `windows-x86_64`, the fourth
+platform ([#330](https://github.com/jackgeek/climon2/issues/330); see
+[Windows quality and CI qualification](windows/quality.md#release)); pull
+requests never qualify. Each job runs
 `cargo xtask qualify run`, which records every scenario case, each scenario's
 required layer on that platform, in one of the states **not implemented**,
 **not run**, **passed**, **failed** or **blocked**:
@@ -163,7 +166,7 @@ failed job; only a harness error fails one.
 
 The `verdict` job then judges every platform's records with the owner's
 dispositions in `qualification/dispositions.json`. Unqualified conformance
-needs every mandatory case passed on all three platforms; a case without a
+needs every mandatory case passed on all four platforms; a case without a
 platform's evidence is blocked. A case that did not pass needs the owner's
 recorded disposition, which names its exact scenario, layer, states and
 optionally platforms, so a performance (Measure) disposition never waives a
@@ -187,9 +190,11 @@ cargo xtask qualify run --platform linux-x86_64 \
 cargo xtask qualify verdict --evidence target/qualification --out target/verdict
 ```
 
-A local verdict lacks both macOS platforms, so their cases are blocked.
+A local verdict lacks the other platforms, so their cases are blocked.
 
 Publishing merges the independently generated checksum manifests, requires
-identical stamped install scripts, verifies all assets, and attests and uploads
-both archives with the qualification evidence. No native platform's failure
-can be replaced by neutral checks.
+identical stamped `install.sh` scripts, verifies all assets, and attests and
+uploads the two Unix archives, `install.sh`, the Windows zip and its stamped
+`install.ps1` with the qualification evidence. A platform whose artifact is
+missing fails publishing as a whole. No native platform's failure can be
+replaced by neutral checks.

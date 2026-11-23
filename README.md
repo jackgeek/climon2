@@ -796,11 +796,14 @@ release commit; this is the maintainer's responsibility, not a duplicated CI
 job. A `v<workspace version>` tag runs full macOS-only mutation and the native
 runtime/archive gates (on macOS only while `CLIMON2_MACOS_TESTS` is on), then
 [release qualification](docs/for-humans/distribution.md#release-qualification)
-of the exact archives on all three platforms, whatever that variable says. The same final
-macOS archive must pass both architectures, and the Linux archive must pass
-Ubuntu 24.04, under bash 5 including vim and less. Both platforms must pass
-before one GitHub Release and provenance attestation are published.
-`-rc.N` tags are prereleases. Starting with the second published release, actual
+of the exact archives on all four platforms, whatever that variable says. The same final
+macOS archive must pass both architectures, the Linux archive must pass
+Ubuntu 24.04, under bash 5 including vim and less, and the Windows zip must pass
+`windows-2025` with the Windows Test, Archive and native-only gates
+([Windows quality](docs/for-humans/windows/quality.md#release)). Every platform must pass
+before one GitHub Release, with the zip, `install.ps1` and provenance attestations, is published.
+`-rc.N` tags are prereleases, published without the Windows manual checklist; a final tag needs
+the checklist's records of its latest release candidate. Starting with the second published release, actual
 previous-release compatibility is mandatory; the first release invents none.
 
 **Intel runner availability is a release blocker.** If `macos-15-intel` retires,
