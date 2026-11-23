@@ -75,7 +75,7 @@ jobs:
       # The Linux and Windows gates share the owner's PC. One worker left it
       # mostly idle, so the owner asked to raise workers until tests fail, then
       # back off (2026-11-23, docs/for-humans/quality-runners.md).
-      CLIMON2_MUTATION_WORKERS: "3"
+      CLIMON2_MUTATION_WORKERS: "4"
       # Each worker's Cargo gets 4 build jobs and 4 test threads.
       CLIMON2_MUTATION_WORKER_JOBS: "4"
       # The rest of the gate, such as its own baseline, gets 8 build jobs and 8
@@ -119,7 +119,7 @@ jobs:
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
       # Shares the owner's PC with the Linux gate; the same workers as it.
-      CLIMON2_NATIVE_MUTATION_WORKERS: "3"
+      CLIMON2_NATIVE_MUTATION_WORKERS: "4"
       # Each worker's Cargo gets 4 build jobs and 4 test threads.
       CLIMON2_MUTATION_WORKER_JOBS: "4"
       # The rest of the gate, such as its own baseline, gets 8 build jobs and 8
