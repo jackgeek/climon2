@@ -15,9 +15,11 @@
 //! whole UTF-8 characters.
 //!
 //! Console control events: Ctrl+C is a termination, as SIGINT is on Unix;
-//! Ctrl+Break does nothing yet (#326); close, logoff and shutdown are a
-//! hang-up, which ends the client with 129, and the handler holds the process
-//! until the client has ended itself.
+//! Ctrl+Break is a break the client passes on to the session (#326); close,
+//! logoff and shutdown are a hang-up, which ends the client with 129, and the
+//! handler holds the process until the client has ended itself. The key-up
+//! record carrying ETX that Windows Terminal sends with Ctrl+Break is
+//! ignored with every other key-up record, so it never arrives as Ctrl+C.
 use crate::{
     notifier::Notifier,
     waiting::{self, Watch},
@@ -246,6 +248,8 @@ impl Drop for RawModeGuard {
 
 /// Set by the input thread on a window-size record.
 static RESIZED: AtomicBool = AtomicBool::new(false);
+/// Set by the handler routine on Ctrl+Break.
+static BROKE: AtomicBool = AtomicBool::new(false);
 /// The Unix signal number of the last console control event that ends a
 /// client; zero before any.
 static TERMINATION: AtomicU32 = AtomicU32::new(0);
@@ -272,6 +276,11 @@ impl Signals {
         RESIZED.swap(false, Ordering::SeqCst)
     }
 
+    /// Whether Ctrl+Break was pressed since the last look.
+    pub fn take_break(&self) -> bool {
+        BROKE.swap(false, Ordering::SeqCst)
+    }
+
     /// 1 after close, logoff or shutdown and 2 after Ctrl+C, as Unix reports
     /// SIGHUP and SIGINT; never set in the daemon.
     pub fn termination_signal(&self) -> Option<u32> {
@@ -292,6 +301,7 @@ fn signal(event: u32) -> Option<u32> {
 /// as this returns, so it never does: the client sees the hang-up, restores
 /// the console and exits 129 first.
 unsafe extern "system" fn console_event(event: u32) -> BOOL {
+    BROKE.fetch_or(event == CTRL_BREAK_EVENT, Ordering::SeqCst);
     if let Some(signal) = signal(event) {
         TERMINATION.store(signal, Ordering::SeqCst);
         if signal == HANGUP {
@@ -609,6 +619,14 @@ mod tests {
     }
 
     #[test]
+    fn the_key_up_record_that_accompanies_ctrl_break_types_nothing() {
+        // Windows Terminal sends no key-down for Ctrl+Break, only a key-up
+        // carrying ETX (#326).
+        let mut keys = Keys::default();
+        assert_eq!(keys.feed(&[key(0x03, false, 1)]), b"");
+    }
+
+    #[test]
     fn a_surrogate_pair_split_across_reads_is_one_character() {
         let mut keys = Keys::default();
         assert_eq!(
@@ -652,6 +670,13 @@ mod tests {
         assert_eq!(extent(10, 9), 0);
         assert_eq!(extent(0, i16::MAX), 32768);
         assert_eq!(extent(i16::MIN, i16::MAX), 0);
+    }
+
+    #[test]
+    fn a_break_is_taken_once() {
+        BROKE.store(true, Ordering::SeqCst);
+        assert!(Signals.take_break());
+        assert!(!Signals.take_break());
     }
 
     #[test]

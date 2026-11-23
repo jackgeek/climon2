@@ -17,6 +17,9 @@
 //! never the order of events, because real hosts deliver close events in
 //! different orders.
 //!
+//! #326: Ctrl+Break, by `WIN-09`, under the Windows Terminal model only: the
+//! VS Code terminal delivers nothing for it.
+//!
 //! The product comes from the release zip named by `CLIMON2_E2E_ARCHIVE`,
 //! as the Windows Test job builds it, or else from this build's binaries in
 //! the same layout. It writes the `current` file the launcher reads itself;
@@ -30,7 +33,8 @@
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
 use climon2_test_term::{
-    ConPty, HostModel, HostSettings, JobShape, Options, Terminal, controlled_pwsh, rerun_outside,
+    ConPty, HostModel, HostSettings, JobShape, Key, Modifiers, Options, Terminal, controlled_pwsh,
+    rerun_outside,
 };
 use portable_pty::CommandBuilder;
 use std::{
@@ -860,4 +864,65 @@ fn full_width_statuses_pass_through_the_client_the_cli_and_the_launcher() {
             .unwrap_or_else(|error| panic!("{error}\nLOGS:\n{}", home.logs()));
         assert_eq!(ended, status, "{status:#x}: {}", terminal.screen());
     }
+}
+
+/// `WIN-09` (#326): Ctrl+Break pressed in the Windows Terminal model reaches
+/// the program in the session. `ping -t` reports Ctrl+Break and carries on,
+/// where Ctrl+C would stop it, so the key-up record carrying ETX that comes
+/// with Ctrl+Break never reached the session as Ctrl+C. `timeout`, which
+/// keeps the default handler, ends with `0xC000013A`, and `cmd`, the
+/// session's shell, survives.
+#[test]
+fn ctrl_break_reaches_the_program_in_the_session_and_the_shell_survives() {
+    if rerun_outside(
+        "ctrl_break_reaches_the_program_in_the_session_and_the_shell_survives",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let (package, home) = (Package::new(), Home::new());
+    let mut command = CommandBuilder::new(package.launcher());
+    command.args(["exec", "cmd", "/d", "/k", "prompt INNER$G"]);
+    command.env("CLIMON2_HOME", home.home());
+    command.env("LOCALAPPDATA", home.local());
+    let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
+    wait(&mut terminal, &home, "INNER>");
+
+    enter(&mut terminal, "ping -t 127.0.0.1");
+    wait(&mut terminal, &home, "Reply from");
+    terminal.press(Key::Break, Modifiers::CTRL).unwrap();
+    wait(&mut terminal, &home, "Control-Break");
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            screen
+                .split("Control-Break")
+                .nth(1)
+                .is_some_and(|after| after.contains("Reply from"))
+        })
+        .unwrap_or_else(|error| panic!("{error}\nLOGS:\n{}", home.logs()));
+    assert!(
+        !terminal.screen().contains("Control-C"),
+        "{}",
+        terminal.screen()
+    );
+    // Ctrl+C, byte 0x03, stops it.
+    terminal.send([0x03]).unwrap();
+    wait(&mut terminal, &home, "Control-C");
+
+    enter(&mut terminal, "cls");
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| !screen.contains("Control-C"))
+        .unwrap();
+    enter(&mut terminal, "timeout /t 60");
+    wait(&mut terminal, &home, "press a key");
+    terminal.press(Key::Break, Modifiers::CTRL).unwrap();
+    enter(&mut terminal, "echo BREAK-STATUS=%ERRORLEVEL%");
+    wait(&mut terminal, &home, "BREAK-STATUS=-1073741510");
+    enter(&mut terminal, "exit 0");
+    assert_eq!(
+        terminal.wait_exit(TIMEOUT).unwrap(),
+        0,
+        "{}",
+        terminal.screen()
+    );
 }

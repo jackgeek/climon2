@@ -288,7 +288,9 @@ impl Ending {
 pub(super) enum Done {
     /// Input accepted, all of its bytes.
     Input(u32),
-    Resized,
+    /// A result with no active member, under its native result tag:
+    /// Resize's and Break's (#326).
+    Bare(u32),
     /// Acquire's or Ready's authority result, under its native result tag.
     Authority(u32, wire::AuthorityResult),
     /// Whether a state the request reported changed.
@@ -891,7 +893,7 @@ impl Done {
                 response.result_tag = native::INPUT_ACCEPTED;
                 response.result.accepted_bytes = accepted_bytes;
             }
-            Self::Resized => response.result_tag = native::RESIZE_ACCEPTED,
+            Self::Bare(tag) => response.result_tag = tag,
             Self::Authority(tag, result) => {
                 response.result_tag = tag;
                 response.result.authority = authority(&result);
