@@ -1,4 +1,7 @@
 //! Shared platform seams from ADR 0003.
+#[cfg(windows)]
+#[path = "command/windows.rs"]
+pub mod command;
 pub mod connection;
 pub mod daemon;
 #[cfg(windows)]

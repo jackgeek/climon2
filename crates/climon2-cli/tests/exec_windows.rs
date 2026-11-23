@@ -14,6 +14,11 @@
 //! with; and an ordinary `exec` that cannot start its client stops its
 //! daemon. The packaged smoke test is in `packaged_windows.rs`.
 //!
+//! #322: the command resolves through `PATH` and `PATHEXT`, never the
+//! working directory; a missing one exits 127 and one that cannot start, or
+//! a working directory over 260 characters, 126; and a batch file's argument
+//! `cmd.exe` cannot represent exits 2 before anything starts.
+//!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).
@@ -412,16 +417,136 @@ fn exec_exits_125_when_a_bundled_conpty_file_is_missing() {
     }
 }
 
+/// #322: `exec --headless -- <command>` with `PATH` naming only `folders`
+/// under the scratch folder and `PATHEXT` set.
+fn exec_on_path(
+    install: &Install,
+    home: &Home,
+    folders: &[&str],
+    pathext: &str,
+    command: &[&str],
+) -> Finished {
+    let path = std::env::join_paths(folders.iter().map(|folder| home.0.path().join(folder)));
+    home.outside(install)
+        .env("PATH", path.unwrap())
+        .env("PATHEXT", pathext)
+        .args(["exec", "--headless", "--"])
+        .args(command)
+        .run(Duration::from_secs(30))
+        .unwrap()
+}
+
+/// A folder `name` under the scratch folder holding `files`, each a batch
+/// file that writes its own name to `ran.txt` in its working directory.
+fn scripts(home: &Home, name: &str, files: &[&str]) {
+    let folder = home.0.path().join(name);
+    fs::create_dir_all(&folder).unwrap();
+    for file in files {
+        fs::write(
+            folder.join(file),
+            format!("@echo {name}\\{file}> ran.txt\r\n"),
+        )
+        .unwrap();
+    }
+}
+
+/// #322: `PATH` folders in order and, in each, `PATHEXT` in order.
+#[test]
+fn a_command_resolves_through_path_and_pathext_in_order() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    scripts(&home, "first", &["tool.bat", "tool.cmd"]);
+    scripts(&home, "second", &["tool.com", "tool.cmd"]);
+    let finished = exec_on_path(
+        &install,
+        &home,
+        &["first", "second"],
+        ".COM;.CMD;.BAT",
+        &["tool"],
+    );
+    session_id(&finished);
+    home.wait_until_ended(&install);
+    let ran = fs::read_to_string(home.work().join("ran.txt")).unwrap();
+    assert_eq!(ran.trim_end(), r"first\tool.cmd");
+}
+
+/// #322: as on Unix, with the current directory never searched.
+#[test]
+fn a_missing_command_is_status_127_even_in_the_working_directory() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    scripts(&home, "work", &["here.cmd"]);
+    for command in ["climon2-no-such-program", "here"] {
+        let finished = exec_on_path(&install, &home, &["empty"], ".CMD", &[command]);
+        assert_eq!(finished.status, 127, "{command}: {finished:?}");
+        assert!(
+            finished.stderr.contains("command not found"),
+            "{command}: {finished:?}"
+        );
+        assert!(home.sessions().is_empty(), "{command}");
+    }
+    assert!(!home.work().join("ran.txt").exists());
+}
+
 #[test]
 fn a_command_that_cannot_start_is_status_126() {
     let (install, home) = (Install::new(&[]), Home::new());
-    let finished = home.exec(&install, &["climon2-no-such-program"]);
+    fs::create_dir(home.0.path().join("bin")).unwrap();
+    fs::write(home.0.path().join(r"bin\broken.exe"), b"not a program").unwrap();
+    let finished = exec_on_path(&install, &home, &["bin"], ".EXE", &["broken"]);
     assert_eq!(finished.status, 126, "{finished:?}");
     assert!(
         finished.stderr.contains("command cannot be executed"),
         "{finished:?}"
     );
     assert!(home.sessions().is_empty());
+}
+
+/// #322: `cmd.exe` cannot pass a line break to a batch file unchanged, so
+/// exec refuses it as a usage error before it creates or starts anything.
+/// A program takes the same argument.
+#[test]
+fn a_batch_argument_cmd_cannot_represent_exits_2_before_anything_starts() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    scripts(&home, "bin", &["tool.cmd"]);
+    let finished = exec_on_path(&install, &home, &["bin"], ".CMD", &["tool", "two\nlines"]);
+    assert_eq!(finished.status, 2, "{finished:?}");
+    assert_eq!(
+        finished.stderr,
+        "climon2: error: cmd.exe cannot pass these arguments to a batch file unchanged\n"
+    );
+    assert!(!home.home().exists(), "the home was created");
+    let program = home.exec(&install, &["cmd", "/d", "/c", "rem", "two\nlines"]);
+    session_id(&program);
+    home.wait_until_ended(&install);
+}
+
+/// #322, `WIN-11`: `CreateProcessW` refuses a working directory over 260
+/// characters, which exec reports as Unix reports an unusable one. Windows
+/// cannot start the CLI there either, so the CLI's test hook gives it the
+/// working directory it would have.
+#[test]
+fn exec_from_a_working_directory_over_260_characters_exits_126() {
+    let (install, home) = (Install::new(&[]), Home::new());
+    let mut long = home.work();
+    while long.as_os_str().len() <= 260 {
+        long.push("a-folder-name-of-forty-characters-------");
+    }
+    let mut verbatim = std::ffi::OsString::from(r"\\?\");
+    verbatim.push(&long);
+    fs::create_dir_all(&verbatim).unwrap();
+    let finished = home
+        .outside(&install)
+        .env("CLIMON2_CLI_CWD", &long)
+        .args(["exec", "--headless", "--"])
+        .args(HELD)
+        .run(Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(finished.status, 126, "{finished:?}");
+    assert!(
+        finished.stderr.contains("command cannot be executed"),
+        "{finished:?}"
+    );
+    assert!(home.sessions().is_empty());
+    assert!(install.daemon_stopped());
 }
 
 #[test]

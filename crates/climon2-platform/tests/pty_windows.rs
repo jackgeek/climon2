@@ -4,8 +4,12 @@
 //! handle reports its full exit status even while a background process keeps
 //! the console; and hang-up closes the pseudoconsole and ends the job.
 #![cfg(windows)]
-use climon2_platform::pty::{self, ConPty, Hosted};
+use climon2_platform::{
+    command::{self, Launch},
+    pty::{self, ConPty, Hosted},
+};
 use std::{
+    ffi::{OsStr, OsString},
     fs, io,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::Path,
@@ -36,8 +40,14 @@ fn start_with(argv: &[&str], environment: &[(&str, &str)]) -> Hosted {
     let cwd = std::env::temp_dir();
     pty::open(conpty(), 24, 80)
         .unwrap()
-        .start(argv, &cwd, environment)
+        .start(&launch(argv), &cwd, environment)
         .unwrap()
+}
+
+/// `argv` resolved as the daemon resolves a session's command.
+fn launch(argv: &[&str]) -> Launch {
+    let arguments: Vec<OsString> = argv[1..].iter().map(OsString::from).collect();
+    command::launch(OsStr::new(argv[0]), &arguments, &std::env::temp_dir()).unwrap()
 }
 
 /// Output read until `done` holds for it or ten seconds pass; the read that
@@ -274,7 +284,7 @@ fn a_command_that_cannot_start_fails_to_start() {
     let missing = std::env::temp_dir().join("climon2-no-such-directory");
     let error = pty::open(conpty(), 24, 80)
         .unwrap()
-        .start(&["cmd", "/d", "/c", "exit"], &missing, &[])
+        .start(&launch(&["cmd", "/d", "/c", "exit"]), &missing, &[])
         .err()
         .unwrap();
     // ERROR_DIRECTORY

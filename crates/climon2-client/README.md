@@ -658,7 +658,10 @@ Windows it waits on the library's notification event and on the events of
 the console's input and output threads. The console rules (raw modes, UTF-8
 code pages, key-down records only, resize from window-size records, and
 restoration on every exit path) are `climon2-platform`'s. Close, logoff and
-shutdown end the client with 129, and a Ctrl+C event with 130. The library's
+shutdown end the client with 129, and a Ctrl+C event with 130. The client
+exits with the command's status in all 32 bits, such as `0xC000013A` (#322):
+its `main` ends through `std::process::exit`, because `ExitCode` takes only
+8 bits, which on Unix still keeps the low 8 bits as before. The library's
 notification descriptor is a manual-reset event (ADR 0008), its paths cross as
 `CM1_NATIVE_WINDOWS`, and its waker is a loopback UDP socket, all through
 `climon2-platform`'s seams. `tests/library_windows.rs` checks the built
@@ -667,7 +670,8 @@ the shared loader: by exact path, never freed, two same-named copies as two
 modules, its dependencies found only beside it or in System32, and each
 failure classified. `climon2-cli`'s `tests/exec_windows.rs` proves `c2 kill`
 end to end and the console preflight, and its `tests/packaged_windows.rs`
-attaches, detaches and reattaches in the smoke test.
+attaches, detaches and reattaches in the smoke test and passes full-width
+statuses through the client, the CLI and `c2.exe` (`WIN-10`).
 
 On Windows the executable and the library both write their debug symbols to
 `climon2_client.pdb`, which Cargo reports as an output filename collision.
