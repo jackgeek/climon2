@@ -94,7 +94,7 @@ sudo pacman -S --needed base-devel git rustup python clang shellcheck vim less
 ```
 
 `/bin/bash` must be GNU bash 5, which it is on Arch. The workflow runs the
-Linux gate with 6 workers (`CLIMON2_MUTATION_WORKERS`); see
+Linux gate with three mutation workers (`CLIMON2_MUTATION_WORKERS`); see
 [Sharing the PC](#sharing-the-pc).
 
 ### Windows VM
@@ -184,14 +184,19 @@ Options, or `sudo pmset -c sleep 0`), or a job waits until it wakes.
 
 The Linux gate and the Windows gate run on the same PC, the Windows one
 inside the VM, and they run at the same time. So the workflow runs each of
-them with 6 mutation workers, set in `quality.yml`, to keep the PC from being
-overloaded. This was the owner's decision on 2026-11-22.
+them with three mutation workers, set in `quality.yml`.
 
-Each worker builds and tests the workspace on its own. Without a limit,
-each worker's Cargo would use every core, and timing tests failed on both
-gates. So `CLIMON2_MUTATION_WORKER_JOBS`, also set in `quality.yml`, gives
-each worker's Cargo 2 build jobs and 2 test threads. The gate measures its
-stage timeouts under the same limit.
+How many is a trade-off. With 6 workers each, with 2 build jobs and 2 test
+threads per worker, end-to-end tests missed their deadlines on both gates.
+With one worker each, nothing failed, but the PC sat at 1-14% busy: a worker
+spends most of its time waiting on its tests' processes, pipes and timeouts.
+So on 2026-11-23 the owner asked to raise the workers until tests start to
+fail, then back off a little. Three is the first step up.
+
+Each worker builds and tests the workspace on its own.
+`CLIMON2_MUTATION_WORKER_JOBS`, also set in `quality.yml`, gives its Cargo 4
+build jobs and 4 test threads. The gate measures its stage timeouts under
+the same limit.
 
 The rest of the gate, such as its own coverage build and test run, gets 8
 build jobs and 8 test threads (`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`).
