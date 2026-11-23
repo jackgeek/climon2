@@ -152,6 +152,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match request {
             Request::Ready(ready) => self.ready(id, ready),
             Request::Kill(kill) => self.wire_kill(id, kill),
+            Request::Break(request) => {
+                self.wire_break(id, request);
+                Ok(())
+            }
             other => {
                 self.attachment_request(id, other);
                 Ok(())
@@ -164,7 +168,6 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             Request::Input(input) => self.wire_input(id, input),
             Request::Resize(resize) => self.resize(id, resize),
             Request::Focus(focus) => self.focus(id, focus),
-            Request::Break(request) => self.wire_break(id, request),
             other => self.status_request(id, other),
         }
     }
