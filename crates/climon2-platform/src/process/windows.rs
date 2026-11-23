@@ -14,8 +14,8 @@ use windows_sys::Win32::{
     },
     Networking::WinSock::WSAEMFILE,
     System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        WaitForSingleObject,
+        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, TerminateProcess, WaitForSingleObject,
     },
 };
 
@@ -95,6 +95,17 @@ fn epoch_micros(time: FILETIME) -> io::Result<u64> {
         .checked_sub(UNIX_EPOCH_INTERVALS)
         .map(|since_epoch| since_epoch / 10)
         .ok_or_else(|| io::Error::other("process created before the Unix epoch"))
+}
+
+/// Ends this process at once with all 32 bits of `status` (#323;
+/// docs/for-humans/windows/lifecycle.md, "Client console"), without flushing
+/// std's standard output. Not `std::process::exit`, which sets the status
+/// only after unloading the process's libraries: a close event arriving
+/// meanwhile replaces it with `STATUS_CONTROL_C_EXIT`.
+pub fn exit(status: u32) -> ! {
+    // SAFETY: this process's own pseudo-handle.
+    unsafe { TerminateProcess(GetCurrentProcess(), status) };
+    std::process::exit(status as i32)
 }
 
 /// The process ran out of sockets (Winsock's `WSAEMFILE`) or of file

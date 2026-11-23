@@ -29,6 +29,7 @@ use syn::{
 /// probes' fixtures.
 const WINDOWS_TRIGGERS: &[&str] = &[
     ".github/",
+    "crates/climon2-cli/tests/attach_deadline_windows.rs",
     "crates/climon2-cli/tests/exec_windows.rs",
     "crates/climon2-cli/tests/packaged_windows.rs",
     "crates/climon2-install/tests/archive_windows.rs",
@@ -281,6 +282,7 @@ mod tests {
             "crates/climon2-test-term/src/windows.rs",
             "crates/climon2-test-term/src/windows/host.rs",
             "crates/climon2-test-term/tests/windows_host.rs",
+            "crates/climon2-cli/tests/attach_deadline_windows.rs",
             "crates/climon2-cli/tests/exec_windows.rs",
             "crates/climon2-cli/tests/packaged_windows.rs",
             "crates/climon2-install/src/windows.rs",

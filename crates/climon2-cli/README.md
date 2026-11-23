@@ -55,13 +55,24 @@ interrupts its client, and kill exits 130 with it; an ordinary `exec` whose
 client is missing exits 125 and stops its daemon. It needs the daemon binary
 built first (`cargo test -p climon2-daemon --test windows`), and the client
 binary and library (`cargo test -p climon2-client --test library_windows`).
+`tests/attach_deadline_windows.rs` (#323), with the same version folder,
+proves that an ordinary session nobody attaches to within five seconds ends,
+while the `CLIMON2_CLI_HOLD` test hook holds `exec` before its client. It is
+a test binary of its own so that it never runs beside `exec_windows.rs`'s
+kill tests.
 `tests/packaged_windows.rs` is the Windows smoke test
 (docs/for-humans/windows/qualification.md): in the harness's Windows Terminal model,
 `pwsh` runs `c2 exec pwsh`, a command, a detach, `c2 list` and `c2 attach`,
 which restores the session's screen, and `exit 7` reaches the outer shell;
 and `0xC000013A`, `259` and `0xFFFFFFFF` from an ordinary `exec` pass through
-the client, the CLI and `c2.exe` unchanged (`WIN-10`, #322). It
-installs the zip `CLIMON2_E2E_ARCHIVE` names, as the Windows Test job does, or
+the client, the CLI and `c2.exe` unchanged (`WIN-10`, #322).
+The same file holds `WIN-01` and `WIN-02` (#323): closing the host of an
+attached ordinary session ends the client with 129 and then the session;
+closing the host of a client attached to a headless session leaves the
+session running, and closing a shell a session was detached from leaves it
+running too, each to be attached again; and after `c2 kill` two attached
+clients of a `pwsh`, `powershell` or `cmd.exe` session both exit with
+`0xC000013A`. It installs the zip `CLIMON2_E2E_ARCHIVE` names, as the Windows Test job does, or
 else this build's binaries in the same layout, which also needs the launcher
 (`cargo test -p climon2-launcher`).
 

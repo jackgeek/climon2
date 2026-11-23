@@ -329,6 +329,12 @@ mod unix {
         matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE))
     }
 
+    /// Ends the process with `status` as a Unix exit status holds it: its
+    /// low eight bits.
+    pub fn exit(status: u32) -> ! {
+        std::process::exit(i32::from(status as u8))
+    }
+
     /// Ends the process with `code` at once: no exit handlers and no
     /// flushing, so whatever must be seen is flushed first.
     pub fn exit_immediately(code: i32) -> ! {

@@ -19,6 +19,10 @@
 //! a working directory over 260 characters, 126; and a batch file's argument
 //! `cmd.exe` cannot represent exits 2 before anything starts.
 //!
+//! #323: closing the host and `c2 kill` with attached clients are in
+//! `packaged_windows.rs`, and the five-second attach deadline in
+//! `attach_deadline_windows.rs`.
+//!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).

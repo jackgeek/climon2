@@ -12,6 +12,11 @@
 //! sessions, whose inner daemon leaves the outer session's job, and the
 //! refusal of a session attaching to itself.
 //!
+//! #323: closing the host and killing the session, by `WIN-01` and `WIN-02`
+//! (qualification.md, "Windows-only scenarios"). Each asserts outcomes only,
+//! never the order of events, because real hosts deliver close events in
+//! different orders.
+//!
 //! The product comes from the release zip named by `CLIMON2_E2E_ARCHIVE`,
 //! as the Windows Test job builds it, or else from this build's binaries in
 //! the same layout. It writes the `current` file the launcher reads itself;
@@ -29,11 +34,13 @@ use climon2_test_term::{
 };
 use portable_pty::CommandBuilder;
 use std::{
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::System::{
     JobObjects::IsProcessInJob,
@@ -574,6 +581,250 @@ fn a_session_attaching_to_itself_is_refused_with_125_and_carries_on() {
     assert!(home.sessions().is_empty());
 }
 
+/// The shell a session runs, by its qualified profile
+/// (docs/for-humans/windows/qualification.md, "Shell profiles").
+#[derive(Clone, Copy, Debug)]
+enum Profile {
+    Pwsh,
+    PowerShell,
+    Cmd,
+}
+
+impl Profile {
+    const ALL: [Self; 3] = [Self::Pwsh, Self::PowerShell, Self::Cmd];
+
+    /// The shell by absolute path; `None` is a reported local skip.
+    fn path(self) -> Option<PathBuf> {
+        let system = Path::new(&env::var_os("SystemRoot").unwrap()).join("System32");
+        match self {
+            Self::Pwsh => controlled_pwsh(),
+            Self::PowerShell => Some(system.join(r"WindowsPowerShell\v1.0\powershell.exe")),
+            Self::Cmd => Some(system.join("cmd.exe")),
+        }
+    }
+
+    /// `pwsh`; or locally, where only the Store build may be installed, which
+    /// a session cannot start, Windows PowerShell in its place.
+    fn session() -> (Self, PathBuf) {
+        [Self::Pwsh, Self::PowerShell]
+            .into_iter()
+            .find_map(|shell| Some((shell, shell.path()?)))
+            .unwrap()
+    }
+
+    /// Interactive start-up with the prompt `<name>> `.
+    fn arguments(self, name: &str) -> Vec<String> {
+        match self {
+            Self::Pwsh | Self::PowerShell => pwsh_arguments(name),
+            Self::Cmd => vec!["/D".into(), "/K".into(), format!("prompt {name}$G$S")],
+        }
+    }
+}
+
+impl Home {
+    /// `c2 <arguments>` from the package, with this home.
+    fn c2(&self, package: &Package, arguments: &[&OsStr]) -> CommandBuilder {
+        let mut command = CommandBuilder::new(package.launcher());
+        command.args(arguments);
+        command.env("CLIMON2_HOME", self.home());
+        command.env("LOCALAPPDATA", self.local());
+        command
+    }
+
+    /// `c2 <arguments>` run to its end without a console, with this home.
+    fn run(&self, package: &Package, arguments: &[&OsStr]) -> std::process::Output {
+        Command::new(package.launcher())
+            .args(arguments)
+            .env("CLIMON2_HOME", self.home())
+            .env("LOCALAPPDATA", self.local())
+            .output()
+            .unwrap()
+    }
+
+    /// The one session, once its metadata is written.
+    fn session(&self) -> SessionMetadata {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            if let Ok([session]) = <[_; 1]>::try_from(self.sessions()) {
+                return session;
+            }
+            assert!(Instant::now() < deadline, "{}", self.logs());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Waits until no session is left and `session`'s daemon has ended.
+    fn wait_until_ended(&self, session: &SessionMetadata) {
+        let deadline = Instant::now() + TIMEOUT;
+        while !self.sessions().is_empty() || process::is_same_daemon(session).unwrap() {
+            assert!(Instant::now() < deadline, "{}", self.logs());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// `exec <shell> <its start-up>`, the shell's prompt `INNER> `.
+fn exec_arguments(shell: Profile, path: &Path) -> Vec<OsString> {
+    let mut arguments: Vec<OsString> = vec!["exec".into(), path.into()];
+    arguments.extend(shell.arguments("INNER").into_iter().map(OsString::from));
+    arguments
+}
+
+fn borrowed(arguments: &[OsString]) -> Vec<&OsStr> {
+    arguments.iter().map(OsString::as_os_str).collect()
+}
+
+/// `c2 <arguments>` hosted in a terminal of its own, once `text` shows.
+fn hosted(package: &Package, home: &Home, arguments: &[OsString], text: &str) -> Terminal {
+    let command = home.c2(package, &borrowed(arguments));
+    let mut terminal = Terminal::spawn(command, 30, 120).unwrap();
+    wait(&mut terminal, home, text);
+    terminal
+}
+
+fn attach_arguments(id: &str) -> Vec<OsString> {
+    vec!["attach".into(), id[..8].into()]
+}
+
+/// `0xC000013A`, `STATUS_CONTROL_C_EXIT`: how each shell ends when its
+/// console closes.
+const CONTROL_C_EXIT: u32 = 0xC000_013A;
+/// Longer than the hang-up grace, with room for a session that ends late.
+const PAST_GRACE: Duration = Duration::from_secs(8);
+
+/// WIN-02 and #323: `c2 kill` hangs a session up, and every client attached
+/// to it exits with the command's status: the shell's status when its
+/// console closes, through the client, the CLI and the launcher unchanged.
+#[test]
+fn kill_ends_every_attached_client_with_the_shells_close_status() {
+    if rerun_outside(
+        "kill_ends_every_attached_client_with_the_shells_close_status",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    for shell in Profile::ALL {
+        let Some(path) = shell.path() else {
+            continue;
+        };
+        let (package, home) = (Package::new(), Home::new());
+        let mut first = hosted(&package, &home, &exec_arguments(shell, &path), "INNER> ");
+        let id = home.session().session_id.to_string();
+        let mut second = hosted(&package, &home, &attach_arguments(&id), "INNER> ");
+
+        let killed = home.run(&package, &borrowed(&["kill".into(), id[..8].into()]));
+        assert_eq!(killed.status.code(), Some(0), "{shell:?} {killed:?}");
+        for client in [&mut first, &mut second] {
+            assert_eq!(
+                client.wait_exit(TIMEOUT).unwrap(),
+                CONTROL_C_EXIT,
+                "{shell:?}: {}",
+                client.screen()
+            );
+        }
+        assert!(home.sessions().is_empty(), "{shell:?}");
+    }
+}
+
+/// WIN-01, Windows Terminal model: closing the host while attached ends the
+/// client with 129, and the ordinary session, whose last client is lost, is
+/// hung up and ends.
+#[test]
+fn closing_the_host_ends_the_client_with_129_and_the_ordinary_session_with_it() {
+    if rerun_outside(
+        "closing_the_host_ends_the_client_with_129_and_the_ordinary_session_with_it",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let (shell, path) = Profile::session();
+    let (package, home) = (Package::new(), Home::new());
+    let mut host = hosted(&package, &home, &exec_arguments(shell, &path), "INNER> ");
+    let session = home.session();
+
+    host.close();
+    assert_eq!(host.wait_exit(TIMEOUT).unwrap(), 129, "{}", host.screen());
+    home.wait_until_ended(&session);
+}
+
+/// WIN-01, Windows Terminal model: closing the host of a client attached to a
+/// headless session ends the client with 129 and leaves the session running,
+/// to be attached again.
+#[test]
+fn closing_the_host_of_a_headless_sessions_client_leaves_the_session_running() {
+    if rerun_outside(
+        "closing_the_host_of_a_headless_sessions_client_leaves_the_session_running",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let (shell, path) = Profile::session();
+    let (package, home) = (Package::new(), Home::new());
+    let mut arguments = exec_arguments(shell, &path);
+    arguments.splice(1..1, ["--headless".into(), "--".into()]);
+    let started = home.run(&package, &borrowed(&arguments));
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    let session = home.session();
+    let id = session.session_id.to_string();
+
+    let mut host = hosted(&package, &home, &attach_arguments(&id), "INNER> ");
+    host.close();
+    assert_eq!(host.wait_exit(TIMEOUT).unwrap(), 129, "{}", host.screen());
+    std::thread::sleep(PAST_GRACE);
+    assert!(process::is_same_daemon(&home.session()).unwrap());
+
+    let mut again = hosted(&package, &home, &attach_arguments(&id), "INNER> ");
+    enter(&mut again, "exit 7");
+    assert_eq!(again.wait_exit(TIMEOUT).unwrap(), 7, "{}", again.screen());
+    home.wait_until_ended(&session);
+}
+
+/// WIN-01, Windows Terminal model: a session detached from its host survives
+/// the host closing, and attaching again restores its screen.
+#[test]
+fn a_detached_session_survives_its_host_closing_and_reattaches() {
+    if rerun_outside(
+        "a_detached_session_survives_its_host_closing_and_reattaches",
+        OUTSIDE,
+    ) {
+        return;
+    }
+    let (shell, path) = Profile::session();
+    let (package, home) = (Package::new(), Home::new());
+    let mut host = Terminal::spawn(home.pwsh(&package, &path, "OUTER"), 30, 120).unwrap();
+    wait(&mut host, &home, "OUTER> ");
+    let inner: Vec<String> = shell
+        .arguments("INNER")
+        .iter()
+        .map(|argument| quoted(argument))
+        .collect();
+    enter(
+        &mut host,
+        &format!(
+            "c2 exec {} {}",
+            quoted(&path.to_string_lossy()),
+            inner.join(" ")
+        ),
+    );
+    wait(&mut host, &home, "INNER> ");
+    enter(&mut host, "\"$(6*7)-ok\"");
+    wait(&mut host, &home, "42-ok");
+    let session = home.session();
+    let id = session.session_id.to_string();
+    host.send(DETACH).unwrap();
+    wait(&mut host, &home, "OUTER> ");
+
+    host.close();
+    host.wait_exit(TIMEOUT).unwrap();
+    drop(host);
+    std::thread::sleep(PAST_GRACE);
+    assert!(process::is_same_daemon(&home.session()).unwrap());
+
+    let mut again = hosted(&package, &home, &attach_arguments(&id), "42-ok");
+    enter(&mut again, "exit 7");
+    assert_eq!(again.wait_exit(TIMEOUT).unwrap(), 7, "{}", again.screen());
+    home.wait_until_ended(&session);
+}
 /// #322, `WIN-10`: a command's full 32-bit status, including 259, which
 /// Windows also reports for a process still running, passes unchanged
 /// through the client, the CLI and the launcher.
