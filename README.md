@@ -530,9 +530,10 @@ queries itself and never asks your terminal anything. `TERM=xterm-256color` and
 `COLORTERM=truecolor` describe the subset of xterm that climon2 qualifies, not
 complete xterm compatibility; they replace any inherited values.
 
-Interactive shells are qualified on GNU bash 5.x only; macOS `/bin/bash` 3.2 is
-not supported for interactive sessions. `install.sh` still runs under
-`/bin/bash`.
+On macOS and Linux, interactive shells are qualified on GNU bash 5.x only;
+macOS `/bin/bash` 3.2 is not supported for interactive sessions. `install.sh`
+still runs under `/bin/bash`. The Windows hosts and shells are listed under
+[Windows](#windows).
 
 ## Limitations
 
@@ -573,11 +574,15 @@ not supported for interactive sessions. `install.sh` still runs under
 - **Combining marks are unbounded.** Alacritty 0.26.0 stores a cell's combining
   marks without a limit, so a stream of them grows daemon memory. Qualification
   evidence for other Alacritty revisions does not apply to 0.26.0.
+- **Windows has limitations of its own.** They are listed under
+  [Windows limitations](#windows-limitations).
 
 ## Install
 
-Supports **macOS 15 or newer** on Apple Silicon and Intel, and **x86_64
-GNU/Linux** with glibc 2.39 or newer, qualified on Ubuntu 24.04. macOS binaries
+Supports **macOS 15 or newer** on Apple Silicon and Intel, **x86_64
+GNU/Linux** with glibc 2.39 or newer, qualified on Ubuntu 24.04, and **x86_64
+Windows 11**, build 26100 or newer (see
+[Installing on Windows](#installing-on-windows)). macOS binaries
 are universal and ad-hoc signed, without Developer ID signing or notarisation.
 Arch Linux is supported for native development; musl and Linux arm64 are not
 qualified. See [distribution](docs/for-humans/distribution.md) for platform archives.
@@ -629,6 +634,157 @@ filesystem supporting `renameat2` directory exchange at the installation path.
 Processes sharing a climon2 home must share the same PID namespace; sharing
 session metadata across containers or PID namespaces is not supported.
 
+### Installing on Windows
+
+Windows needs x86_64 Windows 11, build 26100 or newer. The build is documented,
+not checked when climon2 runs; Windows 10 is not supported. Nothing else needs
+installing first: every climon2 program has Microsoft's C runtime built in.
+
+In Windows PowerShell 5.1, which Windows 11 includes, or PowerShell 7, install
+the latest release with:
+
+```powershell
+irm https://github.com/jackgeek/climon2/releases/latest/download/install.ps1 | iex
+```
+
+Pinned release (replace `0.1.0` with the published version):
+
+```powershell
+irm https://github.com/jackgeek/climon2/releases/download/v0.1.0/install.ps1 | iex
+```
+
+Each published `install.ps1` downloads only its stamped version's archive,
+`climon2-<version>-windows-x86_64-msvc.zip`, checks its SHA-256 against the
+release's `SHA256SUMS`, and runs the `install.exe` inside it. Piping it to
+`iex` works under Windows' default execution policy. It never closes your
+window: a failure is a PowerShell error starting `climon2-install.ps1: error:`.
+To pass options, run it as a script block:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/jackgeek/climon2/releases/latest/download/install.ps1))) -Dir "$env:USERPROFILE\tools\climon2" -NoModifyPath
+```
+
+The default executable home is `%LOCALAPPDATA%\climon2`, and `-Dir` chooses
+another. Unlike the macOS and Linux installers, the Windows installer adds the
+executable home to your user `PATH`, at the end so `c2` never takes precedence
+over another tool, without administrator rights. It prints a line when it does.
+Terminals that are already open do not see the change; open a new one. A later
+install into another directory replaces the entry the installer added, so there
+is never more than one. `-NoModifyPath` leaves `PATH` alone and prints the
+entry to add by hand.
+
+Upgrades keep older version folders, and live sessions keep running on their
+own version. If a `c2` command is running during an upgrade, the installed
+`c2.exe` launcher is kept, which is safe because every launcher runs every
+version, and the next install made while none is running replaces it.
+
+To install from a browser download instead, unblock the zip before extracting
+it, check it against `SHA256SUMS` and run its installer. `install.exe` takes
+`--dir <directory>` and `--no-modify-path`:
+
+```powershell
+Unblock-File climon2-0.1.0-windows-x86_64-msvc.zip
+(Get-FileHash -Algorithm SHA256 climon2-0.1.0-windows-x86_64-msvc.zip).Hash   # compare with SHA256SUMS
+Expand-Archive climon2-0.1.0-windows-x86_64-msvc.zip -DestinationPath .
+.\climon2-0.1.0-windows-x86_64-msvc\install.exe
+```
+
+Session data defaults to `%USERPROFILE%\.climon2`; `CLIMON2_HOME` overrides it,
+as on the other platforms.
+
+## Windows
+
+On Windows, `c2` runs the same commands as on macOS and Linux, with the same
+shortcuts, escape prefix, leave policy and monitor:
+
+```powershell
+c2 exec pwsh
+$id = c2 exec --headless pwsh -NoProfile -File .\long-build.ps1
+c2 attach $id
+c2 list
+c2 kill $id
+c2 monitor
+```
+
+**Qualified hosts and shells.** The qualified terminals are Windows Terminal
+and the VS Code integrated terminal with its default settings. The qualified
+shells are PowerShell 7 (`pwsh`) installed from its MSI package, Windows
+PowerShell 5.1 (`powershell`) and `cmd.exe`. Other terminals, such as the
+classic console window or an SSH session, and other shells are not tested but
+not blocked. `exec`, `attach` and `monitor` need a console on stdin and stdout:
+redirected input or output is refused as a missing terminal is on Unix, with
+125.
+
+**How a session runs.** A session's daemon runs the command in a
+pseudoconsole, the Windows counterpart of a pseudo-terminal. climon2 ships its
+own copy of ConPTY, the Windows component that provides one, as `conpty.dll`
+and `OpenConsole.exe` in each version folder; if either is missing, `exec`
+exits 125. The session's processes share a job object, a Windows group of
+processes that can be ended together. A hang-up or `c2 kill` closes the
+pseudoconsole, which tells every program on it to close, waits the full five
+seconds, then ends whatever is left in the job. A `c2 exec` inside a session
+starts its own session outside that job.
+
+**Finding the command.** climon2 looks the command up itself: in each `PATH`
+directory in order, trying each `PATHEXT` extension in order, so `c2 exec npm`
+runs `npm.cmd`. The current directory is not searched. A command containing
+`\`, `/` or `:` is found from the working directory instead. Batch files run
+through the system's `cmd.exe`, and an argument a batch file cannot receive
+unchanged (one holding a carriage return, line feed or NUL) is a usage error
+(2).
+
+**Exit statuses** are Windows' full 32-bit statuses, passed through `c2`
+unchanged, and none is derived from a signal. A command ended by `c2 kill` or a
+hang-up normally reports `0xC000013A`, which PowerShell's `$LASTEXITCODE` shows
+as `-1073741510`; a program that handles the close itself reports its own
+status. Closing the terminal while a client is attached still ends the client
+with 129, and climon2's own 2, 125, 126 and 127 keep their meanings. Ctrl+C
+reaches the command as on Unix.
+
+**Jobs around your shell.** The session daemon must leave any job object your
+shell runs in, or it would end with your terminal. `c2 exec` exits 125 when it
+cannot: inside a job that refuses this, and under PowerShell's
+`Start-Process -Wait`. Windows Terminal, VS Code terminals and VS Code tasks
+put no job around their shells.
+
+### Windows limitations
+
+- **The Microsoft Store build of PowerShell 7 cannot run in a session.**
+  Windows refuses to start a Store app inside a session's job object. Install
+  PowerShell 7 from its MSI package, or use `powershell` or `cmd.exe`, as the
+  session's shell. Running `c2` from the Store build is not affected.
+- **Working directories over 260 characters.** `c2 exec` cannot start a command
+  in one, whatever the long-path setting: it exits 126 with "command cannot be
+  executed".
+- **Ctrl+Break does nothing in the VS Code integrated terminal.** That terminal
+  delivers neither an event nor a key for it. climon2 does not yet pass
+  Ctrl+Break to the session in Windows Terminal either
+  ([#326](https://github.com/jackgeek/climon2/issues/326)).
+- **Sign-out and shutdown end every session.** Windows ends every process you
+  own, and no exit status is promised. The next `c2 list` cleans up what they
+  leave behind.
+- **The programs are not code-signed.** A zip downloaded with a browser and
+  extracted in Explorer carries Windows' mark for files from the internet, so
+  SmartScreen may warn when `install.exe` runs; run `Unblock-File` on the zip
+  before extracting it. Files installed with `install.ps1` carry no such mark.
+  Where Smart App Control is enforcing, it may block unsigned programs
+  whatever their origin. Integrity rests on `SHA256SUMS` and the release's
+  build-provenance attestations.
+- **What the bundled ConPTY adds is dropped.** A session's pseudoconsole starts
+  its output by negotiating with a terminal: `ESC [ 1 t`, `ESC [ c`,
+  `CSI ? 1004 h` (focus reporting on) and `CSI ? 9001 h` (win32-input-mode
+  on). climon2 drops these from the start of the output, so your terminal never
+  receives them, they are not in the screen restored on attach, and
+  win32-input-mode is never turned on. From the command's first output on,
+  output passes on unchanged.
+- **Keys plain VT input cannot express arrive as their plain form.** climon2
+  reads your terminal's keys as VT sequences, so Shift+Enter, for example,
+  arrives in the session as Enter.
+- **Focus reports wait for the session to ask.** A session receives focus
+  changes as `CSI I` and `CSI O` only after it turns focus reporting on, as on
+  Unix. Your terminal's own pseudoconsole passes on climon2's "focus reporting
+  off" and then turns it straight back on for itself.
+
 ## Diagnostics
 
 Operational failures use status 125 and identify a log file. Logs contain climon2 diagnostics,
@@ -670,14 +826,17 @@ On arm64 macOS, install both Rust targets before running workspace tests,
 
 CI runs full runtime, real-terminal and packaged tests on Linux, and on both
 macOS architectures while the repository variable `CLIMON2_MACOS_TESTS` is
-`on`; otherwise macOS only builds its release archive. Windows runs neutral
-contracts only. The agreed
+`on`; otherwise macOS only builds its release archive. On `windows-2025`, CI
+always builds the Windows release zip. While the repository variable
+`CLIMON2_WINDOWS_TESTS` is on, or when a change touches Windows-only code, it
+also runs the tests that build on Windows, including the Windows scenarios and
+the smoke test against that zip, and tests its installer and `install.ps1`.
 [Windows host and shell qualification](docs/for-humans/windows/qualification.md) says what a
-Windows release will have to pass,
-[Windows quality and CI qualification](docs/for-humans/windows/quality.md) says how CI will
-check it, and the
+Windows release has to pass,
+[Windows quality and CI qualification](docs/for-humans/windows/quality.md) says how CI
+checks it, and the
 [Windows platform and lifecycle contract](docs/for-humans/windows/lifecycle.md) says how its
-processes will start, run and end. Shared and Linux-specific
+processes start, run and end. Shared and Linux-specific
 CRAP/mutation run on the dedicated Linux development host, with 8 mutation
 workers. CI does not repeat those quality checks.
 
