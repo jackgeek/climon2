@@ -301,10 +301,10 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
         );
     }
     // The Linux and Windows gates share the owner's PC: four mutation workers on
-    // Linux and three on Windows, whose VM memory is the limit (owner decision,
-    // 2026-11-23).
+    // Linux and two on Windows, whose VM's memory and load are the limit (owner
+    // decision, 2026-11-23).
     assert!(job(&quality, "linux").contains(&"      CLIMON2_MUTATION_WORKERS: \"4\""));
-    assert!(job(&quality, "windows").contains(&"      CLIMON2_NATIVE_MUTATION_WORKERS: \"3\""));
+    assert!(job(&quality, "windows").contains(&"      CLIMON2_NATIVE_MUTATION_WORKERS: \"2\""));
     for name in ["linux", "windows"] {
         // Each worker's Cargo gets 4 build jobs and 4 test threads.
         assert!(job(&quality, name).contains(&"      CLIMON2_MUTATION_WORKER_JOBS: \"4\""));

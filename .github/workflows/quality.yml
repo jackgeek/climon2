@@ -118,9 +118,10 @@ jobs:
     # (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
-      # Shares the owner's PC with the Linux gate. Three, not four: at three
-      # the VM's 16 GB ran critically low on memory (2026-11-23).
-      CLIMON2_NATIVE_MUTATION_WORKERS: "3"
+      # Shares the owner's PC with the Linux gate. At three, the VM's 16 GB ran
+      # critically low on memory and its load made the Linux gate's timing tests
+      # miss their deadlines, so two (owner decision, 2026-11-23).
+      CLIMON2_NATIVE_MUTATION_WORKERS: "2"
       # Each worker's Cargo gets 4 build jobs and 4 test threads.
       CLIMON2_MUTATION_WORKER_JOBS: "4"
       # The rest of the gate, such as its own baseline, gets 8 build jobs and 8
