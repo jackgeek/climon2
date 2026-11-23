@@ -18,9 +18,11 @@
 //! as a full Unix PTY buffer does.
 //!
 //! The pseudoconsole starts its output with its own negotiation with a host
-//! (#325, `WIN-08`). The daemon is no host and answers none of it, so the
-//! output thread drops it: a session's clients, and the terminal model that
-//! restores their screens, see only the command's own output.
+//! (#325, `WIN-08`). The output thread drops it: a session's clients, and the
+//! terminal model that restores their screens, see only the command's own
+//! output. The input thread answers its device attributes request first
+//! (#328), because the pseudoconsole takes the first answer it reads as its
+//! host's, and would otherwise take the one meant for the command.
 use crate::command::Launch;
 use std::{
     cell::RefCell,
@@ -484,6 +486,13 @@ fn pump_output(source: &PipeReader, chunks: &SyncSender<io::Result<Vec<u8>>>) {
 /// focus reporting and win32-input-mode.
 const NEGOTIATION: [&[u8]; 4] = [b"\x1b[1t", b"\x1b[c", b"\x1b[?1004h", b"\x1b[?9001h"];
 
+/// The answer to the negotiation's device attributes request, the first thing
+/// the input thread writes. The pseudoconsole takes the first answer it reads
+/// as its host's; without this one it would take the answer to the command's
+/// own first request, which the command would then never get. It is the
+/// answer the session's terminal model gives a command.
+const DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?6c";
+
 /// Drops the negotiation from the start of the output. Output that may
 /// still be the start of a negotiation sequence is held for the next read;
 /// from the first other byte on, everything passes unchanged.
@@ -548,7 +557,7 @@ fn read(source: &PipeReader, buffer: &mut [u8]) -> io::Result<usize> {
 /// The input thread: writes each queued chunk until the queue closes or the
 /// pseudoconsole stops reading.
 fn pump_input(sink: &mut PipeWriter, queued: &Receiver<Vec<u8>>) {
-    for bytes in queued {
+    for bytes in std::iter::once(DEVICE_ATTRIBUTES.to_vec()).chain(queued) {
         if sink.write_all(&bytes).is_err() {
             return;
         }

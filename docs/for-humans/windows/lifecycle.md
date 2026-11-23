@@ -221,7 +221,12 @@ The session's pseudoconsole starts its output with its own negotiation with
 a host: `ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h` and `CSI ? 9001 h`. The daemon
 is no host, so it drops these from the start of the output, and neither its
 clients nor the screen it restores for them ever see them. From the
-command's first output on, everything passes unchanged.
+command's first output on, everything passes unchanged. The pseudoconsole
+takes the first device attributes answer it reads as its host's, so the
+daemon writes one (`ESC [ ? 6 c`, the answer it gives commands) before any
+input. Otherwise the pseudoconsole would take the answer to the command's
+own first request, and a program that waits for it, such as Microsoft Edit,
+would wait forever ([#328](https://github.com/jackgeek/climon2/issues/328)).
 
 Output adds `ENABLE_VIRTUAL_TERMINAL_PROCESSING` and
 `DISABLE_NEWLINE_AUTO_RETURN`, and both code pages are UTF-8 while the client

@@ -160,6 +160,34 @@ Each app's scenarios: enter it, edit, detach, reattach and see the screen
 restored, resize, quit and see the main screen restored. Edit takes the place
 `less` has on Unix.
 
+Built so far ([#328](https://github.com/jackgeek/climon2/issues/328)): the
+pins are `pins/vim.txt` (vim 9.2.1259) and `pins/edit.txt` (Edit 2.0.0). Each
+names the zip's URL, the zip's SHA-256, the program in it and the SHA-256 of
+each file the harness relies on: `vim.exe` and the `vim64.dll` it loads, or
+`edit.exe`. `climon2-test-term`'s `App` downloads the zip, checks its hash,
+unpacks it and checks each pinned file, and keeps it in `target/apps/<the
+zip's hash>`, or under `CLIMON2_TEST_APP_CACHE`. It checks the pinned files
+again before each use. A hash that differs fails.
+
+The scenarios are in `crates/climon2-cli/tests/fullscreen_windows.rs`, under
+both host models. From a session's `pwsh` each app opens a document, adds a
+line, detaches, is attached again with its screen restored, sees the host's
+new size after a resize, saves and quits, and leaves the shell's main screen
+as it was. Edit passes. vim's are written but ignored: the client holds a
+lone Escape as the possible start of a paste marker until the next byte
+arrives. The session's pseudoconsole then reads the Escape and that byte
+together as Alt with the byte, so vim never leaves insert mode. How long the
+client should wait before passing a lone Escape on is a question for the
+owner on #328, because it changes the shared client on every platform.
+
+Edit could not start in a session until the daemon answered its
+pseudoconsole's own device attributes request. The pseudoconsole takes the
+first answer it reads as its host's. Edit asks for the device attributes
+and waits for the answer, so it waited forever. The daemon now writes that
+first answer itself, and the answer to the command's own request reaches the
+command (`the_answer_to_a_commands_device_attributes_request_reaches_it` in
+`crates/climon2-platform/tests/pty_windows.rs`).
+
 ## Automated scenarios
 
 ### Coverage
@@ -323,7 +351,12 @@ keeps running and reattaches) and of a shell that a session was detached from
 session of each shell and runs `c2 kill`: both exit with `0xC000013A`. The
 `powershell` and `cmd.exe` start-ups are the test file's own until the harness
 has their profiles. vim and Edit join `WIN-02` with their pinned downloads
-([#328](https://github.com/jackgeek/climon2/issues/328)). Where only the Store
+([#328](https://github.com/jackgeek/climon2/issues/328)), in
+`fullscreen_windows.rs`: `c2 kill` of a session whose command is the app
+ends its client with `0xC000013A` for each. That is not the `0x1` recorded
+for vim in the table above. Outside a session vim's own close handler exits
+`0x1` at once, but in a session it does not finish within the grace, so the
+session job ends it. Why is an open question on #328. Where only the Store
 build of `pwsh` is installed, which a session cannot start, the local runs of
 `WIN-01` use `powershell` in its place; CI requires the MSI build. In
 `crates/climon2-cli/tests/attach_deadline_windows.rs`, an ordinary session

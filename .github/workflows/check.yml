@@ -171,6 +171,12 @@ jobs:
         with:
           path: target/conpty
           key: conpty-${{ hashFiles('pins/conpty.txt') }}
+      # The same for the pinned full-screen apps, vim and Microsoft Edit,
+      # against pins/vim.txt and pins/edit.txt.
+      - uses: actions/cache@v4
+        with:
+          path: target/apps
+          key: apps-${{ hashFiles('pins/vim.txt', 'pins/edit.txt') }}
       - name: Test the platform seams that build on Windows
         run: cargo test --locked -p climon2-platform --lib --test home_windows --test private_windows --test cross_account_windows --test presentation_windows --test connection_windows --test runtime_windows --test process_windows --test pty_windows --test command_windows --test notifier_windows --test native_path_windows --test terminal_windows --test handoff_windows
       - name: Test the harness's Windows host

@@ -1,0 +1,10 @@
+# vim for Windows (docs/for-humans/windows/qualification.md, "Full-screen apps"):
+# the vim-win32-installer release zip, a full build whose console vim.exe loads
+# vim64.dll beside it. The test harness downloads the zip, checks it and each
+# file below, and runs the program by absolute path. Hashes are SHA-256 in
+# lowercase hex; each `file` line is a path inside the zip and its hash.
+url https://github.com/vim/vim-win32-installer/releases/download/v9.2.1259/gvim_9.2.1259_x64.zip
+package 86d17c662662d538c9741aa8ccad7f9db8843eb719a27d72b0448f356a55f930
+program vim/vim92/vim.exe
+file vim/vim92/vim.exe 5002a41c4b6042477938b5149d52e04cb1fdcdfcdd5abaeb84c071961f9de539
+file vim/vim92/vim64.dll 7caf26c86884aab9e1d9d8ec0b2280705a2ac1dbf14ddc751218b30eb2440b5a

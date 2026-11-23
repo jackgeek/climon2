@@ -108,6 +108,13 @@ its job, and leaves a stale session `c2 list` reclaims; and with tracing on,
 no environment, argument or typed secret reaches a log, while every log,
 metadata file and managed folder carries the private descriptor. The Windows
 Test job runs it; the Windows gate leaves it out of each mutant's run.
+`tests/fullscreen_windows.rs` (#328) runs the pinned vim and Microsoft Edit
+(`climon2-test-term`'s `App`) under both host models: from a session's `pwsh`
+each opens a document, adds a line, detaches, reattaches restored, follows a
+resize, saves and quits to the shell's restored main screen; and `c2 kill` of
+a session running either ends its client with `0xC000013A`. vim's own
+scenarios are ignored until the owner decides how long the client holds a
+lone Escape. Like `sessions_windows.rs`, it stays out of each mutant's run.
 
 The `test-hooks` feature adds `CLIMON2_CLI_HOLD` (the client hand-off waits
 for a file) and `CLIMON2_CLI_CWD` (it stands in for the working directory the

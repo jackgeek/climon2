@@ -335,7 +335,9 @@ For the session daemon and headless `exec` (#317; docs/for-humans/windows/lifecy
   `ERROR_BROKEN_PIPE`. `try_wait` reads the leader's handle; `close`, `end`
   (the job terminated with `0xC000013A`, then the leader's status) and
   `finish` are hang-up's steps. The output thread drops the pseudoconsole's
-  start-up negotiation from the start of the output (#325).
+  start-up negotiation from the start of the output (#325), and the input
+  thread first answers its device attributes request, so the answer to the
+  command's own request reaches the command (#328).
 - `src/command/windows.rs` (#322; docs/for-humans/windows/lifecycle.md,
   "Command resolution and arguments"), a module only Windows has:
   `search(command, cwd, path, pathext)` finds the file a command names, in
