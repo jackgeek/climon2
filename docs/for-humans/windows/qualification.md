@@ -266,6 +266,14 @@ starts the client. It is a test binary of its own because cargo runs test
 binaries one at a time: running beside the kill tests, it made them miss
 their ten-second deadline under the coverage build.
 
+`WIN-09` is built ([#326](https://github.com/jackgeek/climon2/issues/326)),
+in `crates/climon2-cli/tests/packaged_windows.rs`. It runs ordinary `exec` of
+`cmd.exe` through the launcher in the Windows Terminal model and presses
+Ctrl+Break twice. `ping -t` in the session reports Ctrl+Break and keeps
+running, which it would not after Ctrl+C, so the key-up record never arrived
+as `0x03`. `timeout`, which keeps the default handler, ends with
+`0xC000013A`, and `cmd.exe` goes on to its next command.
+
 `WIN-09` to `WIN-11` follow the
 [Windows platform and lifecycle contract](lifecycle.md). Ctrl+Break
 has no VS Code model scenario: that host delivers nothing for it, a documented

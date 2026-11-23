@@ -191,7 +191,8 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   off, and `ReadConsoleInputW` supplies key characters and
   `WINDOW_BUFFER_SIZE_EVENT` resizes. Keys VT cannot express, such as
   Shift+Enter, are a documented limitation. Ctrl+Break reaches the session
-  through a console control handler instead
+  through a console control handler instead, and a Break request to the
+  daemon ([#326](https://github.com/jackgeek/climon2/issues/326))
   ([Windows lifecycle](#windows-lifecycle-agreed-not-implemented)). Output enables
   `ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN` and the
   UTF-8 code page, and writes raw bytes with `WriteFile`, never splitting a

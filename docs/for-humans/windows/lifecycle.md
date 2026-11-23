@@ -22,9 +22,9 @@ resolution, quoting and the launch failure statuses (see
 [#322](https://github.com/jackgeek/climon2/issues/322)), and closing the
 host, the leave policy and the statuses clients exit with after a hang-up (see
 [Session job and hang-up](#session-job-and-hang-up);
-[#323](https://github.com/jackgeek/climon2/issues/323)). Ctrl+C reaches the
-session as byte `0x03`; Ctrl+Break is not passed on yet
-([#326](https://github.com/jackgeek/climon2/issues/326)). It was
+[#323](https://github.com/jackgeek/climon2/issues/323)), and Ctrl+C and
+Ctrl+Break (see [Ctrl+C and Ctrl+Break](#ctrlc-and-ctrlbreak);
+[#326](https://github.com/jackgeek/climon2/issues/326)). It was
 agreed in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 using the VM measurements from
@@ -225,11 +225,18 @@ Ctrl+C arrives in the client as byte `0x03` and is forwarded as input, as on
 Unix; the pseudoconsole turns it into `CTRL_C_EVENT` for the session.
 
 Ctrl+Break has no VT byte. The client's handler routine receives
-`CTRL_BREAK_EVENT` and asks the daemon to break. The daemon runs a short-lived
-detached helper that calls `AttachConsole(leader PID)`, registers a
-TRUE-returning handler, calls `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)`
-and exits. In the probes a default-handler program ended with `0xC000013A` and
-the shell survived, with the helper inside or outside the session job.
+`CTRL_BREAK_EVENT` and asks the daemon to break: while it is the ready
+controller and is not detaching, the client sends a Break request, which
+needs the `break-v1` capability that only a Windows daemon advertises (see the
+[Break request](../protocol/daemon-client/request-break.md)). A break the
+client cannot send then is dropped, not kept for later. The daemon runs a
+short-lived detached helper, its own executable with the private
+`--break-console` argument and the leader's PID, that calls
+`AttachConsole(leader PID)`, registers a TRUE-returning handler, calls
+`GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0)` and exits. The helper starts
+outside the session job, and the daemon does not wait for it. In the probes a
+default-handler program ended with `0xC000013A` and the shell survived, with
+the helper inside or outside the session job.
 Windows Terminal also sends a key-up record carrying `0x03` with Ctrl+Break;
 ignoring key-up records keeps it from arriving as Ctrl+C.
 

@@ -398,7 +398,12 @@ For interactive `exec` and `attach` (#321; docs/for-humans/windows/lifecycle.md,
   is cut only between whole characters (`climon2_core::utf8`) and drained
   when the bridge ends. The client's `Signals` take Ctrl+C as signal 2 and
   close, logoff and shutdown as signal 1, whose handler holds the process
-  until the client has exited 129; Ctrl+Break does nothing yet (#326).
+  until the client has exited 129; Ctrl+Break is a break,
+  `Signals::take_break`, which the client sends to the session (#326).
+- `src/pty/windows.rs` (#326): `Hosted::send_break` starts a helper, given
+  the leader's PID, detached and unwaited; `break_console` is the helper's
+  work: it attaches to the leader's console, ignores Ctrl+Break itself and
+  generates it there. On Unix, `Signals::take_break` is always false.
 - `src/handoff/windows.rs`: `replace` starts a child, waits for it and exits
   with its raw status, as the launcher hands off to the CLI;
   `wait_through_console_events` is its handler routine alone: Ctrl+C and
