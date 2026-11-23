@@ -225,7 +225,7 @@ Log privacy keeps its Unix intent, driven through `pwsh`: the environment,
 argument and typed-input secrets appear in no log. On Windows it also asserts
 that every log file, metadata file and managed folder the run produced carries
 the private descriptor and is not a reparse point, as
-[ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
+[ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport)
 specifies under "Private files and folders". No exception is recorded.
 
 ### Windows-only scenarios

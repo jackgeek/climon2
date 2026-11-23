@@ -34,7 +34,7 @@ and is the specification the Windows port implements.
 Neighbouring decisions live elsewhere:
 
 - I/O, transport, the runtime directory and the bundled ConPTY:
-  [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented).
+  [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport).
 - Which hosts, shells and scenarios qualify a release:
   [Windows host and shell qualification](qualification.md).
 - The monitor and the client library:

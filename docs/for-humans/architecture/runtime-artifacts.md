@@ -56,7 +56,7 @@ The launcher is installed as `c2`, the only command name (#303); there is no
 The installer is a release-payload executable, not a `c2 install` command.
 Installation relationships are outside this consumption diagram.
 
-## Windows (agreed, partly implemented)
+## Windows
 
 This diagram shows only what Windows changes in the diagram above: how the
 launcher reaches the CLI, how the CLI starts the daemon, how the daemon
@@ -77,7 +77,7 @@ loading each session version's library
 ([#327](https://github.com/jackgeek/climon2/issues/327)). No arrow is planned
 any more. How each process starts is in the
 [Windows platform and lifecycle contract](../windows/lifecycle.md). The decisions are in
-[ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
+[ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport)
 and, for the library,
 [#216](https://github.com/jackgeek/climon2/issues/216).
 
