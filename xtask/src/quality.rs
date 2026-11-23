@@ -43,6 +43,16 @@ const MUTATION_WORKERS: &str = "8";
 /// (docs/for-humans/windows/quality.md, "Running the gate locally"), and 16 workers'
 /// builds do not fit in its memory.
 const NATIVE_WORKERS_VARIABLE: &str = "CLIMON2_NATIVE_MUTATION_WORKERS";
+/// Caps the host gates' workers (`cargo xtask check` and `cargo xtask mutate`), which
+/// otherwise number `MUTATION_WORKERS`. The owner's Linux runner shares its PC with the
+/// Windows VM (docs/for-humans/quality-runners.md, "Sharing the PC").
+const HOST_WORKERS_VARIABLE: &str = "CLIMON2_MUTATION_WORKERS";
+/// Limits each mutation worker's Cargo to this many build jobs and test threads, which
+/// otherwise number the CPUs. It applies to the stage-timeout measurement too, so the
+/// timeouts fit the workers. The owner's runners set it so that two gates sharing a PC
+/// do not starve each other's timing tests (docs/for-humans/quality-runners.md,
+/// "Sharing the PC").
+const WORKER_JOBS_VARIABLE: &str = "CLIMON2_MUTATION_WORKER_JOBS";
 /// Rounds of the full gate's mutation-load measurement (`cargo xtask check --full`).
 const MUTATION_LOAD_ROUNDS: &str = "5";
 /// Rounds of the ticket gate's mutation-load measurement (`cargo xtask check`).
@@ -94,6 +104,8 @@ const WINDOWS_SUITE: &[&[&str]] = &[
         "--test",
         "pty_windows",
         "--test",
+        "command_windows",
+        "--test",
         "notifier_windows",
         "--test",
         "native_path_windows",
@@ -137,14 +149,22 @@ impl Scope {
     }
 
     fn workers(self) -> io::Result<String> {
-        self.workers_capped(env::var_os(NATIVE_WORKERS_VARIABLE))
+        self.workers_capped(env::var_os(self.workers_variable()))
     }
 
-    /// The native gate's workers: the CPUs up to 16, or `cap` when it is given.
+    /// The variable that caps this gate's mutation workers.
+    fn workers_variable(self) -> &'static str {
+        match self {
+            Self::Native => NATIVE_WORKERS_VARIABLE,
+            Self::Ticket | Self::Full | Self::Host => HOST_WORKERS_VARIABLE,
+        }
+    }
+
+    /// The gate's workers: `cap` when it is given; otherwise 8 for the host gates and the
+    /// CPUs up to 16 for the native gate.
     fn workers_capped(self, cap: Option<OsString>) -> io::Result<String> {
         match (self, cap) {
-            (Self::Ticket | Self::Full | Self::Host, _) => Ok(MUTATION_WORKERS.to_owned()),
-            (Self::Native, Some(cap)) => cap
+            (_, Some(cap)) => cap
                 .to_str()
                 .and_then(|text| text.parse::<u16>().ok())
                 .filter(|&count| count > 0)
@@ -153,10 +173,12 @@ impl Scope {
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
-                            "{NATIVE_WORKERS_VARIABLE} must be a positive whole number, not {cap:?}"
+                            "{} must be a positive whole number, not {cap:?}",
+                            self.workers_variable()
                         ),
                     )
                 }),
+            (Self::Ticket | Self::Full | Self::Host, None) => Ok(MUTATION_WORKERS.to_owned()),
             (Self::Native, None) => Ok(std::thread::available_parallelism()?
                 .get()
                 .min(16)
@@ -500,13 +522,27 @@ const SUITE: &[&[&str]] = if cfg!(windows) {
 };
 
 /// Names the suite to the quality scripts when it is only part of the workspace; without
-/// it they test the whole workspace.
+/// it they test the whole workspace. It also applies the worker job limit.
 fn suite_environment(command: &mut Command) -> &mut Command {
     if SUITE != [["--workspace"]] {
         command.env(
             "CLIMON2_MUTATION_SUITE",
             serde_json::to_string(SUITE).expect("the suite serializes"),
         );
+    }
+    worker_limits(command, env::var_os(WORKER_JOBS_VARIABLE))
+}
+
+/// Cargo and libtest read their limits from the environment, which the mutator passes on
+/// to every worker. Workers build without debug info: each has its own target folder,
+/// which with debug info nears 8.4 GB on Windows, and the gate's workers together filled
+/// the owner's VM's disk.
+fn worker_limits(command: &mut Command, jobs: Option<OsString>) -> &mut Command {
+    command.env("CARGO_PROFILE_DEV_DEBUG", "0");
+    if let Some(jobs) = jobs {
+        command
+            .env("CARGO_BUILD_JOBS", &jobs)
+            .env("RUST_TEST_THREADS", &jobs);
     }
     command
 }
@@ -689,6 +725,7 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/logging/windows.rs")
         | Some("crates/climon2-platform/src/daemon/windows.rs")
         | Some("crates/climon2-platform/src/pty/windows.rs")
+        | Some("crates/climon2-platform/src/command/windows.rs")
         | Some("crates/climon2-daemon/src/pty/windows.rs")
         | Some("crates/climon2-platform/src/library/windows.rs")
         | Some("crates/climon2-platform/src/notifier/windows.rs")
@@ -2269,25 +2306,51 @@ No selected line holds a mutation site; nothing to mutate.
     }
 
     #[test]
-    fn only_the_native_gate_takes_a_worker_cap_and_it_must_be_a_positive_number() {
+    fn workers_build_without_debug_info_and_a_job_limit_caps_their_cargo() {
+        let limits = |jobs: Option<&str>| {
+            let mut command = Command::new("cargo");
+            worker_limits(&mut command, jobs.map(OsString::from));
+            command
+                .get_envs()
+                .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+                .collect::<Vec<_>>()
+        };
+        let set = |name: &str, value: &str| (OsString::from(name), Some(OsString::from(value)));
+        assert_eq!(limits(None), [set("CARGO_PROFILE_DEV_DEBUG", "0")]);
+        assert_eq!(
+            limits(Some("2")),
+            [
+                set("CARGO_BUILD_JOBS", "2"),
+                set("CARGO_PROFILE_DEV_DEBUG", "0"),
+                set("RUST_TEST_THREADS", "2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_gate_takes_its_own_worker_cap_and_it_must_be_a_positive_number() {
         let cap = |text: &str| Some(OsString::from(text));
-        assert_eq!(Scope::Native.workers_capped(cap("2")).unwrap(), "2");
-        assert_eq!(Scope::Native.workers_capped(cap("40")).unwrap(), "40");
         let cpus = std::thread::available_parallelism().unwrap().get().min(16);
         assert_eq!(
             Scope::Native.workers_capped(None).unwrap(),
             cpus.to_string()
         );
+        assert_eq!(Scope::Native.workers_variable(), NATIVE_WORKERS_VARIABLE);
         for scope in [Scope::Ticket, Scope::Full, Scope::Host] {
-            assert_eq!(scope.workers_capped(cap("2")).unwrap(), MUTATION_WORKERS);
+            assert_eq!(scope.workers_capped(None).unwrap(), MUTATION_WORKERS);
+            assert_eq!(scope.workers_variable(), HOST_WORKERS_VARIABLE);
         }
-        for bad in ["0", "-1", "two", "", " 2"] {
-            let error = Scope::Native.workers_capped(cap(bad)).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
-            assert!(
-                error.to_string().contains(NATIVE_WORKERS_VARIABLE),
-                "{error}"
-            );
+        for scope in [Scope::Ticket, Scope::Full, Scope::Host, Scope::Native] {
+            assert_eq!(scope.workers_capped(cap("6")).unwrap(), "6");
+            assert_eq!(scope.workers_capped(cap("40")).unwrap(), "40");
+            for bad in ["0", "-1", "two", "", " 2"] {
+                let error = scope.workers_capped(cap(bad)).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
+                assert!(
+                    error.to_string().contains(scope.workers_variable()),
+                    "{error}"
+                );
+            }
         }
     }
 
@@ -2401,6 +2464,10 @@ No selected line holds a mutation site; nothing to mutate.
                 cfg!(windows),
             ),
             ("crates/climon2-platform/src/pty/windows.rs", cfg!(windows)),
+            (
+                "crates/climon2-platform/src/command/windows.rs",
+                cfg!(windows),
+            ),
             ("crates/climon2-daemon/src/pty/windows.rs", cfg!(windows)),
             (
                 "crates/climon2-platform/src/library/windows.rs",

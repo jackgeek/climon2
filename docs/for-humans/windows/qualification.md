@@ -111,6 +111,21 @@ optionally inside jobs of the shapes above, outer job first
 ([#317](https://github.com/jackgeek/climon2/issues/317)). Headless `exec`'s
 tests use it for every job shape.
 
+Built so far ([#324](https://github.com/jackgeek/climon2/issues/324)): the
+three job-shape scenarios, `WIN-03`, in
+`crates/climon2-cli/tests/packaged_windows.rs`. Each runs again outside every
+job through the relay, then hosts a shell under the Windows Terminal model and
+types `c2 exec --headless` into it:
+
+- In a job that allows breakaway, `exec` exits 0. The scenario then drops the
+  host, which ends every process in its job, and checks that the session's
+  daemon still runs and is in no job.
+- In a job that refuses breakaway, `exec` exits 125, says the daemon cannot
+  leave the job, and leaves no session.
+- `Start-Process -Wait -NoNewWindow` from `pwsh` and from Windows PowerShell
+  5.1 gives the same 125. `Start-Process` without `-Wait` starts the session,
+  so the job comes from `-Wait`.
+
 ## Shell profiles
 
 | Shell | Start-up | Prompt |
@@ -192,6 +207,17 @@ job tests installing with `install.ps1`
 ([#329](https://github.com/jackgeek/climon2/issues/329)). Like headless `exec`'s tests, it
 runs again outside every job, through the harness's relay.
 
+The same file holds the Windows forms of two more scenarios
+([#324](https://github.com/jackgeek/climon2/issues/324)):
+
+- **Nested `pwsh` sessions.** Inside a session, `c2 exec pwsh` starts a second
+  session at depth 2. Its daemon is in no job, so it has left the outer
+  session's job. `exit 7` in the inner session reaches the outer session's
+  shell, and `exit 9` in the outer one reaches the host's shell.
+- **Self-attach.** `c2 attach $env:CLIMON2_SESSION_ID` inside a session exits
+  125 with "cannot attach to the current session", and the session carries
+  on.
+
 The refusal of a session attaching to itself keeps its Unix intent, because
 the daemon sets `CLIMON2_SESSION_ID` for the command on Windows too
 ([Windows platform and lifecycle contract](lifecycle.md#self-attach-and-nested-sessions)).
@@ -217,6 +243,13 @@ specifies under "Private files and folders". No exception is recorded.
 | `WIN-09` | Ctrl+Break, Windows Terminal model | A program using the default handler ends with `0xC000013A` and the shell survives; the key-up record that accompanies Ctrl+Break never reaches the session as `0x03` |
 | `WIN-10` | Full-width statuses | `0xC000013A`, `259` and `0xFFFFFFFF` pass unchanged through the launcher, the CLI and the client |
 | `WIN-11` | Long working directory | `exec` from a working directory over 260 characters exits 126 |
+
+`WIN-07`, `WIN-10` and `WIN-11` are built
+([#322](https://github.com/jackgeek/climon2/issues/322)). `WIN-07` and
+`WIN-11` run headless `exec` through the relay; `WIN-10` runs ordinary `exec`
+through the launcher in the Windows Terminal model. `WIN-11` gives the CLI its
+working directory through a test hook, because Windows cannot start a
+program in a directory that long either.
 
 `WIN-09` to `WIN-11` follow the
 [Windows platform and lifecycle contract](lifecycle.md). Ctrl+Break

@@ -107,7 +107,9 @@ fn dependency_violations(package: &Package) -> Vec<String> {
         } else if is_test_only(&package.name) || dependency.path.is_none() {
             true
         } else if dependency.kind.as_deref() == Some("dev") {
+            // A package's tests may build its own test hooks (#322).
             is_test_only(&dependency.name)
+                || dependency.name == package.name
                 || allowed_internal_dependencies(&package.name).contains(&dependency.name.as_str())
         } else {
             allowed_internal_dependencies(&package.name).contains(&dependency.name.as_str())
@@ -262,6 +264,7 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-monitor", "climon2-daemon", None, Some(".")),
         ("climon2-monitor", "climon2-cli", None, Some(".")),
         ("climon2-cli", "climon2-monitor", None, Some(".")),
+        ("climon2-cli", "climon2-cli", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -290,6 +293,7 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-monitor", "climon2-vt", None),
         ("climon2-monitor", "climon2-discovery", None),
         ("climon2-test-term", "climon2-monitor", None),
+        ("climon2-cli", "climon2-cli", Some("dev")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {

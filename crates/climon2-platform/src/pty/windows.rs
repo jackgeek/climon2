@@ -4,7 +4,8 @@
 //!
 //! The daemon hosts its command in a pseudoconsole of the pinned, bundled
 //! ConPTY: `conpty.dll` loaded by full path from the daemon's own folder,
-//! beside `OpenConsole.exe`. The command starts with one `CreateProcessW`
+//! beside `OpenConsole.exe`. The command, resolved and quoted by
+//! [`crate::command`], starts with one `CreateProcessW`
 //! whose attribute list holds the pseudoconsole and the session job, with
 //! handle inheritance off and null standard handles, after the daemon set the
 //! session's variables in its own environment and cleared any inherited
@@ -15,6 +16,7 @@
 //! One thread per blocking handle: one reads the output pipe and one writes
 //! the input pipe, each through a bounded channel, so a full channel behaves
 //! as a full Unix PTY buffer does.
+use crate::command::Launch;
 use std::{
     cell::RefCell,
     ffi::OsStr,
@@ -219,18 +221,18 @@ fn session_job() -> io::Result<OwnedHandle> {
 }
 
 impl Opened {
-    /// Starts `argv` with one `CreateProcessW` in `cwd`, on the pseudoconsole
-    /// and in the session job from its first instruction, then releases the
-    /// pseudoconsole. `environment` is set in this process's own environment
-    /// first, which the command inherits.
+    /// Starts `launch` with one `CreateProcessW` in `cwd`, on the
+    /// pseudoconsole and in the session job from its first instruction, then
+    /// releases the pseudoconsole. `environment` is set in this process's own
+    /// environment first, which the command inherits.
     pub fn start(
         self,
-        argv: &[impl AsRef<OsStr>],
+        launch: &Launch,
         cwd: &Path,
         environment: &[(&str, &str)],
     ) -> io::Result<Hosted> {
         prepare(environment)?;
-        let (leader, pid) = self.console.spawn(argv, cwd)?;
+        let (leader, pid) = self.console.spawn(launch, cwd)?;
         self.console.release()?;
         Ok(Hosted::new(self, leader, pid))
     }
@@ -260,7 +262,7 @@ impl Console {
     /// Handle inheritance is off and there is no handle list (Windows refuses
     /// an empty one); null standard handles make the command take the
     /// pseudoconsole's.
-    fn spawn(&self, argv: &[impl AsRef<OsStr>], cwd: &Path) -> io::Result<(OwnedHandle, u32)> {
+    fn spawn(&self, launch: &Launch, cwd: &Path) -> io::Result<(OwnedHandle, u32)> {
         let job = self.job.as_raw_handle();
         let console = self.handle.unwrap_or_default();
         let mut attributes = Attributes::new(2)?;
@@ -275,7 +277,7 @@ impl Console {
             (&raw const job).cast(),
             size_of::<HANDLE>(),
         )?;
-        create(&mut attributes, argv, cwd)
+        create(&mut attributes, launch, cwd)
     }
 
     fn release(&self) -> io::Result<()> {
@@ -314,21 +316,22 @@ impl Drop for Console {
 
 fn create(
     attributes: &mut Attributes,
-    argv: &[impl AsRef<OsStr>],
+    launch: &Launch,
     cwd: &Path,
 ) -> io::Result<(OwnedHandle, u32)> {
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.lpAttributeList = attributes.list();
-    let mut line = command_line(argv);
+    let mut line = launch.line();
     let directory = wide(cwd.as_os_str());
     let mut information = PROCESS_INFORMATION::default();
-    // A mutable NUL-terminated command line, a NUL-terminated directory, the
-    // inherited environment and the extended startup information.
+    // A NUL-terminated application path, a mutable NUL-terminated command
+    // line, a NUL-terminated directory, the inherited environment and the
+    // extended startup information.
     check(unsafe {
         CreateProcessW(
-            ptr::null(),
+            launch.application().as_ptr(),
             line.as_mut_ptr(),
             ptr::null(),
             ptr::null(),

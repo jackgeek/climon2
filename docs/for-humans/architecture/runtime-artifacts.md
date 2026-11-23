@@ -60,13 +60,16 @@ Installation relationships are outside this consumption diagram.
 
 This diagram shows only what Windows changes in the diagram above: how the
 launcher reaches the CLI, how the CLI starts the daemon, how the daemon
-reaches the session command through ConPTY, the Windows pseudoconsole, and how
-the client and the monitor load the client library. How the CLI starts the
+reaches the session command through ConPTY, the Windows pseudoconsole, and
+through `cmd.exe` when the command is a batch file, and how the client and the
+monitor load the client library. How the CLI starts the
 client and the monitor is omitted. Arrows run from consumer to
 consumed artifact. Solid arrows exist: the launcher reaching the CLI
 ([#315](https://github.com/jackgeek/climon2/issues/315)), the CLI starting
 the daemon, which hosts the session's command in the bundled ConPTY
-([#317](https://github.com/jackgeek/climon2/issues/317)), and the client loading
+([#317](https://github.com/jackgeek/climon2/issues/317)) and runs a batch file
+through the system's `cmd.exe`
+([#322](https://github.com/jackgeek/climon2/issues/322)), and the client loading
 the library beside it to end a session for `c2 kill`
 ([#318](https://github.com/jackgeek/climon2/issues/318)) and to attach for
 `c2 exec` and `c2 attach` ([#321](https://github.com/jackgeek/climon2/issues/321)), and the monitor
@@ -92,6 +95,7 @@ flowchart TB
             openconsole["OpenConsole.exe"]
         end
         wcommand(["Session command"])
+        wcmd(["System cmd.exe"])
         inbox(["Inbox conhost.exe"])
 
         wlauncher -->|"spawns and waits for current version; current"| wcli
@@ -102,6 +106,8 @@ flowchart TB
         conpty -->|"starts from beside the DLL"| openconsole
         openconsole -->|"hosts the session pseudoconsole"| wcommand
         wdaemon -->|"creates in ConPTY and session job"| wcommand
+        wdaemon -->|"creates in ConPTY and session job for a .bat or .cmd command"| wcmd
+        wcmd -->|"runs the resolved script with escaped arguments"| wcommand
         conpty --x|"fallback refused: exec fails with 125"| inbox
     end
 ```
@@ -113,8 +119,14 @@ flowchart TB
 | `climon2_client.dll` | The client library, the Windows build of the Rust cdylib above. It links the C runtime statically, as every Windows build does, imports only Windows system DLLs and exports only its bootstrap symbol. The loader never frees it and refuses it when Windows loaded another file for its path. |
 | `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
 | `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |
-| Session command | The program the session runs. |
+| Session command | The program the session runs, found through `PATH` and `PATHEXT` by the daemon, never in the current directory. It sees its first argument as typed. |
+| System `cmd.exe` | Windows' command processor from the system folder. The daemon starts it with `/e:ON /v:OFF /d /c` to run a session command that is a `.bat` or `.cmd` file. |
 | Inbox `conhost.exe` | Windows' own console host. It is never used: if `OpenConsole.exe` is missing, `conpty.dll` would fall back to it, so the daemon checks both files and `exec` fails with 125. |
+
+**Current (#322):** the daemon resolves the session's command itself and
+starts it by its resolved path. A `.bat` or `.cmd` command runs through the
+system's `cmd.exe`, which is not part of the release
+([Windows platform and lifecycle contract](../windows/lifecycle.md#command-resolution-and-arguments)).
 
 **Current (#319, #329, #327):** the Windows release zip carries `c2.exe`,
 `install.exe` and, in its version folder, `climon2-cli.exe`,

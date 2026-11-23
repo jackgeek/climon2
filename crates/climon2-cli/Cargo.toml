@@ -39,3 +39,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+# The working-directory test hook for the long working directory test
+# (tests/exec_windows.rs); on Unix climon2-test-term enables the test hooks.
+climon2-cli = { path = ".", features = ["test-hooks"] }

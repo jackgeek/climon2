@@ -72,6 +72,16 @@ jobs:
     timeout-minutes: 360
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+      # The Linux and Windows gates share the owner's PC; 6 workers each
+      # (owner decision, 2026-11-22, docs/for-humans/quality-runners.md).
+      CLIMON2_MUTATION_WORKERS: "6"
+      # Each worker's Cargo gets 2 build jobs and 2 test threads, so the two gates
+      # do not starve each other's timing tests (owner decision, 2026-11-22).
+      CLIMON2_MUTATION_WORKER_JOBS: "2"
+      # The whole gate, its own baseline included, gets 8 build jobs and 8 test
+      # threads, so the two gates together use at most half the PC's 32 threads.
+      CARGO_BUILD_JOBS: "8"
+      RUST_TEST_THREADS: "8"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,6 +90,10 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: ./.github/actions/controlled-bash
+      # A cancelled or failed gate leaves its mutation workers' copies behind,
+      # and with clean: false they would fill the machine's disk.
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify changed host source
@@ -99,11 +113,19 @@ jobs:
     defaults:
       run:
         shell: bash
-    # The runner's .env supplies CLIMON2_QUALITY_PYTHON, CLIMON2_NATIVE_MUTATION_WORKERS,
-    # CLIMON2_TEST_CONPTY_CACHE and the second account the cross-account test logs on
-    # as (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
+    # The runner's .env supplies CLIMON2_QUALITY_PYTHON, CLIMON2_TEST_CONPTY_CACHE
+    # and the second account the cross-account test logs on as
+    # (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+      # Shares the owner's PC with the Linux gate; 6 workers each.
+      CLIMON2_NATIVE_MUTATION_WORKERS: "6"
+      # 2 build jobs and 2 test threads per worker, as on the Linux gate.
+      CLIMON2_MUTATION_WORKER_JOBS: "2"
+      # The whole gate, its own baseline included, gets 8 build jobs and 8 test
+      # threads, so the two gates together use at most half the PC's 32 threads.
+      CARGO_BUILD_JOBS: "8"
+      RUST_TEST_THREADS: "8"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -111,6 +133,10 @@ jobs:
           clean: false
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
+      # A cancelled or failed gate leaves its mutation workers' copies behind,
+      # and with clean: false they would fill the machine's disk.
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify only Windows-exclusive source
@@ -140,6 +166,10 @@ jobs:
       - name: Install universal payload targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: ./.github/actions/controlled-bash
+      # A cancelled or failed gate leaves its mutation workers' copies behind,
+      # and with clean: false they would fill the machine's disk.
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify only macOS-exclusive source
