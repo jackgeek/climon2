@@ -299,12 +299,16 @@ impl Console {
             size_of::<isize>(),
         )?;
         let (process, thread, pid) = create(&mut attributes, launch, cwd)?;
-        if let Err(error) = self.join(&process, &thread) {
+        self.enter(&process, &thread)?;
+        Ok((process, pid))
+    }
+
+    /// Joins the session job, or ends the process before it runs anything.
+    fn enter(&self, process: &OwnedHandle, thread: &OwnedHandle) -> io::Result<()> {
+        self.join(process, thread).inspect_err(|_| {
             // The handle has every access; the process has run nothing.
             unsafe { TerminateProcess(process.as_raw_handle(), STATUS_CONTROL_C_EXIT as u32) };
-            return Err(error);
-        }
-        Ok((process, pid))
+        })
     }
 
     /// Puts the suspended `process` in the session job, then lets `thread`,
