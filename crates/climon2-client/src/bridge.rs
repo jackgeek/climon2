@@ -851,9 +851,11 @@ mod tests {
     #[test]
     fn a_held_escape_goes_on_alone_once_it_waited_with_no_byte_after_it() {
         let mut filter = InputFilter::new(ClientSettings::default()).releasing_after(Some(AFTER));
-        assert!(filter.feed(b"x", true).len() == 1);
-        let held = Instant::now();
-        assert!(filter.release_due(held, true).is_empty());
+        assert!(filter.feed(b"x\x1b", true).len() == 1);
+        let held = filter.held_since.expect("the Escape is held");
+        let early = held + AFTER - Duration::from_nanos(1);
+        assert!(filter.release_due(early, true).is_empty());
+        // Exactly the delay after the read is late enough.
         assert_eq!(
             actions(filter.release_due(held + AFTER, true)),
             ["input:[27]"]
@@ -865,7 +867,7 @@ mod tests {
     #[test]
     fn a_held_marker_start_is_released_as_keys_and_a_whole_marker_is_not_held() {
         let mut filter = InputFilter::new(ClientSettings::default()).releasing_after(Some(AFTER));
-        assert!(filter.feed(b"[20", true).is_empty());
+        assert!(filter.feed(b"\x1b[20", true).is_empty());
         let later = Instant::now() + AFTER;
         assert_eq!(
             actions(filter.release_due(later, false)),
@@ -873,18 +875,18 @@ mod tests {
             "an observer's held keys are not input"
         );
         assert_eq!(
-            actions(filter.feed(b"[200~p", true)),
+            actions(filter.feed(b"\x1b[200~p", true)),
             ["input:[27, 91, 50, 48, 48, 126, 112]"]
         );
         // Inside a paste, a held end marker's start is payload in waiting.
-        assert!(filter.feed(b"[20", true).is_empty());
+        assert!(filter.feed(b"\x1b[20", true).is_empty());
         assert!(filter.release_due(Instant::now() + AFTER, true).is_empty());
     }
 
     #[test]
     fn without_a_delay_a_held_escape_waits_for_the_next_byte() {
         let mut filter = InputFilter::new(ClientSettings::default());
-        assert!(filter.feed(b"", true).is_empty());
+        assert!(filter.feed(b"\x1b", true).is_empty());
         assert!(
             filter
                 .release_due(Instant::now() + AFTER * 100, true)
