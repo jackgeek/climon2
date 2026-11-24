@@ -78,10 +78,13 @@ How the commands behave on Windows is in [Commands](commands.md#on-windows).
 
 ### Windows limitations
 
-- **The Microsoft Store build of PowerShell 7 cannot run in a session.**
-  Windows refuses to start a Store app inside a session's job object. Install
-  PowerShell 7 from its MSI package, or use `powershell` or `cmd.exe`, as the
-  session's shell. Running `c2` from the Store build is not affected.
+- **Programs started by the Microsoft Store build of PowerShell 7 can outlive
+  their session.** The Store build runs in a session like any other shell, but
+  Windows does not let a session keep track of the programs it starts. Ending
+  the session still ends those that use the session's window. One started
+  hidden, in its own window, or a graphical app, such as with
+  `Start-Process -WindowStyle Hidden`, can keep running. The MSI build of
+  PowerShell 7, `powershell` and `cmd.exe` do not have this gap.
 - **Working directories over 260 characters.** `c2 exec` cannot start a command
   in one, whatever the long-path setting: it exits 126 with "command cannot be
   executed".

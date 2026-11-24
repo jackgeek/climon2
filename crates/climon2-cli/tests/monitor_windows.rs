@@ -116,20 +116,12 @@ fn work(home: &Home) -> PathBuf {
     home.0.path().join("work")
 }
 
-/// The shell the sessions run: the controlled `pwsh`, unless
-/// `CLIMON2_TEST_SESSION_SHELL` names another. A machine whose only
-/// PowerShell 7 is the Store build needs that: Windows refuses to start a
-/// Store app inside a session's job.
-fn session_shell(pwsh: &Path) -> PathBuf {
-    std::env::var_os("CLIMON2_TEST_SESSION_SHELL").map_or_else(|| pwsh.to_owned(), PathBuf::from)
-}
-
 /// Starts a headless session running [`WATCHED`] as `name`, and returns
 /// its id.
 fn headless(package: &Package, home: &Home, pwsh: &Path, name: &str) -> String {
     let output = Command::new(package.launcher())
         .args(["exec", "--headless"])
-        .arg(session_shell(pwsh))
+        .arg(pwsh)
         .args([
             "-NoLogo",
             "-NoProfile",

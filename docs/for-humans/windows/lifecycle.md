@@ -100,8 +100,12 @@ tasks.
 The daemon starts the command with one `CreateProcessW`, with no helper
 process:
 
-- Its attribute list holds `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` and
-  `PROC_THREAD_ATTRIBUTE_JOB_LIST` (the session job).
+- Its attribute list holds `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`.
+- The command starts suspended (`CREATE_SUSPENDED`). The daemon puts it in
+  the session job with `AssignProcessToJobObject`, and only then lets it run
+  with `ResumeThread`, so the command is in the job before its first
+  instruction. If either call fails, the daemon ends the command before it
+  runs and reports a command that cannot start.
 - Handle inheritance is off and there is no handle list. Windows rejects an
   empty list (error 24), and with inheritance off nothing leaks.
 - `STARTF_USESTDHANDLES` with null standard handles, so the command uses the
@@ -117,6 +121,27 @@ process:
   [Command resolution and arguments](#command-resolution-and-arguments)). The
   program sees `argv[0]` as typed, as on Unix. A batch file's program is
   `cmd.exe`, which is given the script's resolved path.
+
+The job is not given in the attribute list (`PROC_THREAD_ATTRIBUTE_JOB_LIST`),
+because Windows refuses that for a Microsoft Store app, such as the Store
+build of `pwsh` ([#393](https://github.com/jackgeek/climon2/issues/393)). A
+Store app is started through its **app execution alias**, a file in
+`%LOCALAPPDATA%\Microsoft\WindowsApps` that stands for the program inside the
+app's package; `pwsh` on `PATH` resolves to it. The probes, on Windows 11
+build 26200 with Store `pwsh` 7.7.0, started from a process that is not a
+Store app itself:
+
+| How the job is given | Through the alias | Through the package's own `pwsh.exe` |
+| --- | --- | --- |
+| In the attribute list | Refused: error 5, access denied | Refused: `0xC0070005` |
+| Suspended start, then `AssignProcessToJobObject` | Starts in the job | Starts in the job |
+| Not given | Starts in no job | Starts in no job |
+
+The results were the same with the bundled pseudoconsole, Windows' own, or
+none, and whether the starting process had a console or was detached as the
+daemon is. A Store `pwsh` started suspended did not run until it was resumed.
+A shell starts the alias with no job in its attribute list, and its child
+inherits the shell's job, so `pwsh` typed at a session's shell always ran.
 
 A working directory over 260 characters cannot be used: `CreateProcessW` fails
 with error 267 under every long-path setting, as for a missing directory. The
@@ -165,19 +190,17 @@ attaches to within five seconds of its start ends the same way. After
 `c2 kill`, every attached client exits with the leader's status at its full
 32 bits, which the CLI and the launcher pass on unchanged.
 
-The Store build of `pwsh` is in the session job, but the processes it starts
-are in no job. Those on the session's console still end at step 1. A program
-it starts detached from the console (hidden, in its own window, or a GUI app)
-can outlive the session. This is accepted rather than hunting descendants by
-parent PID, which Windows reuses. Unix has a similar gap for programs that
-detach with `setsid`.
-
-As built, a session cannot run the Store build at all: Windows refuses to
-start a Store app inside the session's job, which the command joins as it is
-created. The CLI's Windows tests therefore take another shell for their
-sessions where the Store build is the only PowerShell 7
-([`crates/climon2-cli/README.md`](../../../crates/climon2-cli/README.md)).
-Starting `c2` from the Store build is not affected.
+The Store build of `pwsh` is in the session job, whether it is the session's
+command or started from the session's shell, but the processes it starts are
+in no job. That holds even for a job that refuses breakaway, and for a
+program it starts on the session's console. Those on the console still end at
+step 1. A program it starts detached from the console (hidden, in its own
+window, or a GUI app) can outlive the session. This is accepted rather than
+hunting descendants by parent PID, which Windows reuses. Unix has a similar
+gap for programs that detach with `setsid`. Running the Store build as the
+session's command
+([#393](https://github.com/jackgeek/climon2/issues/393)) does not widen the
+gap: the same Store `pwsh`, started from a session's shell, already had it.
 
 ## Hand-offs
 
@@ -359,7 +382,7 @@ the identity check.
 | 1 | Exit statuses are full-width `u32`, passed through every hand-off unchanged. climon2's own 2, 125, 126, 127 and 129 are unchanged. | Automated: `0xC000013A`, `259` and `0xFFFFFFFF` round-trip through every hand-off |
 | 2 | There are no signal-derived statuses. Hang-up and kill report the command's close status (`0xC000013A`, or the program's own, such as vim's `0x1`); a process the session job ends reports `0xC000013A`. | Automated: the close-status scenarios in [Windows host and shell qualification](qualification.md#windows-only-scenarios) |
 | 3 | `exec` exits 125 when the daemon cannot leave the caller's job: a job that refuses breakaway, or `Start-Process -Wait`. | Automated: the three job-shape scenarios |
-| 4 | A session cannot run Store `pwsh`; the probes found that, where it ran, programs it started detached from the session's console could outlive the session. | Manual: an observation recorded with the checklist |
+| 4 | Programs that Store `pwsh` starts are in no job, so those detached from the session's console can outlive the session. | Store `pwsh` itself in the session job: automated where it is installed, not on CI. Its programs: manual, an observation recorded with the checklist |
 | 5 | A working directory over 260 characters makes `exec` exit 126. | Automated scenario |
 | 6 | Ctrl+Break reaches the session in Windows Terminal through the attach helper; in VS Code it does nothing. | Automated: the Windows Terminal model scenario. The VS Code gap is documented only |
 | 7 | Sessions end at sign-out and shutdown, with no status promised. | Documented only; it cannot be tested without ending the run |

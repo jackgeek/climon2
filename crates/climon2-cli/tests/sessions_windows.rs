@@ -80,9 +80,8 @@ Set-Content -LiteralPath (Join-Path $env:OWNED_DIR 'command.pid') $PID
 while ($true) { Start-Sleep 1 }
 "#;
 
-/// The session's shell: the controlled `pwsh`, or locally, where only the
-/// Store build may be installed, which a session cannot start, Windows
-/// PowerShell 5.1 in its place. CI requires the MSI `pwsh`.
+/// The session's shell: the controlled `pwsh`, or locally, where it is
+/// missing, Windows PowerShell 5.1 in its place. CI requires the MSI `pwsh`.
 fn session_shell() -> PathBuf {
     controlled_pwsh().unwrap_or_else(|| {
         Path::new(&env::var_os("SystemRoot").unwrap())
