@@ -3,10 +3,10 @@
 The runtime supports macOS 15+ on Apple Silicon and Intel, and x86_64
 GNU/Linux with an Ubuntu 24.04/glibc 2.39 release baseline. Arch Linux is a
 native development host. Windows (x86_64 MSVC, Windows 11 build 26100 or
-newer) is specified, not implemented; its I/O and transport decisions are under
-[Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented),
+newer) is built to these decisions; its I/O and transport decisions are under
+[Windows I/O and transport](#windows-io-and-transport),
 and its process lifecycle under
-[Windows lifecycle](#windows-lifecycle-agreed-not-implemented). Each
+[Windows lifecycle](#windows-lifecycle). Each
 platform-specific concern is its own module, with platform-neutral function
 signatures and `#[cfg(target_os = …)]` bodies. There are no trait objects or
 runtime platform dispatch. Unsupported targets hit `compile_error!` inside
@@ -64,7 +64,7 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 includ
   actually compiles them. Shared source is qualified on the Linux development
   host; native CI retains runtime and archive coverage on both platforms.
 
-## Windows I/O and transport (agreed, not implemented)
+## Windows I/O and transport
 
 Decided in [Define Windows I/O and transport architecture](https://github.com/jackgeek/climon2/issues/211) (owner, 2026-11-19). Linux and macOS behaviour does not change.
 
@@ -193,13 +193,13 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   Shift+Enter, are a documented limitation. Ctrl+Break reaches the session
   through a console control handler instead, and a Break request to the
   daemon ([#326](https://github.com/jackgeek/climon2/issues/326))
-  ([Windows lifecycle](#windows-lifecycle-agreed-not-implemented)). Output enables
+  ([Windows lifecycle](#windows-lifecycle)). Output enables
   `ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN` and the
   UTF-8 code page, and writes raw bytes with `WriteFile`, never splitting a
   UTF-8 character across writes (a pure `climon2-core` boundary function, used
   only on Windows). Every exit path restores both console modes and code pages.
 
-## Windows lifecycle (agreed, not implemented)
+## Windows lifecycle
 
 Decided in [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212) (owner, 2026-11-21), after measurements on a Windows 11 VM. The full contract and its exceptions are in [Windows platform and lifecycle contract](../for-humans/windows/lifecycle.md).
 
@@ -220,8 +220,8 @@ Decided in [Define Windows platform support and lifecycle contract](https://gith
 
 ## Notes for future ports
 
-- **Windows peer check and runtime directory:** superseded by [Windows I/O and transport](#windows-io-and-transport-agreed-not-implemented).
-- **Windows hang-up, launcher and exit status:** superseded by [Windows lifecycle](#windows-lifecycle-agreed-not-implemented). The launcher's contract freezes when Windows first ships (ADR 0002).
+- **Windows peer check and runtime directory:** superseded by [Windows I/O and transport](#windows-io-and-transport).
+- **Windows hang-up, launcher and exit status:** superseded by [Windows lifecycle](#windows-lifecycle). The launcher's contract freezes when Windows first ships (ADR 0002).
 
 ## Shell profiles
 
@@ -250,7 +250,10 @@ The Windows shell profiles, the host models and the scenarios they run are speci
   including installer exchange and daemon identity adapters, live in native
   source files so this split cannot omit them. Native-only CI still exercises
   real workspace callers for coverage and the unchanged-worker baseline.
-  Windows retains platform-neutral contract tests, not runtime qualification.
+  Windows CI runs the runtime and archive tests that build on Windows on
+  `windows-2025`, and the Windows-only CRAP and mutation gate qualifies
+  registered Windows-exclusive source at the same thresholds
+  ([Windows quality and CI qualification](../for-humans/windows/quality.md)).
 - Local full quality gates must pass for the exact release commit before
   tagging; this maintainer-owned check is not duplicated or certified by CI.
 - One release publishes the Linux, macOS and Windows archives only after every
