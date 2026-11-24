@@ -21,7 +21,8 @@ not supported for interactive sessions. `install.sh` still runs under
 On Windows, climon2 is tested in Windows Terminal and in the VS Code
 integrated terminal with its default settings. The tested shells are
 PowerShell 7 (`pwsh`) installed from its MSI package, Windows PowerShell 5.1
-(`powershell`) and `cmd.exe`. Other terminals, such as the
+(`powershell`) and `cmd.exe`. The tested full-screen apps are vim for
+Windows and Microsoft Edit. Other terminals, such as the
 classic console window or an SSH session, and other shells are not tested but
 not blocked. `exec`, `attach` and `monitor` need a console on stdin and stdout:
 redirected input or output is refused as a missing terminal is on Unix, with
@@ -111,6 +112,11 @@ How the commands behave on Windows is in [Commands](commands.md#on-windows).
   changes as `CSI I` and `CSI O` only after it turns focus reporting on, as on
   Unix. Your terminal's own pseudoconsole passes on climon2's "focus reporting
   off" and then turns it straight back on for itself.
+- **A lone Escape waits 50 ms.** climon2 holds an Escape until it knows
+  whether a paste follows, and Windows reads an Escape and the key after it,
+  sent together, as Alt with that key. So on Windows an Escape with no key
+  after it reaches the session 50 ms later, and an Escape followed by another
+  key within 50 ms may arrive as Alt with that key.
 
 ## Diagnostics
 
