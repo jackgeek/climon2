@@ -75,6 +75,12 @@ const OUTPUT_CHUNK: usize = 16 * 1024;
 const QUEUED: usize = 4;
 /// How long the end of a bridge waits for queued output to reach the console.
 const DRAIN: Duration = Duration::from_secs(5);
+/// How long the client holds a lone Escape, or the start of a paste marker,
+/// before it passes it on as keys (#328). The session's pseudoconsole reads
+/// an Escape and the byte after it, written together, as Alt with that byte,
+/// so a held Escape must go on its own. 50 ms is longer than the gap between
+/// the bytes of one sequence and shorter than a typist's next key.
+pub const LONE_ESCAPE: Option<Duration> = Some(Duration::from_millis(50));
 
 pub fn require_ttys() -> io::Result<()> {
     if console(&io::stdin()) && console(&io::stdout()) {

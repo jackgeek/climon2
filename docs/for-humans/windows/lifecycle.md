@@ -143,6 +143,12 @@ Hang-up, whether from the [leave policy](../../../GLOSSARY.md) or `c2 kill`:
 3. `TerminateJobObject(job, 0xC000013A)` for anything left in the job.
 4. The leader's status, as it stands, is the session's status.
 
+From the close on, the daemon reads no more of the session's output, and its
+output thread drops what the pseudoconsole still writes. Otherwise a program
+that writes as it ends on the close, as vim does, blocks on the full output
+pipe until the job ends it
+([#328](https://github.com/jackgeek/climon2/issues/328)).
+
 The probes recorded the leader's status after a close as `0xC000013A` for
 `pwsh`, `powershell`, `cmd.exe` and Edit, and `0x1` for vim. Windows' own
 five-second kill of console processes after `CTRL_CLOSE_EVENT` races the
@@ -208,6 +214,16 @@ Raw mode clears `ENABLE_PROCESSED_INPUT`, `ENABLE_LINE_INPUT` and
 client reads key-down records only: key-up records are ignored. Resize
 arrives as `WINDOW_BUFFER_SIZE_EVENT`. Close, logoff and shutdown end the
 client with 129. The monitor uses the same console rules.
+
+The client holds an Escape, and the bytes after it while they could still
+begin a paste marker (`ESC [ 2 0 0 ~`), until it knows which they are. On
+Unix it holds them until the next byte. The session's pseudoconsole reads
+an Escape and the byte after it, written together, as Alt with that byte, so
+on Windows the client passes held bytes on by themselves once 50 ms pass
+with no byte after them: a lone Escape, such as the one that leaves vim's
+insert mode, reaches the session alone. 50 ms is longer than the gap
+between the bytes of one sequence and shorter than the gap before a typed
+next key ([#328](https://github.com/jackgeek/climon2/issues/328)).
 
 With VT input on, the console turns the host's focus reports into the
 typed bytes `CSI I` and `CSI O` once the program reading it turns focus

@@ -349,3 +349,67 @@ fn the_answer_to_a_commands_device_attributes_request_reaches_it() {
     let (text, _) = read_until(&hosted, |text| text.contains("GOT:1b5b3f3663"));
     assert!(text.contains("GOT:1b5b3f3663"), "{text:?}");
 }
+
+/// A command that fills its output until the host stops reading, then, on
+/// its console's close, writes more and exits 9, as vim does with `0x1`.
+const CLOSE_WRITER: &str = r#"Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class Closing {
+    public delegate bool Handler(uint kind);
+    [DllImport("kernel32.dll")] static extern bool SetConsoleCtrlHandler(Handler handler, bool add);
+    [DllImport("kernel32.dll")] static extern void ExitProcess(uint code);
+    static Handler kept = OnEvent;
+    static bool OnEvent(uint kind) {
+        if (kind == 2) {
+            Console.Out.Write(new string('c', 64 * 1024));
+            ExitProcess(9);
+        }
+        return false;
+    }
+    public static void Install() { SetConsoleCtrlHandler(kept, true); }
+}
+'@
+[Closing]::Install()
+'CLOSE-' + 'WRITER'
+while ($true) { [Console]::Out.Write('x' * 4096) }
+"#;
+
+/// After a hang-up closes the console the daemon reads no more output, so
+/// the output thread drops it: a program that writes as it ends on the close
+/// ends with its own status, not the job's at the end of the grace. And the
+/// daemon's wait still waits rather than spin.
+#[test]
+fn after_a_hang_up_a_program_writing_on_the_close_ends_with_its_own_status() {
+    let mut hosted = start(&[
+        "powershell",
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        CLOSE_WRITER,
+    ]);
+    let (text, _) = read_until(&hosted, |text| text.contains("CLOSE-WRITER"));
+    assert!(text.contains("CLOSE-WRITER"), "{text:?}");
+    // Unread, the output fills every queue and the program blocks writing.
+    std::thread::sleep(Duration::from_secs(1));
+    hosted.close();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = hosted.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() > deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status, Some(9));
+    let waited = Instant::now();
+    hosted.wait_readable(Duration::from_millis(300));
+    assert!(
+        waited.elapsed() >= Duration::from_millis(250),
+        "{:?}",
+        waited.elapsed()
+    );
+    assert_eq!(hosted.end().unwrap(), 9);
+}

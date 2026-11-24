@@ -173,12 +173,15 @@ The scenarios are in `crates/climon2-cli/tests/fullscreen_windows.rs`, under
 both host models. From a session's `pwsh` each app opens a document, adds a
 line, detaches, is attached again with its screen restored, sees the host's
 new size after a resize, saves and quits, and leaves the shell's main screen
-as it was. Edit passes. vim's are written but ignored: the client holds a
-lone Escape as the possible start of a paste marker until the next byte
-arrives. The session's pseudoconsole then reads the Escape and that byte
-together as Alt with the byte, so vim never leaves insert mode. How long the
-client should wait before passing a lone Escape on is a question for the
-owner on #328, because it changes the shared client on every platform.
+as it was. Both pass under both models.
+
+vim leaves insert mode with a lone Escape. The client holds an Escape as the
+possible start of a paste marker until the next byte arrives, and the
+session's pseudoconsole reads an Escape and the byte after it, written
+together, as Alt with that byte. So on Windows the client passes held bytes
+on by themselves once 50 ms pass with no byte after them
+([Windows platform and lifecycle contract](lifecycle.md#client-console)). Unix
+keeps holding them until the next byte (owner decision on #328).
 
 Edit could not start in a session until the daemon answered its
 pseudoconsole's own device attributes request. The pseudoconsole takes the
@@ -366,10 +369,12 @@ session of each shell and runs `c2 kill`: both exit with `0xC000013A`. The
 has their profiles. vim and Edit join `WIN-02` with their pinned downloads
 ([#328](https://github.com/jackgeek/climon2/issues/328)), in
 `fullscreen_windows.rs`: `c2 kill` of a session whose command is the app
-ends its client with `0xC000013A` for each. That is not the `0x1` recorded
-for vim in the table above. Outside a session vim's own close handler exits
-`0x1` at once, but in a session it does not finish within the grace, so the
-session job ends it. Why is an open question on #328. Where only the Store
+ends its client with vim's `0x1` or Edit's `0xC000013A`. vim's close handler
+writes to the console as it ends. The daemon reads no output during the
+grace, so until #328 ConPTY blocked on the full output pipe and vim with it,
+and the session job ended vim with `0xC000013A`. The daemon's output thread
+now drops what it reads once the pseudoconsole is closed
+([Session job and hang-up](lifecycle.md#session-job-and-hang-up)). Where only the Store
 build of `pwsh` is installed, which a session cannot start, the local runs of
 `WIN-01` use `powershell` in its place; CI requires the MSI build. In
 `crates/climon2-cli/tests/attach_deadline_windows.rs`, an ordinary session

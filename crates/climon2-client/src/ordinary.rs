@@ -67,9 +67,24 @@ fn raw_bridge(
         state.signals,
         &metadata.session_id,
         settings,
+        lone_escape(),
     )?;
     drop(raw);
     Ok(exit_code(result, metadata))
+}
+
+/// How long the bridge holds a lone Escape (`terminal::LONE_ESCAPE`); with
+/// `test-hooks`, `CLIMON2_CLIENT_LONE_ESCAPE_MS` sets it, so the Unix suites
+/// test the timed release Windows uses.
+fn lone_escape() -> Option<std::time::Duration> {
+    #[cfg(feature = "test-hooks")]
+    if let Some(milliseconds) = std::env::var("CLIMON2_CLIENT_LONE_ESCAPE_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        return Some(std::time::Duration::from_millis(milliseconds));
+    }
+    terminal::LONE_ESCAPE
 }
 
 #[cfg(feature = "test-hooks")]

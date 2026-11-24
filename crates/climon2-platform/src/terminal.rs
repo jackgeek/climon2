@@ -13,6 +13,10 @@ mod native;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod unix {
     use crate::waiting::{Interest, Watch};
+    /// On Unix a lone Escape, or the start of a paste marker, waits for the next
+    /// byte, as it always has (#328): a program on a Unix terminal reads an
+    /// Escape followed by a byte that starts no sequence it knows as two keys.
+    pub const LONE_ESCAPE: Option<std::time::Duration> = None;
     use climon2_core::protocol::TerminalSize;
     use signal_hook::{SigId, consts::signal::*};
     use std::{

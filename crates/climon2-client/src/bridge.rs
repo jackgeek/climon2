@@ -89,6 +89,11 @@ struct InputFilter {
     prefix_pending: bool,
     paste: Paste,
     marker: Vec<u8>,
+    /// How long held bytes wait for the next byte before they go on as keys;
+    /// `None` holds them until it comes (`terminal::LONE_ESCAPE`).
+    release_after: Option<Duration>,
+    /// When the last read left bytes held outside a paste.
+    held_since: Option<Instant>,
 }
 
 impl InputFilter {
@@ -98,6 +103,12 @@ impl InputFilter {
             take_control: settings.take_control_key().map(|key| key.byte()),
             ..Self::default()
         }
+    }
+
+    /// Held bytes go on as keys once they waited `after` for the next byte.
+    fn releasing_after(mut self, after: Option<Duration>) -> Self {
+        self.release_after = after;
+        self
     }
 
     /// Resets the key state; a paste still open is no longer this role's input.
@@ -115,6 +126,27 @@ impl InputFilter {
             if self.settle(controlling, &mut actions) {
                 self.marker.clear();
                 break;
+            }
+        }
+        let held = self.paste == Paste::Outside && !self.marker.is_empty();
+        self.held_since = held.then(Instant::now);
+        actions
+    }
+
+    /// Once held bytes have waited `release_after` with no byte after them,
+    /// passes them on as the keys they are: a lone Escape, or a paste
+    /// marker's start that no marker followed.
+    fn release_due(&mut self, now: Instant, controlling: bool) -> Vec<FilterAction> {
+        let due = self
+            .release_after
+            .zip(self.held_since)
+            .is_some_and(|(after, since)| now >= since + after);
+        let mut actions = Vec::new();
+        if due {
+            self.held_since = None;
+            // A paste marker's start holds no `d`, so nothing here detaches.
+            for byte in std::mem::take(&mut self.marker) {
+                self.pass(byte, controlling, &mut actions);
             }
         }
         actions
@@ -286,12 +318,13 @@ pub fn run(
     signals: Signals,
     id: &SessionId,
     settings: ClientSettings,
+    lone_escape: Option<Duration>,
 ) -> io::Result<BridgeExit> {
     let mut bridge = Bridge {
         attachment: opened.attachment,
         terminal: Bridged::new(terminal)?,
         signals,
-        filter: InputFilter::new(settings),
+        filter: InputFilter::new(settings).releasing_after(lone_escape),
         takeover: settings.take_control_key(),
         size: opened.size,
         told: opened.size,
@@ -377,6 +410,7 @@ impl Bridge {
     }
 
     fn tick(&mut self) -> io::Result<Option<BridgeExit>> {
+        self.release_held();
         self.resize()?;
         self.pass_break();
         self.send()?;
@@ -635,10 +669,22 @@ impl Bridge {
             return false;
         }
         let actions = self.filter.feed(read, self.role.controlling());
+        self.apply(actions);
+        true
+    }
+
+    /// Held bytes that waited long enough go on as keys (`terminal::LONE_ESCAPE`).
+    fn release_held(&mut self) {
+        let actions = self
+            .filter
+            .release_due(Instant::now(), self.role.controlling());
+        self.apply(actions);
+    }
+
+    fn apply(&mut self, actions: Vec<FilterAction>) {
         if !matches!(self.role, Role::Restoring(_)) {
             self.perform(actions);
         }
-        true
     }
 
     fn perform(&mut self, actions: Vec<FilterAction>) {
@@ -742,6 +788,7 @@ mod tests {
     use crate::attachment::Ending;
     use climon2_core::keys::{ClientSettings, ControlKey};
     use std::io;
+    use std::time::{Duration, Instant};
 
     fn actions(actions: Vec<FilterAction>) -> Vec<String> {
         actions
@@ -797,6 +844,53 @@ mod tests {
             actions(filter.feed(b"\x1b[200~z\x1b[201~", true)),
             ["input:[27, 91, 50, 48, 48, 126, 122, 27, 91, 50, 48, 49, 126]"]
         );
+    }
+
+    const AFTER: Duration = Duration::from_millis(50);
+
+    #[test]
+    fn a_held_escape_goes_on_alone_once_it_waited_with_no_byte_after_it() {
+        let mut filter = InputFilter::new(ClientSettings::default()).releasing_after(Some(AFTER));
+        assert!(filter.feed(b"x", true).len() == 1);
+        let held = Instant::now();
+        assert!(filter.release_due(held, true).is_empty());
+        assert_eq!(
+            actions(filter.release_due(held + AFTER, true)),
+            ["input:[27]"]
+        );
+        // Released once.
+        assert!(filter.release_due(held + AFTER * 2, true).is_empty());
+    }
+
+    #[test]
+    fn a_held_marker_start_is_released_as_keys_and_a_whole_marker_is_not_held() {
+        let mut filter = InputFilter::new(ClientSettings::default()).releasing_after(Some(AFTER));
+        assert!(filter.feed(b"[20", true).is_empty());
+        let later = Instant::now() + AFTER;
+        assert_eq!(
+            actions(filter.release_due(later, false)),
+            Vec::<String>::new(),
+            "an observer's held keys are not input"
+        );
+        assert_eq!(
+            actions(filter.feed(b"[200~p", true)),
+            ["input:[27, 91, 50, 48, 48, 126, 112]"]
+        );
+        // Inside a paste, a held end marker's start is payload in waiting.
+        assert!(filter.feed(b"[20", true).is_empty());
+        assert!(filter.release_due(Instant::now() + AFTER, true).is_empty());
+    }
+
+    #[test]
+    fn without_a_delay_a_held_escape_waits_for_the_next_byte() {
+        let mut filter = InputFilter::new(ClientSettings::default());
+        assert!(filter.feed(b"", true).is_empty());
+        assert!(
+            filter
+                .release_due(Instant::now() + AFTER * 100, true)
+                .is_empty()
+        );
+        assert_eq!(actions(filter.feed(b":", true)), ["input:[27, 58]"]);
     }
 
     #[test]

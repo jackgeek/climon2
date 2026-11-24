@@ -112,9 +112,8 @@ Test job runs it; the Windows gate leaves it out of each mutant's run.
 (`climon2-test-term`'s `App`) under both host models: from a session's `pwsh`
 each opens a document, adds a line, detaches, reattaches restored, follows a
 resize, saves and quits to the shell's restored main screen; and `c2 kill` of
-a session running either ends its client with `0xC000013A`. vim's own
-scenarios are ignored until the owner decides how long the client holds a
-lone Escape. Like `sessions_windows.rs`, it stays out of each mutant's run.
+a session running either ends its client with its close status, vim's `0x1`
+or Edit's `0xC000013A`. Like `sessions_windows.rs`, it stays out of each mutant's run.
 `tests/shells_windows.rs` (#328) runs the shell subset: from Windows
 PowerShell 5.1 and from `cmd.exe`, a session of the same shell starts, runs a
 command, passes a child's status, is interrupted by Ctrl+C, detaches,
