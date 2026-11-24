@@ -699,14 +699,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// Records the authority an attachment now holds; false for a
     /// connection that is no longer one.
     fn hold(&mut self, id: u64, authority: Authority, geometry: TerminalSize) -> bool {
-        let Some(attachment) = self.attachment_mut(id) else {
-            return false;
-        };
-        attachment.held = Some(Held {
-            authority,
-            geometry,
-        });
-        true
+        self.attachment_mut(id)
+            .map(|attachment| {
+                attachment.held = Some(Held {
+                    authority,
+                    geometry,
+                });
+            })
+            .is_some()
     }
 
     fn begin_restoration(&mut self, id: u64, authority: Authority, geometry: TerminalSize) {

@@ -185,11 +185,11 @@ impl Pty {
     /// Records the command session's job groups while its leader may still hold the terminal;
     /// at most every `OBSERVE_JOBS`, as each look lists the terminal's processes.
     pub fn observe_jobs(&mut self) -> io::Result<()> {
-        if !super::due(self.observed, OBSERVE_JOBS) {
-            return Ok(());
+        if super::due(self.observed, OBSERVE_JOBS) {
+            self.observed = Instant::now();
+            self.session.observe()?;
         }
-        self.observed = Instant::now();
-        self.session.observe()
+        Ok(())
     }
 }
 

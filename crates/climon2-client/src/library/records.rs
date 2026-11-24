@@ -350,9 +350,9 @@ impl Status {
 /// An optional status as native availability: unavailable is all zero.
 fn available(status: Option<Status>) -> native::AvailableStatus {
     status.map_or(NO_STATUS, |status| native::AvailableStatus {
-        available: 1,
-        reserved: 0,
+        available: u32::from(true),
         value: status.native(),
+        ..NO_STATUS
     })
 }
 
@@ -363,16 +363,16 @@ fn progress(progress: wire::Progress) -> native::Progress {
         state: progress.state() as u32 + 1,
         percent_present: u32::from(percent.is_some()),
         percent: percent.map_or(0, |percent| percent.get().into()),
-        reserved: 0,
+        ..NO_PROGRESS.value
     }
 }
 
 /// Optional progress as native availability: unavailable is all zero.
 fn available_progress(value: Option<wire::Progress>) -> native::AvailableProgress {
     value.map_or(NO_PROGRESS, |value| native::AvailableProgress {
-        available: 1,
-        reserved: 0,
+        available: u32::from(true),
         value: progress(value),
+        ..NO_PROGRESS
     })
 }
 
@@ -843,8 +843,8 @@ impl Initial {
 fn optional_command(command: Option<&Command>) -> native::OptionalCommand {
     command.map_or(NO_COMMAND, |command| native::OptionalCommand {
         present: u32::from(true),
-        reserved: 0,
         value: command.native(),
+        ..NO_COMMAND
     })
 }
 
