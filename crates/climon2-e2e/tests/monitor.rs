@@ -4673,6 +4673,103 @@ fn a_revoked_selection_shows_only_the_placeholder_until_the_take_control_key() {
     package.assert_clean();
 }
 
+/// Without the key introduction, with `client.take_control_key` set to
+/// `key`, as JSON.
+fn with_take_control_key(package: &Package, key: Value) {
+    without_introduction(package);
+    let path = config_file(package);
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["client"] = json!({ "take_control_key": key });
+    fs::write(path, config.to_string()).unwrap();
+}
+
+/// Starts the monitor and Alpha, its initial selection, then attaches
+/// another client to Alpha, which takes it over: the monitor shows the
+/// placeholder, which says `lines`. Returns the monitor's host and the
+/// attached client.
+fn taken_over(package: &Package, lines: &[&str]) -> (Terminal, Terminal) {
+    let mut terminal = outer(package, "c2 monitor");
+    opened(&mut terminal);
+    let alpha = headless(package, &watched("Alpha"), "finish");
+    top_row_is(&mut terminal, &controlled("Alpha", RUNNING));
+    first_row_starts(&terminal, "RAW");
+    let other = attach(package, &alpha);
+    let top = session_top_row(
+        usize::from(COLS),
+        "Alpha",
+        &[RUNNING, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(&mut terminal, &centred_below(&top, ROWS, COLS, lines));
+    (terminal, other)
+}
+
+/// Exits the monitor, which hands Alpha back to the attached client
+/// `other`, then detaches it and ends the sessions.
+fn leave_taken_over(package: &Package, mut terminal: Terminal, mut other: Terminal) {
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(package, &mut terminal, 0);
+    attached_ready(&mut other);
+    detach(other);
+    finish_sessions(package, "finish");
+    package.assert_clean();
+}
+
+/// #187, INP-01 (Monitor: takeover): the placeholder spells the configured
+/// take-control key, here Ctrl+B. Ctrl+T, the default, is then an ordinary
+/// key, which reaches no session while the monitor does not control it;
+/// Ctrl+B takes control back and the session's content returns.
+#[test]
+fn the_placeholder_names_the_configured_take_control_key() {
+    let package = Package::new();
+    with_take_control_key(&package, json!("Ctrl+B"));
+    let (mut terminal, mut other) = taken_over(
+        &package,
+        &[VIEWED_ELSEWHERE, "Press Ctrl+B to take control"],
+    );
+    terminal.send("\x14").unwrap();
+    terminal.send("\x02").unwrap();
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+    ready_at(&mut terminal, "Alpha", RUNNING, "29 120");
+    terminal.send("k").unwrap();
+    received_by(&package, "Alpha", b"k");
+    leave_taken_over(&package, terminal, other);
+}
+
+/// #187, INP-01 (Monitor: takeover): with no take-control key the
+/// placeholder shows only its first line, and Ctrl+T takes nothing back.
+/// Choosing the session in the selector still takes control, and the
+/// session's content returns.
+#[test]
+fn without_a_take_control_key_the_placeholder_shows_only_its_first_line() {
+    let package = Package::new();
+    with_take_control_key(&package, Value::Null);
+    let (mut terminal, mut other) = taken_over(&package, &[VIEWED_ELSEWHERE]);
+    terminal.send("\x14").unwrap();
+    // A title change comes back through the daemon after the key was read.
+    retitle(&package, "Alpha", "Alpha kept");
+    let top = session_top_row(
+        usize::from(COLS),
+        "Alpha kept",
+        &[RUNNING, NOT_CONTROLLING, SESSIONS_HINT],
+    );
+    shows(
+        &mut terminal,
+        &centred_below(&top, ROWS, COLS, &[VIEWED_ELSEWHERE]),
+    );
+    assert!(
+        !other.screen().contains(VIEWED_ELSEWHERE),
+        "{}",
+        other.screen()
+    );
+    terminal.send("\x1ds").unwrap();
+    enter_on(&mut terminal, "Alpha kept");
+    other.wait_for_text(VIEWED_ELSEWHERE, TIMEOUT).unwrap();
+    ready_at(&mut terminal, "Alpha kept", RUNNING, "29 120");
+    terminal.send("k").unwrap();
+    received_by(&package, "Alpha", b"k");
+    leave_taken_over(&package, terminal, other);
+}
+
 /// CTL-03 (Monitor, status-value case, moved from #107 to #266 by the
 /// owner): a session's effective status keeps updating in the monitor
 /// whatever its role, on any clock: each session reports `working` at
