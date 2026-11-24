@@ -283,10 +283,10 @@ rests on `SHA256SUMS` and GitHub build-provenance attestations.
 - Files installed with the download script carry no Mark-of-the-Web, and
   neither do files expanded with `Expand-Archive` or `tar`. A zip downloaded
   with a browser and extracted in Explorer does carry it, so SmartScreen may
-  warn when `install.exe` runs. The README says to run `Unblock-File` on the
+  warn when `install.exe` runs. The [install guide](../guide/install.md) says to run `Unblock-File` on the
   zip first.
 - Smart App Control, where it is enforcing, may block unsigned programs
-  whatever their origin. The README lists this as a limitation.
+  whatever their origin. The user guide lists this as a limitation.
 - Neither feature exists on the CI runner. When the owner runs the
   [manual checklist](qualification.md#manual-checklist), they also
   record what SmartScreen and Smart App Control did for both install routes.
