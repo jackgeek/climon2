@@ -486,19 +486,25 @@ passed record for every host its row names:
 | `WINM-01` | Record the Windows build, the host's version and the `pwsh` build. Run the job probe, a PowerShell snippet that calls `IsProcessInJob` | Its result is recorded | Host manual | Windows Terminal, VS Code |
 | `WINM-02` | `c2 exec pwsh`, run a command, detach, `c2 list`, reattach | The screen is restored | Host manual | Windows Terminal, VS Code |
 | `WINM-03` | `exit 7` inside the session | The outer shell sees 7 | Host manual | Windows Terminal, VS Code |
-| `WINM-04` | Close the tab or panel while attached | From a new one, the session is listed and reattaches | Host manual | Windows Terminal, VS Code |
-| `WINM-05` | Close the whole application while attached | From a new one, the session is listed and reattaches | Host manual | Windows Terminal, VS Code |
+| `WINM-04` | Start a headless session (`c2 exec --headless pwsh`) and attach to it. Close the tab or panel while attached | From a new one, the session is listed and reattaches | Host manual | Windows Terminal, VS Code |
+| `WINM-05` | Attach to a headless session. Close the whole application while attached | From a new one, the session is listed and reattaches | Host manual | Windows Terminal, VS Code |
 | `WINM-06` | Keys: arrows, Home and End, a function key and an Alt combination; Ctrl+C during a running command | Each key arrives; Ctrl+C interrupts the command | Host manual | Windows Terminal, VS Code |
 | `WINM-07` | Paste several lines | They arrive once, in order | Host manual | Windows Terminal, VS Code |
 | `WINM-08` | Resize the window with vim open | vim redraws to the new size | Host manual | Windows Terminal, VS Code |
 | `WINM-09` | vim, then Edit: open, edit, detach, reattach, quit | The main screen returns | Host manual | Windows Terminal, VS Code |
 | `WINM-10` | Show CJK text, emoji and box-drawing characters | They line up | Host manual | Windows Terminal, VS Code |
 | `WINM-11` | A short pass in `cmd.exe` and in `powershell` 5.1: start, run a command | The exit status is the command's | Host manual | Windows Terminal, VS Code |
-| `WINM-12` | Run `c2 exec` from a task terminal, and run "Reload Window" with a session attached | The session survives | Host manual | VS Code |
+| `WINM-12` | From a task terminal, attach to a headless session (`c2 exec --headless`, then `c2 attach`), and run "Reload Window" | The session survives | Host manual | VS Code |
 | `WINM-13` | With two sessions running, `c2 monitor` | It opens and lists both | Host manual | Windows Terminal, VS Code |
 | `WINM-14` | Switch between them with the selector, and type | Typed input reaches only the selected session | Host manual | Windows Terminal, VS Code |
 | `WINM-15` | Make a session need attention, then press the prefix followed by `j` | A toast is raised, and the prefix and `j` jump to the session | Host manual | Windows Terminal, VS Code |
 | `WINM-16` | Resize the window, then exit the monitor | The monitor re-renders, and both sessions keep running | Host manual | Windows Terminal, VS Code |
+
+`WINM-04`, `WINM-05` and `WINM-12` use a headless session because closing the
+host, or reloading a VS Code task terminal, ends the attached client as an
+accident would, and an ordinary session then ends under the
+[leave policy](../guide/commands.md#sessions); only a headless session keeps
+running.
 
 Signing out and shutting down are not checklist items: sessions end with
 them and no status is promised.
