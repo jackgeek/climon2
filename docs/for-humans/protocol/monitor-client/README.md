@@ -33,7 +33,8 @@ library's allocator. State a library dependency keeps for the whole process
 or a caller's thread is shared-release allocation, so it is not counted.
 `submit` accepts `CM1_OPEN` in both modes, `CM1_LEAVE`, `CM1_ACQUIRE`,
 `CM1_INPUT`, `CM1_RESIZE`, `CM1_READY`, `CM1_VIEWING`, `CM1_ACKNOWLEDGE`,
-`CM1_FOCUS` and `CM1_KILL`. An instance opens a
+`CM1_FOCUS`, `CM1_BREAK` ([#326](https://github.com/jackgeek/climon2/issues/326))
+and `CM1_KILL`. An instance opens a
 [passive monitor connection](../../../../GLOSSARY.md#attachment-and-control) or an
 interactive attachment to its [session daemon](../../../../GLOSSARY.md#sessions)
 over [daemon wire revision 1](../daemon-client/README.md), delivers
@@ -119,6 +120,7 @@ shutdown/handle release, notification and measurements are indexed in
 | [Readiness](request-ready.md) | Monitor -> client -> daemon | Report current complete restoration applied. |
 | [Acknowledge attention](request-acknowledge.md) | Monitor -> client -> daemon | Explicitly acknowledge current pending attention. |
 | [Application focus](request-focus.md) | Monitor -> client -> daemon | Optional non-user core focus state/forwarding report. |
+| [Break](request-break.md) | Caller -> client -> daemon | Optional core Ctrl+Break for the command's console, Windows only. |
 | [Detach](request-detach.md) | Monitor -> client | Request deliberate detach. |
 | [Kill](request-kill.md) | Monitor -> client | Confirm command termination and daemon cleanup through a standalone role. |
 | [Extension request](request-extension.md) | Either endpoint, through client | Request negotiated plugin work regardless of control. |
@@ -425,7 +427,7 @@ Core capability support is `daemon-wire-v1`; monitor Open additionally requires
 The library intersects its support with daemon advertisements; unsupported
 required support rejects before effects, unknown optional support is not selected.
 After Open, acquisition/optional operations check the selected support, never
-release versions. Lack of title/status/progress/focus is explicit and does not
+release versions. Lack of title/status/progress/focus/break is explicit and does not
 fabricate supported empty/clear values.
 
 | Native tag / args | Exact fields and allowed state | Wire / success result |
@@ -440,6 +442,7 @@ fabricate supported empty/clear values.
 | `CM1_LEAVE` / `generation` | Current opened connection; no period/readiness requirement. Atomic registration/membership departure including promotion race. | [Leave `0x37`](../daemon-client/request-leave.md); `CM1_LEFT` / `attachment_detached` distinguishes passive deregistration from attachment detach. |
 | `CM1_KILL` / `required` | This immutable session; standalone or alongside Open, through a separate hello-validated first-role connection. No takeover/role replacement; at most one pending Kill. | [Kill `0x38`](../daemon-client/request-kill.md); `CM1_TERMINATION` / `termination` with present result and complete daemon cleanup. |
 | `CM1_FOCUS` / `flag` | Current ready authority plus desired 0/1 state, selected focus or valid retained-controller focus-out; selected `focus-v1`. Never user Input or acknowledgement. | [Focus `0x39`](../daemon-client/request-focus.md); `CM1_FOCUS_RESULT` / `flag` changed/value and accepted_bytes 0 or 3. |
+| `CM1_BREAK` / `authority` | Current ready authority; selected `break-v1`, which only Windows session daemons advertise. Never user Input. | [Break `0x3a`](../daemon-client/request-break.md); `CM1_BREAK_SENT`, no active result member. |
 
 Shutdown's internal Leave has no public request ID and is recorded separately
 in terminal evidence. If an explicit Leave is already executing, join that
@@ -630,15 +633,16 @@ this section.
 - **Description.** `capabilities` lists exactly the families the library
   relays: `daemon-wire-v1`, `monitor-v1`, `title-v1`, `status-v1`
   ([#95](https://github.com/jackgeek/climon2/issues/95)), `notification-v1`,
-  `progress-v1` ([#98](https://github.com/jackgeek/climon2/issues/98)) and
-  `focus-v1`: every revision-1 family.
+  `progress-v1` ([#98](https://github.com/jackgeek/climon2/issues/98)),
+  `focus-v1` and `break-v1` ([#326](https://github.com/jackgeek/climon2/issues/326)):
+  every revision-1 family.
   A required family outside the description is `CM1_UNSUPPORTED_OPERATION`
   with `unsupported_capability`; an optional one is not requested.
 - **Startup.** Create refuses a path that breaks the platform's `cm1_path`
   rule (on Unix, `PATH_MAX` bytes or more; on Windows, more than 32767 code
   units or an odd byte length), and a `filter` the current logger's grammar does not accept, with
   `CM1_INVALID_ARGUMENT` (`invalid_argument`).
-- **Admission.** `submit` checks the tag (`CM1_OPEN` to `CM1_FOCUS`), reserved
+- **Admission.** `submit` checks the tag (`CM1_OPEN` to `CM1_BREAK`), reserved
   zero and a nonzero ID before the operation's arguments. A token list is null
   and zero or a pointer and a positive count; tokens are nonempty UTF-8, each
   named once across both lists. A request's footprint, `sizeof(cm1_request)`
@@ -690,10 +694,10 @@ this section.
   refusal and the stream ends. The Open sent names the required families and
   the optional ones both sides support; the daemon's selection must contain
   every required family and nothing unrequested (`invalid_record`).
-- **Commands.** Acquire, Input, Resize, Ready, Set viewing, Acknowledge and
-  Focus wait, like Leave, for the Initial metadata. Another generation is
+- **Commands.** Acquire, Input, Resize, Ready, Set viewing, Acknowledge,
+  Focus and Break wait, like Leave, for the Initial metadata. Another generation is
   `stale_generation`, no role or a Leave under way `invalid_state`, Focus
-  without `focus-v1` selected, and Set viewing or Acknowledge without
+  without `focus-v1` selected, Break without `break-v1` selected, and Set viewing or Acknowledge without
   `status-v1` selected ([#95](https://github.com/jackgeek/climon2/issues/95)), `unsupported_capability`, and a frame
   over the daemon's request ceiling `unsupported_limit`: each rejected
   without being sent. The flag of Set viewing and Focus is 0 or 1 with

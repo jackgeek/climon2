@@ -108,6 +108,9 @@ pub enum Success {
         focused: bool,
         accepted_bytes: FocusBytes,
     },
+    /// The session daemon started the break; it proves nothing about the
+    /// command (#326).
+    BreakSent {},
 }
 
 /// The result of Acquire and of Ready: whether the request changed control

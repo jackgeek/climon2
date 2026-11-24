@@ -127,17 +127,17 @@ fn publishing_waits_for_the_qualification_verdict() {
     assert!(qualify.contains(&"    if: ${{ !cancelled() && needs.verify.result == 'success' }}"));
     let verdict = job(&release, "verdict");
     assert!(
-        verdict.contains(&"    needs: [verify, qualify]"),
+        verdict.contains(&"    needs: [verify, qualify, qualify-windows]"),
         "{verdict:#?}"
     );
     assert!(
         verdict.iter().any(|line| line.trim_start()
-            == "run: cargo xtask qualify verdict --evidence target/evidence --out target/verdict"),
+            == "run: cargo xtask qualify verdict --evidence target/evidence --out target/verdict --tag \"$GITHUB_REF_NAME\""),
         "{verdict:#?}"
     );
     let publish = job(&release, "publish");
     assert!(
-        publish.contains(&"    needs: [verify, verdict]"),
+        publish.contains(&"    needs: [verify, candidate, verdict]"),
         "{publish:#?}"
     );
     assert!(
@@ -335,5 +335,142 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
             !workflow(workflow_name).contains("self-hosted"),
             "{workflow_name} must stay on GitHub-hosted runners"
         );
+    }
+}
+
+/// #330: Windows is the fourth qualification platform. Its job qualifies the
+/// exact zip on windows-2025 whatever the Windows switches say, records with
+/// `--platform windows-x86_64`, takes the latest release candidate's
+/// checklist records on a final tag, and uploads its evidence for the
+/// verdict.
+#[test]
+fn windows_qualifies_its_exact_zip_on_windows_2025() {
+    let release = workflow("release.yml");
+    let windows = job(&release, "qualify-windows");
+    for line in [
+        "    needs: [verify, measure, candidate]",
+        "    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.candidate.result == 'success' }}",
+        "    runs-on: windows-2025",
+        "          name: release-dist-windows-x86_64-msvc",
+        "          pattern: measure-windows-2025-*",
+        "          CLIMON2_E2E_REAL_USER_PATH: \"1\"",
+        "          CANDIDATE_TAG: ${{ needs.candidate.outputs.tag }}",
+        "          CANDIDATE_SHA256: ${{ needs.candidate.outputs.sha256 }}",
+        "          name: qualification-windows-x86_64",
+    ] {
+        assert!(windows.contains(&line), "{line}: {windows:#?}");
+    }
+    assert!(
+        windows.iter().any(|line| line
+            .trim_start()
+            .starts_with("cargo xtask qualify run --platform windows-x86_64")),
+        "{windows:#?}"
+    );
+    assert!(
+        !windows
+            .iter()
+            .any(|line| line.contains("CLIMON2_WINDOWS_TESTS")
+                || line.contains("CLIMON2_WINDOWS_QUALITY")),
+        "{windows:#?}"
+    );
+}
+
+/// #330: a final tag takes the latest release candidate, which must exist
+/// and differ from it only in the version stamp and qualification/; the
+/// candidate job names it and its zip's SHA-256, and publishing waits for it.
+#[test]
+fn a_final_tag_takes_its_latest_release_candidate() {
+    let release = workflow("release.yml");
+    let candidate = job(&release, "candidate");
+    assert!(
+        candidate.contains(&"          fetch-depth: 0"),
+        "{candidate:#?}"
+    );
+    assert!(
+        candidate.iter().any(|line| line
+            .contains("cargo xtask qualify candidate --tag \"$GITHUB_REF_NAME\" --releases")),
+        "{candidate:#?}"
+    );
+    assert!(
+        candidate
+            .iter()
+            .any(|line| line.contains("-windows-x86_64-msvc\\.zip$")),
+        "{candidate:#?}"
+    );
+    assert!(
+        !candidate.iter().any(|line| line.starts_with("    needs:")),
+        "a release candidate's run never waits for it: {candidate:#?}"
+    );
+}
+
+/// #330: the release gate requires the Windows Test and Archive jobs and
+/// the native-only gate over every registered Windows file, after its
+/// probes: Release calls the checks with `mutate_all`, which runs the
+/// Windows Quality job whatever `CLIMON2_WINDOWS_QUALITY` says, and a tag
+/// always runs the Windows jobs; publishing needs the checks to pass.
+#[test]
+fn the_release_gate_needs_windows_test_archive_and_mutate_all() {
+    let check = workflow("check.yml");
+    let scope = job(&check, "windows-scope");
+    assert!(
+        scope
+            .iter()
+            .any(|line| line.contains("\"$REF_TYPE\" == tag")),
+        "{scope:#?}"
+    );
+    for name in ["windows-test", "windows-archive", "windows-quality"] {
+        assert!(
+            job(&check, name)
+                .iter()
+                .any(|line| line.contains("needs.windows-scope.outputs.test == 'true'")),
+            "{name}"
+        );
+    }
+    let quality = job(&check, "windows-quality");
+    assert!(
+        quality
+            .iter()
+            .any(|line| line.trim() == "flags=(--native-only)"),
+        "{quality:#?}"
+    );
+    assert!(
+        quality.iter().any(|line| line
+            .trim()
+            .starts_with("if [[ \"$MUTATE_ALL\" == true ]]; then flags+=(--mutate-all); fi")),
+        "{quality:#?}"
+    );
+    let release = workflow("release.yml");
+    assert!(
+        release.contains(
+            "    uses: ./.github/workflows/check.yml\n    with:\n      mutate_all: true\n"
+        )
+    );
+    let publish = job(&release, "publish");
+    assert!(
+        publish
+            .iter()
+            .any(|line| line.starts_with("    needs: [verify,"))
+    );
+}
+
+/// #330: one release publishes every platform: the Windows zip and the
+/// stamped install.ps1 beside the Unix archives and install.sh, one
+/// SHA256SUMS over all of them, and attestations for every file. A missing
+/// platform's artifact fails publishing as a whole.
+#[test]
+fn publication_includes_the_windows_zip_and_install_ps1() {
+    let release = workflow("release.yml");
+    let publish = job(&release, "publish");
+    for line in [
+        "          windows=target/downloaded/release-dist-windows-x86_64-msvc",
+        "            \"$windows/climon2-$version-windows-x86_64-msvc.zip\" \\",
+        "            \"$macos/install.sh\" \"$windows/install.ps1\"; do",
+        "            test -f \"$file\"",
+        "          cat \"$macos/SHA256SUMS\" \"$linux/SHA256SUMS\" \"$windows/SHA256SUMS\" | sort -u > target/dist/SHA256SUMS",
+        "          subject-path: target/dist/*",
+        "            \"target/dist/climon2-$version-windows-x86_64-msvc.zip\" \\",
+        "            target/dist/install.sh target/dist/install.ps1 target/dist/SHA256SUMS \\",
+    ] {
+        assert!(publish.contains(&line), "{line}: {publish:#?}");
     }
 }

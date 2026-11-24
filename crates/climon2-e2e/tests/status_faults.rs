@@ -1,5 +1,5 @@
-//! Library layer and Fault (#95): status, viewing and acknowledgement
-//! through the installed client library against the host's fake daemon
+//! Library layer and Fault (#95): status, viewing and acknowledgement, and
+//! Break (#326), through the installed client library against the host's fake daemon
 //! peer, which holds, loses, mismatches or misorders what a real daemon
 //! never would. Every case records what reached the fake daemon, so a
 //! replayed or wrongly sent request cannot hide. Expected values come from
@@ -255,6 +255,87 @@ fn installed_library_rejects_viewing_and_acknowledgement_it_cannot_send() {
         kinds(&report["peers"]["unselected"]),
         ["hello", "open", "leave"]
     );
+    assert_all_released(&report["ledger"]);
+}
+
+/// The native result tag of Break's success (#326), which has no result
+/// member.
+const BREAK_SENT: u64 = 12;
+
+/// COM-03 Library and Fault (Break, #326): with `break-v1` selected, a
+/// Break reaches the daemon once, as the wire reference writes it under the
+/// authority it names, and its success maps to `CM1_BREAK_SENT` with no
+/// result member; on a connection whose Open did not select `break-v1`,
+/// Break is `unsupported_capability` locally and never sent.
+#[test]
+fn installed_library_sends_break_only_with_break_v1_selected() {
+    let package = Package::new();
+    let root = root(&package);
+    let breaking =
+        json!({ "tag": "break", "request_id": 2, "authority": [1, "$period", "$restoration"] });
+    let mut steps = Vec::new();
+    for (name, advertised) in [("selected", true), ("unselected", false)] {
+        let mut families = vec!["daemon-wire-v1", "title-v1"];
+        families.extend(advertised.then_some("break-v1"));
+        let answer = answered("break", "ok", json!({ "kind": "break_sent" }), Value::Null);
+        let mut peer = attached_peer(&families, unknown(), json!({ "break": [answer] }));
+        let mut capabilities = ADVERTISED.to_vec();
+        capabilities.extend(advertised.then_some("break-v1"));
+        peer["hello"] = json!({ "json": { "capabilities": capabilities } });
+        let open = json!({
+            "tag": "open",
+            "request_id": 1,
+            "open": {
+                "mode": INTERACTIVE,
+                "geometry": [80, 24],
+                "required": ["daemon-wire-v1"],
+                "optional": ["title-v1", "break-v1"],
+            },
+        });
+        let instance = [
+            json!({ "do": "create", "peer": peer }),
+            json!({ "do": "submit", "request": open }),
+            json!({ "do": "run" }),
+            json!({ "do": "drain", "until": { "tag": RESTORATION_COMPLETE } }),
+            json!({ "do": "submit", "request": breaking, "as": "accepted" }),
+            json!({ "do": "drain", "until": { "response": 2 }, "as": format!("{name}-answered") }),
+            json!({ "do": "shutdown" }),
+            json!({ "do": "finish", "as": format!("finished-{name}") }),
+        ];
+        steps.extend(instance.into_iter().map(|mut step| {
+            step["instance"] = json!(name);
+            step
+        }));
+    }
+    let report = script(&package, &root, json!(steps));
+    assert_accepted(&report, &steps);
+
+    let records = drained(&report, &steps, "selected-answered");
+    assert_eq!(
+        assert_ok(answer(&records, 2), 1, 2, BREAK_SENT),
+        &Value::Null
+    );
+    let peer = &report["peers"]["selected"];
+    assert_eq!(kinds(peer), ["hello", "open", "break", "leave"]);
+    let body = json!({ "request_id": "2", "period": "2", "restoration_id": "2" });
+    assert_eq!(peer["frames"][2]["body"], body);
+
+    let records = drained(&report, &steps, "unselected-answered");
+    assert_rejected(
+        answer(&records, 2),
+        1,
+        2,
+        ORIGIN_LIBRARY,
+        "unsupported_capability",
+    );
+    assert_eq!(
+        kinds(&report["peers"]["unselected"]),
+        ["hello", "open", "leave"]
+    );
+    for name in ["selected", "unselected"] {
+        let (_, terminal) = ended(&report, &steps, name);
+        assert_detached(terminal, 1);
+    }
     assert_all_released(&report["ledger"]);
 }
 

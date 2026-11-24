@@ -9,10 +9,11 @@ use crate::Session;
 use climon2_core::{
     hello::Lifecycle,
     wire::{
-        self, Acknowledge, Acquire, ActualGeometry, AuthorityIds, AuthorityResult, CommandResult,
-        ControlRecord, ControlRevoked, Counter, Display, Focus, FocusBytes, Frame, Geometry,
-        GrantReason, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response, RestorationBegin,
-        RestorationComplete, RevocationReason, ServerMessage, SetViewing, Success,
+        self, Acknowledge, Acquire, ActualGeometry, AuthorityIds, AuthorityResult, Break,
+        CommandResult, ControlRecord, ControlRevoked, Counter, Display, Focus, FocusBytes, Frame,
+        Geometry, GrantReason, Input, Kill, Leave, Mode, Outcome, Ready, Resize, Response,
+        RestorationBegin, RestorationComplete, RevocationReason, ServerMessage, SetViewing,
+        Success,
     },
 };
 use std::{fs, io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::Duration};
@@ -985,7 +986,8 @@ fn focus_reports_follow_the_input_accepted_before_them() {
 
 /// COM-01 and COM-03 (Contract, interactive first roles): an interactive
 /// Open selects the requested families this daemon supports, `focus-v1`
-/// and `status-v1` included, and is rejected without effects, ending its
+/// and `status-v1` included but not `break-v1`, which only Windows daemons
+/// support (#326), and is rejected without effects, ending its
 /// stream, for an unsupported revision, an unknown required family or a
 /// geometry beyond the supported terminal size, one dimension at a time.
 /// The session keeps its one attachment, whose selected `status-v1` reports
@@ -993,7 +995,7 @@ fn focus_reports_follow_the_input_accepted_before_them() {
 #[test]
 fn interactive_open_selects_supported_families_and_rejects_without_effects() {
     let mut session = super::clocked("exit");
-    let optional = ["focus-v1", "title-v1", "status-v1", "future-v9"];
+    let optional = ["focus-v1", "title-v1", "status-v1", "break-v1", "future-v9"];
     let mut attached = ready_attachment(&session, &optional);
     assert_eq!(attached.selected, ["focus-v1", "status-v1", "title-v1"]);
     let mut later_revision = open(1, &[], &[], Mode::Interactive(geometry(80, 24)));
@@ -1097,6 +1099,16 @@ fn requests_on_an_interactive_attachment_get_their_documented_results() {
         .to_frame()
     });
     rejected(acknowledged, "unsupported_capability");
+    // Only Windows daemons advertise `break-v1` (#326), so no Open here
+    // selected it, even from the ready controller.
+    let broken = attached.ask(attached.authority(), |request_id, authority| {
+        Break {
+            request_id,
+            authority,
+        }
+        .to_frame()
+    });
+    rejected(broken, "unsupported_capability");
     rejected(attached.input(b""), "invalid_argument");
     rejected(attached.resize(65536, 30), "invalid_geometry");
     rejected(attached.resize(100, 65536), "invalid_geometry");

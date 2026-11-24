@@ -17,6 +17,11 @@
 //! the input pipe, each through a bounded channel, so a full channel behaves
 //! as a full Unix PTY buffer does.
 //!
+//! Ctrl+Break has no byte the pseudoconsole could turn into an event, so a
+//! short-lived helper with no console of its own attaches to the leader's
+//! console and generates `CTRL_BREAK_EVENT` there (#326; lifecycle.md,
+//! "Ctrl+C and Ctrl+Break").
+//!
 //! The pseudoconsole starts its output with its own negotiation with a host
 //! (#325, `WIN-08`). The output thread drops it: a session's clients, and the
 //! terminal model that restores their screens, see only the command's own
@@ -31,18 +36,25 @@ use std::{
     os::windows::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
+        process::CommandExt,
     },
     path::Path,
+    process::{Command, Stdio},
     ptr,
     sync::mpsc::{self, Receiver, SyncSender, TrySendError},
     time::Duration,
 };
 use windows_sys::{
     Win32::{
-        Foundation::{ERROR_BROKEN_PIPE, FALSE, HANDLE, STATUS_CONTROL_C_EXIT, WAIT_OBJECT_0},
+        Foundation::{
+            ERROR_BROKEN_PIPE, FALSE, HANDLE, STATUS_CONTROL_C_EXIT, TRUE, WAIT_OBJECT_0,
+        },
         Storage::FileSystem::ReadFile,
         System::{
-            Console::{COORD, SetConsoleCtrlHandler},
+            Console::{
+                AttachConsole, COORD, CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent,
+                SetConsoleCtrlHandler,
+            },
             Environment::SetEnvironmentVariableW,
             JobObjects::{
                 CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
@@ -54,11 +66,12 @@ use windows_sys::{
                 LoadLibraryExW,
             },
             Threading::{
-                CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-                GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-                LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-                STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+                CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList,
+                EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
+                InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+                PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+                UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
     },
@@ -429,6 +442,21 @@ impl Hosted {
         self.console.resize(rows, cols)
     }
 
+    /// Gives the leader's console Ctrl+Break: starts `helper`, given the
+    /// leader's PID, to call [`break_console`] with it. The helper starts
+    /// detached, so with no console of its own to leave, and is not waited
+    /// for.
+    pub fn send_break(&self, helper: &mut Command) -> io::Result<()> {
+        helper
+            .arg(self.pid.to_string())
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(drop)
+    }
+
     /// The leader's exit status, in full, once it has exited.
     pub fn try_wait(&self) -> io::Result<Option<u32>> {
         // The handle is open with SYNCHRONIZE; a zero timeout only looks.
@@ -459,6 +487,23 @@ impl Hosted {
         self.close();
         self.console.terminate()
     }
+}
+
+/// The helper's work: attaches this process, which has no console, to
+/// `leader`'s, ignores Ctrl+Break itself, and generates it for every process
+/// on that console.
+pub fn break_console(leader: u32) -> io::Result<()> {
+    // SAFETY (each): plain console calls; the handler lives as long as the
+    // process.
+    check(unsafe { AttachConsole(leader) })?;
+    check(unsafe { SetConsoleCtrlHandler(Some(handled), TRUE) })?;
+    check(unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) })
+}
+
+/// A handler routine that handles every event, so the helper outlives its
+/// own Ctrl+Break.
+unsafe extern "system" fn handled(_event: u32) -> BOOL {
+    TRUE
 }
 
 fn exit_code(process: &OwnedHandle) -> io::Result<u32> {

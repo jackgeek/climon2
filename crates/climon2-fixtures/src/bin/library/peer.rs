@@ -17,8 +17,8 @@
 //!   each Leave; `leaves`, a list of action lists, overrides `leave` for the
 //!   first Leaves in turn; `input`, `resize`, `acquire`, `ready` and
 //!   `focus`: the actions after each of those requests (#94); `viewing` and
-//!   `acknowledge` after Set viewing and Acknowledge (#95); `kill`: the
-//!   actions after a Kill (#96);
+//!   `acknowledge` after Set viewing and Acknowledge (#95); `break` after a
+//!   Break (#326); `kill`: the actions after a Kill (#96);
 //! - `auxiliary`: a script of its own (its `hello` and actions) for a
 //!   second connection, accepted once the first one is and served beside
 //!   it, as a Kill on an opened instance needs (#96); the report has its
@@ -336,6 +336,7 @@ impl Serving {
                 0x37 => "leave",
                 0x38 => "kill",
                 0x39 => "focus",
+                0x3a => "break",
                 _ => "other",
             };
             let body: Value = serde_json::from_slice(frame.body())

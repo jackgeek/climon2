@@ -29,7 +29,7 @@ mod release;
 mod windows_source;
 
 const HELP: &str = "\
-Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|windows-changed <base>|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...>
+Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|windows-changed <base>|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...|qualify candidate ...>
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
 check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
@@ -62,7 +62,10 @@ qualify run writes one platform's evidence records (#122) for every acceptance-m
 native host, from the packaged tests against the exact candidate archive, every workspace test,
 the platform's Measure reports and the manual records; a failed case is a record, not a failure.
 qualify verdict judges every platform's records with the owner's recorded dispositions and fails
-unless the release may be published.
+unless the release may be published; --tag of a release candidate publishes without the Windows
+manual checklist.
+qualify candidate names a final tag's latest release candidate, whose checklist records count,
+and fails unless the tag differs from it only in the version stamp and qualification/.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
 On Windows it tests only what builds there, after the sentinel and a probe that a killed
 process keeps its coverage. Windows builds no check, tooling-probe, release-check or install.

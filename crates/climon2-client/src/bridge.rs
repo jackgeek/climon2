@@ -378,6 +378,7 @@ impl Bridge {
 
     fn tick(&mut self) -> io::Result<Option<BridgeExit>> {
         self.resize()?;
+        self.pass_break();
         self.send()?;
         let reported = self.poll()?;
         self.exchange(reported)
@@ -479,7 +480,25 @@ impl Bridge {
     /// Keys are read only once earlier commands were accepted, and never
     /// after a detach or the end of the stream.
     fn reading(&self) -> bool {
-        self.attachment.idle() && !self.pending_detach && self.ending.is_none()
+        self.attachment.idle() && self.staying()
+    }
+
+    /// Whether the bridge is neither detaching nor ending, so what it reads
+    /// or passes on still goes to the session.
+    fn staying(&self) -> bool {
+        !self.pending_detach && self.ending.is_none()
+    }
+
+    /// Ctrl+Break, which only a Windows console reports, goes to the
+    /// session from the ready controller that stays attached (#326);
+    /// otherwise it is dropped, never held for a later controller.
+    fn pass_break(&mut self) {
+        if self.signals.take_break()
+            && self.staying()
+            && let Role::Controlling(authority) = self.role
+        {
+            self.held(authority, Held::Confirm(Confirm::Break));
+        }
     }
 
     fn resize(&mut self) -> io::Result<()> {

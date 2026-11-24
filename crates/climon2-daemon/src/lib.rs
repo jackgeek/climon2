@@ -26,10 +26,11 @@ use std::{
 /// Run the private daemon invocation documented in this crate's README.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> u8 {
     let arguments: Vec<_> = arguments.into_iter().collect();
-    if arguments.first().is_some_and(|arg| arg == "--exec-command") {
-        return pty::exec_command(&arguments[1..]);
+    match arguments.split_first() {
+        Some((helper, rest)) if helper == "--exec-command" => pty::exec_command(rest),
+        Some((helper, rest)) if helper == "--break-console" => pty::break_command(rest),
+        _ => run_session(arguments),
     }
-    run_session(arguments)
 }
 
 fn run_session(arguments: Vec<OsString>) -> u8 {

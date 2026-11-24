@@ -1,8 +1,8 @@
 //! Ordinary attach (#101) through the executable's own release's client
 //! library: one interactive Open that requires `daemon-wire-v1` and asks
-//! for `status-v1` alone, optionally (#102), then the commands the bridge
-//! decides (Input, Resize, Acquire, Ready, Set viewing, Acknowledge and
-//! Leave), offered in order. The library's records are parsed once, here,
+//! for `status-v1` (#102) and `break-v1` (#326), optionally, then the
+//! commands the bridge decides (Input, Resize, Acquire, Ready, Set viewing,
+//! Acknowledge, Break and Leave), offered in order. The library's records are parsed once, here,
 //! into the events the bridge acts on; it interprets no key, and the
 //! executable keeps the host terminal.
 
@@ -29,10 +29,11 @@ const POLL: Duration = Duration::from_millis(25);
 /// The only family ordinary attach requires.
 const CORE: &[u8] = b"daemon-wire-v1";
 
-/// The only family ordinary attach asks for optionally, for viewing and
-/// acknowledgement (#102). Without it the library refuses both locally,
-/// sending nothing.
-const STATUS: &[u8] = b"status-v1";
+/// The families ordinary attach asks for optionally: `status-v1` for
+/// viewing and acknowledgement (#102), and `break-v1` for Ctrl+Break, which
+/// only Windows session daemons advertise (#326). Without one the library
+/// refuses its requests locally, sending nothing.
+const OPTIONAL: [&[u8]; 2] = [b"status-v1", b"break-v1"];
 
 /// The grant reasons of an explicit attach or takeover, whose readiness
 /// acknowledges pending attention (#102).
@@ -86,6 +87,8 @@ pub(crate) enum Confirm {
     Ready,
     /// Acknowledge pending attention (#102).
     Acknowledge,
+    /// Ctrl+Break for the command's console (#326).
+    Break,
 }
 
 impl Command {
@@ -125,6 +128,7 @@ impl Confirm {
         match self {
             Self::Ready => native::READY,
             Self::Acknowledge => native::ACKNOWLEDGE,
+            Self::Break => native::BREAK,
         }
     }
 }
@@ -365,7 +369,7 @@ impl Attachment {
         size: TerminalSize,
     ) -> io::Result<Self> {
         let instance = embedded::session_instance(metadata, session, home)?;
-        let (required, optional) = ([bytes(CORE)], [bytes(STATUS)]);
+        let (required, optional) = ([bytes(CORE)], OPTIONAL.map(bytes));
         instance.submit(&open(size, &required, &optional))?;
         Ok(Self {
             instance,

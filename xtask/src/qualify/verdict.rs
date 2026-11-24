@@ -8,8 +8,13 @@
 //! visible in the records. A disposition names its exact scenario and
 //! layer, so a performance (Measure) disposition never waives a functional
 //! case.
+//!
+//! A release candidate publishes without the Windows manual checklist
+//! (#330): its checklist cases that did not pass carry the release rule's
+//! disposition instead of the owner's. A Windows record that does not name
+//! its runner image and Windows build is blocked, whatever it observed.
 
-use super::{Layer, Platform, State, sources::Scenario};
+use super::{Layer, Platform, State, candidate::Stage, sources::Scenario};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 
@@ -76,6 +81,7 @@ fn disposition(entry: &Value, scenarios: &[Scenario]) -> Result<Disposition, Str
                 .iter()
                 .map(|name| {
                     Platform::parse(name)
+                        .filter(|platform| required.platforms.contains(platform))
                         .ok_or_else(|| format!("{scenario}: unknown platform {name:?}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -145,6 +151,7 @@ pub(crate) fn verdict(
     scenarios: &[Scenario],
     records: &[Value],
     dispositions: &[Disposition],
+    stage: Stage,
 ) -> Result<Verdict, String> {
     let revisions: std::collections::BTreeSet<&str> = records
         .iter()
@@ -157,11 +164,15 @@ pub(crate) fn verdict(
     }
     let mut judged = Vec::new();
     for platform in Platform::ALL {
-        for scenario in scenarios {
+        let required = scenarios
+            .iter()
+            .filter(|scenario| scenario.platforms.contains(&platform));
+        for scenario in required {
             for &layer in &scenario.layers {
                 let record = find(records, &scenario.id, layer, platform)
-                    .unwrap_or_else(|| missing(scenario, layer, platform));
-                judged.push(dispose(record, dispositions));
+                    .map_or_else(|| missing(scenario, layer, platform), traceable);
+                let waived = stage == Stage::Candidate && scenario.is_checklist();
+                judged.push(dispose(record, dispositions, waived));
             }
         }
     }
@@ -202,8 +213,33 @@ fn missing(scenario: &Scenario, layer: Layer, platform: Platform) -> Value {
     })
 }
 
-/// The record with the disposition that covers it, if it did not pass.
-fn dispose(mut record: Value, dispositions: &[Disposition]) -> Value {
+/// The record, blocked if it is a Windows record that does not name its
+/// runner image and Windows build (#330): the `windows-2025` image changes
+/// weekly and cannot be pinned.
+fn traceable(mut record: Value) -> Value {
+    let environment = &record["environment"];
+    let named = |name: &str| {
+        environment[name]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    };
+    let windows = record["platform"] == Platform::WindowsX86_64.name();
+    if windows && !(named("runner_image") && named("windows_build")) {
+        record["state"] = json!(State::Blocked.name());
+        record["observed"] = json!(format!(
+            "no runner image version or Windows build recorded; {}",
+            record["observed"].as_str().unwrap_or_default()
+        ));
+    }
+    record
+}
+
+/// The release rule's disposition of a release candidate's checklist case.
+const CANDIDATE_RULE: &str = "a release candidate publishes without the manual checklist; the final tag needs its records (docs/for-humans/windows/quality.md)";
+
+/// The record with the disposition that covers it, if it did not pass: the
+/// owner's, else the release rule's when `waived`.
+fn dispose(mut record: Value, dispositions: &[Disposition], waived: bool) -> Value {
     let text = |name: &str| record[name].as_str().unwrap_or_default().to_owned();
     let layer = Layer::parse(&text("layer"));
     let platform = Platform::parse(&text("platform"));
@@ -217,10 +253,12 @@ fn dispose(mut record: Value, dispositions: &[Disposition]) -> Value {
                 .iter()
                 .find(|disposition| disposition.covers(&scenario, layer, platform, state))
         });
-    record["disposition"] = covering.map_or(
-        Value::Null,
-        |disposition| json!({"decision": disposition.decision, "recorded": disposition.recorded}),
-    );
+    let rule = (waived && state != Some(State::Passed))
+        .then(|| json!({"decision": CANDIDATE_RULE, "recorded": "release rule"}));
+    record["disposition"] = covering
+        .map(|disposition| json!({"decision": disposition.decision, "recorded": disposition.recorded}))
+        .or(rule)
+        .unwrap_or(Value::Null);
     record
 }
 
@@ -290,6 +328,8 @@ mod tests {
             setup: String::new(),
             expected: String::new(),
             layers: layers.to_vec(),
+            platforms: Platform::ALL.to_vec(),
+            hosts: Vec::new(),
         }
     }
 
@@ -308,6 +348,7 @@ mod tests {
             "platform": platform.name(),
             "state": state,
             "observed": "seen",
+            "environment": {"runner_image": "win25 20251110.1", "windows_build": "10.0.26100.6899"},
         })
     }
 
@@ -350,7 +391,7 @@ mod tests {
     }
 
     fn conformance(records: &[Value], dispositions: &[Disposition]) -> Conformance {
-        verdict(&matrix(), records, dispositions)
+        verdict(&matrix(), records, dispositions, Stage::Final)
             .unwrap()
             .conformance
     }
@@ -379,7 +420,7 @@ mod tests {
     fn a_missing_platform_blocks_its_cases() {
         let mut records = evidence("passed", &[]);
         records.retain(|record| record["platform"] != "macos-arm64");
-        let verdict = verdict(&matrix(), &records, &[]).unwrap();
+        let verdict = verdict(&matrix(), &records, &[], Stage::Final).unwrap();
         assert_eq!(verdict.conformance, Conformance::NotQualified);
         let blocked: Vec<_> = verdict
             .records
@@ -407,7 +448,13 @@ mod tests {
             &[("PERF-01", "Measure", Platform::MacosArm64, "failed")],
         );
         let accepted = disposition("PERF-01", Layer::Measure, None, &[State::Failed]);
-        let verdict = verdict(&matrix(), &failed, std::slice::from_ref(&accepted)).unwrap();
+        let verdict = verdict(
+            &matrix(),
+            &failed,
+            std::slice::from_ref(&accepted),
+            Stage::Final,
+        )
+        .unwrap();
         assert_eq!(verdict.conformance, Conformance::WithDispositions);
         assert!(verdict.conformance.publishable());
         let disposed: Vec<_> = verdict
@@ -460,7 +507,7 @@ mod tests {
             disposition("PERF-01", Layer::Measure, None, &[State::Failed]),
             disposition("NOT-02", Layer::Measure, None, &[State::Failed]),
         ];
-        let verdict = verdict(&matrix(), &failed, &performance).unwrap();
+        let verdict = verdict(&matrix(), &failed, &performance, Stage::Final).unwrap();
         assert_eq!(verdict.conformance, Conformance::NotQualified);
         let monitor = verdict
             .records
@@ -471,13 +518,116 @@ mod tests {
         assert!(!verdict.conformance.publishable());
     }
 
+    /// A Windows-only checklist item, WINM-02, beside the matrix.
+    fn with_checklist() -> Vec<Scenario> {
+        let mut item = scenario("WINM-02", &[Layer::HostManual]);
+        item.platforms = vec![Platform::WindowsX86_64];
+        item.hosts = vec!["Windows Terminal".into(), "VS Code".into()];
+        let mut scenarios = matrix();
+        scenarios.push(item);
+        scenarios
+    }
+
+    /// A Windows-only scenario is required on Windows alone: other
+    /// platforms' cases never wait for it.
+    #[test]
+    fn a_windows_only_scenario_is_required_on_windows_alone() {
+        let records = evidence("passed", &[]);
+        let verdict = verdict(&with_checklist(), &records, &[], Stage::Final).unwrap();
+        let checklist: Vec<_> = verdict
+            .records
+            .iter()
+            .filter(|record| record["scenario"] == "WINM-02")
+            .map(|record| (record["platform"].clone(), record["state"].clone()))
+            .collect();
+        assert_eq!(checklist, [(json!("windows-x86_64"), json!("blocked"))]);
+        assert_eq!(verdict.conformance, Conformance::NotQualified);
+    }
+
+    /// A release candidate publishes without the checklist: its checklist
+    /// cases that did not pass carry the release rule's disposition. A
+    /// final tag needs them; other cases are never waived; the owner's own
+    /// disposition comes first.
+    #[test]
+    fn a_release_candidate_publishes_without_the_checklist() {
+        let mut records = evidence("passed", &[]);
+        records.push(record(
+            "WINM-02",
+            "Host manual",
+            Platform::WindowsX86_64,
+            "not run",
+        ));
+        let judged = |records: &[Value], dispositions: &[Disposition], stage| {
+            verdict(&with_checklist(), records, dispositions, stage).unwrap()
+        };
+        let candidate = judged(&records, &[], Stage::Candidate);
+        assert_eq!(candidate.conformance, Conformance::WithDispositions);
+        let waived = candidate
+            .records
+            .iter()
+            .find(|record| record["scenario"] == "WINM-02")
+            .unwrap();
+        assert_eq!(waived["disposition"]["recorded"], "release rule");
+        assert_eq!(waived["disposition"]["decision"], CANDIDATE_RULE);
+        assert_eq!(
+            judged(&records, &[], Stage::Final).conformance,
+            Conformance::NotQualified
+        );
+        let owner = disposition("WINM-02", Layer::HostManual, None, &[State::NotRun]);
+        let disposed = judged(&records, std::slice::from_ref(&owner), Stage::Candidate);
+        let kept = disposed
+            .records
+            .iter()
+            .find(|record| record["scenario"] == "WINM-02")
+            .unwrap();
+        assert_eq!(kept["disposition"]["decision"], "accepted WINM-02");
+        let last = records.len() - 1;
+        records[last]["state"] = json!("passed");
+        assert_eq!(
+            judged(&records, &[], Stage::Candidate).conformance,
+            Conformance::Unqualified
+        );
+        records[0]["state"] = json!("failed");
+        assert_eq!(
+            judged(&records, &[], Stage::Candidate).conformance,
+            Conformance::NotQualified
+        );
+    }
+
+    /// A Windows record that does not name its runner image version and
+    /// Windows build is blocked, even when it passed; other platforms'
+    /// records need neither.
+    #[test]
+    fn a_windows_record_must_name_its_image_and_build() {
+        for missing in ["runner_image", "windows_build"] {
+            let mut records = evidence("passed", &[]);
+            for record in &mut records {
+                record["environment"][missing] = json!("");
+            }
+            let verdict = verdict(&matrix(), &records, &[], Stage::Final).unwrap();
+            let blocked: Vec<_> = verdict
+                .records
+                .iter()
+                .filter(|record| record["state"] == "blocked")
+                .map(|record| (record["platform"].clone(), record["observed"].clone()))
+                .collect();
+            assert_eq!(blocked.len(), 3, "{missing}");
+            assert!(
+                blocked
+                    .iter()
+                    .all(|(platform, observed)| platform == "windows-x86_64"
+                        && observed == "no runner image version or Windows build recorded; seen")
+            );
+        }
+    }
+
     /// Evidence of different source revisions is refused.
     #[test]
     fn evidence_must_share_one_revision() {
         let mut records = evidence("passed", &[]);
         records[0]["source_revision"] = json!("other");
         assert_eq!(
-            verdict(&matrix(), &records, &[]).err(),
+            verdict(&matrix(), &records, &[], Stage::Final).err(),
             Some("the evidence is of several revisions: {\"abc\", \"other\"}".to_owned())
         );
     }
@@ -525,6 +675,18 @@ mod tests {
             changed("platforms", json!(["windows"])),
             "PERF-01: unknown platform \"windows\""
         );
+        let windows_only = dispositions(
+            &json!({"dispositions": [{
+                "scenario": "WINM-02", "layer": "Host manual", "platforms": ["linux-x86_64"],
+                "states": ["not run"], "decision": "accepted",
+            }]})
+            .to_string(),
+            &with_checklist(),
+        );
+        assert_eq!(
+            windows_only.unwrap_err(),
+            "WINM-02: unknown platform \"linux-x86_64\""
+        );
         assert_eq!(
             changed("states", json!(["passed"])),
             "PERF-01: a disposition cannot accept \"passed\""
@@ -556,7 +718,7 @@ mod tests {
             ],
         );
         let accepted = disposition("PERF-01", Layer::Measure, None, &[State::Failed]);
-        let verdict = verdict(&matrix(), &records, &[accepted]).unwrap();
+        let verdict = verdict(&matrix(), &records, &[accepted], Stage::Final).unwrap();
         let summary = summary(&verdict);
         assert!(
             summary.starts_with("# Release qualification\n\n**not qualified.**\n"),
