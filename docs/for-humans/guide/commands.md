@@ -218,3 +218,52 @@ attached client.
 Each session is attached and killed through the client of its own climon2
 version, so that version must still be installed. Older sessions that do not
 support an action fail with 125 and are left alone. `list` needs no client.
+
+## On Windows
+
+On Windows, `c2` runs the same commands as on macOS and Linux, with the same
+shortcuts, escape prefix, leave policy and monitor:
+
+```powershell
+c2 exec pwsh
+$id = c2 exec --headless pwsh -NoProfile -File .\long-build.ps1
+c2 attach $id
+c2 list
+c2 kill $id
+c2 monitor
+```
+
+The terminals and shells climon2 is tested with on Windows are listed in
+[Terminals](terminals.md#windows).
+
+**How a session runs.** A session's daemon runs the command in a
+pseudoconsole, the Windows counterpart of a pseudo-terminal. climon2 ships its
+own copy of ConPTY, the Windows component that provides one, as `conpty.dll`
+and `OpenConsole.exe` in each version folder; if either is missing, `exec`
+exits 125. The session's processes share a job object, a Windows group of
+processes that can be ended together. A hang-up or `c2 kill` closes the
+pseudoconsole, which tells every program on it to close, waits the full five
+seconds, then ends whatever is left in the job. A `c2 exec` inside a session
+starts its own session outside that job.
+
+**Finding the command.** climon2 looks the command up itself: in each `PATH`
+directory in order, trying each `PATHEXT` extension in order, so `c2 exec npm`
+runs `npm.cmd`. The current directory is not searched. A command containing
+`\`, `/` or `:` is found from the working directory instead. Batch files run
+through the system's `cmd.exe`, and an argument a batch file cannot receive
+unchanged (one holding a carriage return, line feed or NUL) is a usage error
+(2).
+
+**Exit statuses** are Windows' full 32-bit statuses, passed through `c2`
+unchanged, and none is derived from a signal. A command ended by `c2 kill` or a
+hang-up normally reports `0xC000013A`, which PowerShell's `$LASTEXITCODE` shows
+as `-1073741510`; a program that handles the close itself reports its own
+status. Closing the terminal while a client is attached still ends the client
+with 129, and climon2's own 2, 125, 126 and 127 keep their meanings. Ctrl+C
+reaches the command as on Unix.
+
+**Jobs around your shell.** The session daemon must leave any job object your
+shell runs in, or it would end with your terminal. `c2 exec` exits 125 when it
+cannot: inside a job that refuses this, and under PowerShell's
+`Start-Process -Wait`. Windows Terminal, VS Code terminals and VS Code tasks
+put no job around their shells.

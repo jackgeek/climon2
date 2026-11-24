@@ -26,7 +26,9 @@ that tracks every session:
 
 ## Quick start
 
-Install climon2 (macOS 15+ or x86_64 Linux) and add it to your PATH:
+Install climon2 (macOS 15+ or x86_64 Linux) and add it to your PATH. On
+x86_64 Windows 11, see [Windows](docs/for-humans/guide/install.md#windows)
+instead.
 
 ```sh
 curl -fsSL https://github.com/jackgeek/climon2/releases/latest/download/install.sh | /bin/bash

@@ -1,9 +1,9 @@
-# Windows quality and CI qualification (agreed, partly implemented)
+# Windows quality and CI qualification
 
 This document says how Windows code is checked: which CI jobs run, how
 Windows-only source meets the same quality thresholds as the rest of climon2,
 and what a release needs from Windows before it is published. It is for
-contributors. So far the Test job (see [Pull request jobs](#pull-request-jobs)), its switch and change trigger, the
+contributors. The Test job (see [Pull request jobs](#pull-request-jobs)), its switch and change trigger, the
 registry's Windows arm and the source check are built
 ([#313](https://github.com/jackgeek/climon2/issues/313)), and so is the
 Quality job with everything [the native-only gate on Windows](#the-native-only-gate-on-windows)
@@ -13,7 +13,14 @@ harness's Windows host, whose own tests the Test job runs
 ([#319](https://github.com/jackgeek/climon2/issues/319)), and the Archive job
 ([#329](https://github.com/jackgeek/climon2/issues/329)), which so far tests
 the installer and the download script on the zip. The Test and
-Quality jobs run only the tests that build on Windows yet. The rest is not built. It was agreed in
+Quality jobs run the tests that build on Windows, listed as `WINDOWS_SUITE` in
+`xtask/src/quality.rs`; the session suites in `climon2-e2e` and the monitor
+acceptance matrix's own suites do not build there yet, and the Archive job
+runs no end-to-end suite yet. What a [release](#release) needs from Windows is
+built ([#330](https://github.com/jackgeek/climon2/issues/330)), except
+measuring PERF-01 on Windows. Also not built: the Authenticode test and the memory summary under
+[Facts only CI can show](#facts-only-ci-can-show), and the vim and Microsoft
+Edit downloads ([#328](https://github.com/jackgeek/climon2/issues/328)). It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 and is the specification the Windows port implements.
 
@@ -30,7 +37,7 @@ matter most:
   compiled only on Windows.
 - A **registered native file** is a source file listed in xtask's native-source
   registry as belonging to one operating system. Today the registry lists
-  `linux.rs` and `macos.rs` files, and twenty-one `windows.rs` files:
+  `linux.rs` and `macos.rs` files, and twenty-two `windows.rs` files:
   `crates/climon2-platform/src/home/windows.rs`, which names the Windows
   homes; `crates/climon2-platform/src/private/windows.rs`, which creates the
   files and folders only their user may open
@@ -68,7 +75,8 @@ matter most:
   `crates/climon2-install/src/user_path/windows.rs`, the installer and its
   user PATH edit ([#329](https://github.com/jackgeek/climon2/issues/329)); and
   `crates/climon2-cli/src/windows.rs`, which runs `list`, `exec`, `attach`
-  and `kill` and refuses the monitor until it builds on Windows.
+  and `kill` and hands `monitor` to the monitor program
+  ([#327](https://github.com/jackgeek/climon2/issues/327)).
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a
@@ -137,20 +145,20 @@ A pull request touches Windows-only code when it changes any of:
 
 ### The Quality job during development
 
-While Windows support is being built, the Quality job is off for pull
-requests and pushes to `main`. A run takes 25 to 50 minutes, and each round
+The Quality job is off for pull requests and pushes to `main`. It was turned
+off while Windows support was built. A run takes 25 to 50 minutes, and each round
 of fixes waited for one. The gate runs on the Windows development VM instead
 (see [Running the gate locally](#running-the-gate-locally)), and each pull
 request that changes a registered Windows file reports its result. This was
 the owner's decision on 2026-11-22.
 
 A second repository variable, `CLIMON2_WINDOWS_QUALITY`, turns the job back
-on when it is `on`. Release qualification and tags run it whatever that
-variable says. Turning it back on for good is part of
-[#330](https://github.com/jackgeek/climon2/issues/330).
-
-Once the owner's Windows machine runs the gate as a self-hosted runner, a
-push runs it there instead; see [Quality runners](../quality-runners.md).
+on when it is `on`. It stays off: the owner's Windows machine runs the same
+gate as a self-hosted runner on every push, and that is the check for each
+change (owner decision on
+[#330](https://github.com/jackgeek/climon2/issues/330); see
+[Quality runners](../quality-runners.md)). Release qualification and tags run
+the job on `windows-2025` whatever the variable says.
 
 ### Running the gate locally
 
@@ -253,7 +261,7 @@ Windows behaviour. Each is an ordinary test in the Test job:
   account, which the job creates; the same account is also denied opening a
   session log, a metadata file and the `logs` folder;
 - the Authenticode signatures of the bundled `conpty.dll` and
-  `OpenConsole.exe`;
+  `OpenConsole.exe`, which no test checks yet;
 - binding the runtime directory on the runner's real `%LOCALAPPDATA%` volume.
 
 [#316](https://github.com/jackgeek/climon2/issues/316) built the first,
@@ -266,12 +274,13 @@ a local member of Users with a random password, and name it to the tests in
 uses it is skipped, saying why, where the account is missing, and fails on CI.
 
 The memory used by the daemon and console host, under the inbox and the
-bundled ConPTY, is written to the job summary on each run. It has no
-threshold.
+bundled ConPTY, is to be written to the job summary on each run, with no
+threshold. No job writes it yet.
 
-vim and Microsoft Edit are fetched from their upstream release URLs, verified
-against the SHA-256 in the repository and cached by that hash. A failed
-download or a mismatch fails the job. No mirror is kept.
+vim and Microsoft Edit are to be fetched from their upstream release URLs,
+verified against the SHA-256 in the repository and cached by that hash
+([#328](https://github.com/jackgeek/climon2/issues/328)). A failed download or
+a mismatch fails the job. No mirror is kept.
 
 ## Release
 

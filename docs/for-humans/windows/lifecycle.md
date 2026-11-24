@@ -1,30 +1,30 @@
-# Windows platform and lifecycle contract (agreed, partly implemented)
+# Windows platform and lifecycle contract
 
 This document says how climon2's processes start, run and end on Windows: the
 daemon, the session's command, the hand-offs between climon2's own programs,
 the client's console, and how a session is identified and cleaned up. It is
-for contributors. Built so far: the launcher's hand-off (see [Hand-offs](#hand-offs);
-[#315](https://github.com/jackgeek/climon2/issues/315)), the daemon's
-identity and liveness check (see [Identity and liveness](#identity-and-liveness);
-[#316](https://github.com/jackgeek/climon2/issues/316)), and starting the
-daemon, its session job and its command for `exec --headless` (see
-[Starting the daemon](#starting-the-daemon) and
-[Starting the command](#starting-the-command);
-[#317](https://github.com/jackgeek/climon2/issues/317)), and `c2 kill`, which
-hangs the session up through the client and its library (see
-[Session job and hang-up](#session-job-and-hang-up);
-[#318](https://github.com/jackgeek/climon2/issues/318)), and the CLI's hand-offs
-to the client for `exec`, `attach` and `kill` and the client's console (see
-[Hand-offs](#hand-offs) and [Client console](#client-console);
-[#321](https://github.com/jackgeek/climon2/issues/321)), and command
-resolution, quoting and the launch failure statuses (see
-[Command resolution and arguments](#command-resolution-and-arguments);
-[#322](https://github.com/jackgeek/climon2/issues/322)), and closing the
-host, the leave policy and the statuses clients exit with after a hang-up (see
-[Session job and hang-up](#session-job-and-hang-up);
-[#323](https://github.com/jackgeek/climon2/issues/323)), and Ctrl+C and
-Ctrl+Break (see [Ctrl+C and Ctrl+Break](#ctrlc-and-ctrlbreak);
-[#326](https://github.com/jackgeek/climon2/issues/326)). It was
+for contributors. All of it is built. It was built in these slices: the
+launcher's hand-off ([#315](https://github.com/jackgeek/climon2/issues/315));
+[identity and liveness](#identity-and-liveness)
+([#316](https://github.com/jackgeek/climon2/issues/316));
+[starting the daemon](#starting-the-daemon), its session job and
+[the command](#starting-the-command) for `exec --headless`
+([#317](https://github.com/jackgeek/climon2/issues/317)); `c2 kill`, which
+hangs the session up through the client and its library
+([#318](https://github.com/jackgeek/climon2/issues/318)); the CLI's
+[hand-offs](#hand-offs) to the client for `exec`, `attach` and `kill`, and the
+[client console](#client-console)
+([#321](https://github.com/jackgeek/climon2/issues/321));
+[command resolution, quoting](#command-resolution-and-arguments) and the
+launch failure statuses ([#322](https://github.com/jackgeek/climon2/issues/322));
+closing the host, the leave policy and the statuses clients exit with after a
+[hang-up](#session-job-and-hang-up)
+([#323](https://github.com/jackgeek/climon2/issues/323)); focus reports and the
+dropped start-up sequences ([#325](https://github.com/jackgeek/climon2/issues/325));
+the hand-off to the monitor
+([#327](https://github.com/jackgeek/climon2/issues/327)); and
+[Ctrl+C and Ctrl+Break](#ctrlc-and-ctrlbreak)
+([#326](https://github.com/jackgeek/climon2/issues/326)). It was
 agreed in
 [Define Windows platform support and lifecycle contract](https://github.com/jackgeek/climon2/issues/212),
 using the VM measurements from
@@ -34,7 +34,7 @@ and is the specification the Windows port implements.
 Neighbouring decisions live elsewhere:
 
 - I/O, transport, the runtime directory and the bundled ConPTY:
-  [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented).
+  [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport).
 - Which hosts, shells and scenarios qualify a release:
   [Windows host and shell qualification](qualification.md).
 - The monitor and the client library:
@@ -171,6 +171,13 @@ it starts detached from the console (hidden, in its own window, or a GUI app)
 can outlive the session. This is accepted rather than hunting descendants by
 parent PID, which Windows reuses. Unix has a similar gap for programs that
 detach with `setsid`.
+
+As built, a session cannot run the Store build at all: Windows refuses to
+start a Store app inside the session's job, which the command joins as it is
+created. The CLI's Windows tests therefore take another shell for their
+sessions where the Store build is the only PowerShell 7
+([`crates/climon2-cli/README.md`](../../../crates/climon2-cli/README.md)).
+Starting `c2` from the Store build is not affected.
 
 ## Hand-offs
 
@@ -352,7 +359,7 @@ the identity check.
 | 1 | Exit statuses are full-width `u32`, passed through every hand-off unchanged. climon2's own 2, 125, 126, 127 and 129 are unchanged. | Automated: `0xC000013A`, `259` and `0xFFFFFFFF` round-trip through every hand-off |
 | 2 | There are no signal-derived statuses. Hang-up and kill report the command's close status (`0xC000013A`, or the program's own, such as vim's `0x1`); a process the session job ends reports `0xC000013A`. | Automated: the close-status scenarios in [Windows host and shell qualification](qualification.md#windows-only-scenarios) |
 | 3 | `exec` exits 125 when the daemon cannot leave the caller's job: a job that refuses breakaway, or `Start-Process -Wait`. | Automated: the three job-shape scenarios |
-| 4 | Under Store `pwsh`, programs started detached from the session's console can outlive the session. | Manual: an observation recorded with the checklist |
+| 4 | A session cannot run Store `pwsh`; the probes found that, where it ran, programs it started detached from the session's console could outlive the session. | Manual: an observation recorded with the checklist |
 | 5 | A working directory over 260 characters makes `exec` exit 126. | Automated scenario |
 | 6 | Ctrl+Break reaches the session in Windows Terminal through the attach helper; in VS Code it does nothing. | Automated: the Windows Terminal model scenario. The VS Code gap is documented only |
 | 7 | Sessions end at sign-out and shutdown, with no status promised. | Documented only; it cannot be tested without ending the run |
@@ -361,14 +368,17 @@ the identity check.
 Self-attach refusal, nested sessions, 127 for a missing command, the
 five-second grace and the leave policy keep their Unix behaviour.
 
-## Limitations the user guide will publish
+## Limitations the user guide publishes
 
-When Windows ships, the
-[user guide's limitations](../guide/terminals.md#limitations) gain:
+The user guide's [Windows limitations](../guide/terminals.md#windows-limitations)
+publish:
 
 - exceptions 4 to 7 above;
 - that Windows Defender SmartScreen or Smart App Control may block the
   unsigned binaries, and that a browser-downloaded zip needs `Unblock-File`
   ([#215](https://github.com/jackgeek/climon2/issues/215));
-- what the bundled ConPTY rewrites, drops or cannot express. That wording is
-  written from observed behaviour when the Windows I/O is implemented.
+- what the bundled ConPTY is observed to rewrite or drop: its start-up
+  negotiation, which the daemon drops (see [Client console](#client-console)),
+  and keys plain VT input cannot express, such as Shift+Enter, which arrives
+  as Enter. The guide also notes the focus-reporting pair that the host's
+  own pseudoconsole, not the bundled one, sends.
