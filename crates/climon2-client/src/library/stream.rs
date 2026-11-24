@@ -122,7 +122,14 @@ fn accepted(success: Success) -> Option<Done> {
 
 fn resized(success: Success) -> Option<Done> {
     match success {
-        Success::ResizeAccepted {} => Some(Done::Resized),
+        Success::ResizeAccepted {} => Some(Done::Bare(native::RESIZE_ACCEPTED)),
+        _ => None,
+    }
+}
+
+fn broke(success: Success) -> Option<Done> {
+    match success {
+        Success::BreakSent {} => Some(Done::Bare(native::BREAK_SENT)),
         _ => None,
     }
 }
@@ -290,6 +297,7 @@ impl Confirm {
         match self {
             Self::Ready => readied,
             Self::Acknowledge => acknowledged,
+            Self::Break => broke,
         }
     }
 
@@ -297,6 +305,7 @@ impl Confirm {
         match self {
             Self::Ready => None,
             Self::Acknowledge => Some(Family::StatusV1),
+            Self::Break => Some(Family::BreakV1),
         }
     }
 
@@ -308,6 +317,11 @@ impl Confirm {
             }
             .to_frame(),
             Self::Acknowledge => wire::Acknowledge {
+                request_id,
+                authority,
+            }
+            .to_frame(),
+            Self::Break => wire::Break {
                 request_id,
                 authority,
             }
@@ -595,7 +609,8 @@ impl Stream {
     }
 
     /// Whether the Open selected the family `act` needs, if it needs one:
-    /// `focus-v1` for Focus, `status-v1` for Set viewing and Acknowledge.
+    /// `focus-v1` for Focus, `status-v1` for Set viewing and Acknowledge,
+    /// `break-v1` for Break.
     pub(super) fn supports(&self, act: &Act) -> bool {
         act.family().is_none_or(|family| self.selects(family))
     }

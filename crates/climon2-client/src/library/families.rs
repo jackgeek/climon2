@@ -7,9 +7,9 @@ use climon2_core::wire::{Advertisement, Families, Family, Mode, Requested};
 
 /// Core (roles, control, restoration and display), passive monitor entry,
 /// titles, application focus (#94), status with viewing and
-/// acknowledgement (#95), and notifications and progress (#98): every
-/// revision-1 family.
-pub(super) const RELAYED: [Family; 7] = [
+/// acknowledgement (#95), notifications and progress (#98), and Ctrl+Break
+/// (#326): every revision-1 family.
+pub(super) const RELAYED: [Family; 8] = [
     Family::DaemonWireV1,
     Family::MonitorV1,
     Family::TitleV1,
@@ -17,6 +17,7 @@ pub(super) const RELAYED: [Family; 7] = [
     Family::NotificationV1,
     Family::ProgressV1,
     Family::FocusV1,
+    Family::BreakV1,
 ];
 
 /// The relayed family `token` names, if any.

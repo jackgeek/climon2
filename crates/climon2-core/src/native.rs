@@ -87,6 +87,7 @@ pub const ACKNOWLEDGE: u32 = 7;
 pub const LEAVE: u32 = 8;
 pub const KILL: u32 = 9;
 pub const FOCUS: u32 = 10;
+pub const BREAK: u32 = 11;
 
 pub const RESULT_NONE: u32 = 0;
 pub const OPENED: u32 = 1;
@@ -100,6 +101,7 @@ pub const LEFT: u32 = 8;
 pub const TERMINATION: u32 = 9;
 pub const FOCUS_RESULT: u32 = 10;
 pub const KNOWN_FINAL: u32 = 11;
+pub const BREAK_SENT: u32 = 12;
 
 pub const RESPONSE: u32 = 1;
 pub const INITIAL_METADATA: u32 = 2;

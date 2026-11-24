@@ -38,6 +38,7 @@ fn tag(spec: &Value) -> u32 {
         Some("viewing") => native::VIEWING,
         Some("acknowledge") => native::ACKNOWLEDGE,
         Some("focus") => native::FOCUS,
+        Some("break") => native::BREAK,
         Some("kill") => native::KILL,
         _ => number(spec, 0),
     }
@@ -132,7 +133,7 @@ pub fn build(arena: &mut Arena, spec: &Value) -> *const native::Request {
                 geometry: geometry(&spec["geometry"]),
             };
         }
-        native::READY | native::ACKNOWLEDGE => {
+        native::READY | native::ACKNOWLEDGE | native::BREAK => {
             request.args.authority = authority(&spec["authority"]);
         }
         native::FOCUS | native::VIEWING => {

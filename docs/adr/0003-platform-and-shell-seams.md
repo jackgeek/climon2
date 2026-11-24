@@ -3,9 +3,7 @@
 The runtime supports macOS 15+ on Apple Silicon and Intel, and x86_64
 GNU/Linux with an Ubuntu 24.04/glibc 2.39 release baseline. Arch Linux is a
 native development host. Windows (x86_64 MSVC, Windows 11 build 26100 or
-newer) is built to these decisions, except that Ctrl+Break does not reach the
-session yet ([#326](https://github.com/jackgeek/climon2/issues/326)); its I/O
-and transport decisions are under
+newer) is built to these decisions; its I/O and transport decisions are under
 [Windows I/O and transport](#windows-io-and-transport),
 and its process lifecycle under
 [Windows lifecycle](#windows-lifecycle). Each
@@ -192,10 +190,10 @@ Decided in [Define Windows I/O and transport architecture](https://github.com/ja
   `ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT` with processed input
   off, and `ReadConsoleInputW` supplies key characters and
   `WINDOW_BUFFER_SIZE_EVENT` resizes. Keys VT cannot express, such as
-  Shift+Enter, are a documented limitation. Ctrl+Break is to reach the
-  session through a console control handler instead
-  ([Windows lifecycle](#windows-lifecycle)); that is not built yet
-  ([#326](https://github.com/jackgeek/climon2/issues/326)). Output enables
+  Shift+Enter, are a documented limitation. Ctrl+Break reaches the session
+  through a console control handler instead, and a Break request to the
+  daemon ([#326](https://github.com/jackgeek/climon2/issues/326))
+  ([Windows lifecycle](#windows-lifecycle)). Output enables
   `ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN` and the
   UTF-8 code page, and writes raw bytes with `WriteFile`, never splitting a
   UTF-8 character across writes (a pure `climon2-core` boundary function, used
@@ -258,5 +256,5 @@ The Windows shell profiles, the host models and the scenarios they run are speci
   ([Windows quality and CI qualification](../for-humans/windows/quality.md)).
 - Local full quality gates must pass for the exact release commit before
   tagging; this maintainer-owned check is not duplicated or certified by CI.
-- One release publishes both platform archives only after both native gates
-  pass; see [distribution](../for-humans/distribution.md).
+- One release publishes the Linux, macOS and Windows archives only after every
+  native gate passes (#330); see [distribution](../for-humans/distribution.md).

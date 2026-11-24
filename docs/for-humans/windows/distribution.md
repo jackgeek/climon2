@@ -2,15 +2,15 @@
 
 This document says what a Windows release of climon2 contains, how it is
 installed, and what an upgrade may and may not touch. It is for contributors.
-All of it is built except [publishing](#releases) the archive with a release,
-which is [#330](https://github.com/jackgeek/climon2/issues/330): the
-launcher's retry of [`current`](#current)
+All of it is built: the launcher's retry of [`current`](#current)
 ([#315](https://github.com/jackgeek/climon2/issues/315)),
 [the archive](#the-archive) with its Dist job
 ([#319](https://github.com/jackgeek/climon2/issues/319)), and
 [`install.exe`](#the-installer) and [`install.ps1`](#the-download-script)
 with the Archive job that tests them
-([#329](https://github.com/jackgeek/climon2/issues/329)). It was agreed in
+([#329](https://github.com/jackgeek/climon2/issues/329)), and
+[publishing](#releases) the archive with a release
+([#330](https://github.com/jackgeek/climon2/issues/330)). It was agreed in
 [Define Windows packaging and upgrade contract](https://github.com/jackgeek/climon2/issues/215)
 and is the specification the Windows port implements. The macOS and Linux
 equivalent, which is built, is [Release distribution](../distribution.md).
@@ -92,8 +92,9 @@ the one `$Version = '…'` line of the checked-in
 [`install.ps1`](../../../install.ps1), as the Unix dist stamps `install.sh`. The Windows Dist job runs it on `windows-2025` on
 every run of the checks, even when the Windows test switch is off
 ([Windows quality](quality.md#the-switch)), and keeps the result as a
-workflow artifact. Publishing it with a release is
-[#330](https://github.com/jackgeek/climon2/issues/330).
+workflow artifact. The Release workflow publishes that zip and its stamped
+`install.ps1` with the release
+([#330](https://github.com/jackgeek/climon2/issues/330)).
 
 - **Static C runtime.** Every climon2 program is built with the C runtime
   linked in, so a clean Windows 11 needs nothing installed first. The

@@ -190,6 +190,11 @@ mod unix {
             self.resize.swap(false, Ordering::SeqCst)
         }
 
+        /// Unix terminals have no Ctrl+Break (#326).
+        pub fn take_break(&self) -> bool {
+            false
+        }
+
         pub fn termination_signal(&self) -> Option<u32> {
             let signal = self.termination.load(Ordering::SeqCst);
             std::num::NonZeroU32::new(u32::try_from(signal).ok()?).map(std::num::NonZeroU32::get)

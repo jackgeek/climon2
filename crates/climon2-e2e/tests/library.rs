@@ -65,9 +65,9 @@ fn installed_library_describes_revision_one_with_its_version_identity() {
         description["capabilities"],
         json!({
             "null": false,
-            "count": 7,
+            "count": 8,
             "tokens": ["daemon-wire-v1", "monitor-v1", "title-v1", "status-v1",
-                       "notification-v1", "progress-v1", "focus-v1"],
+                       "notification-v1", "progress-v1", "focus-v1", "break-v1"],
         })
     );
     assert_within_default_reservations(&description["requirements"]);

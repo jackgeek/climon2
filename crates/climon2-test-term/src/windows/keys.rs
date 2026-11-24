@@ -56,6 +56,9 @@ pub enum Key {
     Right,
     Home,
     End,
+    /// The Break key, pressed with Ctrl: Windows reports Ctrl+Break as
+    /// `VK_CANCEL` (0x03) with scan code 0x46, typing ETX (0x03).
+    Break,
     /// A function key, F1 to F12.
     F(u8),
 }
@@ -125,6 +128,7 @@ impl Key {
             Self::Right => (enhanced(0x27, 0x4D), false, 0),
             Self::Home => (enhanced(0x24, 0x47), false, 0),
             Self::End => (enhanced(0x23, 0x4F), false, 0),
+            Self::Break => (key(0x03, 0x46), false, 0),
             Self::F(number @ 1..=12) => (function(number), false, 0),
             Self::F(_) => return None,
         })
@@ -194,6 +198,7 @@ fn typed(key: Key, modifiers: Modifiers, plain: u16) -> u16 {
     match key {
         Key::Enter => 0x0A,
         Key::Backspace => 0x7F,
+        Key::Break => 0x03,
         Key::Char(' ') => 0,
         Key::Char(c) if c.is_ascii_alphabetic() || ('@'..='_').contains(&c) => {
             u16::from(c.to_ascii_uppercase() as u8 & 0x1F)
@@ -281,6 +286,9 @@ pub(crate) fn vt(key: Key, modifiers: Modifiers, application_cursor: bool) -> Ve
         Key::Left => return cursor(b'D'),
         Key::Home => return cursor(b'H'),
         Key::End => return cursor(b'F'),
+        // VT has no Break: a plain-VT host such as the VS Code terminal
+        // sends nothing for it.
+        Key::Break => return Vec::new(),
         Key::F(number) => return function_vt(number, modifiers),
         Key::Tab if modifiers.shift => b"\x1b[Z".to_vec(),
         Key::Tab => b"\t".to_vec(),
@@ -424,6 +432,15 @@ mod tests {
             text(win32(Key::Char('?'), Modifiers::NONE)),
             "\x1b[16;42;0;1;16;1_\x1b[191;53;63;1;16;1_\x1b[191;53;63;0;16;1_\x1b[16;42;0;0;0;1_"
         );
+    }
+
+    #[test]
+    fn ctrl_break_is_vk_cancel_typing_etx_and_has_no_vt() {
+        assert_eq!(
+            text(win32(Key::Break, Modifiers::CTRL)),
+            "\x1b[17;29;0;1;8;1_\x1b[3;70;3;1;8;1_\x1b[3;70;3;0;8;1_\x1b[17;29;0;0;0;1_"
+        );
+        assert_eq!(vt(Key::Break, Modifiers::CTRL, false), b"");
     }
 
     #[test]

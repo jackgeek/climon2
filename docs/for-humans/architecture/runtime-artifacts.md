@@ -61,7 +61,8 @@ Installation relationships are outside this consumption diagram.
 This diagram shows only what Windows changes in the diagram above: how the
 launcher reaches the CLI, how the CLI starts the daemon, how the daemon
 reaches the session command through ConPTY, the Windows pseudoconsole, and
-through `cmd.exe` when the command is a batch file, and how the client and the
+through `cmd.exe` when the command is a batch file, how the daemon starts its
+own executable again as the Ctrl+Break helper, and how the client and the
 monitor load the client library. How the CLI starts the
 client and the monitor is omitted. Arrows run from consumer to
 consumed artifact. Solid arrows exist: the launcher reaching the CLI
@@ -69,7 +70,9 @@ consumed artifact. Solid arrows exist: the launcher reaching the CLI
 the daemon, which hosts the session's command in the bundled ConPTY
 ([#317](https://github.com/jackgeek/climon2/issues/317)) and runs a batch file
 through the system's `cmd.exe`
-([#322](https://github.com/jackgeek/climon2/issues/322)), and the client loading
+([#322](https://github.com/jackgeek/climon2/issues/322)) and starts itself as
+the Ctrl+Break helper ([#326](https://github.com/jackgeek/climon2/issues/326)),
+and the client loading
 the library beside it to end a session for `c2 kill`
 ([#318](https://github.com/jackgeek/climon2/issues/318)) and to attach for
 `c2 exec` and `c2 attach` ([#321](https://github.com/jackgeek/climon2/issues/321)), and the monitor
@@ -108,6 +111,7 @@ flowchart TB
         wdaemon -->|"creates in ConPTY and session job"| wcommand
         wdaemon -->|"creates in ConPTY and session job for a .bat or .cmd command"| wcmd
         wcmd -->|"runs the resolved script with escaped arguments"| wcommand
+        wdaemon -->|"starts itself detached as the Ctrl+Break helper, which attaches to the command's console"| wdaemon
         conpty --x|"fallback refused: exec fails with 125"| inbox
     end
 ```
@@ -115,7 +119,7 @@ flowchart TB
 | Node | Purpose |
 |---|---|
 | `c2.exe` | The frozen launcher, the only command name. Windows cannot replace a process, so it starts the CLI and waits for it. |
-| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. `climon2-cli.exe` runs `list`, `exec`, `attach` and `kill`; for `exec` without `--headless`, `attach` and `kill` it starts the session version's `climon2-client.exe` and waits for it. for `monitor` it starts its own version's `climon2-monitor.exe` and waits for it. |
+| `climon2-cli.exe`, `climon2-daemon.exe`, `climon2-client.exe`, `climon2-monitor.exe` | The same roles as on Unix. `climon2-cli.exe` runs `list`, `exec`, `attach` and `kill`; for `exec` without `--headless`, `attach` and `kill` it starts the session version's `climon2-client.exe` and waits for it. For `monitor` it starts its own version's `climon2-monitor.exe` and waits for it. `climon2-daemon.exe` also runs as the short-lived Ctrl+Break helper, which it starts with `--break-console`. |
 | `climon2_client.dll` | The client library, the Windows build of the Rust cdylib above. It links the C runtime statically, as every Windows build does, imports only Windows system DLLs and exports only its bootstrap symbol. The loader never frees it and refuses it when Windows loaded another file for its path. |
 | `conpty.dll` | Microsoft's pinned ConPTY library, shipped in each version folder. Only the daemon loads it. |
 | `OpenConsole.exe` | The console host that `conpty.dll` starts for each session, from the same pinned package. |

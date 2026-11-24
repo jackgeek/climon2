@@ -16,9 +16,9 @@ the installer and the download script on the zip. The Test and
 Quality jobs run the tests that build on Windows, listed as `WINDOWS_SUITE` in
 `xtask/src/quality.rs`; the session suites in `climon2-e2e` and the monitor
 acceptance matrix's own suites do not build there yet, and the Archive job
-runs no end-to-end suite yet. Also not built: what a [release](#release) needs
-from Windows ([#330](https://github.com/jackgeek/climon2/issues/330)), the
-Authenticode test and the memory summary under
+runs no end-to-end suite yet. What a [release](#release) needs from Windows is
+built ([#330](https://github.com/jackgeek/climon2/issues/330)), except
+measuring PERF-01 on Windows. Also not built: the Authenticode test and the memory summary under
 [Facts only CI can show](#facts-only-ci-can-show), and the vim and Microsoft
 Edit downloads ([#328](https://github.com/jackgeek/climon2/issues/328)). It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
@@ -144,20 +144,20 @@ A pull request touches Windows-only code when it changes any of:
 
 ### The Quality job during development
 
-While Windows support is being built, the Quality job is off for pull
-requests and pushes to `main`. A run takes 25 to 50 minutes, and each round
+The Quality job is off for pull requests and pushes to `main`. It was turned
+off while Windows support was built. A run takes 25 to 50 minutes, and each round
 of fixes waited for one. The gate runs on the Windows development VM instead
 (see [Running the gate locally](#running-the-gate-locally)), and each pull
 request that changes a registered Windows file reports its result. This was
 the owner's decision on 2026-11-22.
 
 A second repository variable, `CLIMON2_WINDOWS_QUALITY`, turns the job back
-on when it is `on`. Release qualification and tags run it whatever that
-variable says. Turning it back on for good is part of
-[#330](https://github.com/jackgeek/climon2/issues/330).
-
-Once the owner's Windows machine runs the gate as a self-hosted runner, a
-push runs it there instead; see [Quality runners](../quality-runners.md).
+on when it is `on`. It stays off: the owner's Windows machine runs the same
+gate as a self-hosted runner on every push, and that is the check for each
+change (owner decision on
+[#330](https://github.com/jackgeek/climon2/issues/330); see
+[Quality runners](../quality-runners.md)). Release qualification and tags run
+the job on `windows-2025` whatever the variable says.
 
 ### Running the gate locally
 
@@ -280,32 +280,60 @@ a mismatch fails the job. No mirror is kept.
 
 ## Release
 
-`windows-x86_64` becomes the fourth release qualification platform. A release
-needs all of these from Windows, whatever the switch says:
+`windows-x86_64` is the fourth release qualification platform
+([#330](https://github.com/jackgeek/climon2/issues/330)). A release needs all
+of these from Windows, whatever the switches say:
 
-1. Test and Archive pass.
+1. Test and Archive pass. The Release workflow calls the checks for its tag,
+   which always run the Windows jobs.
 2. The native-only gate passes over every registered Windows file, after the
-   sentinel and coverage probes.
+   sentinel and coverage probes: Release calls the checks with `mutate_all`,
+   which runs the Quality job's `cargo xtask mutate --native-only
+   --mutate-all` on `windows-2025` whatever `CLIMON2_WINDOWS_QUALITY` says.
+   The owner's own machines ([Quality runners](../quality-runners.md)) do
+   not take part.
 3. Every automated scenario case has passed or has a disposition.
 4. Every manual checklist case has passed or has a disposition. This applies
    to final tags only.
 
 ### Evidence records
 
-`cargo xtask qualify run` records the existing acceptance matrix on Windows as
-it does elsewhere. It also reads the scenario IDs in
-[Windows host and shell qualification](qualification.md):
+The Release workflow's `qualify-windows` job runs `cargo xtask qualify run
+--platform windows-x86_64` on the exact zip on `windows-2025`. It records the
+existing acceptance matrix on Windows as it does elsewhere, from two runs: the
+Windows suite the Quality job tests, on hook-enabled debug builds, and the
+CLI's tests and the installer's archive tests against the zip. It also reads
+the scenario tables in [Windows host and shell qualification](qualification.md),
+which apply to Windows alone:
 
 | IDs | Scenarios | Layer |
 | --- | --- | --- |
 | `WIN-01` to `WIN-11` | The Windows-only scenario groups | Contract |
 | `WINM-01` to `WINM-16` | The manual checklist items | Host manual |
 
+`WIN-01` to `WIN-11` take their results from the tests that
+`crates/climon2-cli/README.md` names for them. Every Windows record also
+carries the runner image version (`runner_image`, such as `win25 20251110.1`)
+and the Windows build (`windows_build`, from `ver`) in its `environment`. The
+verdict blocks a Windows record that lacks either.
+
 A manual checklist case passes when `qualification/manual.json` holds a passed
-record for both Windows Terminal and VS Code (`WINM-12` needs VS Code only). A
-failed or missing record is a failed or not-run case that needs a disposition.
-This is stricter than the existing Host manual check, `FOC-02`, where a host
-that fails is recorded as a limitation.
+record for each host its row names: Windows Terminal and VS Code, or VS Code
+alone for `WINM-12`. A failed or limited record is a failed case, and a
+missing one a not-run case; either needs a disposition. This is stricter than
+the existing Host manual check, `FOC-02`, where a host that fails is recorded
+as a limitation. A checklist record names the candidate it was run on, by its
+version and its zip's SHA-256, and only records of the latest candidate count:
+
+```json
+{
+  "scenario": "WINM-02", "layer": "Host manual", "os": "windows",
+  "host": "Windows Terminal", "gesture": "c2 exec pwsh, a command, detach, c2 list, attach",
+  "observed": "the screen was restored", "result": "passed",
+  "recorded": "owner, 2026-11-24",
+  "candidate": "0.2.0-rc.1", "sha256": "<the zip's SHA-256 from the release's SHA256SUMS>"
+}
+```
 
 ### Manual checklist timing
 
@@ -313,9 +341,22 @@ The checklist needs the candidate installed with `install.ps1`, so it can only
 run once a release candidate is published:
 
 1. A release candidate tag publishes its prerelease. Its manual checklist
-   cases are recorded as not run and do not block it.
+   cases are recorded as not run and do not block it: the verdict, given the
+   tag, gives each one the release rule's disposition, which stays visible in
+   the records.
 2. The owner runs the checklist on that candidate and commits records naming
    its version and the SHA-256 of its Windows zip.
 3. The final tag publishes only if those records name the latest release
    candidate, and the final tag's source differs from that candidate's only in
-   the version stamp and the files under `qualification/`.
+   the version stamp and the files under `qualification/`. The Release
+   workflow's `candidate` job runs `cargo xtask qualify candidate`, which finds
+   the published `-rc.N` of the tag's version with the greatest `N` and
+   compares every changed file after replacing the candidate's version with
+   the final one. It fails when there is no candidate or anything else
+   changed, and nothing is published. Otherwise it passes the candidate's
+   version and zip SHA-256 to the Windows qualification job.
+
+A release publishes every platform or none. Publishing needs the checks, the
+candidate job and the verdict to pass, and uploads the Windows zip and its
+stamped `install.ps1` beside the Unix archives, with one `SHA256SUMS` over all
+of them and a build-provenance attestation for each file.

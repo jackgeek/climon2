@@ -2,17 +2,31 @@
 //! matrix's scenarios, the crate READMEs' scenario-to-test claims, and which
 //! packaged tests only run on hook-enabled debug builds.
 
-use super::Layer;
+use super::{Layer, Platform};
 use std::collections::BTreeSet;
 
 /// One acceptance-matrix scenario: its ID, setup, required result and
-/// required layers (docs/for-humans/behaviour/monitor/acceptance.md).
+/// required layers (docs/for-humans/behaviour/monitor/acceptance.md), the
+/// platforms it is required on, and, for a manual checklist item
+/// (docs/for-humans/windows/qualification.md), the hosts each needing a
+/// passed record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Scenario {
     pub(crate) id: String,
     pub(crate) setup: String,
     pub(crate) expected: String,
     pub(crate) layers: Vec<Layer>,
+    pub(crate) platforms: Vec<Platform>,
+    /// Empty except for a checklist item.
+    pub(crate) hosts: Vec<String>,
+}
+
+impl Scenario {
+    /// Whether it is a manual checklist item: a release candidate publishes
+    /// without it.
+    pub(crate) fn is_checklist(&self) -> bool {
+        !self.hosts.is_empty()
+    }
 }
 
 /// Whether `text` is a scenario ID: three or four capitals, a hyphen and two
@@ -32,15 +46,24 @@ fn cells(line: &str) -> Option<Vec<&str>> {
     Some(inner.split('|').map(str::trim).collect())
 }
 
-/// Every scenario of the acceptance matrix, in document order: each table
-/// row whose first cell is a scenario ID and which has its four cells. An
-/// unknown layer or a repeated ID is an error, never skipped.
-pub(crate) fn scenarios(matrix: &str) -> Result<Vec<Scenario>, String> {
-    let mut scenarios: Vec<Scenario> = Vec::new();
+/// Appends every scenario of `matrix` to `scenarios`, in document order,
+/// each required on `platforms`: each table row whose first cell is a
+/// scenario ID and which has its four cells (ID, setup, required result,
+/// layers), or five for a checklist item, the fifth naming its hosts. An
+/// unknown layer or an ID already listed, here or before, is an error, never
+/// skipped.
+pub(crate) fn scenarios(
+    matrix: &str,
+    platforms: &[Platform],
+    scenarios: &mut Vec<Scenario>,
+) -> Result<(), String> {
     for row in matrix.lines().filter_map(cells) {
-        let [id, setup, expected, layers] = row[..] else {
-            continue;
+        let (id, setup, expected, layers, hosts) = match row[..] {
+            [id, setup, expected, layers] => (id, setup, expected, layers, ""),
+            [id, setup, expected, layers, hosts] => (id, setup, expected, layers, hosts),
+            _ => continue,
         };
+        let id = id.trim_matches('`');
         if !is_id(id) {
             continue;
         }
@@ -58,9 +81,16 @@ pub(crate) fn scenarios(matrix: &str) -> Result<Vec<Scenario>, String> {
             setup: setup.to_owned(),
             expected: expected.to_owned(),
             layers,
+            platforms: platforms.to_vec(),
+            hosts: hosts
+                .split(',')
+                .map(str::trim)
+                .filter(|host| !host.is_empty())
+                .map(str::to_owned)
+                .collect(),
         });
     }
-    Ok(scenarios)
+    Ok(())
 }
 
 /// What one README row claims for one scenario: the layers its tests
@@ -223,12 +253,28 @@ mod tests {
         list.iter().map(|id| (*id).to_owned()).collect()
     }
 
-    /// The matrix's rows become scenarios with their layers; rows of other
-    /// tables, the header and the separator are not scenarios.
+    fn parsed(matrix: &str, platforms: &[Platform]) -> Result<Vec<Scenario>, String> {
+        let mut parsed = Vec::new();
+        scenarios(matrix, platforms, &mut parsed).map(|()| parsed)
+    }
+
+    fn scenario(id: &str, setup: &str, expected: &str, layers: &[Layer]) -> Scenario {
+        Scenario {
+            id: id.into(),
+            setup: setup.into(),
+            expected: expected.into(),
+            layers: layers.to_vec(),
+            platforms: Platform::ALL.to_vec(),
+            hosts: Vec::new(),
+        }
+    }
+
+    /// The matrix's rows become scenarios with their layers, required on the
+    /// given platforms; rows of other tables, the header and the separator
+    /// are not scenarios.
     #[test]
     fn matrix_rows_become_scenarios_with_their_layers() {
-        let matrix = "\
-| Layer | Required meaning |
+        let matrix = "| Layer | Required meaning |
 |---|---|
 | Contract | Deterministic. |
 
@@ -238,43 +284,89 @@ mod tests {
 | PERF-01 | Run. | Report. | Measure |
 | FOC-02 | Copy. | Recorded. | Monitor, Host manual |
 ";
-        let scenarios = scenarios(matrix).unwrap();
         assert_eq!(
-            scenarios,
+            parsed(matrix, &Platform::ALL).unwrap(),
             [
-                Scenario {
-                    id: "ENT-01".into(),
-                    setup: "Start it.".into(),
-                    expected: "It opens.".into(),
-                    layers: vec![Layer::Monitor],
-                },
-                Scenario {
-                    id: "PERF-01".into(),
-                    setup: "Run.".into(),
-                    expected: "Report.".into(),
-                    layers: vec![Layer::Measure],
-                },
-                Scenario {
-                    id: "FOC-02".into(),
-                    setup: "Copy.".into(),
-                    expected: "Recorded.".into(),
-                    layers: vec![Layer::Monitor, Layer::HostManual],
-                },
+                scenario("ENT-01", "Start it.", "It opens.", &[Layer::Monitor]),
+                scenario("PERF-01", "Run.", "Report.", &[Layer::Measure]),
+                scenario(
+                    "FOC-02",
+                    "Copy.",
+                    "Recorded.",
+                    &[Layer::Monitor, Layer::HostManual]
+                ),
             ]
         );
     }
 
-    /// An unknown layer or a scenario listed twice is an error.
+    /// A checklist item's fifth cell names the hosts each needing a passed
+    /// record (#330); a scenario without one is no checklist item.
+    #[test]
+    fn checklist_rows_name_their_hosts() {
+        let matrix = "| ID | Item | Required result | Layer | Hosts |
+|---|---|---|---|---|
+| WINM-02 | Detach. | Restored. | Host manual | Windows Terminal, VS Code |
+| WINM-12 | Reload. | Survives. | Host manual | VS Code |
+| `WIN-01` | Close. | 129. | Contract |
+";
+        let windows = [Platform::WindowsX86_64];
+        let read = parsed(matrix, &windows).unwrap();
+        let hosts: Vec<(&str, Vec<String>, bool)> = read
+            .iter()
+            .map(|scenario| {
+                (
+                    scenario.id.as_str(),
+                    scenario.hosts.clone(),
+                    scenario.is_checklist(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            hosts,
+            [
+                (
+                    "WINM-02",
+                    vec!["Windows Terminal".into(), "VS Code".into()],
+                    true
+                ),
+                ("WINM-12", vec!["VS Code".into()], true),
+                ("WIN-01", vec![], false),
+            ]
+        );
+        assert!(read.iter().all(|scenario| scenario.platforms == windows));
+        assert_eq!(read[0].layers, [Layer::HostManual]);
+    }
+
+    /// An unknown layer or a scenario listed twice, in one document or
+    /// across two, is an error.
     #[test]
     fn unknown_layers_and_repeated_ids_are_errors() {
-        let unknown = "| ENT-01 | a | b | Monitor, Smoke |\n";
+        let unknown = "| ENT-01 | a | b | Monitor, Smoke |
+";
         assert_eq!(
-            scenarios(unknown),
+            parsed(unknown, &Platform::ALL),
             Err("ENT-01: unknown layer \" Smoke\"".to_owned())
         );
-        let twice = "| ENT-01 | a | b | Monitor |\n| ENT-01 | c | d | Fault |\n";
+        let twice = "| ENT-01 | a | b | Monitor |
+| ENT-01 | c | d | Fault |
+";
         assert_eq!(
-            scenarios(twice),
+            parsed(twice, &Platform::ALL),
+            Err("scenario ENT-01 is listed twice".to_owned())
+        );
+        let mut both = parsed(
+            "| ENT-01 | a | b | Monitor |
+",
+            &Platform::ALL,
+        )
+        .unwrap();
+        assert_eq!(
+            scenarios(
+                "| ENT-01 | c | d | Fault |
+",
+                &[Platform::WindowsX86_64],
+                &mut both
+            ),
             Err("scenario ENT-01 is listed twice".to_owned())
         );
     }

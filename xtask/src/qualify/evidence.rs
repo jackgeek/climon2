@@ -100,7 +100,16 @@ pub(crate) struct Report {
     pub(crate) json: Value,
 }
 
-/// A manual record: a Host manual check (FOC-02) or a documentation review.
+/// A published release candidate: its version and its Windows zip's
+/// SHA-256 (#330).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Candidate {
+    pub(crate) version: String,
+    pub(crate) sha256: String,
+}
+
+/// A manual record: a Host manual check (FOC-02), a Windows manual checklist
+/// item (WINM-01 to WINM-16) or a documentation review.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Manual {
     pub(crate) scenario: String,
@@ -114,6 +123,9 @@ pub(crate) struct Manual {
     pub(crate) passed: bool,
     pub(crate) limitation: String,
     pub(crate) recorded: String,
+    /// The release candidate a checklist record was run on; empty for any
+    /// other record.
+    pub(crate) candidate: Candidate,
 }
 
 /// Every input one platform's records are made from.
@@ -126,6 +138,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) runs: &'a [Run],
     pub(crate) reports: &'a [Report],
     pub(crate) manual: &'a [Manual],
+    /// The latest release candidate, whose checklist records count; none
+    /// for a release candidate's own run.
+    pub(crate) candidate: Option<&'a Candidate>,
     /// The candidate archive's SHA-256.
     pub(crate) sha256: &'a str,
     /// What every record shares: revision, artifact, environment.
@@ -175,6 +190,7 @@ fn merge(record: &mut Value, fields: Value) {
 fn finding(inputs: &Inputs<'_>, scenario: &Scenario, layer: Layer) -> Finding {
     match layer {
         Layer::Measure => measured(inputs),
+        Layer::HostManual if scenario.is_checklist() => checklist(inputs, scenario, layer),
         Layer::HostManual => manual(inputs, scenario, layer),
         layer => tested(inputs, scenario, layer),
     }
@@ -324,6 +340,58 @@ fn manual(inputs: &Inputs<'_>, scenario: &Scenario, layer: Layer) -> Finding {
     }
 }
 
+/// A Windows manual checklist item (#330): it passes with a passed record
+/// for each of its hosts run on the latest release candidate, and fails
+/// with any failed or limited one. Records of another candidate never
+/// count, and with no candidate named (a release candidate's own run) it is
+/// not run.
+fn checklist(inputs: &Inputs<'_>, scenario: &Scenario, layer: Layer) -> Finding {
+    let Some(candidate) = inputs.candidate else {
+        return Finding {
+            state: State::NotRun,
+            observed: "no release candidate named: the checklist runs on a published candidate"
+                .to_owned(),
+            limitation: String::new(),
+            evidence: json!({"manual": []}),
+        };
+    };
+    let records: Vec<&Manual> = reviews(inputs, scenario, layer)
+        .into_iter()
+        .filter(|record| record.candidate == *candidate && scenario.hosts.contains(&record.host))
+        .collect();
+    let passed = scenario
+        .hosts
+        .iter()
+        .filter(|host| {
+            records
+                .iter()
+                .any(|record| record.host == **host && record.passed)
+        })
+        .count();
+    let failures: Vec<String> = records
+        .iter()
+        .filter(|record| !record.passed)
+        .map(|record| format!("{}: {}", record.host, record.observed))
+        .collect();
+    let state = if !failures.is_empty() {
+        State::Failed
+    } else if passed == scenario.hosts.len() {
+        State::Passed
+    } else {
+        State::NotRun
+    };
+    Finding {
+        state,
+        observed: format!(
+            "{passed} of {} hosts passed on {}",
+            scenario.hosts.len(),
+            candidate.version
+        ),
+        limitation: failures.join("; "),
+        evidence: json!({"manual": records.iter().map(|record| manual_json(record)).collect::<Vec<_>>()}),
+    }
+}
+
 /// Host terminals each OS's FOC-02 check covers (owner decision on #122).
 pub(crate) const MANUAL_HOSTS: usize = 3;
 
@@ -339,6 +407,8 @@ fn manual_json(record: &Manual) -> Value {
         "result": result(record.passed),
         "limitation": record.limitation,
         "recorded": record.recorded,
+        "candidate": record.candidate.version,
+        "sha256": record.candidate.sha256,
     })
 }
 
@@ -456,6 +526,8 @@ mod tests {
             setup: format!("{id} setup"),
             expected: format!("{id} expected"),
             layers: layers.to_vec(),
+            platforms: Platform::ALL.to_vec(),
+            hosts: Vec::new(),
         }
     }
 
@@ -490,6 +562,7 @@ mod tests {
         runs: Vec<Run>,
         reports: Vec<Report>,
         manual: Vec<Manual>,
+        candidate: Option<Candidate>,
         common: Value,
     }
 
@@ -502,6 +575,7 @@ mod tests {
                 runs,
                 reports: Vec::new(),
                 manual: Vec::new(),
+                candidate: None,
                 common: json!({"source_revision": "abc123"}),
             }
         }
@@ -515,6 +589,7 @@ mod tests {
                 runs: &self.runs,
                 reports: &self.reports,
                 manual: &self.manual,
+                candidate: self.candidate.as_ref(),
                 sha256: "feed",
                 common: &self.common,
             })
@@ -765,6 +840,7 @@ test result: FAILED. 1 passed; 1 failed; 2 ignored
             passed,
             limitation: ["only the visible page", ""][usize::from(passed)].to_owned(),
             recorded: "owner, 2026-11-20".to_owned(),
+            candidate: Candidate::default(),
         }
     }
 
@@ -800,6 +876,129 @@ test result: FAILED. 1 passed; 1 failed; 2 ignored
         assert_eq!(
             fixture.records(Platform::LinuxX86_64)[0]["state"],
             "not run"
+        );
+    }
+
+    fn candidate(version: &str) -> Candidate {
+        Candidate {
+            version: version.to_owned(),
+            sha256: format!("{version} zip"),
+        }
+    }
+
+    /// One host's checklist record of `scenario`, run on `on`.
+    fn checked(scenario: &str, host: &str, passed: bool, on: &Candidate) -> Manual {
+        Manual {
+            scenario: scenario.to_owned(),
+            layer: Layer::HostManual,
+            os: "windows".to_owned(),
+            host: host.to_owned(),
+            gesture: "c2 exec pwsh, detach, reattach".to_owned(),
+            observed: ["the screen was blank", "the screen was restored"][usize::from(passed)]
+                .to_owned(),
+            passed,
+            limitation: String::new(),
+            recorded: "owner, 2026-11-24".to_owned(),
+            candidate: on.clone(),
+        }
+    }
+
+    fn checklist_fixture(hosts: &[&str]) -> Fixture {
+        let mut item = scenario("WINM-02", &[Layer::HostManual]);
+        item.hosts = hosts.iter().map(|host| (*host).to_owned()).collect();
+        item.platforms = vec![Platform::WindowsX86_64];
+        let mut fixture = Fixture::new(vec![item], vec![], vec![]);
+        fixture.candidate = Some(candidate("1.2.0-rc.2"));
+        fixture
+    }
+
+    fn checklist_state(fixture: &Fixture) -> (String, String, String) {
+        let record = &fixture.records(Platform::WindowsX86_64)[0];
+        let text = |name: &str| record[name].as_str().unwrap().to_owned();
+        (text("state"), text("observed"), text("limitation"))
+    }
+
+    /// A checklist item (#330) passes with a passed record for each of its
+    /// hosts on the latest candidate; one host short is not run; any failed
+    /// or limited record of that candidate fails it, however many passed.
+    #[test]
+    fn a_checklist_item_needs_every_host_passed_on_the_latest_candidate() {
+        let latest = candidate("1.2.0-rc.2");
+        let mut fixture = checklist_fixture(&["Windows Terminal", "VS Code"]);
+        fixture.manual = vec![checked("WINM-02", "Windows Terminal", true, &latest)];
+        assert_eq!(
+            checklist_state(&fixture),
+            (
+                "not run".into(),
+                "1 of 2 hosts passed on 1.2.0-rc.2".into(),
+                String::new()
+            )
+        );
+        fixture
+            .manual
+            .push(checked("WINM-02", "VS Code", true, &latest));
+        assert_eq!(checklist_state(&fixture).0, "passed");
+        assert_eq!(
+            fixture.records(Platform::WindowsX86_64)[0]["evidence"]["manual"][1],
+            json!({
+                "host": "VS Code", "gesture": "c2 exec pwsh, detach, reattach",
+                "observed": "the screen was restored", "result": "passed", "limitation": "",
+                "recorded": "owner, 2026-11-24", "candidate": "1.2.0-rc.2",
+                "sha256": "1.2.0-rc.2 zip",
+            })
+        );
+        fixture
+            .manual
+            .push(checked("WINM-02", "VS Code", false, &latest));
+        assert_eq!(
+            checklist_state(&fixture),
+            (
+                "failed".into(),
+                "2 of 2 hosts passed on 1.2.0-rc.2".into(),
+                "VS Code: the screen was blank".into()
+            )
+        );
+    }
+
+    /// Only records of the latest candidate, its exact zip, this item, its
+    /// hosts and Windows count; without a candidate named, the item is not
+    /// run.
+    #[test]
+    fn a_checklist_item_counts_only_the_latest_candidates_records() {
+        let latest = candidate("1.2.0-rc.2");
+        let mut fixture = checklist_fixture(&["VS Code"]);
+        let mut other_zip = checked("WINM-02", "VS Code", true, &latest);
+        other_zip.candidate.sha256 = "rebuilt zip".to_owned();
+        let mut other_os = checked("WINM-02", "VS Code", true, &latest);
+        other_os.os = "linux".to_owned();
+        fixture.manual = vec![
+            checked("WINM-02", "VS Code", true, &candidate("1.2.0-rc.1")),
+            checked("WINM-02", "VS Code", false, &candidate("1.2.0-rc.1")),
+            other_zip,
+            other_os,
+            checked("WINM-03", "VS Code", true, &latest),
+            checked("WINM-02", "Windows Terminal", false, &latest),
+        ];
+        assert_eq!(
+            checklist_state(&fixture),
+            (
+                "not run".into(),
+                "0 of 1 hosts passed on 1.2.0-rc.2".into(),
+                String::new()
+            )
+        );
+        fixture
+            .manual
+            .push(checked("WINM-02", "VS Code", true, &latest));
+        assert_eq!(checklist_state(&fixture).0, "passed");
+        fixture.candidate = None;
+        assert_eq!(
+            checklist_state(&fixture),
+            (
+                "not run".into(),
+                "no release candidate named: the checklist runs on a published candidate".into(),
+                String::new()
+            )
         );
     }
 
@@ -840,6 +1039,7 @@ test result: FAILED. 1 passed; 1 failed; 2 ignored
             passed,
             limitation: String::new(),
             recorded: "owner".to_owned(),
+            candidate: Candidate::default(),
         };
         fixture.manual = vec![review(true)];
         let records = fixture.records(Platform::MacosX86_64);

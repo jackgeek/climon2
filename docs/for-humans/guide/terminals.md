@@ -85,9 +85,8 @@ How the commands behave on Windows is in [Commands](commands.md#on-windows).
   in one, whatever the long-path setting: it exits 126 with "command cannot be
   executed".
 - **Ctrl+Break does nothing in the VS Code integrated terminal.** That terminal
-  delivers neither an event nor a key for it. climon2 does not yet pass
-  Ctrl+Break to the session in Windows Terminal either
-  ([#326](https://github.com/jackgeek/climon2/issues/326)).
+  delivers neither an event nor a key for it. In Windows Terminal, Ctrl+Break
+  reaches the session's command as it would outside climon2.
 - **Sign-out and shutdown end every session.** Windows ends every process you
   own, and no exit status is promised. The next `c2 list` cleans up what they
   leave behind.
