@@ -18,7 +18,7 @@ cargo xtask check --print-mutation-plan
 cargo xtask check --full
 cargo xtask check --full --mutate-all
 cargo xtask dist
-cargo xtask install
+cargo xtask install                      # macOS and Linux only
 cargo xtask install --dir "$HOME/tools/climon2"
 ```
 
@@ -206,6 +206,20 @@ the installer without making an archive. It needs the same host and tools as
 `dist`. It installs to `~/.local/share/climon2` by default; `--dir <directory>`
 picks another folder. It keeps other versions and prints a PATH hint when
 needed. It does not touch shell start-up files.
+
+Windows has no `xtask install`. To install a local build there, run
+`cargo xtask dist` and the `install.exe` in the zip it makes, from PowerShell:
+
+```powershell
+cargo xtask dist
+cd target\dist
+Expand-Archive .\climon2-<version>-windows-x86_64-msvc.zip -DestinationPath . -Force
+.\climon2-<version>-windows-x86_64-msvc\install.exe --dir "$env:USERPROFILE\c2test" --no-modify-path
+```
+
+Replace `<version>` with the workspace version; PowerShell does not expand a
+wildcard here. Without `--dir` and `--no-modify-path` it installs as a release
+would, to `%LOCALAPPDATA%\climon2`, and adds that folder to your user `PATH`.
 
 ## Releasing
 
