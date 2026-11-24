@@ -230,19 +230,19 @@ specifies under "Private files and folders". No exception is recorded.
 
 ### Windows-only scenarios
 
-| ID | Group | Required result |
-| --- | --- | --- |
-| `WIN-01` | Close, per host model | The client exits 129, the leave policy applies, and a detached session survives and reattaches |
-| `WIN-02` | Close status, per shell and app | The session reports the status measured for `pwsh`, `powershell`, `cmd.exe`, vim and Edit (`0xC000013A`; vim `0x1`) |
-| `WIN-03` | Host jobs | The three job shapes under [Host models](#host-models) |
-| `WIN-04` | Key input, per host model | One key table (arrows, Home and End, function keys, Alt and Ctrl combinations, Ctrl+C as byte `0x03`), sent in that model's encoding, arrives in the session as the expected bytes |
-| `WIN-05` | Console preflight | `exec` and `attach` refuse a redirected stdin or stdout as they refuse a missing terminal on Unix |
-| `WIN-06` | ConPTY files | With `conpty.dll` or `OpenConsole.exe` missing, `exec` exits 125 |
-| `WIN-07` | Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 |
-| `WIN-08` | Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded |
-| `WIN-09` | Ctrl+Break, Windows Terminal model | A program using the default handler ends with `0xC000013A` and the shell survives; the key-up record that accompanies Ctrl+Break never reaches the session as `0x03` |
-| `WIN-10` | Full-width statuses | `0xC000013A`, `259` and `0xFFFFFFFF` pass unchanged through the launcher, the CLI and the client |
-| `WIN-11` | Long working directory | `exec` from a working directory over 260 characters exits 126 |
+| ID | Group | Required result | Layer |
+| --- | --- | --- | --- |
+| `WIN-01` | Close, per host model | The client exits 129, the leave policy applies, and a detached session survives and reattaches | Contract |
+| `WIN-02` | Close status, per shell and app | The session reports the status measured for `pwsh`, `powershell`, `cmd.exe`, vim and Edit (`0xC000013A`; vim `0x1`) | Contract |
+| `WIN-03` | Host jobs | The three job shapes under [Host models](#host-models) | Contract |
+| `WIN-04` | Key input, per host model | One key table (arrows, Home and End, function keys, Alt and Ctrl combinations, Ctrl+C as byte `0x03`), sent in that model's encoding, arrives in the session as the expected bytes | Contract |
+| `WIN-05` | Console preflight | `exec` and `attach` refuse a redirected stdin or stdout as they refuse a missing terminal on Unix | Contract |
+| `WIN-06` | ConPTY files | With `conpty.dll` or `OpenConsole.exe` missing, `exec` exits 125 | Contract |
+| `WIN-07` | Command resolution | Commands resolve in `PATH` × `PATHEXT` order; a `.cmd` or `.bat` argument that `cmd.exe` cannot represent exits 2 | Contract |
+| `WIN-08` | Start-up negotiation | ConPTY's own start-up sequences (`ESC [ 1 t`, `ESC [ c`, `CSI ? 1004 h`) never reach the host, and `CSI ? 9001` is never forwarded | Contract |
+| `WIN-09` | Ctrl+Break, Windows Terminal model | A program using the default handler ends with `0xC000013A` and the shell survives; the key-up record that accompanies Ctrl+Break never reaches the session as `0x03` | Contract |
+| `WIN-10` | Full-width statuses | `0xC000013A`, `259` and `0xFFFFFFFF` pass unchanged through the launcher, the CLI and the client | Contract |
+| `WIN-11` | Long working directory | `exec` from a working directory over 260 characters exits 126 | Contract |
 
 `WIN-07`, `WIN-10` and `WIN-11` are built
 ([#322](https://github.com/jackgeek/climon2/issues/322)). `WIN-07` and
@@ -351,37 +351,29 @@ Windows Terminal and VS Code, and the exact candidate archive installed with
 the default profile, the user's PowerShell profile loaded, default host
 settings.
 
-Run every item in Windows Terminal, then in the VS Code integrated terminal.
-Item *n* is scenario `WINM-`*n* (`WINM-01` to `WINM-16`) in the release's
-evidence records:
+Run every item in Windows Terminal, then in the VS Code integrated terminal,
+except `WINM-12`, which is for VS Code alone. Each item is a scenario in the
+release's evidence records, in the Host manual layer, and passes only with a
+passed record for every host its row names:
 
-1. Record the Windows build, the host's version and the `pwsh` build. Run the
-   job probe, a PowerShell snippet that calls `IsProcessInJob`, and record its
-   result.
-2. `c2 exec pwsh`, run a command, detach, `c2 list`, reattach: the screen is
-   restored.
-3. `exit 7` inside the session: the outer shell sees 7.
-4. Close the tab or panel while attached: from a new one, the session is
-   listed and reattaches.
-5. Close the whole application while attached: the same.
-6. Keys: arrows, Home and End, a function key and an Alt combination arrive;
-   Ctrl+C interrupts a running command.
-7. Paste several lines: they arrive once, in order.
-8. Resize the window with vim open: it redraws to the new size.
-9. vim, then Edit: open, edit, detach, reattach, quit; the main screen
-   returns.
-10. CJK text, emoji and box-drawing characters line up.
-11. A short pass in `cmd.exe` and in `powershell` 5.1: start, run a command,
-    check the exit status.
-12. VS Code only: run `c2 exec` from a task terminal, and run "Reload Window"
-    with a session attached; the session survives.
-13. With two sessions running, `c2 monitor` opens and lists both.
-14. The selector switches between them, and typed input reaches only the
-    selected session.
-15. A session that needs attention raises a toast, and the prefix followed by
-    `j` jumps to it.
-16. Resizing the window re-renders the monitor, and exiting the monitor leaves
-    both sessions running.
+| ID | Check | Required result | Layer | Hosts |
+| --- | --- | --- | --- | --- |
+| `WINM-01` | Record the Windows build, the host's version and the `pwsh` build. Run the job probe, a PowerShell snippet that calls `IsProcessInJob` | Its result is recorded | Host manual | Windows Terminal, VS Code |
+| `WINM-02` | `c2 exec pwsh`, run a command, detach, `c2 list`, reattach | The screen is restored | Host manual | Windows Terminal, VS Code |
+| `WINM-03` | `exit 7` inside the session | The outer shell sees 7 | Host manual | Windows Terminal, VS Code |
+| `WINM-04` | Close the tab or panel while attached | From a new one, the session is listed and reattaches | Host manual | Windows Terminal, VS Code |
+| `WINM-05` | Close the whole application while attached | From a new one, the session is listed and reattaches | Host manual | Windows Terminal, VS Code |
+| `WINM-06` | Keys: arrows, Home and End, a function key and an Alt combination; Ctrl+C during a running command | Each key arrives; Ctrl+C interrupts the command | Host manual | Windows Terminal, VS Code |
+| `WINM-07` | Paste several lines | They arrive once, in order | Host manual | Windows Terminal, VS Code |
+| `WINM-08` | Resize the window with vim open | vim redraws to the new size | Host manual | Windows Terminal, VS Code |
+| `WINM-09` | vim, then Edit: open, edit, detach, reattach, quit | The main screen returns | Host manual | Windows Terminal, VS Code |
+| `WINM-10` | Show CJK text, emoji and box-drawing characters | They line up | Host manual | Windows Terminal, VS Code |
+| `WINM-11` | A short pass in `cmd.exe` and in `powershell` 5.1: start, run a command | The exit status is the command's | Host manual | Windows Terminal, VS Code |
+| `WINM-12` | Run `c2 exec` from a task terminal, and run "Reload Window" with a session attached | The session survives | Host manual | VS Code |
+| `WINM-13` | With two sessions running, `c2 monitor` | It opens and lists both | Host manual | Windows Terminal, VS Code |
+| `WINM-14` | Switch between them with the selector, and type | Typed input reaches only the selected session | Host manual | Windows Terminal, VS Code |
+| `WINM-15` | Make a session need attention, then press the prefix followed by `j` | A toast is raised, and the prefix and `j` jump to the session | Host manual | Windows Terminal, VS Code |
+| `WINM-16` | Resize the window, then exit the monitor | The monitor re-renders, and both sessions keep running | Host manual | Windows Terminal, VS Code |
 
 Signing out and shutting down are not checklist items: sessions end with
 them and no status is promised.

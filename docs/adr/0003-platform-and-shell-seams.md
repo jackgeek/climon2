@@ -253,5 +253,5 @@ The Windows shell profiles, the host models and the scenarios they run are speci
   Windows retains platform-neutral contract tests, not runtime qualification.
 - Local full quality gates must pass for the exact release commit before
   tagging; this maintainer-owned check is not duplicated or certified by CI.
-- One release publishes both platform archives only after both native gates
-  pass; see [distribution](../for-humans/distribution.md).
+- One release publishes the Linux, macOS and Windows archives only after every
+  native gate passes (#330); see [distribution](../for-humans/distribution.md).

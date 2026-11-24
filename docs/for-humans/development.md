@@ -197,7 +197,8 @@ build too. Set `CLIMON2_E2E_ARCHIVE` to the archive to test it as it is.
 On an **x86_64 Windows host**, `xtask dist` builds the Windows zip, the
 download script `install.ps1`, and their `SHA256SUMS` instead, with the pinned
 ConPTY files. It fails if any shipped program or library needs the Visual C++
-runtime. The zip's `install.exe` installs it, but it is not published yet. See
+runtime. The zip's `install.exe` installs it, and each release publishes the
+zip and the stamped `install.ps1`. See
 [Windows packaging and upgrades](windows/distribution.md).
 
 `xtask install` builds and checks the same release files as `dist`, then runs
@@ -217,14 +218,18 @@ A `v<workspace version>` tag runs:
 1. full macOS-only mutation, and the native runtime and archive checks (on
    macOS only while `CLIMON2_MACOS_TESTS` is on);
 2. [release qualification](distribution.md#release-qualification)
-   of the exact archives on all three platforms, whatever that variable says.
+   of the exact archives on all four platforms, whatever that variable says.
 
 The same final macOS archive must pass on both architectures. The Linux
-archive must pass on Ubuntu 24.04, under bash 5, with vim and less. Both
-platforms must pass before one GitHub Release and its provenance attestation
-are published.
+archive must pass on Ubuntu 24.04, under bash 5, with vim and less. The
+Windows zip must pass on `windows-2025`, with the Windows Test and Archive
+jobs and the native-only gate over every Windows-only file
+([Windows quality](windows/quality.md#release)). Every platform must pass
+before one GitHub Release is published, with the Windows zip, `install.ps1`
+and a provenance attestation for each file.
 
-`-rc.N` tags are prereleases. From the second published release on, it must
+`-rc.N` tags are prereleases, published without the Windows manual checklist.
+A final tag needs the checklist's records of its latest release candidate. From the second published release on, it must
 work with the release before it. The first release has nothing to be
 compatible with.
 

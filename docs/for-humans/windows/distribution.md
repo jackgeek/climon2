@@ -90,8 +90,9 @@ the one `$Version = '…'` line of the checked-in
 [`install.ps1`](../../../install.ps1), as the Unix dist stamps `install.sh`. The Windows Dist job runs it on `windows-2025` on
 every run of the checks, even when the Windows test switch is off
 ([Windows quality](quality.md#the-switch)), and keeps the result as a
-workflow artifact. Publishing it with a release is
-[#330](https://github.com/jackgeek/climon2/issues/330).
+workflow artifact. The Release workflow publishes that zip and its stamped
+`install.ps1` with the release
+([#330](https://github.com/jackgeek/climon2/issues/330)).
 
 - **Static C runtime.** Every climon2 program is built with the C runtime
   linked in, so a clean Windows 11 needs nothing installed first. The

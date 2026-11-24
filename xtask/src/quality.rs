@@ -79,7 +79,7 @@ pub(crate) const SHIPPED: &[&str] = &[
 ];
 /// The test runs that make up the workspace suite on Windows, where only part of the
 /// workspace builds so far: as the Windows Test job runs them.
-const WINDOWS_SUITE: &[&[&str]] = &[
+pub(crate) const WINDOWS_SUITE: &[&[&str]] = &[
     // First: it takes seconds, so a mutant of the installer dies before the long runs.
     &["-p", "climon2-install"],
     &["-p", "climon2-core", "-p", "climon2-vt"],

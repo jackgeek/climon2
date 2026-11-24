@@ -21,9 +21,39 @@ jobs:
     uses: ./.github/workflows/measure.yml
     with:
       candidate_built: true
+  # A final tag takes the Windows manual checklist records of the latest
+  # release candidate of its version (#330, docs/for-humans/windows/quality.md
+  # "Manual checklist timing"): this names that candidate and its Windows
+  # zip's SHA-256, and fails unless the tag's source differs from it only in
+  # the version stamp and qualification/. A release candidate names none.
+  candidate:
+    name: Latest release candidate
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.latest.outputs.tag }}
+      sha256: ${{ steps.latest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --tags --force --quiet
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .tag_name' > "$RUNNER_TEMP/releases.txt"
+          tag="$(cargo xtask qualify candidate --tag "$GITHUB_REF_NAME" --releases "$RUNNER_TEMP/releases.txt")"
+          if [[ -n "$tag" ]]; then
+            gh release download "$tag" --pattern SHA256SUMS --dir "$RUNNER_TEMP/candidate"
+            sha256="$(awk '/-windows-x86_64-msvc\.zip$/ { print $1 }' "$RUNNER_TEMP/candidate/SHA256SUMS")"
+            test -n "$sha256"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          fi
   # Release qualification (#122) between build and publish: the complete
   # acceptance matrix on the exact candidate archives, natively on x86-64
-  # GNU/Linux and both macOS architectures. It always runs the macOS jobs,
+  # GNU/Linux and both macOS architectures, and on Windows below. It always runs the macOS jobs,
   # whatever CLIMON2_MACOS_TESTS says (owner decision on #122); pull requests
   # never qualify. Each job records every case's evidence, failures
   # included, and uploads it.
@@ -141,13 +171,96 @@ jobs:
           name: qualification-${{ matrix.platform }}
           path: target/qualification/
           if-no-files-found: warn
+  # The fourth platform (#330): the acceptance matrix, the Windows-only
+  # scenarios and the manual checklist on the exact Windows zip, on
+  # windows-2025, whatever CLIMON2_WINDOWS_TESTS says. Every record names
+  # the runner image and the Windows build. A final tag's checklist cases take
+  # the latest release candidate's records.
+  qualify-windows:
+    name: Qualify / windows-2025
+    needs: [verify, measure, candidate]
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.candidate.result == 'success' }}
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      # Restore the Rust cache before downloading the archive: a partial-match
+      # restore cleans target/, which would delete target/dist.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: qualify-windows-2025
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist-windows-x86_64-msvc
+          path: target/dist
+      - name: Take this runner's Measure reports
+        if: contains(github.ref_name, '-rc.')
+        uses: actions/download-artifact@v4
+        with:
+          pattern: measure-windows-2025-*
+          path: target/measure-reports
+          merge-multiple: true
+      - name: Require native architecture
+        run: test "$PROCESSOR_ARCHITECTURE" = AMD64
+      # The cross-account test logs on as a second, non-administrator account
+      # (docs/for-humans/windows/quality.md, "Facts only CI can show"); it fails on CI
+      # without one.
+      - name: Create the second account the cross-account test logs on as
+        shell: powershell
+        run: |
+          $bytes = New-Object byte[] 24
+          [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+          $password = 'Aa1!' + (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+          Write-Output "::add-mask::$password"
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name c2second -Password $secure -AccountNeverExpires -PasswordNeverExpires | Out-Null
+          Add-LocalGroupMember -Group Users -Member c2second
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "CLIMON2_SECOND_ACCOUNT=c2second`nCLIMON2_SECOND_ACCOUNT_PASSWORD=$password`n")
+      - uses: actions/cache@v4
+        with:
+          path: target/conpty
+          key: conpty-${{ hashFiles('pins/conpty.txt') }}
+      - name: Verify the exact downloaded artifact
+        run: |
+          cd target/dist
+          sha256sum -c SHA256SUMS
+          archive="climon2-${GITHUB_REF_NAME#v}-windows-x86_64-msvc.zip"
+          test -f "$archive"
+          test -f install.ps1
+          echo "CLIMON2_QUALIFY_ARCHIVE=$(cygpath -aw "$archive")" >> "$GITHUB_ENV"
+      # The archive's installer tests may change the real user PATH, which
+      # only this throwaway runner allows; they put it back.
+      - name: Record every scenario case on this exact archive
+        env:
+          CLIMON2_E2E_REAL_USER_PATH: "1"
+          CANDIDATE_TAG: ${{ needs.candidate.outputs.tag }}
+          CANDIDATE_SHA256: ${{ needs.candidate.outputs.sha256 }}
+        run: |
+          extra=()
+          if [[ -d target/measure-reports ]]; then extra+=(--measure target/measure-reports); fi
+          if [[ -n "$CANDIDATE_TAG" ]]; then
+            extra+=(--candidate "${CANDIDATE_TAG#v}" --candidate-sha256 "$CANDIDATE_SHA256")
+          fi
+          cargo xtask qualify run --platform windows-x86_64 --archive "$CLIMON2_QUALIFY_ARCHIVE" \
+            --out target/qualification/windows-x86_64 "${extra[@]}" \
+            --provenance "release-dist-windows-x86_64-msvc of run $GITHUB_RUN_ID on windows-2025"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: qualification-windows-x86_64
+          path: target/qualification/
+          if-no-files-found: warn
   # Unqualified conformance needs every mandatory case passed on every
   # platform; the owner's dispositions recorded in
   # qualification/dispositions.json let the release be published with them.
   # Otherwise this fails and nothing is published.
   verdict:
     name: Qualification verdict
-    needs: [verify, qualify]
+    needs: [verify, qualify, qualify-windows]
     if: ${{ !cancelled() && needs.verify.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
@@ -157,7 +270,7 @@ jobs:
           pattern: qualification-*
           path: target/evidence
       - name: Judge every platform's evidence with the owner's dispositions
-        run: cargo xtask qualify verdict --evidence target/evidence --out target/verdict
+        run: cargo xtask qualify verdict --evidence target/evidence --out target/verdict --tag "$GITHUB_REF_NAME"
       - name: Summarize the verdict
         if: ${{ !cancelled() }}
         run: |
@@ -170,8 +283,11 @@ jobs:
           name: qualification-verdict
           path: target/verdict/
           if-no-files-found: warn
+  # One release for every platform: any platform's failed build, test,
+  # qualification or missing artifact fails it as a whole, and nothing is
+  # published.
   publish:
-    needs: [verify, verdict]
+    needs: [verify, candidate, verdict]
     runs-on: macos-15
     permissions:
       contents: write
@@ -186,14 +302,22 @@ jobs:
         with:
           pattern: qualification-*
           path: target/qualification
-      - name: Assemble both native release artifacts
+      - name: Assemble every platform's release artifacts
         run: |
           mkdir -p target/dist
+          version="${GITHUB_REF_NAME#v}"
           macos=target/downloaded/release-dist-macos-universal
           linux=target/downloaded/release-dist-linux-x86_64-gnu
+          windows=target/downloaded/release-dist-windows-x86_64-msvc
+          for file in "$macos/climon2-$version-macos-universal.tar.gz" \
+            "$linux/climon2-$version-linux-x86_64-gnu.tar.gz" \
+            "$windows/climon2-$version-windows-x86_64-msvc.zip" \
+            "$macos/install.sh" "$windows/install.ps1"; do
+            test -f "$file"
+            cp "$file" target/dist/
+          done
           cmp "$macos/install.sh" "$linux/install.sh"
-          cp "$macos/"*.tar.gz "$linux/"*.tar.gz "$macos/install.sh" target/dist/
-          cat "$macos/SHA256SUMS" "$linux/SHA256SUMS" | sort -u > target/dist/SHA256SUMS
+          cat "$macos/SHA256SUMS" "$linux/SHA256SUMS" "$windows/SHA256SUMS" | sort -u > target/dist/SHA256SUMS
       - name: Verify artifact checksums
         run: cd target/dist && shasum -a 256 -c SHA256SUMS
       - uses: actions/attest-build-provenance@v2
@@ -215,5 +339,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "target/dist/climon2-$version-macos-universal.tar.gz" \
             "target/dist/climon2-$version-linux-x86_64-gnu.tar.gz" \
-            target/dist/install.sh target/dist/SHA256SUMS \
+            "target/dist/climon2-$version-windows-x86_64-msvc.zip" \
+            target/dist/install.sh target/dist/install.ps1 target/dist/SHA256SUMS \
             "target/evidence/climon2-$version-qualification.tar.gz" "${args[@]}"
