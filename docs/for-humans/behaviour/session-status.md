@@ -532,7 +532,7 @@ validates it and honors it for every hint it shows, toasts' included
 ([#82](https://github.com/jackgeek/climon2/issues/82) to
 [#115](https://github.com/jackgeek/climon2/issues/115)).
 See the [canonical amendments](../protocol/terminal-integration.md#attention-jump-and-configurable-hints)
-and [configuration example](../../../README.md#configuration).
+and [configuration example](../guide/configuration.md).
 
 ## Connection loss and retained terminal views
 
