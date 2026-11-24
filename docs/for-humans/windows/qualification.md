@@ -149,7 +149,10 @@ Each shell is started by absolute path. A missing shell or a wrong major
 version fails CI, and the exact version is recorded with the results.
 
 The Store build of `pwsh` behaves differently around job objects and is not on
-the CI runner. Only the manual checklist covers it.
+the CI runner. Where it is installed, `exec_windows.rs` starts it as a
+session's command and checks that it runs in a job and that `c2 kill` ends it;
+elsewhere that scenario prints `SKIP` and passes. Otherwise only the manual
+checklist covers it.
 
 Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
 `pwsh` profile. `CLIMON2_TEST_PWSH` may name another absolute path for local
@@ -386,9 +389,9 @@ writes to the console as it ends. The daemon reads no output during the
 grace, so until #328 ConPTY blocked on the full output pipe and vim with it,
 and the session job ended vim with `0xC000013A`. The daemon's output thread
 now drops what it reads once the pseudoconsole is closed
-([Session job and hang-up](lifecycle.md#session-job-and-hang-up)). Where only the Store
-build of `pwsh` is installed, which a session cannot start, the local runs of
-`WIN-01` use `powershell` in its place; CI requires the MSI build. In
+([Session job and hang-up](lifecycle.md#session-job-and-hang-up)). Where the MSI build
+of `pwsh` is not installed, the local runs of `WIN-01` use `powershell` in its
+place; CI requires the MSI build. In
 `crates/climon2-cli/tests/attach_deadline_windows.rs`, an ordinary session
 that nobody attaches to within five seconds ends, with `exec` held before it
 starts the client. It is a test binary of its own because cargo runs test

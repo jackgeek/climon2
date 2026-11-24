@@ -617,8 +617,8 @@ impl Profile {
         }
     }
 
-    /// `pwsh`; or locally, where only the Store build may be installed, which
-    /// a session cannot start, Windows PowerShell in its place.
+    /// `pwsh`; or locally, where the controlled `pwsh` is missing, Windows
+    /// PowerShell in its place.
     fn session() -> (Self, PathBuf) {
         [Self::Pwsh, Self::PowerShell]
             .into_iter()

@@ -47,9 +47,8 @@ const DETACH: &[u8] = b"\x1dd";
 const ORIGINAL: &str = "fullscreen-original";
 const ADDED: &str = "added-through-session";
 
-/// The session's shell: the controlled `pwsh`, or locally, where only the
-/// Store build may be installed, which a session cannot start, Windows
-/// PowerShell 5.1 in its place. CI requires the MSI `pwsh`.
+/// The session's shell: the controlled `pwsh`, or locally, where it is
+/// missing, Windows PowerShell 5.1 in its place. CI requires the MSI `pwsh`.
 fn session_shell() -> PathBuf {
     controlled_pwsh().unwrap_or_else(|| {
         Path::new(&env::var_os("SystemRoot").unwrap())

@@ -49,7 +49,10 @@ the `CLIMON2_CLI_CWD` test hook because Windows cannot start the CLI there, is
 126 with no daemon left (`WIN-11`). With the client executable and its library in the version folder too,
 `kill` of a headless session exits 0 once the session is cleaned up, after
 the pseudoconsole closed, the full five-second grace passed and the session
-job ended a hidden-console child with `0xC000013A`. Without console handles,
+job ended a hidden-console child with `0xC000013A`. Where the Microsoft
+Store build of PowerShell 7 is installed, a session runs it through its app
+execution alias, in a job, and `kill` ends it (#393); elsewhere, such as on
+CI, that test prints `SKIP` and passes. Without console handles,
 `exec`, `attach` and the session's client refuse to run; Ctrl+C during `kill`
 interrupts its client, and kill exits 130 with it; an ordinary `exec` whose
 client is missing exits 125 and stops its daemon. It needs the daemon binary
@@ -72,9 +75,7 @@ leaving every session running. Each of these runs under both the Windows
 Terminal and the VS Code host models. Closing the console ends the monitor
 and leaves sessions running, and a library load held by an oplock leaves
 the monitor responsive until it completes. It needs the monitor binary
-built first (`cargo test -p climon2-monitor`). `CLIMON2_TEST_SESSION_SHELL`
-names another shell for the sessions, for a machine whose only PowerShell 7
-is the Store build, which Windows will not start inside a session's job.
+built first (`cargo test -p climon2-monitor`).
 `tests/support/mod.rs` holds the packaged layout, home and `pwsh` profile
 it shares with the smoke test.
 `tests/packaged_windows.rs` is the Windows smoke test

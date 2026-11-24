@@ -5,11 +5,11 @@
 //! The daemon hosts its command in a pseudoconsole of the pinned, bundled
 //! ConPTY: `conpty.dll` loaded by full path from the daemon's own folder,
 //! beside `OpenConsole.exe`. The command, resolved and quoted by
-//! [`crate::command`], starts with one `CreateProcessW`
-//! whose attribute list holds the pseudoconsole and the session job, with
-//! handle inheritance off and null standard handles, after the daemon set the
-//! session's variables in its own environment and cleared any inherited
-//! "ignore Ctrl+C". The pseudoconsole is released at once, so its output pipe
+//! [`crate::command`], starts suspended with one `CreateProcessW`
+//! whose attribute list holds the pseudoconsole, with handle inheritance off
+//! and null standard handles, after the daemon set the session's variables in
+//! its own environment and cleared any inherited "ignore Ctrl+C". It joins the
+//! session job before it runs. The pseudoconsole is released at once, so its output pipe
 //! breaks when the last process leaves it. The command's end is learnt from
 //! the leader's process handle, never from the job.
 //!
@@ -61,7 +61,7 @@ use windows_sys::{
             },
             Environment::SetEnvironmentVariableW,
             JobObjects::{
-                CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
             },
@@ -70,12 +70,12 @@ use windows_sys::{
                 LoadLibraryExW,
             },
             Threading::{
-                CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList,
+                CREATE_SUSPENDED, CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList,
                 EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
                 InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-                PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-                UpdateProcThreadAttribute, WaitForSingleObject,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, ResumeThread,
+                STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+                WaitForSingleObject,
             },
         },
     },
@@ -285,23 +285,50 @@ struct Console {
 impl Console {
     /// Handle inheritance is off and there is no handle list (Windows refuses
     /// an empty one); null standard handles make the command take the
-    /// pseudoconsole's.
+    /// pseudoconsole's. The command starts suspended and joins the session
+    /// job before it runs: Windows refuses to start a Microsoft Store app
+    /// with the job in its attribute list (#393). A command that cannot join
+    /// the job is ended before it runs.
     fn spawn(&self, launch: &Launch, cwd: &Path) -> io::Result<(OwnedHandle, u32)> {
-        let job = self.job.as_raw_handle();
+        let mut attributes = self.attributes()?;
+        let (process, thread, pid) = create(&mut attributes, launch, cwd)?;
+        self.enter(&process, &thread)?;
+        Ok((process, pid))
+    }
+
+    /// The start attributes: this pseudoconsole, and nothing else.
+    fn attributes(&self) -> io::Result<Attributes> {
         let console = self.handle.unwrap_or_default();
-        let mut attributes = Attributes::new(2)?;
+        let mut attributes = Attributes::new(1)?;
         // This attribute's value is the HPCON itself, not a pointer to it.
         attributes.update(
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
             console as *const std::ffi::c_void,
             size_of::<isize>(),
         )?;
-        attributes.update(
-            PROC_THREAD_ATTRIBUTE_JOB_LIST,
-            (&raw const job).cast(),
-            size_of::<HANDLE>(),
-        )?;
-        create(&mut attributes, launch, cwd)
+        Ok(attributes)
+    }
+
+    /// Joins the session job, or ends the process before it runs anything.
+    fn enter(&self, process: &OwnedHandle, thread: &OwnedHandle) -> io::Result<()> {
+        self.join(process, thread).inspect_err(|_| {
+            // The handle has every access; the process has run nothing.
+            unsafe { TerminateProcess(process.as_raw_handle(), STATUS_CONTROL_C_EXIT as u32) };
+        })
+    }
+
+    /// Puts the suspended `process` in the session job, then lets `thread`,
+    /// its first, run.
+    fn join(&self, process: &OwnedHandle, thread: &OwnedHandle) -> io::Result<()> {
+        // Both handles are open with every access.
+        check(unsafe {
+            AssignProcessToJobObject(self.job.as_raw_handle(), process.as_raw_handle())
+        })?;
+        // As above.
+        if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     fn release(&self) -> io::Result<()> {
@@ -342,7 +369,7 @@ fn create(
     attributes: &mut Attributes,
     launch: &Launch,
     cwd: &Path,
-) -> io::Result<(OwnedHandle, u32)> {
+) -> io::Result<(OwnedHandle, OwnedHandle, u32)> {
     let mut startup = STARTUPINFOEXW::default();
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -360,15 +387,14 @@ fn create(
             ptr::null(),
             ptr::null(),
             FALSE,
-            EXTENDED_STARTUPINFO_PRESENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
             ptr::null(),
             directory.as_ptr(),
             &startup.StartupInfo,
             &mut information,
         )
     })?;
-    let (process, _thread, pid) = started(information);
-    Ok((process, pid))
+    Ok(started(information))
 }
 
 /// The new process's handle, its first thread's and its PID.
