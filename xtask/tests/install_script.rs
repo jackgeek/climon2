@@ -73,6 +73,29 @@ impl Release {
         fs::write(self.assets.join("SHA256SUMS"), output.stdout).unwrap();
     }
 
+    /// `install.sh` stamped with this build's version, as `cargo xtask dist`
+    /// publishes it: the template's own `VERSION` is only a placeholder.
+    fn script(&self) -> PathBuf {
+        let template =
+            fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../install.sh"))
+                .unwrap();
+        let mut stamped = String::new();
+        let mut found = 0;
+        for line in template.lines() {
+            if line.starts_with("VERSION=") {
+                stamped.push_str(&format!("VERSION='{}'", env!("CARGO_PKG_VERSION")));
+                found += 1;
+            } else {
+                stamped.push_str(line);
+            }
+            stamped.push('\n');
+        }
+        assert_eq!(found, 1, "install.sh must contain one VERSION assignment");
+        let script = self.root.path().join("install.sh");
+        fs::write(&script, stamped).unwrap();
+        script
+    }
+
     fn run(&self, args: &[&std::ffi::OsStr]) -> Output {
         let home = self.root.path().join("home");
         let temporary = self.root.path().join("downloads");
@@ -80,7 +103,7 @@ impl Release {
         fs::create_dir_all(&temporary).unwrap();
         Command::new("/bin/bash")
             .args(["--noprofile", "--norc"])
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../install.sh"))
+            .arg(self.script())
             .args(args)
             .env("HOME", home)
             .env("TMPDIR", temporary)

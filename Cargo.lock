@@ -142,7 +142,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "climon2-cli"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-cli",
  "climon2-core",
@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-client"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-fixtures",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-core"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "semver",
  "serde",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-daemon"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "base64",
  "climon2-core",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-discovery"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-platform",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-e2e"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-fixtures",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-fixtures"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-platform",
@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-install"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "libc",
@@ -260,11 +260,11 @@ dependencies = [
 
 [[package]]
 name = "climon2-launcher"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 
 [[package]]
 name = "climon2-measure"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-platform",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-monitor"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-discovery",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-platform"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-fixtures",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-test-term"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "alacritty_terminal",
  "climon2-cli",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "climon2-vt"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "alacritty_terminal",
  "unicode-width",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-fixtures",

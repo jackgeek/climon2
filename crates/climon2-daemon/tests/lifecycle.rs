@@ -17,6 +17,8 @@ use std::{
 mod revision1;
 
 const ID: &str = "01234567-89ab-4cde-8fab-0123456789ab";
+/// The release this build is, as the CLI passes it to every daemon it starts.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Test-only fixtures live in climon2-fixtures and are built beside this test binary (ADR 0004).
 fn daemon_fixture() -> PathBuf {
@@ -280,7 +282,7 @@ impl Prepared {
             PathBuf::from(env!("CARGO_BIN_EXE_climon2-daemon"))
         };
         let mut command = Command::new(executable);
-        command.args(["--session-id", ID, "--version", "0.1.0", "--cli-pid", "1"]);
+        command.args(["--session-id", ID, "--version", VERSION, "--cli-pid", "1"]);
         command.args(["--lifetime", "ordinary"]);
         command
             .arg("--home")
@@ -841,7 +843,7 @@ fn repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations() {
     type Configure = fn(&mut Command, &Path);
     let cases: [Configure; 6] = [
         |command, _| {
-            command.args(["--version", "0.1.0"]);
+            command.args(["--version", VERSION]);
         },
         |command, _| {
             command.args(["--unknown", "value"]);

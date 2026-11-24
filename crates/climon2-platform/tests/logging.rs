@@ -25,7 +25,7 @@ fn diagnostic_roles_have_private_files_and_required_headers() {
         let text = fs::read_to_string(log.path()).unwrap();
         assert!(text.contains(&format!("role={role}")));
         assert!(text.contains(&format!("pid={}", std::process::id())));
-        assert!(text.contains("version=0.1.0"));
+        assert!(text.contains(concat!("version=", env!("CARGO_PKG_VERSION"))));
         assert!(text.contains(id().as_str()));
         assert_eq!(
             fs::metadata(log.path()).unwrap().permissions().mode() & 0o777,
@@ -92,7 +92,8 @@ fn general_logs_are_named_and_headed_by_their_roles() {
         let header = fs::read_to_string(log.path()).unwrap();
         assert!(
             header.contains(&format!(
-                " INFO climon2: role={role} pid={pid} version=0.1.0"
+                " INFO climon2: role={role} pid={pid} version={}",
+                env!("CARGO_PKG_VERSION")
             )),
             "{header}"
         );

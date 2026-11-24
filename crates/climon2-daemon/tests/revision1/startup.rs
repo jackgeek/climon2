@@ -38,7 +38,7 @@ fn readiness_publishes_session_metadata_and_command_final_is_last() {
         Some(metadata.daemon_start_time),
         process::start_time(session.pid).unwrap()
     );
-    assert_eq!(metadata.climon2_version.as_str(), "0.1.0");
+    assert_eq!(metadata.climon2_version.as_str(), crate::VERSION);
     let sessions = session.directory.path().join("sessions");
     assert_eq!(fs::read_dir(&sessions).unwrap().count(), 1);
     for (path, mode) in [(&session.metadata, 0o600), (&sessions, 0o700)] {

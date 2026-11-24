@@ -59,7 +59,7 @@ climon2_test_term::outside_relay!();
 /// `0xC000013A`, `STATUS_CONTROL_C_EXIT`, at full width.
 const CONTROL_C_EXIT: &str = "0xc000013a";
 
-/// A version folder, `<root>/exe/0.1.0`, outside the crate folder, holding
+/// A version folder, `<root>/exe/<this build's version>`, outside the crate folder, holding
 /// the CLI, the daemon, the client and its library and, unless left out, the
 /// two bundled ConPTY files.
 struct Install(tempfile::TempDir);
@@ -103,7 +103,7 @@ impl Install {
     }
 
     fn version(&self) -> PathBuf {
-        self.0.path().join("exe").join("0.1.0")
+        self.0.path().join("exe").join(env!("CARGO_PKG_VERSION"))
     }
 
     fn cli(&self) -> PathBuf {
@@ -817,10 +817,11 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
         execing.screen()
     );
     assert!(
-        execing
-            .screen()
-            .replace('\n', "")
-            .contains("needs climon2 0.1.0, which is not installed"),
+        execing.screen().replace('\n', "").contains(concat!(
+            "needs climon2 ",
+            env!("CARGO_PKG_VERSION"),
+            ", which is not installed"
+        )),
         "{}",
         execing.screen()
     );

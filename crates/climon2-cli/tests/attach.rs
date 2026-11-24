@@ -261,7 +261,7 @@ fn kill(isolation: &Isolation, cli: &Path, selector: &str) -> (i32, String, Stri
 }
 
 fn installed_cli(isolation: &Isolation) -> PathBuf {
-    let installed = isolation.home().join("exe/0.1.0");
+    let installed = isolation.home().join("exe").join(env!("CARGO_PKG_VERSION"));
     fs::create_dir_all(&installed).unwrap();
     let cli = installed.join("climon2-cli");
     copy_executable(&bin_path("climon2-cli"), &cli);
