@@ -49,6 +49,9 @@ pub enum Uncertainty {
     Unreachable(io::Error),
     /// The socket is missing or refuses, but the recorded daemon process still runs.
     DaemonAlive,
+    /// The socket is missing or refuses, but the daemon was created on another machine or
+    /// in another PID namespace, where its PID means something else (#133).
+    CreatedElsewhere,
     /// The socket is missing or refuses, and the daemon's identity cannot be checked.
     IdentityUnknown(io::Error),
 }
@@ -161,13 +164,44 @@ fn connection_failed(metadata: SessionMetadata, error: io::Error, removal: Remov
 /// Only a proven dead daemon identity makes such a session stale, and only a stale session's
 /// files are cleaned up, as the pass's removal says.
 fn prove_stale_and_clean_up(metadata: SessionMetadata, removal: Removal) -> Outcome {
-    match process::is_same_daemon(&metadata) {
-        Ok(false) => {
+    match daemon(&metadata) {
+        Ok(Daemon::Gone) => {
             let cleanup = removal.clean_up(&metadata);
             Outcome::Stale(metadata, cleanup)
         }
-        Ok(true) => Outcome::Uncertain(metadata, Uncertainty::DaemonAlive),
+        Ok(Daemon::Running) => Outcome::Uncertain(metadata, Uncertainty::DaemonAlive),
+        Ok(Daemon::Elsewhere) => Outcome::Uncertain(metadata, Uncertainty::CreatedElsewhere),
         Err(error) => Outcome::Uncertain(metadata, Uncertainty::IdentityUnknown(error)),
+    }
+}
+
+/// What this reader can prove about a session's recorded daemon.
+enum Daemon {
+    Gone,
+    Running,
+    /// Created where this reader cannot see its processes.
+    Elsewhere,
+}
+
+/// A daemon's identity is checked only where it was created: a record that names another
+/// machine or PID namespace is never proven gone here. A record without an origin, from an
+/// older writer, is checked here as it always was.
+fn daemon(metadata: &SessionMetadata) -> io::Result<Daemon> {
+    if created_elsewhere(metadata)? {
+        return Ok(Daemon::Elsewhere);
+    }
+    Ok(if process::is_same_daemon(metadata)? {
+        Daemon::Running
+    } else {
+        Daemon::Gone
+    })
+}
+
+/// Two origins are the same place only when they are equal (ADR 0005).
+fn created_elsewhere(metadata: &SessionMetadata) -> io::Result<bool> {
+    match &metadata.daemon_origin {
+        Some(origin) => Ok(process::origin()? != *origin),
+        None => Ok(false),
     }
 }
 

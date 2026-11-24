@@ -326,6 +326,34 @@ fn the_descriptor_limit_is_the_per_process_handle_table() {
     assert_eq!(process::descriptor_limit(), 16_777_216);
 }
 
+/// #133 / ADR 0005: a daemon records the machine it runs on as Windows'
+/// `MachineGuid`, the value `reg query` shows, and no PID namespace.
+#[test]
+fn the_origin_is_this_machines_machine_guid() {
+    let output = Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let guid = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("MachineGuid"))
+        .unwrap()
+        .trim()
+        .strip_prefix("REG_SZ")
+        .unwrap()
+        .trim();
+    let origin = process::origin().unwrap();
+    assert_eq!(origin.machine_id.unwrap().as_str(), guid);
+    assert_eq!(origin.pid_namespace, None);
+}
+
 /// Set in a copy of this test binary that must end at once with a status.
 const EXIT_NOW: &str = "CLIMON2_TEST_EXIT_IMMEDIATELY";
 

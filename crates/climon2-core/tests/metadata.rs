@@ -89,6 +89,95 @@ fn adr0005_linux_boot_ids_accept_exactly_the_canonical_guids_session_ids_accept(
     }
 }
 
+/// #133 / ADR 0005: where a daemon was created is optional and additive. A
+/// Linux writer records its machine and PID namespace, macOS and Windows
+/// writers their machine only, and older records carry neither.
+#[test]
+fn adr0005_session_origin_is_additive_and_records_machine_and_pid_namespace() {
+    use climon2_core::metadata::{MachineId, SessionOrigin};
+    let read = |bytes: &[u8]| SessionMetadata::from_json(Path::new(FILE), bytes).unwrap();
+    let machine = |id: &str| Some(id.parse::<MachineId>().unwrap());
+    for (bytes, origin) in [
+        (V1, None),
+        (
+            include_bytes!("goldens/metadata-origin-linux-v1.json").as_slice(),
+            Some(SessionOrigin {
+                machine_id: machine("8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f"),
+                pid_namespace: Some(4_026_531_836),
+            }),
+        ),
+        (
+            include_bytes!("goldens/metadata-origin-windows-v1.json").as_slice(),
+            Some(SessionOrigin {
+                machine_id: machine("6d1f0c2a-5b3e-4f7a-9c8d-1e2f3a4b5c6d"),
+                pid_namespace: None,
+            }),
+        ),
+    ] {
+        let metadata = read(bytes);
+        assert_eq!(metadata.daemon_origin, origin);
+        let written: serde_json::Value =
+            serde_json::from_slice(&metadata.to_json().unwrap()).unwrap();
+        let golden: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(written, golden);
+    }
+    let mut record: serde_json::Value = serde_json::from_slice(V1).unwrap();
+    record["daemon_origin"] = serde_json::json!({"machine_id": null, "pid_namespace": 7});
+    let metadata = read(&serde_json::to_vec(&record).unwrap());
+    let origin = SessionOrigin {
+        machine_id: None,
+        pid_namespace: Some(7),
+    };
+    assert_eq!(metadata.daemon_origin, Some(origin));
+    assert_eq!(
+        serde_json::to_value(&metadata).unwrap()["daemon_origin"],
+        serde_json::json!({"pid_namespace": 7})
+    );
+    record["daemon_origin"] = serde_json::Value::Null;
+    assert_eq!(
+        read(&serde_json::to_vec(&record).unwrap()).daemon_origin,
+        None
+    );
+}
+
+/// #133 / ADR 0005: a malformed origin makes the record unreadable, like any
+/// malformed known field. A machine ID is ASCII letters, digits and hyphens.
+#[test]
+fn adr0005_session_origin_rejects_malformed_machine_ids_and_namespaces() {
+    use climon2_core::metadata::MachineId;
+    for valid in [
+        "8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f",
+        "6d1f0c2a-5b3e-4f7a-9c8d-1e2f3a4b5c6d",
+        "6D1F0C2A-5B3E-4F7A-9C8D-1E2F3A4B5C6D",
+        "a",
+        "-",
+    ] {
+        assert_eq!(valid.parse::<MachineId>().unwrap().as_str(), valid);
+    }
+    let original: serde_json::Value =
+        serde_json::from_slice(include_bytes!("goldens/metadata-origin-linux-v1.json")).unwrap();
+    let read = |record: &serde_json::Value| {
+        SessionMetadata::from_json(Path::new(FILE), &serde_json::to_vec(record).unwrap())
+    };
+    for (field, invalid) in [
+        ("machine_id", serde_json::json!("")),
+        ("machine_id", serde_json::json!("8f2c 4d1e")),
+        ("machine_id", serde_json::json!("8f2c4d1e\n")),
+        ("machine_id", serde_json::json!("8f2c_4d1e")),
+        ("machine_id", serde_json::json!("8f2c4d1\u{e9}")),
+        ("machine_id", serde_json::json!(42)),
+        ("pid_namespace", serde_json::json!(-1)),
+        ("pid_namespace", serde_json::json!("4026531836")),
+    ] {
+        let mut record = original.clone();
+        record["daemon_origin"][field] = invalid.clone();
+        assert!(read(&record).is_err(), "{field} {invalid}");
+    }
+    let mut record = original;
+    record["daemon_origin"] = serde_json::json!("elsewhere");
+    assert!(read(&record).is_err());
+}
+
 #[test]
 fn adr0005_every_checked_in_golden_is_readable_by_the_current_reader() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");

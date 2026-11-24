@@ -1,6 +1,12 @@
 use super::unix::{ProcessList, pid};
-use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata};
+use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata, SessionOrigin};
 use std::{io, mem::MaybeUninit, num::NonZeroU32};
+
+/// How long `gethostuuid` may wait for the hardware UUID.
+const HOST_UUID_WAIT: libc::timespec = libc::timespec {
+    tv_sec: 5,
+    tv_nsec: 0,
+};
 
 /// Room for processes started between sizing and filling the PID list.
 const PID_SLACK: usize = 64;
@@ -17,6 +23,22 @@ pub fn linux_identity(_pid: u32) -> io::Result<Option<LinuxProcessIdentity>> {
 
 pub fn is_same_daemon(metadata: &SessionMetadata) -> io::Result<bool> {
     super::unix::is_same_process(metadata.daemon_pid, metadata.daemon_start_time)
+}
+
+/// Where this process runs (#133): the machine's hardware UUID, the
+/// `IOPlatformUUID` that `ioreg` shows, as 32 lowercase hex digits. macOS has
+/// no PID namespaces.
+pub fn origin() -> io::Result<SessionOrigin> {
+    let mut uuid = [0u8; 16];
+    // SAFETY: gethostuuid writes exactly 16 bytes and only reads the timeout.
+    if unsafe { gethostuuid(uuid.as_mut_ptr(), &HOST_UUID_WAIT) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let hex: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(SessionOrigin {
+        machine_id: Some(hex.parse().map_err(io::Error::other)?),
+        pid_namespace: None,
+    })
 }
 
 pub fn start_time(value: u32) -> io::Result<Option<u64>> {
@@ -63,6 +85,8 @@ fn missing_process<T>(error: io::Error) -> io::Result<Option<T>> {
 
 unsafe extern "C" {
     fn notify_is_valid_token(token: libc::c_int) -> bool;
+    /// `<unistd.h>`: the host's hardware UUID.
+    fn gethostuuid(id: *mut u8, wait: *const libc::timespec) -> libc::c_int;
 }
 
 /// Wait out libnotify's global initialization before its macOS fork handler runs.

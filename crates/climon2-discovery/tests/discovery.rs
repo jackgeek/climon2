@@ -731,6 +731,59 @@ fn linux_daemon_identity_alone_proves_a_session_stale() {
     assert_eq!(files.map(|file| file.exists()), [true, true, false]);
 }
 
+/// #133, DSC-04 Contract case (uncertain disappearance): a daemon's identity is checked only
+/// where it was created. With its socket missing and its daemon's identity gone here, a
+/// session recorded on another machine, or in another PID namespace of this one, is uncertain
+/// and kept even when cleanup is requested. One recorded here whose daemon was lost to a reboot
+/// (Linux: another boot ID alone; macOS: another start time) is stale and removed, as is one
+/// from an older writer that recorded no origin.
+#[test]
+fn only_a_daemon_created_here_can_be_proven_gone() {
+    use climon2_core::metadata::SessionOrigin;
+    let (_directory, home) = home();
+    let here = process::origin().unwrap();
+    let mut other_machine = record(&home, 0x71, CREATED);
+    other_machine.daemon_origin = Some(SessionOrigin {
+        machine_id: Some("another-machine".parse().unwrap()),
+        ..here.clone()
+    });
+    let mut other_namespace = record(&home, 0x72, CREATED);
+    other_namespace.daemon_origin = Some(SessionOrigin {
+        pid_namespace: Some(here.pid_namespace.map_or(1, |namespace| namespace + 1)),
+        ..here.clone()
+    });
+    let mut rebooted = record(&home, 0x73, CREATED);
+    rebooted.daemon_origin = Some(here);
+    rebooted.daemon_linux_identity = own_identity().map(|identity| LinuxProcessIdentity {
+        boot_id: "00000000-0000-4000-8000-000000000000".into(),
+        ..identity
+    });
+    let unrecorded = record(&home, 0x74, CREATED);
+    let records = [&other_machine, &other_namespace, &rebooted, &unrecorded];
+    let files = records.map(|metadata| save(&home, metadata));
+
+    let pass = discover(&home, REMOVE).unwrap();
+    let [
+        Outcome::Uncertain(found_machine, Uncertainty::CreatedElsewhere),
+        Outcome::Uncertain(found_namespace, Uncertainty::CreatedElsewhere),
+        Outcome::Stale(found_rebooted, Cleanup::Removed),
+        Outcome::Stale(found_unrecorded, Cleanup::Removed),
+    ] = pass.sessions.as_slice()
+    else {
+        panic!("{pass:?}");
+    };
+    assert_eq!(
+        [
+            found_machine,
+            found_namespace,
+            found_rebooted,
+            found_unrecorded
+        ],
+        records
+    );
+    assert_eq!(files.map(|file| file.exists()), [true, true, false, false]);
+}
+
 /// DSC-04 Contract case (uncertain disappearance): a path that is not a socket is never
 /// unlinked as one. Linux refuses a connection to a regular file just as it refuses one to a
 /// dead daemon's socket, so with a dead identity the session is stale, but its cleanup fails

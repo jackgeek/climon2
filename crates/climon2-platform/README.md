@@ -96,6 +96,12 @@ dispatch or shell-specific logic.
   `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
   conversion is clock-sensitive and is not stale-cleanup authority.
   Missing stable identity makes Linux cleanup fail safely, retaining metadata.
+- `process::origin() -> io::Result<SessionOrigin>` is where this process runs,
+  which a daemon records as `daemon_origin` (#133, ADR 0005): on Linux the
+  machine ID from `/etc/machine-id` (absent when there is none) and the PID
+  namespace as the inode of `/proc/self/ns/pid`; on macOS the hardware UUID
+  from `gethostuuid`, as 32 lowercase hex digits. Stale cleanup checks a
+  daemon's identity only when the record's origin equals the reader's.
 - `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
@@ -294,8 +300,10 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   the first 64, and any event already signalled, beyond them too, ends it at
   once (#327, the monitor's instances).
 - `src/process/windows.rs`: `start_time`, `is_same_process` and
-  `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
-  time in epoch microseconds. Only "no such process"
+  `is_same_daemon`, and `origin`, the machine's `MachineGuid` from
+  `HKLM\SOFTWARE\Microsoft\Cryptography` (#133): a climon2 home on a network
+  share is read from other machines. A daemon is its PID plus its
+  `GetProcessTimes` creation time in epoch microseconds. Only "no such process"
   (`ERROR_INVALID_PARAMETER`) or a process that has exited while its object
   is still held reads as gone; any other failure, such as access denied, is
   an error and never evidence of death. `descriptor_limit` is the kernel's
@@ -507,7 +515,8 @@ directory instead fails with `WSAENETDOWN`, which proves nothing),
 `a_gone_process_is_not_the_same_daemon`,
 `an_exited_process_whose_handle_is_held_is_not_the_same_daemon` and
 `a_process_the_caller_may_not_open_is_never_taken_for_a_gone_one` (an empty
-process DACL, opened without `SeDebugPrivilege`).
+process DACL, opened without `SeDebugPrivilege`) and
+`the_origin_is_this_machines_machine_guid` (checked against `reg query`).
 `tests/presentation_windows.rs`:
 `a_creation_time_is_shown_in_the_systems_local_time` (checked against .NET)
 and `redirected_output_is_80_columns_wide`.
@@ -532,7 +541,9 @@ and on CI it fails without the account.
 `issue15_bad_cwd_is_rejected_before_pty_can_fall_back`,
 `issue312_the_descriptor_limit_is_the_soft_limit`,
 `issue312_only_emfile_and_enfile_are_out_of_descriptors`,
-`issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`.
+`issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`,
+`linux_origin_is_the_machine_id_and_the_pid_namespace` (Linux) and
+`macos_origin_is_the_hardware_uuid` (macOS, checked against `ioreg`).
 
 On Linux x86_64,
 `procfs_reaping::process_reaped_between_procfs_open_and_read_is_absent` traces

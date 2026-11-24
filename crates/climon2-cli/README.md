@@ -164,8 +164,9 @@ calling thread, so the general log records them under the CLI's own target, as
 before the extraction. They are `invalid session metadata` (warn) once per
 invalid entry; then one per probe that proves nothing or fails its cleanup:
 `session probe did not match` (debug, `responded=`), `session connection
-failed` (debug, `errno=`), `refused connection belongs to a live daemon`
-(debug), `daemon identity is uncertain` (warn, `errno=`; Linux also warns when
+failed` (debug, `errno=`), `refused connection belongs to a live daemon or
+one created elsewhere` (debug, `created_elsewhere=`: true for a session created
+on another machine or in another PID namespace, #133), `daemon identity is uncertain` (warn, `errno=`; Linux also warns when
 the daemon's stable identity is unavailable) and `stale session cleanup failed`
 (warn, `errno=`); then `malformed hello extensions` (warn, `session=`) for each
 live session whose capabilities or state are malformed.

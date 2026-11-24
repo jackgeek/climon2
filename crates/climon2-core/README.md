@@ -137,6 +137,10 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   The optional Linux `daemon_linux_identity` (`LinuxProcessIdentity`) is
   additive; `from_json` refuses a record whose `boot_id` fails the
   canonical-GUID rule that `SessionId` and `Guid` share.
+  The optional `daemon_origin` (`SessionOrigin`, #133) records where the
+  daemon was created: an optional `MachineId` (non-empty ASCII letters, digits
+  and hyphens) and, on Linux, an optional PID namespace inode. Two origins are
+  the same place only when they are equal.
   `metadata_session_id` filters candidate filenames.
   `metadata::MetadataPath` accepts absolute Unix, drive-rooted Windows and UNC
   display paths independently of the reader OS.
@@ -303,6 +307,7 @@ Integration tests call only these public boundaries:
 | ADR 0005 GUID/SemVer/time validation | `adr0005_guid_and_version_are_validated_without_normalizing_untrusted_paths`, `adr0005_created_at_requires_real_utc_calendar_time_with_exact_milliseconds` |
 | ADR 0005 / #26 frozen fields, future999 and one-way display | `adr0005_append_only_goldens_include_future999_and_unknown_fields`, `adr0005_frozen_fields_reject_missing_wrong_types_invalid_values_and_filename_mismatch`, `adr0005_metadata_requires_a_json_object_not_a_positional_array`, `adr0005_metadata_paths_are_absolute_cross_os_display_strings_not_native_paths`, `adr0005_display_is_lossy_only_and_never_used_as_runtime_argv` |
 | ADR 0005 optional Linux process identity is additive; #157 its `boot_id` accepts exactly the canonical GUIDs that session IDs and wire GUIDs accept (case, length, hyphen positions, hex digits, whitespace and the other GUID spellings) | `linux_process_identity_is_additive_and_rejects_malformed_boot_ids`, `adr0005_linux_boot_ids_accept_exactly_the_canonical_guids_session_ids_accept` |
+| ADR 0005 / #133 optional session origin (machine ID and Linux PID namespace) is additive, with its own goldens, and a malformed one makes the record unreadable | `adr0005_session_origin_is_additive_and_records_machine_and_pid_namespace`, `adr0005_session_origin_rejects_malformed_machine_ids_and_namespaces` |
 | #17/#18/#28 home, layout, hash and frozen invocation | `issue17_home_defaults_only_when_unset_and_never_accepts_empty_or_relative`, `adr0001_version_matched_client_has_exact_frozen_invocation`, `issue18_runtime_hash_is_sha256_of_exact_canonical_home_and_socket_is_bounded` |
 | #155 a resolved climon2 home is its own layout | `issue155_a_resolved_climon2_home_is_its_own_layout` |
 | #155 one failure type for the CLI, client executable and monitor: one-line diagnostic, the first logs named keep it, I/O failures carry the climon2 error code | `issue155_a_failure_reads_as_one_line_without_logs`, `issue155_a_logged_failure_names_its_logs_on_the_same_line`, `issue155_the_first_logs_to_record_a_failure_keep_it`, `issue155_an_io_failure_has_the_climon2_error_code` |

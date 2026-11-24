@@ -1,6 +1,6 @@
 //! ADR 0005 frozen, write-once record. File permissions, atomic publication,
 //! liveness and deletion belong to platform/callers, not to this pure parser.
-pub use crate::identity::MetadataPath;
+pub use crate::identity::{MachineId, MetadataPath};
 use crate::{ContractError, SessionId, Timestamp, VersionName, identity::validate_guid};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -49,6 +49,21 @@ impl LinuxProcessIdentity {
     }
 }
 
+/// Where a session daemon was created (#133, ADR 0005): its machine and, on
+/// Linux, its PID namespace. Its PID and process identity mean something only
+/// there, so a reader anywhere else can never prove it gone. Two origins are
+/// the same place only when they are equal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SessionOrigin {
+    /// Absent where the machine has no identity to read, as in many container
+    /// images without `/etc/machine-id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<MachineId>,
+    /// The inode of the daemon's `/proc/self/ns/pid`; Linux only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_namespace: Option<u64>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub format_version: NonZeroU32,
@@ -59,6 +74,10 @@ pub struct SessionMetadata {
     pub daemon_start_time: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_linux_identity: Option<LinuxProcessIdentity>,
+    /// Absent in records from older writers, and when the writer could not
+    /// read where it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_origin: Option<SessionOrigin>,
     /// Display only; never use these strings to reconstruct a command.
     pub command: String,
     pub args: Vec<String>,

@@ -65,6 +65,13 @@ validated_string!(
     validate_guid
 );
 validated_string!(VersionName, validate_version);
+validated_string!(
+    /// A machine's stable identity, which survives reboots (#133): Linux's
+    /// `/etc/machine-id`, macOS's hardware UUID or Windows' `MachineGuid`.
+    /// Opaque: readers only compare it for equality.
+    MachineId,
+    validate_machine_id
+);
 
 impl SessionId {
     /// The session ID whose 16 bytes are `bytes`, in canonical textual order
@@ -131,6 +138,16 @@ pub(crate) fn validate_guid(value: &str) -> Result<(), ContractError> {
         ));
     }
     Ok(())
+}
+
+/// Every machine ID climon2 writes is hexadecimal, with or without hyphens;
+/// readers accept any non-empty run of ASCII letters, digits and hyphens.
+fn validate_machine_id(value: &str) -> Result<(), ContractError> {
+    let allowed = |character: char| character.is_ascii_alphanumeric() || character == '-';
+    if !value.is_empty() && value.chars().all(allowed) {
+        return Ok(());
+    }
+    Err(ContractError("invalid machine ID".into()))
 }
 
 fn validate_version(value: &str) -> Result<(), ContractError> {
