@@ -23,6 +23,9 @@
 //! `packaged_windows.rs`, and the five-second attach deadline in
 //! `attach_deadline_windows.rs`.
 //!
+//! #393: where it is installed, the Microsoft Store build of PowerShell 7
+//! runs as a session's command, in the session job, and `kill` ends it.
+//!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).
@@ -713,6 +716,45 @@ fn kill_hangs_up_waits_the_full_grace_ends_the_job_and_exits_0_once_cleaned_up()
         "the job ended after {grace:?}"
     );
     assert!(home.list(&install).contains("No climon2 sessions running."));
+}
+
+/// The Microsoft Store build of PowerShell 7's app execution alias, named by
+/// its package family so that no other `pwsh` matches; `None` where the
+/// Store build is not installed, such as CI's `windows-2025`.
+fn store_pwsh() -> Option<PathBuf> {
+    let alias = Path::new(&std::env::var_os("LOCALAPPDATA")?)
+        .join(r"Microsoft\WindowsApps\Microsoft.PowerShell_8wekyb3d8bbwe\pwsh.exe");
+    // An alias is a reparse point that only the activation path follows.
+    fs::symlink_metadata(&alias).is_ok().then_some(alias)
+}
+
+/// #393: Windows refuses to start a Store app with the session job in its
+/// attribute list, so the command starts suspended and joins the job before
+/// it runs. The daemon is in no job, so the only job the command can be in
+/// is the session's, which `kill` ends.
+#[test]
+fn the_store_build_of_pwsh_runs_in_the_session_job_and_ends_with_kill() {
+    let Some(pwsh) = store_pwsh() else {
+        eprintln!("SKIP: the Microsoft Store build of PowerShell 7 is not installed");
+        return;
+    };
+    let (install, home) = (Install::new(&[]), Home::new());
+    let command = [
+        pwsh.to_str().unwrap(),
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        "Set-Content leader $PID; while ($true) { Start-Sleep 1 }",
+    ];
+    let id = session_id(&home.exec(&install, &command));
+    let leader = home.written_process("leader");
+    let pid = fs::read_to_string(home.work().join("leader")).unwrap();
+    let [session] = home.sessions().try_into().unwrap();
+    assert!(!in_any_job(session.daemon_pid));
+    assert!(in_any_job(pid.trim().parse().unwrap()));
+    let killed = home.kill(&install, &id[..8]);
+    assert_eq!(killed.status.code(), Some(0), "{killed:?}");
+    assert!(leader.exit_code(Duration::ZERO).is_some());
 }
 
 /// #321: `exec`, `attach` and the session's own client refuse to run without
