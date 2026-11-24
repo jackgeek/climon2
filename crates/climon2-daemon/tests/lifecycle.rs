@@ -37,7 +37,13 @@ fn daemon_fixture() -> PathBuf {
 /// #17: malformed private invocation is a sanitized wrapper failure.
 #[test]
 fn malformed_daemon_invocation_is_own_failure_with_no_stdout() {
-    for args in [vec![], vec!["--secret\nvalue"], vec!["--exec-command"]] {
+    for args in [
+        vec![],
+        vec!["--secret\nvalue"],
+        vec!["--exec-command"],
+        // Windows' Ctrl+Break helper (#326) does not exist on Unix.
+        vec!["--break-console", "1"],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_climon2-daemon"))
             .args(args)
             .output()

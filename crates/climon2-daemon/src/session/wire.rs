@@ -16,7 +16,7 @@ use climon2_core::{
     protocol::TerminalSize,
     wire::{
         Acknowledge, ActualGeometry, Advertisement, AuthorityIds, AuthorityResult, Available,
-        Cleanup, CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked,
+        Break, Cleanup, CommandFinal, CommandResult, ControlGranted, ControlRecord, ControlRevoked,
         Counter, Display, Error, Failure, Families, Family, Focus, FocusBytes, Frame, FrameLimits,
         Geometry, GrantReason, Guid, InitialMetadata, Input, Kill, KnownResult, Mode, Notification,
         Open, OperationalCode, Outcome, PartialCleanup, PartialTermination, Progress,
@@ -33,6 +33,7 @@ const NOT_OPENED: &str = "this connection opened nothing";
 const UNSUPPORTED_REVISION: &str = "this daemon supports revision 1 only";
 const UNSUPPORTED_CAPABILITY: &str = "a required capability is not supported";
 const FOCUS_NOT_SELECTED: &str = "focus-v1 was not selected";
+const BREAK_NOT_SELECTED: &str = "break-v1 was not selected";
 const STATUS_NOT_SELECTED: &str = "status-v1 was not selected";
 const NOT_VIEWING: &str = "the latest reported viewing is not true";
 const EPISODES_EXHAUSTED: &str = "the session's attention episode identifiers are exhausted";
@@ -40,7 +41,8 @@ const UNSUPPORTED_GEOMETRY: &str = "the geometry exceeds the supported terminal 
 const EMPTY_INPUT: &str = "Input carries no bytes";
 const CLEANUP_INCOMPLETE: &str = "the session's termination or cleanup did not complete";
 
-/// What hello advertises: only the families this daemon implements.
+/// What hello advertises: only the families this daemon implements, Break's
+/// only where its platform has Ctrl+Break (#326).
 pub(super) fn advertisement() -> Advertisement {
     let limits = FrameLimits {
         max_request_frame_bytes: frame_limit(),
@@ -54,7 +56,9 @@ pub(super) fn advertisement() -> Advertisement {
             Family::NotificationV1,
             Family::ProgressV1,
             Family::FocusV1,
-        ],
+        ]
+        .into_iter()
+        .chain(crate::pty::BREAK),
         limits,
     )
 }
@@ -148,6 +152,10 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         match request {
             Request::Ready(ready) => self.ready(id, ready),
             Request::Kill(kill) => self.wire_kill(id, kill),
+            Request::Break(request) => {
+                self.wire_break(id, request);
+                Ok(())
+            }
             other => {
                 self.attachment_request(id, other);
                 Ok(())
@@ -175,7 +183,8 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
             | Request::Kill(_)
             | Request::Input(_)
             | Request::Resize(_)
-            | Request::Focus(_) => unreachable!("dispatched earlier in the chain"),
+            | Request::Focus(_)
+            | Request::Break(_) => unreachable!("dispatched earlier in the chain"),
         }
     }
 
@@ -479,6 +488,30 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
         }
     }
 
+    /// Break needs `break-v1`, checked first, then the ready controller's
+    /// current authority. The command's console then gets Ctrl+Break; the
+    /// answer proves only that its delivery started (#326).
+    fn wire_break(&mut self, id: u64, request: Break) {
+        if !self.selects(id, Family::BreakV1) {
+            let code = OperationalCode::UnsupportedCapability;
+            return self.reject(id, request.request_id, code, BREAK_NOT_SELECTED);
+        }
+        self.authorized_break(id, request);
+    }
+
+    /// A selected Break, which only a Windows daemon can receive, once its
+    /// authority is checked.
+    fn authorized_break(&mut self, id: u64, request: Break) {
+        let needs = (request.authority, Needs::Readiness);
+        let Some(_) = self.authorized(id, request.request_id, needs) else {
+            return;
+        };
+        let sent = (self.pty.send_break())
+            .map(|()| Success::BreakSent {})
+            .map_err(|_| OperationalCode::IoError);
+        self.answer(id, request.request_id, sent);
+    }
+
     /// Set viewing needs `status-v1`, checked first, then the controller's
     /// current authority; viewing true also needs readiness, while false
     /// is accepted during restoration too. It reports a fact and never
@@ -666,14 +699,14 @@ impl<C: FnMut() -> io::Result<()>> Session<'_, C> {
     /// Records the authority an attachment now holds; false for a
     /// connection that is no longer one.
     fn hold(&mut self, id: u64, authority: Authority, geometry: TerminalSize) -> bool {
-        let Some(attachment) = self.attachment_mut(id) else {
-            return false;
-        };
-        attachment.held = Some(Held {
-            authority,
-            geometry,
-        });
-        true
+        self.attachment_mut(id)
+            .map(|attachment| {
+                attachment.held = Some(Held {
+                    authority,
+                    geometry,
+                });
+            })
+            .is_some()
     }
 
     fn begin_restoration(&mut self, id: u64, authority: Authority, geometry: TerminalSize) {

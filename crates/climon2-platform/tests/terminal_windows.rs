@@ -294,20 +294,32 @@ fn tty() -> i32 {
     i32::from(terminal::require_ttys().is_ok()) + 2 * i32::from(terminal::input().is_ok())
 }
 
-/// Ctrl+Break changes nothing; Ctrl+C is SIGINT.
+/// Ctrl+Break is a break, taken once, and no termination (#326); Ctrl+C is
+/// SIGINT and no break.
 fn signals(report: &Path) -> i32 {
     let signals = Signals::client().unwrap();
+    let before = signals.take_break();
     // SAFETY: events for every process on this console, which is this one.
     unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) };
-    thread::sleep(Duration::from_millis(500));
+    let deadline = Instant::now() + TIMEOUT;
+    let mut broke = false;
+    while !broke && Instant::now() < deadline {
+        broke = signals.take_break();
+        thread::sleep(Duration::from_millis(10));
+    }
     let after_break = signals.termination_signal();
+    let again = signals.take_break();
     unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) };
     let deadline = Instant::now() + TIMEOUT;
     while signals.termination_signal().is_none() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
     let after_c = signals.termination_signal();
-    write_report(report, &format!("{after_break:?}|{after_c:?}"));
+    let c_broke = signals.take_break();
+    write_report(
+        report,
+        &format!("{before}|{broke}|{again}|{after_break:?}|{after_c:?}|{c_broke}"),
+    );
     130
 }
 
@@ -436,9 +448,12 @@ fn a_terminal_needs_console_input_and_output() {
 }
 
 #[test]
-fn ctrl_break_is_ignored_and_ctrl_c_is_an_interrupt() {
+fn ctrl_break_is_a_break_and_ctrl_c_is_an_interrupt() {
     let (mut terminal, report) = hosted("signals");
-    assert_eq!(report.read(&terminal), "None|Some(2)");
+    assert_eq!(
+        report.read(&terminal),
+        "false|true|false|None|Some(2)|false"
+    );
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 130);
 }
 

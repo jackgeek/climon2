@@ -15,7 +15,7 @@ Use the [overview](../README.md), [domain glossary](../../../../GLOSSARY.md),
 and [technical terms](../TERMS.md) alongside each message page.
 
 An encoder and validator for the [framing](../TERMS.md#frame), the shared
-types and all ten [request](../TERMS.md#request) and fourteen server
+types and all eleven [request](../TERMS.md#request) and fourteen server
 messages of this revision, including the binary [Input](request-input.md)
 and [Display](event-display.md) records, now exists in
 [`climon2-core`](../../../../crates/climon2-core/README.md). Its tests decode
@@ -53,7 +53,8 @@ with takeover,
 [leave policy](../../../../GLOSSARY.md#attachment-and-control), the
 [promotion](../../../../GLOSSARY.md#attachment-and-control) of passive registrations
 and the [canonical presentation](../../../../GLOSSARY.md#restoration-and-presentation)
-of monitor-mode connections. It serves all ten requests. The
+of monitor-mode connections. It serves all eleven requests, Break only on
+Windows ([#326](https://github.com/jackgeek/climon2/issues/326)). The
 [client library](../../../../GLOSSARY.md#sessions) speaks this revision for
 passive monitor connections ([#93](https://github.com/jackgeek/climon2/issues/93)),
 for control, display and Focus ([#94](https://github.com/jackgeek/climon2/issues/94)),
@@ -114,11 +115,11 @@ Every page inherits the shared wire rules on this page:
 portable framing, strict JSON/binary types, IDs, capabilities, ordering,
 acceptance/errors, bounded delivery and unresolved owners. Hello advertises
 support; first Open/Kill validates before effects without a separate exchange.
-There are ten request types and fourteen server types, including Response.
-Requests use types `0x30` to `0x39` and server messages `0x40` to `0x4d`.
+There are eleven request types and fourteen server types, including Response.
+Requests use types `0x30` to `0x3a` and server messages `0x40` to `0x4d`.
 Input and Display bodies are binary; every other body is a UTF-8 JSON object.
 The hello reply advertises each direction's frame-length ceiling.
-Requests use types `0x30` to `0x39` and server messages `0x40` to `0x4d`.
+Requests use types `0x30` to `0x3a` and server messages `0x40` to `0x4d`.
 Input and Display bodies are binary; every other body is a UTF-8 JSON object.
 The hello reply advertises each direction's frame-length ceiling.
 Examples are wire bodies, not native declarations or conformance evidence.
@@ -127,7 +128,8 @@ revision: Open in both modes, Leave for
 [passive monitor connections](../../../../GLOSSARY.md#attachment-and-control) and
 [attachments](../../../../GLOSSARY.md#attachment-and-control), Input, Resize,
 Ready, Acquire, Focus, standalone Kill, Set viewing and Acknowledge
-([#91](https://github.com/jackgeek/climon2/issues/91)), Response, Initial metadata, Title changed, Status changed,
+([#91](https://github.com/jackgeek/climon2/issues/91)), Break on Windows
+([#326](https://github.com/jackgeek/climon2/issues/326)), Response, Initial metadata, Title changed, Status changed,
 Notification and Progress changed ([#98](https://github.com/jackgeek/climon2/issues/98)), the control and restoration
 records, Display, Geometry, Command final with the final status and Fatal
 error; each page states what is implemented.
@@ -144,6 +146,7 @@ error; each page states what is implemented.
 | `0x37` | [Leave](request-leave.md) | Client -> daemon | Remove membership/registration and accept departure. |
 | `0x38` | [Kill](request-kill.md) | Client -> daemon | Standalone termination with daemon-cleanup confirmation. |
 | `0x39` | [Focus](request-focus.md) | Client -> daemon | Optional non-user core application focus (#63 amendment). |
+| `0x3a` | [Break](request-break.md) | Client -> daemon | Ctrl+Break for the command's console, Windows only (#326 amendment). |
 | `0x40` | [Response](response.md) | Daemon -> client | Correlated explicit outcome/result/error. |
 | `0x41` | [Initial metadata](event-initial-metadata.md) | Daemon -> client | Atomic current availability/state before gap-free changes. |
 | `0x42` | [Title changed](event-title-changed.md) | Daemon -> client | Inert [Unicode](../TERMS.md#unicode-and-utf-8) title. |
@@ -277,6 +280,7 @@ Session daemons keep that distinction
 | `notification-v1` | Normalized notification events; requires `status-v1`. |
 | `progress-v1` | Retained normalized progress and changes. |
 | `focus-v1` | Optional non-user core [application Focus](request-focus.md), with truthful state/forwarding outcomes; #63 amendment. |
+| `break-v1` | Optional core [Break](request-break.md): Ctrl+Break for the command's console. Only Windows session daemons advertise it; #326 amendment. |
 
 Core support is implicit in a revision-1 request; monitor support is implicit
 in monitor mode. Unknown optional requested families are not selected.
@@ -440,11 +444,13 @@ two (owner decisions on
 ### Implemented authority checks
 
 The session daemon checks Input, [Resize](request-resize.md),
-[Ready](request-ready.md), Focus, [Set viewing](request-viewing.md) and
-[Acknowledge](request-acknowledge.md) in this order and rejects the first
-unmet condition without effects; the stream goes on:
+[Ready](request-ready.md), Focus, [Set viewing](request-viewing.md),
+[Acknowledge](request-acknowledge.md) and [Break](request-break.md) in this
+order and rejects the first unmet condition without effects; the stream goes
+on:
 
-1. Focus only: the connection's Open selected `focus-v1`; Set viewing and
+1. Focus only: the connection's Open selected `focus-v1`; Break only: it
+   selected `break-v1`; Set viewing and
    Acknowledge only: it selected `status-v1` (owner decision on
    [#86](https://github.com/jackgeek/climon2/issues/86)). Otherwise
    `unsupported_capability`.
@@ -461,8 +467,8 @@ unmet condition without effects; the stream goes on:
    `stale_restoration`: a replacement restoration supersedes the earlier one.
 8. The current restoration is far enough along: Resize and Set viewing
    false need nothing more, Ready needs a complete restoration, whose
-   Restoration complete was sent, and Input, Focus, Set viewing true and
-   Acknowledge need readiness. Otherwise `not_ready`.
+   Restoration complete was sent, and Input, Focus, Set viewing true,
+   Acknowledge and Break need readiness. Otherwise `not_ready`.
 9. Acknowledge only: the latest viewing reported in the current control
    period is true, otherwise `not_viewing`.
 10. Acknowledge only: no attention request has found the session's episode

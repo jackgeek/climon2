@@ -22,6 +22,8 @@ portable-pty = { version = "0.9.0", default-features = false }
 
 [dev-dependencies]
 libc = "0.2.191"
+# The harness's hosted commands, which the Windows tests build.
+portable-pty = { version = "0.9.0", default-features = false }
 serde_json.workspace = true
 tempfile = "3.27.0"
 vt100 = "0.18.1"

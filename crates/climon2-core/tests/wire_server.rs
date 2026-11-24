@@ -96,14 +96,14 @@ fn sigterm() -> CommandResult {
 fn server_messages_are_identified_by_type_and_direction() {
     let title = br#"{"title":null}"#;
     assert!(server(TITLE_CHANGED, title).is_ok());
-    for code in 0x30..=0x39 {
+    for code in 0x30..=0x3a {
         assert_eq!(
             server(code, title),
             Err(FatalCode::WrongDirection),
             "{code:#x}"
         );
     }
-    for code in [0x00, 0x01, 0x27, 0x2f, 0x3a, 0x3f, 0x4e, 0x7f, 0xff] {
+    for code in [0x00, 0x01, 0x27, 0x2f, 0x3b, 0x3f, 0x4e, 0x7f, 0xff] {
         assert_eq!(
             server(code, title),
             Err(FatalCode::UnknownMessageType),
@@ -207,6 +207,7 @@ fn every_documented_success_result_round_trips() {
                 accepted_bytes: FocusBytes::Sequence,
             },
         ),
+        (r#"{"kind":"break_sent"}"#.into(), Success::BreakSent {}),
     ] {
         let body = response("ok", &result, "null");
         assert_eq!(
