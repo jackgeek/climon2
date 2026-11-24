@@ -6,6 +6,7 @@
 //! This is test code: it must pass its own tests in the Windows Test job and
 //! is outside CRAP and mutation (docs/for-humans/windows/quality.md).
 
+mod apps;
 mod conpty;
 mod host;
 mod job;
@@ -13,6 +14,7 @@ mod keys;
 mod outside;
 mod pwsh;
 
+pub use apps::App;
 pub use conpty::ConPty;
 pub use host::{HostModel, HostSettings, Terminal};
 pub use job::JobShape;

@@ -306,3 +306,46 @@ fn the_start_up_negotiation_never_reaches_the_output() {
     assert!(!text[..first].contains("\x1b[?1004h"), "{text:?}");
     assert!(text[first..].contains("\x1b[?1004hfocus-on"), "{text:?}");
 }
+
+/// A command's own device attributes request, after the pseudoconsole's.
+/// It shows `QUERY`, asks, and shows the first input it reads in hex.
+const DEVICE_ATTRIBUTES_PROBE: &str = r#"$signatures = '[DllImport("kernel32.dll")] public static extern System.IntPtr GetStdHandle(int n);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(System.IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(System.IntPtr h, uint m);
+[DllImport("kernel32.dll")] public static extern bool ReadFile(System.IntPtr h, byte[] b, uint n, out uint r, System.IntPtr o);'
+Add-Type -Name Console -Namespace Climon2 -MemberDefinition $signatures
+$in = [Climon2.Console]::GetStdHandle(-10)
+$out = [Climon2.Console]::GetStdHandle(-11)
+[void][Climon2.Console]::SetConsoleMode($in, 0x200)
+$mode = 0
+[void][Climon2.Console]::GetConsoleMode($out, [ref]$mode)
+[void][Climon2.Console]::SetConsoleMode($out, $mode -bor 4)
+[Console]::Write("QUERY$([char]27)[c")
+$buffer = [byte[]]::new(64)
+$read = 0
+[void][Climon2.Console]::ReadFile($in, $buffer, 64, [ref]$read, [IntPtr]::Zero)
+'GOT:' + (-join ($buffer[0..($read - 1)] | ForEach-Object { $_.ToString('x2') }))
+"#;
+
+/// The pseudoconsole asks for the device attributes as it starts and takes
+/// the first answer it reads as its host's. The daemon answers that request
+/// itself, so the answer to the command's own request reaches the command,
+/// as an app such as Microsoft Edit waits for it.
+#[test]
+fn the_answer_to_a_commands_device_attributes_request_reaches_it() {
+    let hosted = start(&[
+        "powershell",
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        DEVICE_ATTRIBUTES_PROBE,
+    ]);
+    let (text, _) = read_until(&hosted, |text| {
+        text.find("QUERY")
+            .is_some_and(|at| text[at..].contains("\x1b[c"))
+    });
+    assert!(text.contains("QUERY"), "{text:?}");
+    hosted.write(b"\x1b[?6c").unwrap();
+    let (text, _) = read_until(&hosted, |text| text.contains("GOT:1b5b3f3663"));
+    assert!(text.contains("GOT:1b5b3f3663"), "{text:?}");
+}

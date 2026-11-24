@@ -184,7 +184,7 @@ fn verified(pin: &Pin, folder: &Path) -> io::Result<()> {
 }
 
 /// Downloads `url` to `to` with the system's `curl.exe`, failing on any HTTP error.
-fn download(url: &str, to: &Path) -> io::Result<()> {
+pub(crate) fn download(url: &str, to: &Path) -> io::Result<()> {
     run(Command::new(system_tool("curl.exe"))
         .args(["--fail", "--silent", "--show-error", "--location"])
         .args(["--retry", "3", "--output"])
@@ -193,12 +193,12 @@ fn download(url: &str, to: &Path) -> io::Result<()> {
 }
 
 /// A tool Windows ships in System32, by absolute path.
-fn system_tool(name: &str) -> PathBuf {
+pub(crate) fn system_tool(name: &str) -> PathBuf {
     let root = env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
     Path::new(&root).join("System32").join(name)
 }
 
-fn run(command: &mut Command) -> io::Result<()> {
+pub(crate) fn run(command: &mut Command) -> io::Result<()> {
     let output = command.output()?;
     if output.status.success() {
         return Ok(());

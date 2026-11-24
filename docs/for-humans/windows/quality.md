@@ -131,7 +131,8 @@ A pull request touches Windows-only code when it changes any of:
 - the Windows dist (`xtask/src/windows_dist.rs`) and the download script
   (`install.ps1`), which make the zip the Archive job tests;
 - the pinned downloads under `pins/`: the ConPTY package's
-  `pins/conpty.txt` and, once they are added, vim's and Microsoft Edit's;
+  `pins/conpty.txt`, and vim's and Microsoft Edit's, `pins/vim.txt` and
+  `pins/edit.txt`;
 - the workflow files or xtask's quality code.
 
 ### The Quality job during development

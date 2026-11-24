@@ -1,0 +1,9 @@
+# Microsoft Edit 2.0.0 (docs/for-humans/windows/qualification.md, "Full-screen
+# apps"): its x86_64 Windows release zip. Windows 11 ships an older edit.exe
+# that comes first on PATH, so the test harness downloads this zip, checks it
+# and the file below, and runs the program by absolute path. Hashes are SHA-256
+# in lowercase hex; each `file` line is a path inside the zip and its hash.
+url https://github.com/microsoft/edit/releases/download/v2.0.0/edit-2.0.0-x86_64-windows.zip
+package 97b8f2c667faea8f211af5f9c879602949164911d74d16f540bbe31ad46c14cb
+program edit-2.0.0-x86_64-windows/edit.exe
+file edit-2.0.0-x86_64-windows/edit.exe a04779216412e551ee1de3b3506e45b2fbae71d4f201468161009c0de54387ad
