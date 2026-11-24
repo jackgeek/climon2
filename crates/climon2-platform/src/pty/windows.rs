@@ -290,6 +290,14 @@ impl Console {
     /// with the job in its attribute list (#393). A command that cannot join
     /// the job is ended before it runs.
     fn spawn(&self, launch: &Launch, cwd: &Path) -> io::Result<(OwnedHandle, u32)> {
+        let mut attributes = self.attributes()?;
+        let (process, thread, pid) = create(&mut attributes, launch, cwd)?;
+        self.enter(&process, &thread)?;
+        Ok((process, pid))
+    }
+
+    /// The start attributes: this pseudoconsole, and nothing else.
+    fn attributes(&self) -> io::Result<Attributes> {
         let console = self.handle.unwrap_or_default();
         let mut attributes = Attributes::new(1)?;
         // This attribute's value is the HPCON itself, not a pointer to it.
@@ -298,9 +306,7 @@ impl Console {
             console as *const std::ffi::c_void,
             size_of::<isize>(),
         )?;
-        let (process, thread, pid) = create(&mut attributes, launch, cwd)?;
-        self.enter(&process, &thread)?;
-        Ok((process, pid))
+        Ok(attributes)
     }
 
     /// Joins the session job, or ends the process before it runs anything.
