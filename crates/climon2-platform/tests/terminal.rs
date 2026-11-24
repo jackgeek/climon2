@@ -106,6 +106,8 @@ fn issue20_signals_coalesce_resize_and_report_exit_signal() {
         libc::raise(libc::SIGTERM);
     }
     assert_eq!(signals.termination_signal(), Some(15));
+    // Unix terminals have no Ctrl+Break (#326): no signal is one.
+    assert!(!signals.take_break());
 }
 
 fn terminal_fixture(mode: &str) -> Command {

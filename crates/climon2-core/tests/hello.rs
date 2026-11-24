@@ -399,6 +399,7 @@ fn advertised_families_are_the_known_revision1_tokens() {
         (Family::NotificationV1, "notification-v1"),
         (Family::ProgressV1, "progress-v1"),
         (Family::FocusV1, "focus-v1"),
+        (Family::BreakV1, "break-v1"),
     ] {
         assert_eq!(family.token(), token);
         assert_eq!(Family::from_token(token), Some(family));

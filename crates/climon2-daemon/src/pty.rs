@@ -84,6 +84,10 @@ impl Pty {
             .resize(size(value))
             .map_err(|_| super::io_error("terminal resize failed"))
     }
+    /// Never reached: without `break-v1` no Open selects it (#326).
+    pub fn send_break(&mut self) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     pub fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         #[cfg(feature = "test-hooks")]
         if crate::startup::selected_fault("pty-write") {
@@ -181,11 +185,11 @@ impl Pty {
     /// Records the command session's job groups while its leader may still hold the terminal;
     /// at most every `OBSERVE_JOBS`, as each look lists the terminal's processes.
     pub fn observe_jobs(&mut self) -> io::Result<()> {
-        if !super::due(self.observed, OBSERVE_JOBS) {
-            return Ok(());
+        if super::due(self.observed, OBSERVE_JOBS) {
+            self.observed = Instant::now();
+            self.session.observe()?;
         }
-        self.observed = Instant::now();
-        self.session.observe()
+        Ok(())
     }
 }
 
@@ -366,6 +370,15 @@ impl Drop for ExecListener {
 
 pub fn exec_command(arguments: &[OsString]) -> u8 {
     exec(arguments).unwrap_or(125)
+}
+
+/// Unix terminals have no Ctrl+Break, so hello never advertises `break-v1`
+/// (#326).
+pub(crate) const BREAK: Option<climon2_core::wire::Family> = None;
+
+/// Windows' Ctrl+Break helper; nothing starts the daemon this way on Unix.
+pub fn break_command(_arguments: &[OsString]) -> u8 {
+    125
 }
 
 fn exec(arguments: &[OsString]) -> io::Result<u8> {

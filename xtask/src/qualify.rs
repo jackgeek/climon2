@@ -12,11 +12,14 @@
 //! `qualify verdict` judges every platform's records with the owner's
 //! recorded dispositions and fails unless the release may be published.
 
+mod candidate;
 mod evidence;
 mod sources;
 mod verdict;
 
-use evidence::{Manual, Report, Run, Source};
+use crate::quality;
+use candidate::Stage;
+use evidence::{Candidate, Manual, Report, Run, Source};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sources::Scenario;
@@ -70,23 +73,31 @@ impl Layer {
     }
 }
 
-/// A qualified platform: x86-64 GNU/Linux on Ubuntu 24.04 and both macOS
-/// architectures, each on its own native runner.
+/// A qualified platform: x86-64 GNU/Linux on Ubuntu 24.04, both macOS
+/// architectures and x86-64 Windows 11 on `windows-2025` (#330), each on its
+/// own native runner.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum Platform {
     LinuxX86_64,
     MacosArm64,
     MacosX86_64,
+    WindowsX86_64,
 }
 
 impl Platform {
-    pub(crate) const ALL: [Self; 3] = [Self::LinuxX86_64, Self::MacosArm64, Self::MacosX86_64];
+    pub(crate) const ALL: [Self; 4] = [
+        Self::LinuxX86_64,
+        Self::MacosArm64,
+        Self::MacosX86_64,
+        Self::WindowsX86_64,
+    ];
 
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::LinuxX86_64 => "linux-x86_64",
             Self::MacosArm64 => "macos-arm64",
             Self::MacosX86_64 => "macos-x86_64",
+            Self::WindowsX86_64 => "windows-x86_64",
         }
     }
 
@@ -97,12 +108,37 @@ impl Platform {
     }
 
     pub(crate) fn os(self) -> &'static str {
-        ["linux", "macos", "macos"][self as usize]
+        ["linux", "macos", "macos", "windows"][self as usize]
     }
 
     /// The Rust architecture that runs it natively.
     fn arch(self) -> &'static str {
-        ["x86_64", "aarch64", "x86_64"][self as usize]
+        ["x86_64", "aarch64", "x86_64", "x86_64"][self as usize]
+    }
+
+    /// The test runs that make up each source's run on this platform, as
+    /// `cargo test` argument lists. Unix runs the packaged tests against the
+    /// archive and every workspace test; Windows, where only part of the
+    /// workspace builds, runs what its Test and Archive jobs run.
+    fn suites(self, source: Source) -> Vec<Vec<&'static str>> {
+        let windows = self == Self::WindowsX86_64;
+        let lists: Vec<&[&'static str]> = match (source, windows) {
+            (Source::Archive, false) => vec![&["-p", "climon2-e2e"]],
+            (Source::Workspace, false) => vec![&["--workspace"]],
+            (Source::Archive, true) => vec![
+                &["-p", "climon2-launcher", "-p", "climon2-cli"],
+                &["-p", "climon2-install", "--test", "archive_windows"],
+            ],
+            (Source::Workspace, true) => quality::WINDOWS_SUITE.to_vec(),
+        };
+        lists
+            .into_iter()
+            .map(|packages| {
+                let mut args = vec!["test", "--locked", "--no-fail-fast"];
+                args.extend_from_slice(packages);
+                args
+            })
+            .collect()
     }
 
     /// Whether this host is the platform itself: cross-compilation and
@@ -152,6 +188,7 @@ impl State {
 const DISPOSITIONS: &str = "qualification/dispositions.json";
 const MANUAL: &str = "qualification/manual.json";
 const MATRIX: &str = "docs/for-humans/behaviour/monitor/acceptance.md";
+const WINDOWS_MATRIX: &str = "docs/for-humans/windows/qualification.md";
 
 /// `qualify run`'s options.
 #[derive(Debug, Eq, PartialEq)]
@@ -162,6 +199,9 @@ struct RunOptions {
     measure: Option<PathBuf>,
     manual: Option<PathBuf>,
     provenance: String,
+    /// The latest release candidate, whose manual checklist records a final
+    /// tag's Windows run takes; none for a release candidate.
+    candidate: Option<Candidate>,
 }
 
 /// `qualify verdict`'s options.
@@ -170,12 +210,22 @@ struct VerdictOptions {
     evidence: PathBuf,
     out: PathBuf,
     dispositions: Option<PathBuf>,
+    stage: Stage,
+}
+
+/// `qualify candidate`'s options: the tag being released and a file of every
+/// published release's tag, one per line.
+#[derive(Debug, Eq, PartialEq)]
+struct CandidateOptions {
+    tag: String,
+    releases: PathBuf,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 enum Options {
     Run(RunOptions),
     Verdict(VerdictOptions),
+    Candidate(CandidateOptions),
 }
 
 /// Each `--flag value` pair; none for an unknown flag, a missing value or a
@@ -211,9 +261,23 @@ fn parse(args: &[OsString]) -> Option<Options> {
                 "--measure",
                 "--manual",
                 "--provenance",
+                "--candidate",
+                "--candidate-sha256",
             ];
             let pairs = flags(rest, &known)?;
+            let candidate = match (
+                value(&pairs, "--candidate"),
+                value(&pairs, "--candidate-sha256"),
+            ) {
+                (Some(version), Some(sha256)) => Some(Candidate {
+                    version: version.to_str()?.to_owned(),
+                    sha256: sha256.to_str()?.to_owned(),
+                }),
+                (None, None) => None,
+                _ => return None,
+            };
             Some(Options::Run(RunOptions {
+                candidate,
                 platform: Platform::parse(value(&pairs, "--platform")?.to_str()?)?,
                 archive: value(&pairs, "--archive")?.into(),
                 out: value(&pairs, "--out")?.into(),
@@ -225,25 +289,37 @@ fn parse(args: &[OsString]) -> Option<Options> {
             }))
         }
         "verdict" => {
-            let pairs = flags(rest, &["--evidence", "--out", "--dispositions"])?;
+            let pairs = flags(rest, &["--evidence", "--out", "--dispositions", "--tag"])?;
             Some(Options::Verdict(VerdictOptions {
                 evidence: value(&pairs, "--evidence")?.into(),
                 out: value(&pairs, "--out")?.into(),
                 dispositions: value(&pairs, "--dispositions").map(PathBuf::from),
+                stage: Stage::of(value(&pairs, "--tag").map_or(Some(""), |tag| tag.to_str())?),
+            }))
+        }
+        "candidate" => {
+            let pairs = flags(rest, &["--tag", "--releases"])?;
+            Some(Options::Candidate(CandidateOptions {
+                tag: value(&pairs, "--tag")?.to_str()?.to_owned(),
+                releases: value(&pairs, "--releases")?.into(),
             }))
         }
         _ => None,
     }
 }
 
-pub(crate) const USAGE: &str = "qualify run --platform <linux-x86_64|macos-arm64|macos-x86_64> \
+pub(crate) const USAGE: &str = "qualify run \
+--platform <linux-x86_64|macos-arm64|macos-x86_64|windows-x86_64> \
 --archive <archive> --out <directory> [--measure <directory>] [--manual <file>] [--provenance <text>] \
-| qualify verdict --evidence <directory> --out <directory> [--dispositions <file>]";
+[--candidate <version> --candidate-sha256 <sha256>] \
+| qualify verdict --evidence <directory> --out <directory> [--dispositions <file>] [--tag <tag>] \
+| qualify candidate --tag <tag> --releases <file>";
 
 pub(crate) fn run(root: &Path, args: &[OsString]) -> io::Result<()> {
     match parse(args) {
         Some(Options::Run(options)) => record(root, &options),
         Some(Options::Verdict(options)) => judge(root, &options),
+        Some(Options::Candidate(options)) => candidate(root, &options),
         None => Err(io::Error::other(format!("usage: cargo xtask {USAGE}"))),
     }
 }
@@ -252,9 +328,22 @@ fn invalid(error: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
-/// The matrix's scenarios.
+/// The matrix's scenarios, on every platform, then the Windows-only
+/// scenarios and manual checklist (#330), on Windows alone.
 fn matrix(root: &Path) -> io::Result<Vec<Scenario>> {
-    sources::scenarios(&fs::read_to_string(root.join(MATRIX))?).map_err(invalid)
+    let mut scenarios = Vec::new();
+    for (document, platforms) in [
+        (MATRIX, &Platform::ALL[..]),
+        (WINDOWS_MATRIX, &[Platform::WindowsX86_64][..]),
+    ] {
+        sources::scenarios(
+            &fs::read_to_string(root.join(document))?,
+            platforms,
+            &mut scenarios,
+        )
+        .map_err(|error| invalid(format!("{document}: {error}")))?;
+    }
+    Ok(scenarios)
 }
 
 /// Every crate README's claims of the matrix's scenarios.
@@ -311,16 +400,21 @@ fn record(root: &Path, options: &RunOptions) -> io::Result<()> {
             platform.name()
         )));
     }
-    let scenarios = matrix(root)?;
+    let mut scenarios = matrix(root)?;
     let claims = claims(root, &scenarios)?;
+    scenarios.retain(|scenario| scenario.platforms.contains(&platform));
     let hooked = hooked(root)?;
-    let archive = fs::canonicalize(&options.archive)?;
+    // Absolute, not canonical: Windows' `tar` cannot read a verbatim
+    // `\\?\` path.
+    let archive = std::path::absolute(&options.archive)?;
     let sha256 = format!("{:x}", Sha256::digest(fs::read(&archive)?));
     let logs = options.out.join("logs");
     fs::create_dir_all(&logs)?;
+    // The workspace run first: on Windows it builds the binaries the
+    // archive run's tests start beside the installed product.
     let runs = [
-        test_run(root, Source::Archive, Some(&archive), &logs)?,
-        test_run(root, Source::Workspace, None, &logs)?,
+        test_run(root, platform, Source::Workspace, None, &logs)?,
+        test_run(root, platform, Source::Archive, Some(&archive), &logs)?,
     ];
     let reports = match &options.measure {
         Some(directory) => measure_reports(directory)?,
@@ -346,6 +440,7 @@ fn record(root: &Path, options: &RunOptions) -> io::Result<()> {
         runs: &runs,
         reports: &reports,
         manual: &manual,
+        candidate: options.candidate.as_ref(),
         sha256: &sha256,
         common: &common,
     });
@@ -376,44 +471,42 @@ fn record(root: &Path, options: &RunOptions) -> io::Result<()> {
 
 /// Runs one set of tests, without stopping at the first failing binary,
 /// and reads every result from its log.
-fn test_run(root: &Path, source: Source, archive: Option<&Path>, logs: &Path) -> io::Result<Run> {
-    let mut command = Command::new(env!("CARGO"));
-    command.current_dir(root).args(test_args(source));
-    match archive {
-        Some(archive) => command.env("CLIMON2_E2E_ARCHIVE", archive),
-        None => command.env_remove("CLIMON2_E2E_ARCHIVE"),
-    };
+fn test_run(
+    root: &Path,
+    platform: Platform,
+    source: Source,
+    archive: Option<&Path>,
+    logs: &Path,
+) -> io::Result<Run> {
     let log = logs.join(format!("{}.log", source.name()));
     let started = Instant::now();
-    eprintln!(
-        "> cargo {} ({} run)",
-        test_args(source).join(" "),
-        source.name()
-    );
-    let output = command.output()?;
-    let text = [output.stdout, output.stderr].concat();
+    let mut text = Vec::new();
+    let mut commands = Vec::new();
+    let mut statuses = Vec::new();
+    for args in platform.suites(source) {
+        let mut command = Command::new(env!("CARGO"));
+        command.current_dir(root).args(&args);
+        match archive {
+            Some(archive) => command.env("CLIMON2_E2E_ARCHIVE", archive),
+            None => command.env_remove("CLIMON2_E2E_ARCHIVE"),
+        };
+        let line = format!("cargo {}", args.join(" "));
+        eprintln!("> {line} ({} run)", source.name());
+        let output = command.output()?;
+        text.extend([output.stdout, output.stderr].concat());
+        commands.push(line);
+        statuses.push(output.status.to_string());
+    }
     fs::write(&log, &text)?;
     let text = String::from_utf8_lossy(&text);
     Ok(Run {
         source,
-        command: format!("cargo {}", test_args(source).join(" ")),
-        status: output.status.to_string(),
+        command: commands.join(" && "),
+        status: statuses.join("; "),
         seconds: started.elapsed().as_secs_f64(),
         log: log.display().to_string(),
         outcomes: evidence::outcomes(&text),
     })
-}
-
-/// The packaged tests alone run against the archive; the workspace run is
-/// every test.
-fn test_args(source: Source) -> Vec<&'static str> {
-    let packages: &[&str] = match source {
-        Source::Archive => &["-p", "climon2-e2e"],
-        Source::Workspace => &["--workspace"],
-    };
-    let mut args = vec!["test", "--locked", "--no-fail-fast"];
-    args.extend_from_slice(packages);
-    args
 }
 
 fn run_json(run: &Run) -> Value {
@@ -476,6 +569,10 @@ fn manual(json: &Value) -> Result<Vec<Manual>, String> {
                 passed,
                 limitation: text("limitation"),
                 recorded: text("recorded"),
+                candidate: Candidate {
+                    version: text("candidate"),
+                    sha256: text("sha256"),
+                },
             })
         })
         .collect()
@@ -498,15 +595,44 @@ fn environment(platform: Platform) -> Value {
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .unwrap_or_default();
+    let variable = |name: &str| std::env::var(name).unwrap_or_default();
     let runner = ["RUNNER_NAME", "ImageOS", "ImageVersion", "GITHUB_RUN_ID"]
-        .map(|name| format!("{name}={}", std::env::var(name).unwrap_or_default()))
+        .map(|name| format!("{name}={}", variable(name)))
         .join(" ");
-    json!({
+    let mut environment = json!({
         "platform": platform.name(),
         "os": uname,
         "architecture": std::env::consts::ARCH,
         "runner": runner,
-    })
+        "runner_image": runner_image(&variable("ImageOS"), &variable("ImageVersion")),
+    });
+    if platform == Platform::WindowsX86_64 {
+        // `ver` is a cmd.exe built-in: "Microsoft Windows [Version 10.0.26100.6899]".
+        let ver = Command::new("cmd")
+            .args(["/d", "/c", "ver"])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        environment["windows_build"] = json!(windows_build(&ver));
+    }
+    environment
+}
+
+/// The hosted runner's image and its version, such as `win25 20251110.1`;
+/// empty off a hosted runner.
+fn runner_image(os: &str, version: &str) -> String {
+    if os.is_empty() || version.is_empty() {
+        return String::new();
+    }
+    format!("{os} {version}")
+}
+
+/// The Windows build number in `ver`'s output, such as `10.0.26100.6899`;
+/// empty when it names none.
+fn windows_build(ver: &str) -> String {
+    ver.split_once("[Version ")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map_or_else(String::new, |(build, _)| build.trim().to_owned())
 }
 
 fn judge(root: &Path, options: &VerdictOptions) -> io::Result<()> {
@@ -529,7 +655,8 @@ fn judge(root: &Path, options: &VerdictOptions) -> io::Result<()> {
                 .cloned(),
         );
     }
-    let verdict = verdict::verdict(&scenarios, &records, &dispositions).map_err(invalid)?;
+    let verdict =
+        verdict::verdict(&scenarios, &records, &dispositions, options.stage).map_err(invalid)?;
     fs::create_dir_all(&options.out)?;
     let document = json!({
         "format": "climon2-qualification-verdict/1",
@@ -551,6 +678,55 @@ fn judge(root: &Path, options: &VerdictOptions) -> io::Result<()> {
             "not qualified: a case neither passed nor has the owner's disposition; see qualification.md",
         ))
     }
+}
+
+/// `qualify candidate`: for a final tag, prints the latest published release
+/// candidate of its version, after checking that `HEAD` differs from it only
+/// in the version stamp and the owner's records; fails when there is none
+/// or anything else changed. For a release candidate it prints nothing.
+fn candidate(root: &Path, options: &CandidateOptions) -> io::Result<()> {
+    if Stage::of(&options.tag) == Stage::Candidate {
+        return Ok(());
+    }
+    let releases = fs::read_to_string(&options.releases)?;
+    let latest = candidate::latest(&options.tag, &releases).ok_or_else(|| {
+        io::Error::other(format!(
+            "no release candidate of {} is published: the final tag takes the manual checklist of its latest candidate",
+            options.tag
+        ))
+    })?;
+    let versions = (
+        latest.trim_start_matches('v'),
+        options.tag.trim_start_matches('v'),
+    );
+    let git = |args: &[&str]| quality::output(Command::new("git").current_dir(root).args(args));
+    let names = git(&["diff", "--name-only", "--no-renames", &latest, "HEAD"])?;
+    let show = |revision: &str, path: &str| {
+        git(&["show", &format!("{revision}:{path}")])
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let changed: Vec<String> = String::from_utf8_lossy(&names.stdout)
+        .lines()
+        .filter(|path| {
+            !candidate::stamp_only(
+                path,
+                show(&latest, path).as_deref(),
+                show("HEAD", path).as_deref(),
+                versions,
+            )
+        })
+        .map(str::to_owned)
+        .collect();
+    if !changed.is_empty() {
+        return Err(io::Error::other(format!(
+            "{} differs from {latest} beyond the version stamp and qualification/: {}",
+            options.tag,
+            changed.join(", ")
+        )));
+    }
+    println!("{latest}");
+    Ok(())
 }
 
 /// Every `evidence.json` at or below `directory`, as the qualification
@@ -603,6 +779,7 @@ mod tests {
                 measure: None,
                 manual: None,
                 provenance: "local".into(),
+                candidate: None,
             }))
         );
         assert_eq!(
@@ -620,6 +797,10 @@ mod tests {
                 "r.json",
                 "--provenance",
                 "run 7",
+                "--candidate-sha256",
+                "feed",
+                "--candidate",
+                "1.2.0-rc.2",
             ])),
             Some(Options::Run(RunOptions {
                 platform: Platform::MacosX86_64,
@@ -628,6 +809,10 @@ mod tests {
                 measure: Some("m".into()),
                 manual: Some("r.json".into()),
                 provenance: "run 7".into(),
+                candidate: Some(Candidate {
+                    version: "1.2.0-rc.2".into(),
+                    sha256: "feed".into(),
+                }),
             }))
         );
         assert_eq!(
@@ -636,6 +821,37 @@ mod tests {
                 evidence: "e".into(),
                 out: "o".into(),
                 dispositions: None,
+                stage: Stage::Final,
+            }))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "verdict",
+                "--tag",
+                "v1.2.0-rc.2",
+                "--evidence",
+                "e",
+                "--out",
+                "o"
+            ])),
+            Some(Options::Verdict(VerdictOptions {
+                evidence: "e".into(),
+                out: "o".into(),
+                dispositions: None,
+                stage: Stage::Candidate,
+            }))
+        );
+        assert_eq!(
+            parse(&args(&[
+                "candidate",
+                "--tag",
+                "v1.2.0",
+                "--releases",
+                "r.txt"
+            ])),
+            Some(Options::Candidate(CandidateOptions {
+                tag: "v1.2.0".into(),
+                releases: "r.txt".into(),
             }))
         );
         for refused in [
@@ -689,6 +905,18 @@ mod tests {
                 "--out",
             ],
             &["verdict", "--evidence", "e"],
+            &[
+                "run",
+                "--platform",
+                "windows-x86_64",
+                "--archive",
+                "a",
+                "--out",
+                "o",
+                "--candidate",
+                "1.2.0-rc.2",
+            ],
+            &["candidate", "--tag", "v1.2.0"],
             &["publish"],
             &[],
         ] {
@@ -702,6 +930,9 @@ mod tests {
         assert!(Platform::LinuxX86_64.is_host("linux", "x86_64"));
         assert!(Platform::MacosArm64.is_host("macos", "aarch64"));
         assert!(Platform::MacosX86_64.is_host("macos", "x86_64"));
+        assert!(Platform::WindowsX86_64.is_host("windows", "x86_64"));
+        assert!(!Platform::WindowsX86_64.is_host("linux", "x86_64"));
+        assert!(!Platform::WindowsX86_64.is_host("windows", "aarch64"));
         assert!(!Platform::LinuxX86_64.is_host("linux", "aarch64"));
         assert!(!Platform::MacosArm64.is_host("macos", "x86_64"));
         assert!(!Platform::MacosX86_64.is_host("linux", "x86_64"));
@@ -716,18 +947,72 @@ mod tests {
         }
     }
 
-    /// The archive run is the packaged tests alone; the workspace run is
-    /// every test; neither stops at a failing binary.
+    /// On Unix the archive run is the packaged tests alone and the
+    /// workspace run every test. On Windows the archive run is the CLI's
+    /// packaged tests and the installer's archive tests, as the Test and
+    /// Archive jobs run them, and the workspace run the Windows suite. No
+    /// run stops at a failing binary.
     #[test]
     fn test_runs_never_stop_at_the_first_failure() {
+        let unix = Platform::LinuxX86_64;
         assert_eq!(
-            test_args(Source::Archive),
-            ["test", "--locked", "--no-fail-fast", "-p", "climon2-e2e"]
+            unix.suites(Source::Archive),
+            [["test", "--locked", "--no-fail-fast", "-p", "climon2-e2e"]]
         );
         assert_eq!(
-            test_args(Source::Workspace),
-            ["test", "--locked", "--no-fail-fast", "--workspace"]
+            unix.suites(Source::Workspace),
+            [["test", "--locked", "--no-fail-fast", "--workspace"]]
         );
+        assert_eq!(
+            Platform::MacosArm64.suites(Source::Archive),
+            unix.suites(Source::Archive)
+        );
+        let windows = Platform::WindowsX86_64;
+        assert_eq!(
+            windows.suites(Source::Archive),
+            [
+                vec![
+                    "test",
+                    "--locked",
+                    "--no-fail-fast",
+                    "-p",
+                    "climon2-launcher",
+                    "-p",
+                    "climon2-cli"
+                ],
+                vec![
+                    "test",
+                    "--locked",
+                    "--no-fail-fast",
+                    "-p",
+                    "climon2-install",
+                    "--test",
+                    "archive_windows"
+                ],
+            ]
+        );
+        let suite = windows.suites(Source::Workspace);
+        assert_eq!(suite.len(), quality::WINDOWS_SUITE.len());
+        for (run, packages) in suite.iter().zip(quality::WINDOWS_SUITE) {
+            assert_eq!(run[..3], ["test", "--locked", "--no-fail-fast"]);
+            assert_eq!(&run[3..], *packages);
+        }
+    }
+
+    /// Every record names the hosted runner's image, and a Windows record
+    /// its Windows build, read from `ver` (#330); off a hosted runner, or
+    /// from output naming no version, they are empty.
+    #[test]
+    fn records_name_the_runner_image_and_windows_build() {
+        assert_eq!(runner_image("win25", "20251110.1"), "win25 20251110.1");
+        assert_eq!(runner_image("", "20251110.1"), "");
+        assert_eq!(runner_image("win25", ""), "");
+        assert_eq!(
+            windows_build("\r\nMicrosoft Windows [Version 10.0.26100.6899]\r\n"),
+            "10.0.26100.6899"
+        );
+        assert_eq!(windows_build("Microsoft Windows"), "");
+        assert_eq!(windows_build("[Version 10.0"), "");
     }
 
     /// Manual records: a limitation or failed result does not pass; an
@@ -752,11 +1037,22 @@ mod tests {
                 passed: false,
                 limitation: "visible page only".into(),
                 recorded: "owner".into(),
+                candidate: Candidate::default(),
             }]
         );
         let mut passed = records.clone();
         passed["records"][0]["result"] = json!("passed");
         assert!(manual(&passed).unwrap()[0].passed);
+        let mut checklist = passed.clone();
+        checklist["records"][0]["candidate"] = json!("1.2.0-rc.2");
+        checklist["records"][0]["sha256"] = json!("feed");
+        assert_eq!(
+            manual(&checklist).unwrap()[0].candidate,
+            Candidate {
+                version: "1.2.0-rc.2".into(),
+                sha256: "feed".into(),
+            }
+        );
         let mut unknown = records.clone();
         unknown["records"][0]["result"] = json!("fine");
         assert_eq!(
@@ -774,15 +1070,45 @@ mod tests {
     }
 
     /// DOC-02 (Docs, traceability): the acceptance matrix is the complete
-    /// 73-scenario matrix with every layer named, and every scenario-to-test
-    /// row in a crate README names tests; the committed dispositions and
-    /// manual records are valid against it.
+    /// 73-scenario matrix with every layer named, followed by the Windows
+    /// scenarios (#330), WIN-01 to WIN-11 in the Contract layer and the
+    /// checklist, WINM-01 to WINM-16 in the Host manual layer, each for both
+    /// hosts but WINM-12, VS Code's alone. Every scenario-to-test row in a
+    /// crate README names tests, and each WIN scenario is claimed; the
+    /// committed dispositions and manual records are valid against it.
     #[test]
     fn the_matrix_readmes_and_owner_records_are_consistent() {
         let scenarios = matrix(root()).unwrap();
-        assert_eq!(scenarios.len(), 73);
-        let cases: usize = scenarios.iter().map(|scenario| scenario.layers.len()).sum();
+        assert_eq!(scenarios.len(), 100);
+        let (shared, windows) = scenarios.split_at(73);
+        assert!(
+            shared
+                .iter()
+                .all(|scenario| scenario.platforms == Platform::ALL)
+        );
+        let cases: usize = shared.iter().map(|scenario| scenario.layers.len()).sum();
         assert_eq!(cases, 174);
+        let hosts = ["Windows Terminal".to_owned(), "VS Code".to_owned()];
+        for (index, scenario) in windows.iter().enumerate() {
+            assert_eq!(scenario.platforms, [Platform::WindowsX86_64]);
+            let (id, layer, hosts) = match index {
+                0..11 => (
+                    format!("WIN-{:02}", index + 1),
+                    Layer::Contract,
+                    &hosts[..0],
+                ),
+                22 => ("WINM-12".to_owned(), Layer::HostManual, &hosts[1..]),
+                _ => (
+                    format!("WINM-{:02}", index - 10),
+                    Layer::HostManual,
+                    &hosts[..],
+                ),
+            };
+            assert_eq!(
+                (&scenario.id, &scenario.layers[..], &scenario.hosts[..]),
+                (&id, &[layer][..], hosts)
+            );
+        }
         let claims = claims(root(), &scenarios).unwrap();
         assert!(claims.iter().all(|claim| !claim.tests.is_empty()));
         let claimed: BTreeSet<&str> = claims.iter().map(|claim| claim.id.as_str()).collect();
@@ -790,6 +1116,14 @@ mod tests {
             claimed.contains("DEL-01") && claimed.contains("PERF-01"),
             "{claimed:?}"
         );
+        for scenario in &windows[..11] {
+            let contract = claims.iter().any(|claim| {
+                claim.id == scenario.id
+                    && claim.layers.contains(&Layer::Contract)
+                    && !claim.supplement
+            });
+            assert!(contract, "{} has no Contract claim", scenario.id);
+        }
         let dispositions = fs::read_to_string(root().join(DISPOSITIONS)).unwrap();
         verdict::dispositions(&dispositions, &scenarios).unwrap();
         manual_records(&root().join(MANUAL)).unwrap();

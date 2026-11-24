@@ -2,7 +2,7 @@
 //! queues is its own copy, never a caller buffer. Only the active argument
 //! member is read; inactive storage is ignored. Authority and geometry are
 //! parsed into core's wire types here, once (#94), as are Set viewing and
-//! Acknowledge (#95).
+//! Acknowledge (#95), and Break (#326).
 
 use super::{
     failure::{
@@ -100,12 +100,13 @@ pub(super) enum Toggle {
     Viewing,
 }
 
-/// The requests that name only the authority: Ready, and Acknowledge
-/// (`status-v1`).
+/// The requests that name only the authority: Ready, Acknowledge
+/// (`status-v1`) and Break (`break-v1`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Confirm {
     Ready,
     Acknowledge,
+    Break,
 }
 
 fn invalid(message: &'static str) -> Failure {
@@ -170,7 +171,7 @@ fn header(request: &native::Request) -> Result<(u64, Parser), Failure> {
 type Parser = unsafe fn(&native::Request, Capacity) -> Result<(Operation, u64), Failure>;
 
 /// Every request this release performs, by tag.
-const PARSERS: [(u32, Parser); 10] = [
+const PARSERS: [(u32, Parser); 11] = [
     (native::OPEN, open_request),
     (native::LEAVE, leave),
     (native::KILL, kill),
@@ -181,6 +182,7 @@ const PARSERS: [(u32, Parser); 10] = [
     (native::VIEWING, viewing),
     (native::ACKNOWLEDGE, acknowledge),
     (native::FOCUS, focus),
+    (native::BREAK, break_request),
 ];
 
 fn nonzero(generation: u64) -> Result<u64, Failure> {
@@ -240,6 +242,17 @@ unsafe fn ready(request: &native::Request, _: Capacity) -> Result<(Operation, u6
 unsafe fn acknowledge(request: &native::Request, _: Capacity) -> Result<(Operation, u64), Failure> {
     // SAFETY: guaranteed by the caller.
     confirmed(unsafe { request.args.authority }, Confirm::Acknowledge)
+}
+
+/// # Safety
+///
+/// The tag names `authority`.
+unsafe fn break_request(
+    request: &native::Request,
+    _: Capacity,
+) -> Result<(Operation, u64), Failure> {
+    // SAFETY: guaranteed by the caller.
+    confirmed(unsafe { request.args.authority }, Confirm::Break)
 }
 
 /// A confirmation under `authority`.

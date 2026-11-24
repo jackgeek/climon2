@@ -72,6 +72,12 @@ passing the original OS strings, explicit cwd, and an exact copied environment.
 That entry point removes `SHELL` **only when originally absent** and directly
 execs the command. Empty and non-UTF8 inherited values remain unchanged.
 
+On Windows there is no exec helper. The daemon instead starts its own private
+`--break-console <leader PID>` entry point, detached, when a Break request
+arrives ([#326](https://github.com/jackgeek/climon2/issues/326)): it attaches
+to the command's console, generates `CTRL_BREAK_EVENT` there and exits 0, or
+125 when it could not. On Unix that entry point is an invalid invocation.
+
 A short-lived authenticated `<private runtime>/<guid>.exec` socket confirms the exec:
 the helper sends an attempt marker, and successful exec closes its CLOEXEC
 connection; failed exec sends 126/127. Its path comes from the shared bounded

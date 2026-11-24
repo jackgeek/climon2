@@ -29,7 +29,7 @@ pub use metadata::{
 };
 pub use record::{ControlRecord, defines};
 pub use request::{
-    Acknowledge, Acquire, Focus, Kill, Leave, Mode, Open, Ready, Request, Resize, SetViewing,
+    Acknowledge, Acquire, Break, Focus, Kill, Leave, Mode, Open, Ready, Request, Resize, SetViewing,
 };
 pub use response::{
     AuthorityResult, Cleanup, Failure, FocusBytes, KnownResult, Outcome, PartialCleanup,

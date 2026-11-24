@@ -115,10 +115,13 @@ The [session daemon](../../../../GLOSSARY.md#sessions) sends it through
 [`climon2-core`](../../../../crates/climon2-core/README.md), after the frozen
 tokens and `state`: `daemon-wire-v1`, `monitor-v1`, `title-v1`,
 `status-v1`, `notification-v1`, `progress-v1`
-([#98](https://github.com/jackgeek/climon2/issues/98)) and `focus-v1`, with `max_request_frame_bytes` and `max_server_frame_bytes` both
+([#98](https://github.com/jackgeek/climon2/issues/98)) and `focus-v1`, and on
+Windows `break-v1` ([#326](https://github.com/jackgeek/climon2/issues/326)),
+with `max_request_frame_bytes` and `max_server_frame_bytes` both
 1,048,576, the release constant from the
 [operational limits](../../behaviour/monitor/operational-limits.md#payloads-and-parser-state).
-It advertises only the families it implements, which are now all seven. The
+It advertises only the families it implements: all eight on Windows, and
+every one but `break-v1` on Linux and macOS, which have no Ctrl+Break. The
 [post-hello boundary](post-hello.md#after-hello) explains that every frame
 after hello is then a revision-1 frame.
 Existing optional-field behavior and required fields remain frozen;
@@ -134,3 +137,5 @@ in the same capability array, selecting [Focus](request-focus.md) through Open.
 Missing support is a visible application-focus limitation without blocking an
 otherwise usable session; it is not a plugin extension or release-number claim.
 No new hello field, required field change, or frozen limit change is introduced.
+The [#326 amendment](request-break.md) adds optional core `break-v1` in the
+same way, selecting [Break](request-break.md) through Open.
