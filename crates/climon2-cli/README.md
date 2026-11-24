@@ -98,6 +98,16 @@ reach a session as the bytes a terminal sends, ConPTY's start-up negotiation
 never reaches the host, a resize reaches the session, `exec` and `attach`
 refuse a redirected stdin or stdout, and under the VS Code model closing the
 host, `c2 kill`, detach and reattach behave as under Windows Terminal.
+`tests/sessions_windows.rs` (#328) installs it the same way for the Windows
+forms of the killed-process and log-privacy scenarios: a session's shell
+ended with `TerminateProcess(…, 1)` exits 1 through the client, the CLI and
+the launcher; a killed client leaves its session to the leave policy, which
+ends a child the console's close did not reach only after the full grace; a
+killed daemon is reported once with its log folder, takes its command with
+its job, and leaves a stale session `c2 list` reclaims; and with tracing on,
+no environment, argument or typed secret reaches a log, while every log,
+metadata file and managed folder carries the private descriptor. The Windows
+Test job runs it; the Windows gate leaves it out of each mutant's run.
 
 The `test-hooks` feature adds `CLIMON2_CLI_HOLD` (the client hand-off waits
 for a file) and `CLIMON2_CLI_CWD` (it stands in for the working directory the

@@ -121,7 +121,29 @@ pub(crate) const WINDOWS_SUITE: &[&[&str]] = &[
     &["-p", "climon2-client", "--test", "library_windows"],
     // Builds the monitor binary, which the CLI's monitor tests start.
     &["-p", "climon2-monitor"],
-    &["-p", "climon2-launcher", "-p", "climon2-cli"],
+    &["-p", "climon2-launcher"],
+    // The CLI's tests but the end-to-end scenarios #328 ported
+    // (docs/for-humans/windows/qualification.md), which the Windows Test job
+    // runs: none is the only test covering a registered Windows file, so they
+    // stay out of each mutant's run (owner decision, 2026-11-22).
+    &[
+        "-p",
+        "climon2-cli",
+        "--lib",
+        "--bins",
+        "--test",
+        "attach_deadline_windows",
+        "--test",
+        "exec_windows",
+        "--test",
+        "host_models_windows",
+        "--test",
+        "list_windows",
+        "--test",
+        "monitor_windows",
+        "--test",
+        "packaged_windows",
+    ],
 ];
 
 #[derive(Clone, Copy, Eq, PartialEq)]

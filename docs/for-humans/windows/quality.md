@@ -201,7 +201,10 @@ Ownership of that source does not move.
 ## The native-only gate on Windows
 
 The gate needs three changes before its result means anything on Windows. It
-also tests only what builds on Windows, the same tests the Test job runs; the
+also tests only what builds on Windows: the tests the Test job runs, less the
+end-to-end scenarios that are not the only test covering a registered Windows
+file (owner decision on
+[#328](https://github.com/jackgeek/climon2/issues/328), 2026-11-22). The
 list is `WINDOWS_SUITE` in `xtask/src/quality.rs`.
 
 **The mutator.** The upstream mutator has two faults on Windows: it runs its

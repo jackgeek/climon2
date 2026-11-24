@@ -228,6 +228,68 @@ the private descriptor and is not a reparse point, as
 [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport-agreed-not-implemented)
 specifies under "Private files and folders". No exception is recorded.
 
+Built so far ([#328](https://github.com/jackgeek/climon2/issues/328)): the
+three killed-process scenarios and log privacy, in
+`crates/climon2-cli/tests/sessions_windows.rs`, under the Windows Terminal
+model. In the killed scenarios the session's `pwsh` starts `ping` on a
+console of its own with no window, so closing the session's console does not
+reach it and only the session's job can end it:
+
+- **Killed command.** `TerminateProcess(…, 1)` on the session's shell: the
+  client, the CLI and the launcher exit 1, and the child ends.
+- **Killed client.** `TerminateProcess` on the client: the CLI and the
+  launcher exit with its status, and the leave policy hangs the ordinary
+  session up. The child ends no sooner than the five-second grace after
+  the kill, and `c2 list` shows no session.
+- **Killed daemon.** The client says once that it lost the connection,
+  naming the session's log folder, and exits 125. The shell and its child
+  die with the job. The stale session stays until `c2 list` reclaims it.
+- **Log privacy.** With `CLIMON2_LOG=trace`, an environment variable, an
+  argument and a typed line each reach the session's `pwsh` and appear in
+  no log. While the session runs and after it ends, every file and folder
+  under `logs` and `sessions`, and the runtime directory with everything in
+  it but its socket, carries the private descriptor and is no reparse point.
+
+These run in the Windows Test job only. None is the only test covering a
+registered Windows file, so they stay out of each mutant's test run
+(owner decision on #328, 2026-11-22).
+
+#### Scenarios with no Windows form
+
+By the same decision, only the scenarios this document gives a Windows form
+are ported. Each other Unix scenario is not applicable on Windows. Most
+exercise shared code, which the Unix suites already test on every change;
+the platform's own part is covered where the table says.
+
+| Unix scenario | Why not applicable |
+| --- | --- |
+| The generic fixture keeps the exact arguments, working directory, environment and size | The fixture programs (`climon2-fixtures`) build only on Unix. Argument quoting is `WIN-07` and `command_windows.rs`; the terminal identity and size are in `exec_windows.rs`; log privacy is ported |
+| The TUI fixture round-trips queries, mouse, paste and resize | The TUI fixture builds only on Unix. Keys and resize per host model are `WIN-04` and `WIN-08`; the rest is shared code |
+| Debug-hook start-up panic and never-ready | Its faults come from hooked debug builds of the Unix package; start-up deadlines are shared code |
+| Log headers, links and filters survive the `exec` hand-offs | Shared logging code; Windows log file creation is `private_windows.rs` and log privacy |
+| Raw socket abuse and a pending hello | Shared connection admission; the Windows socket seam is `connection_windows.rs` |
+| The previous release stays live across an install | No previous Windows release exists until the second one (owner decision) |
+| A client missing after readiness | Already covered: an ordinary `exec` whose client is missing exits 125 and stops its daemon (`exec_windows.rs`) |
+| Debug-hook crash in the middle of an install | It hooks the Unix installer; `install.ps1` has its own Archive job tests ([#329](https://github.com/jackgeek/climon2/issues/329)) |
+| Controlled versions each route their own frozen client | Its synthetic versions are Unix scripts, and compatibility with an earlier Windows release is out of scope until the second one |
+| Debug-hook client panic after `exec` | A hooked debug client; the leave policy after a lost client is the killed-client scenario |
+| The outer shell's input stays below output restored after vim | Shared restoration code |
+| Detach and reattach on an occupied host | Shared restoration code; detach and reattach run in the smoke test and `WIN-01` |
+| An alternate-screen program is reattached and quitting it shows the normal screen | Shared restoration code; the full-screen apps' scenarios detach and reattach on Windows |
+| Two clients share a session with exactly one controller | Shared control code; two attached clients run in `WIN-02` |
+| `kill` ends detached and attached sessions | Already covered: `WIN-02` and `exec_windows.rs`'s `kill` of a headless session |
+| An invalid config is refused before a session exists | Shared configuration code |
+| The config rebinds the client's keys | Shared configuration and key code |
+| `scrollback.max_rows` bounds restored history | Shared daemon code |
+| The session answers queries without the host | Shared terminal code; ConPTY's own start-up queries are `WIN-08` |
+| Titles are encoded and links are plain text | Shared terminal code |
+| A detached session absorbs a large write | Shared daemon code; the Windows pseudoconsole's output is `pty_windows.rs` |
+| The client releases the host on every ending | The Unix form checks the terminal's termios; Windows restores console modes and code pages, which `terminal_windows.rs` checks |
+| An interrupted paste is closed once without a stale payload | Shared control and paste code |
+| A large restoration is complete and ordered | Shared restoration code |
+| A wide host presents the session's rectangle | Shared presentation code |
+| A tall host scrolls the session's rectangle | Shared presentation code |
+
 ### Windows-only scenarios
 
 | ID | Group | Required result | Layer |
