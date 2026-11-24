@@ -3,17 +3,16 @@
 This document says what must be shown before a Windows release of climon2 can
 be published: which terminals and shells are tested, which scenarios run, and
 what a person checks by hand. It is for contributors. Built: both
-[host models](#host-models) and the job shapes, the `pwsh`
-[shell profile](#shell-profiles), the smoke test, nested sessions and
-self-attach, the Windows-only scenarios except vim and Edit's part of
-`WIN-02`, the monitor's Windows scenarios, and recording these scenarios and
+[host models](#host-models) and the job shapes, the
+[shell profiles](#shell-profiles) of `pwsh`, `powershell` and `cmd.exe`, the
+smoke test, nested sessions and self-attach, the
+[full-screen apps](#full-screen-apps), the Windows forms of the
+[session suites](#existing-scenarios)
+([#328](https://github.com/jackgeek/climon2/issues/328)), the Windows-only
+scenarios, the monitor's Windows scenarios, and recording these scenarios and
 the [manual checklist](#manual-checklist) in release qualification
 ([#330](https://github.com/jackgeek/climon2/issues/330)). Not built yet:
-the `powershell` and `cmd.exe` profiles, the
-[full-screen apps](#full-screen-apps) and the
-[session suites](#existing-scenarios) on Windows
-([#328](https://github.com/jackgeek/climon2/issues/328)); and the monitor
-acceptance matrix's own suites on Windows. The sections below
+the monitor acceptance matrix's own suites on Windows. The sections below
 say which parts are built. It was agreed in
 [Define Windows host and shell qualification](https://github.com/jackgeek/climon2/issues/213)
 and is the specification the Windows port implements.
@@ -154,8 +153,9 @@ the CI runner. Only the manual checklist covers it.
 
 Built so far ([#320](https://github.com/jackgeek/climon2/issues/320)): the
 `pwsh` profile. `CLIMON2_TEST_PWSH` may name another absolute path for local
-runs. The `powershell` and `cmd.exe` profiles are
-[#328](https://github.com/jackgeek/climon2/issues/328)'s.
+runs. The `powershell` and `cmd.exe` profiles are in the shell subset's test
+([#328](https://github.com/jackgeek/climon2/issues/328); see
+[Coverage](#coverage)).
 
 ## Full-screen apps
 
@@ -170,8 +170,7 @@ against a SHA-256 kept in the repository, and run by absolute path:
 
 Each app's scenarios: enter it, edit, detach, reattach and see the screen
 restored, resize, quit and see the main screen restored. Edit takes the place
-`less` has on Unix. None of this is built yet
-([#328](https://github.com/jackgeek/climon2/issues/328)).
+`less` has on Unix.
 
 Built so far ([#328](https://github.com/jackgeek/climon2/issues/328)): the
 pins are `pins/vim.txt` (vim 9.2.1259) and `pins/edit.txt` (Edit 2.0.0). Each
@@ -186,12 +185,15 @@ The scenarios are in `crates/climon2-cli/tests/fullscreen_windows.rs`, under
 both host models. From a session's `pwsh` each app opens a document, adds a
 line, detaches, is attached again with its screen restored, sees the host's
 new size after a resize, saves and quits, and leaves the shell's main screen
-as it was. Edit passes. vim's are written but ignored: the client holds a
-lone Escape as the possible start of a paste marker until the next byte
-arrives. The session's pseudoconsole then reads the Escape and that byte
-together as Alt with the byte, so vim never leaves insert mode. How long the
-client should wait before passing a lone Escape on is a question for the
-owner on #328, because it changes the shared client on every platform.
+as it was. Both pass under both models.
+
+vim leaves insert mode with a lone Escape. The client holds an Escape as the
+possible start of a paste marker until the next byte arrives, and the
+session's pseudoconsole reads an Escape and the byte after it, written
+together, as Alt with that byte. So on Windows the client passes held bytes
+on by themselves once 50 ms pass with no byte after them
+([Windows platform and lifecycle contract](lifecycle.md#client-console)). Unix
+keeps holding them until the next byte (owner decision on #328).
 
 Edit could not start in a session until the daemon answered its
 pseudoconsole's own device attributes request. The pseudoconsole takes the
@@ -280,9 +282,7 @@ argument and typed-input secrets appear in no log. On Windows it also asserts
 that every log file, metadata file and managed folder the run produced carries
 the private descriptor and is not a reparse point, as
 [ADR 0003](../../adr/0003-platform-and-shell-seams.md#windows-io-and-transport)
-specifies under "Private files and folders". No exception is recorded. Log
-privacy's Windows form is not built yet
-([#328](https://github.com/jackgeek/climon2/issues/328)).
+specifies under "Private files and folders". No exception is recorded.
 
 Built so far ([#328](https://github.com/jackgeek/climon2/issues/328)): the
 three killed-process scenarios and log privacy, in
@@ -381,10 +381,12 @@ session of each shell and runs `c2 kill`: both exit with `0xC000013A`. The
 has their profiles. vim and Edit join `WIN-02` with their pinned downloads
 ([#328](https://github.com/jackgeek/climon2/issues/328)), in
 `fullscreen_windows.rs`: `c2 kill` of a session whose command is the app
-ends its client with `0xC000013A` for each. That is not the `0x1` recorded
-for vim in the table above. Outside a session vim's own close handler exits
-`0x1` at once, but in a session it does not finish within the grace, so the
-session job ends it. Why is an open question on #328. Where only the Store
+ends its client with vim's `0x1` or Edit's `0xC000013A`. vim's close handler
+writes to the console as it ends. The daemon reads no output during the
+grace, so until #328 ConPTY blocked on the full output pipe and vim with it,
+and the session job ended vim with `0xC000013A`. The daemon's output thread
+now drops what it reads once the pseudoconsole is closed
+([Session job and hang-up](lifecycle.md#session-job-and-hang-up)). Where only the Store
 build of `pwsh` is installed, which a session cannot start, the local runs of
 `WIN-01` use `powershell` in its place; CI requires the MSI build. In
 `crates/climon2-cli/tests/attach_deadline_windows.rs`, an ordinary session

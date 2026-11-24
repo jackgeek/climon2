@@ -112,9 +112,8 @@ Test job runs it; the Windows gate leaves it out of each mutant's run.
 (`climon2-test-term`'s `App`) under both host models: from a session's `pwsh`
 each opens a document, adds a line, detaches, reattaches restored, follows a
 resize, saves and quits to the shell's restored main screen; and `c2 kill` of
-a session running either ends its client with `0xC000013A`. vim's own
-scenarios are ignored until the owner decides how long the client holds a
-lone Escape. Like `sessions_windows.rs`, it stays out of each mutant's run.
+a session running either ends its client with its close status, vim's `0x1`
+or Edit's `0xC000013A`. Like `sessions_windows.rs`, it stays out of each mutant's run.
 `tests/shells_windows.rs` (#328) runs the shell subset: from Windows
 PowerShell 5.1 and from `cmd.exe`, a session of the same shell starts, runs a
 command, passes a child's status, is interrupted by Ctrl+C, detaches,
@@ -306,7 +305,7 @@ the zero-size case's fixture prints the size and exits, so that test types nothi
 | DSC-06 (CLI part): `attach` and `kill` of real sessions, with their statuses and cleanup, are unchanged | `tests/exec.rs`: `packaged_client_can_detach_and_reattach_to_a_live_session`, `kill_terminates_a_detached_session_silently_after_cleanup`, `kill_while_attached_gives_the_client_the_signal_status`, `attach_overwrites_an_inherited_kill_envelope`, `an_unconfirmed_kill_fails_at_the_deadline_and_reaps_only_its_helper` |
 | DSC-06 (CLI part): the general log keeps each probe diagnostic, once per session, with its level, target and errno | `tests/list.rs`: `every_probe_diagnostic_is_logged_once_with_its_errno` |
 | WIN-01 Contract (docs/for-humans/windows/qualification.md): closing the host ends an attached ordinary session's client with 129 and the session with it, leaves a headless session running, and a detached session survives and reattaches, under both host models | `tests/packaged_windows.rs`: `closing_the_host_ends_the_client_with_129_and_the_ordinary_session_with_it`, `closing_the_host_of_a_headless_sessions_client_leaves_the_session_running`, `a_detached_session_survives_its_host_closing_and_reattaches`; `tests/host_models_windows.rs`: `closing_a_vs_code_host_hangs_up_its_ordinary_session`, `a_headless_session_outlives_a_closed_vs_code_host_and_reattaches_restored` |
-| WIN-02 Contract: `c2 kill` ends every attached client of a `pwsh`, `powershell` or `cmd.exe` session with the shell's measured close status | `tests/packaged_windows.rs`: `kill_ends_every_attached_client_with_the_shells_close_status` |
+| WIN-02 Contract: `c2 kill` ends every attached client of a `pwsh`, `powershell` or `cmd.exe` session with the shell's measured close status, and the client of a vim or Microsoft Edit session with the app's (vim `0x1`, Edit `0xC000013A`) | `tests/packaged_windows.rs`: `kill_ends_every_attached_client_with_the_shells_close_status`; `tests/fullscreen_windows.rs`: `kill_ends_an_apps_attached_client_with_the_apps_close_status` |
 | WIN-03 Contract: a job that allows breakaway leaves the session alive after the host; a job that refuses it, or `Start-Process -Wait` from either PowerShell, exits 125 | `tests/packaged_windows.rs`: `from_a_job_that_allows_breakaway_exec_starts_a_session_that_survives_the_host`, `from_a_job_that_refuses_breakaway_exec_exits_125`, `through_start_process_wait_from_each_powershell_exec_exits_125` |
 | WIN-04 Contract: the key table reaches the session as the expected bytes under each host model | `tests/host_models_windows.rs`: `the_key_table_arrives_in_the_session_as_the_expected_bytes_under_windows_terminal`, `the_key_table_arrives_in_the_session_as_the_expected_bytes_under_vs_code` |
 | WIN-05 Contract: `exec` and `attach` refuse a redirected stdin or stdout | `tests/host_models_windows.rs`: `exec_and_attach_refuse_a_redirected_stdin_or_stdout` |

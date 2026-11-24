@@ -741,6 +741,13 @@ path>`: `invocations_outside_the_frozen_contract_are_one_line_usage_failures_wit
 (no arguments, a missing or relative path, another flag or operation, or an
 extra argument).
 
+The bridge holds an Escape, and the bytes after it while they could still
+begin a paste marker, until the next byte arrives; with the platform's
+`terminal::LONE_ESCAPE` (50 ms on Windows, none on Unix) it passes them on by
+themselves once that long passes with no byte after them (#328). With
+`test-hooks`, `CLIMON2_CLIENT_LONE_ESCAPE_MS` sets the delay, so the Unix
+bridge tests cover the timed release too.
+
 The client executable's only fault injection, `CLIMON2_CLIENT_FAULT=panic`
 (with `test-hooks` only), panics after entering raw mode; the client library's
 `CLIMON2_LIBRARY_FAULT` faults are described with its instance lifecycle. The client has no attach-hold hook (the

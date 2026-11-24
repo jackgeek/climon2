@@ -12,15 +12,16 @@ harness's Windows host, whose own tests the Test job runs
 ([#320](https://github.com/jackgeek/climon2/issues/320)), and the Dist job
 ([#319](https://github.com/jackgeek/climon2/issues/319)), and the Archive job
 ([#329](https://github.com/jackgeek/climon2/issues/329)), which so far tests
-the installer and the download script on the zip. The Test and
-Quality jobs run the tests that build on Windows, listed as `WINDOWS_SUITE` in
-`xtask/src/quality.rs`; the session suites in `climon2-e2e` and the monitor
-acceptance matrix's own suites do not build there yet, and the Archive job
+the installer and the download script on the zip. The Test job runs the
+tests that build on Windows, the Windows forms of the session suites among
+them ([#328](https://github.com/jackgeek/climon2/issues/328)); the Quality
+job runs those listed as `WINDOWS_SUITE` in `xtask/src/quality.rs`. The
+session suites in `climon2-e2e` and the monitor acceptance matrix's own
+suites do not build there yet, and the Archive job
 runs no end-to-end suite yet. What a [release](#release) needs from Windows is
 built ([#330](https://github.com/jackgeek/climon2/issues/330)), except
 measuring PERF-01 on Windows. Also not built: the Authenticode test and the memory summary under
-[Facts only CI can show](#facts-only-ci-can-show), and the vim and Microsoft
-Edit downloads ([#328](https://github.com/jackgeek/climon2/issues/328)). It was agreed in
+[Facts only CI can show](#facts-only-ci-can-show). It was agreed in
 [Define Windows quality and CI qualification](https://github.com/jackgeek/climon2/issues/214)
 and is the specification the Windows port implements.
 
@@ -277,10 +278,11 @@ The memory used by the daemon and console host, under the inbox and the
 bundled ConPTY, is to be written to the job summary on each run, with no
 threshold. No job writes it yet.
 
-vim and Microsoft Edit are to be fetched from their upstream release URLs,
-verified against the SHA-256 in the repository and cached by that hash
-([#328](https://github.com/jackgeek/climon2/issues/328)). A failed download or
-a mismatch fails the job. No mirror is kept.
+vim and Microsoft Edit are fetched from their upstream release URLs,
+verified against the SHA-256s in `pins/vim.txt` and `pins/edit.txt` and cached
+by the zip's hash, in `target/apps` where the Test job's cache keeps them
+([#328](https://github.com/jackgeek/climon2/issues/328)). A failed download
+or a mismatch fails the job. No mirror is kept.
 
 ## Release
 

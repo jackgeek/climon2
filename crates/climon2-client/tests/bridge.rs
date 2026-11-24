@@ -66,7 +66,15 @@ impl Pty {
     }
 
     fn configured(home: &Path, metadata: &Path, fault: Option<&str>, filter: Option<&str>) -> Self {
-        Self::launch(home, metadata, fault, filter, false, Descriptions::Shared)
+        Self::launch(
+            home,
+            metadata,
+            fault,
+            filter,
+            false,
+            Descriptions::Shared,
+            None,
+        )
     }
 
     /// Gives the client a stdout that is a separate open-file description of the
@@ -79,13 +87,22 @@ impl Pty {
             None,
             false,
             Descriptions::SeparateOutput,
+            None,
         )
     }
 
     /// Gives the client a read-only stdin whose file-status flags are all clear and a
     /// write-only stdout.
     fn one_way(home: &Path, metadata: &Path) -> Self {
-        Self::launch(home, metadata, None, None, false, Descriptions::OneWay)
+        Self::launch(
+            home,
+            metadata,
+            None,
+            None,
+            false,
+            Descriptions::OneWay,
+            None,
+        )
     }
 
     /// Runs the client as a background job of a shell that owns the PTY as its
@@ -93,7 +110,21 @@ impl Pty {
     /// The shell records the client's status and stderr under `home`, then stays alive:
     /// a session leader's exit would revoke the PTY before termios could be checked.
     fn background(home: &Path, metadata: &Path) -> Self {
-        Self::launch(home, metadata, None, None, true, Descriptions::Shared)
+        Self::launch(home, metadata, None, None, true, Descriptions::Shared, None)
+    }
+
+    /// Passes a lone Escape on after `milliseconds` with no byte after it, as
+    /// the Windows client does (`CLIMON2_CLIENT_LONE_ESCAPE_MS`, #328).
+    fn releasing_escape(home: &Path, metadata: &Path, milliseconds: &str) -> Self {
+        Self::launch(
+            home,
+            metadata,
+            None,
+            None,
+            false,
+            Descriptions::Shared,
+            Some(milliseconds),
+        )
     }
 
     fn launch(
@@ -103,6 +134,7 @@ impl Pty {
         filter: Option<&str>,
         background: bool,
         descriptions: Descriptions,
+        lone_escape: Option<&str>,
     ) -> Self {
         let mut master = -1;
         let mut slave = -1;
@@ -175,6 +207,9 @@ impl Pty {
         }
         if let Some(filter) = filter {
             command.env("CLIMON2_LOG", filter);
+        }
+        if let Some(milliseconds) = lone_escape {
+            command.env("CLIMON2_CLIENT_LONE_ESCAPE_MS", milliseconds);
         }
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
@@ -2653,4 +2688,36 @@ fn ordinary_attach_reports_viewing_and_acknowledges_once_ready_after_attach_and_
         error.starts_with("climon2: detached from session"),
         "{error}"
     );
+}
+
+/// #328: with a release delay, as the Windows client has, a lone Escape goes
+/// on by itself once no byte follows it; without one, as on Unix, it waits
+/// for the next byte and goes with it.
+#[test]
+fn a_lone_escape_goes_on_after_the_release_delay_and_otherwise_waits() {
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::releasing_escape(home.path(), &metadata, "50");
+    let mut peer = Peer::accept(&listener);
+    peer.attach();
+    peer.begin();
+    pty.wait_raw();
+    pty.master.write_all(b"\x1b").unwrap();
+    assert_eq!(peer.input(), b"\x1b");
+    pty.master.write_all(b":").unwrap();
+    assert_eq!(peer.input(), b":");
+    peer.exit(0);
+    pty.finish(0);
+
+    let (home, metadata, listener) = setup();
+    let mut pty = Pty::spawn(home.path(), &metadata, None);
+    let mut peer = Peer::accept(&listener);
+    peer.attach();
+    peer.begin();
+    pty.wait_raw();
+    pty.master.write_all(b"\x1b").unwrap();
+    thread::sleep(Duration::from_millis(300));
+    pty.master.write_all(b":").unwrap();
+    assert_eq!(peer.input(), b"\x1b:");
+    peer.exit(0);
+    pty.finish(0);
 }

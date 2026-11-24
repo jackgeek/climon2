@@ -337,7 +337,10 @@ For the session daemon and headless `exec` (#317; docs/for-humans/windows/lifecy
   `finish` are hang-up's steps. The output thread drops the pseudoconsole's
   start-up negotiation from the start of the output (#325), and the input
   thread first answers its device attributes request, so the answer to the
-  command's own request reaches the command (#328).
+  command's own request reaches the command (#328). From `close` on, the
+  output thread drops what it reads and the output wait only sleeps: nothing
+  reads the output during the grace, and a program writing as it ends on the
+  close, as vim does, would otherwise block until the job ends it (#328).
 - `src/command/windows.rs` (#322; docs/for-humans/windows/lifecycle.md,
   "Command resolution and arguments"), a module only Windows has:
   `search(command, cwd, path, pathext)` finds the file a command names, in
@@ -410,6 +413,9 @@ For interactive `exec` and `attach` (#321; docs/for-humans/windows/lifecycle.md,
   close, logoff and shutdown as signal 1, whose handler holds the process
   until the client has exited 129; Ctrl+Break is a break,
   `Signals::take_break`, which the client sends to the session (#326).
+  `LONE_ESCAPE` is 50 ms: how long the client's bridge holds a lone Escape
+  before it passes it on (#328); on Unix it is `None`, and the Escape waits
+  for the next byte.
 - `src/pty/windows.rs` (#326): `Hosted::send_break` starts a helper, given
   the leader's PID, detached and unwaited; `break_console` is the helper's
   work: it attaches to the leader's console, ignores Ctrl+Break itself and
