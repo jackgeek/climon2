@@ -333,9 +333,10 @@ the identity check.
 Self-attach refusal, nested sessions, 127 for a missing command, the
 five-second grace and the leave policy keep their Unix behaviour.
 
-## Limitations the README will publish
+## Limitations the user guide will publish
 
-When Windows ships, the README's limitations gain:
+When Windows ships, the
+[user guide's limitations](../guide/terminals.md#limitations) gain:
 
 - exceptions 4 to 7 above;
 - that Windows Defender SmartScreen or Smart App Control may block the

@@ -1,6 +1,7 @@
 //! Spec #73 Configuration model: the monitor's one startup snapshot of
 //! `config.jsonc` (CFG-01 and INP-01, Contract layer), the `monitor` section
-//! `exec` validates too, and the README that documents it (CFG-01 Docs).
+//! `exec` validates too, and the configuration guide that documents it
+//! (CFG-01 Docs).
 //! Every expectation is written here from docs/for-humans/behaviour/monitor/operational-limits.md,
 //! never taken from the code under test.
 use climon2_core::{
@@ -1056,17 +1057,15 @@ fn cfg01_the_snapshot_is_one_read_of_the_home_configuration() {
     fs::remove_dir_all(home.root()).unwrap();
 }
 
-/// The README's documented configuration: the first JSONC block of its
-/// Configuration section.
+/// The configuration guide's documented configuration: its first JSONC block.
 fn documented_configuration() -> &'static str {
-    let readme = include_str!("../../../README.md");
-    let section = readme.split_once("\n## Configuration\n").unwrap().1;
-    let block = section.split_once("```jsonc\n").unwrap().1;
+    let guide = include_str!("../../../docs/for-humans/guide/configuration.md");
+    let block = guide.split_once("```jsonc\n").unwrap().1;
     block.split_once("\n```").unwrap().0
 }
 
 /// The documented JSONC as plain JSON: its line comments and trailing commas
-/// removed. The README's strings hold no `//`.
+/// removed. The guide's strings hold no `//`.
 fn plain(jsonc: &str) -> Value {
     let code: Vec<_> = jsonc
         .lines()
@@ -1083,11 +1082,11 @@ fn plain(jsonc: &str) -> Value {
     serde_json::from_str(&json).unwrap()
 }
 
-/// CFG-01 (Docs): the README spells out every client and monitor setting with
+/// CFG-01 (Docs): the configuration guide spells out every client and monitor setting with
 /// its default, as JSONC that both `exec` and the monitor accept, and keeps
 /// the Escape and Alt warning on the line above `escape_prefix`.
 #[test]
-fn cfg01_the_readme_documents_every_default_and_the_escape_warning() {
+fn cfg01_the_guide_documents_every_default_and_the_escape_warning() {
     let documented = documented_configuration();
     let spelled = plain(documented);
     assert_eq!(spelled["client"], defaults()["client"]);
