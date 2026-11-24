@@ -219,6 +219,26 @@ Each session is attached and killed through the client of its own climon2
 version, so that version must still be installed. Older sessions that do not
 support an action fail with 125 and are left alone. `list` needs no client.
 
+**Sessions started somewhere else.** Several machines can share one climon2
+home, for example through a network home directory, and so can a computer and
+the containers running on it. On Linux, a container usually has its own PID
+namespace: its own set of process IDs, separate from the host's. Each session
+records where it was started: the machine and, on Linux, the PID namespace.
+
+`list`, `attach` and `kill` delete the leftover data of sessions that have
+ended. They check that a session has ended by looking for its process, which
+they can only do where it was started. So they never delete a session started
+on another machine or in another PID namespace. If they cannot reach such a
+session, `list` does not show it, and `attach` and `kill` find no match and
+exit 125. Run them where the session was started instead. If they can reach it,
+for example from a container that shares the host's `/tmp`, it is listed and
+works as usual.
+
+A container's PID namespace ends with the container. Data left by a session in
+a container that no longer exists is kept until you delete its file from the
+`sessions` folder in the climon2 home. Sessions started by climon2 versions
+that record no origin are checked where they are read, as before.
+
 ## On Windows
 
 On Windows, `c2` runs the same commands as on macOS and Linux, with the same

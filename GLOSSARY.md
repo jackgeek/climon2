@@ -93,6 +93,10 @@ _Avoid_: Dead session, orphan
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
 
+**Session origin**:
+The machine, and on Linux the PID namespace, where a session daemon was created; only a participant with the same origin can prove that daemon gone.
+_Avoid_: Host, remote session, foreign session
+
 **Discovery pass**:
 One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
 _Avoid_: Scan, refresh, poll

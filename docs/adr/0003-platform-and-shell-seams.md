@@ -25,7 +25,8 @@ the test harness as shell profiles.
 7. Client raw mode and resize notification
 8. Installer default directory and same-version clobber
 9. Exit-status mapping
-10. Process start time (for the stale-metadata PID-reuse check, ADR 0005)
+10. Process start time and session origin (for the stale-metadata PID-reuse
+    check, ADR 0005)
 
 More seams may emerge after the first release. Everything else counts as platform-neutral.
 
@@ -49,9 +50,13 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 includ
   Exclude zombies from live candidates. A clock-independent boot ID and start
   ticks establish daemon identity; epoch start time remains a frozen metadata
   field, not Linux's stale-cleanup authority (ADR 0005).
-- Procfs inspection errors are not evidence of process death. All participants
-  sharing session metadata must share a PID namespace. Cross-namespace shared
-  homes are not supported.
+- Procfs inspection errors are not evidence of process death. A daemon records
+  its PID namespace (the inode of `/proc/self/ns/pid`) and machine ID
+  (`/etc/machine-id`) in its metadata, and only a reader with the same ones
+  checks its identity. A reader in another PID namespace or on another machine
+  that shares the climon2 home never deletes the session (ADR 0005, Optional
+  session origin; [#133](https://github.com/jackgeek/climon2/issues/133)). It
+  cannot attach to or kill such a session unless it can reach the socket.
 - Hanging up closes the PTY master, as closing a terminal window does. Linux
   wakes terminal readers before it signals the session leader, so a leader
   blocked reading the terminal can end with its own status (an interactive
@@ -217,6 +222,9 @@ Decided in [Define Windows platform support and lifecycle contract](https://gith
   128 + signal on Windows.
 - **Process start time.** `GetProcessTimes` creation time in the frozen
   `daemon_start_time`.
+- **Session origin.** The machine's `MachineGuid`, so a climon2 home on a
+  network share read from another machine never loses that machine's sessions
+  (ADR 0005, Optional session origin).
 
 ## Notes for future ports
 
