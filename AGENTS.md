@@ -18,8 +18,8 @@ crate, omit third-party crates, and derive current edges from
 `cargo metadata --no-deps --format-version 1`, not memory.
 
 In both documents, the sentence above each diagram states its scope; keep every
-diagram within it. Keep current and planned relationships distinct and preserve
-the README links.
+diagram within it. Keep current and planned relationships distinct, and keep
+both documents linked from `docs/for-humans/development.md`.
 
 ## Agent skills
 
