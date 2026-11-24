@@ -41,7 +41,11 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     ptr,
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
     time::Duration,
 };
 use windows_sys::{
@@ -392,7 +396,9 @@ impl Hosted {
     fn new(opened: Opened, leader: OwnedHandle, pid: u32) -> Self {
         let (chunks, output) = mpsc::sync_channel(QUEUED);
         let source = opened.output;
-        std::thread::spawn(move || pump_output(&source, &chunks));
+        let discarding = Arc::new(AtomicBool::new(false));
+        let dropping = Arc::clone(&discarding);
+        std::thread::spawn(move || pump_output(&source, &chunks, &dropping));
         let (input, queued) = mpsc::sync_channel(QUEUED);
         let mut sink = opened.input;
         std::thread::spawn(move || pump_input(&mut sink, &queued));
@@ -403,6 +409,7 @@ impl Hosted {
             output: Output {
                 chunks: output,
                 pending: RefCell::default(),
+                discarding,
             },
             input,
         }
@@ -466,8 +473,12 @@ impl Hosted {
         exit_code(&self.leader).map(Some)
     }
 
-    /// Hang-up's first step: closing the pseudoconsole.
+    /// Hang-up's first step: closing the pseudoconsole. Nothing reads its
+    /// output after this, so the output thread drops it from now on: a
+    /// program that writes as it ends on the close, as vim does, would
+    /// otherwise block until the job ends it.
     pub fn close(&mut self) {
+        self.output.discard();
         self.console.close();
     }
 
@@ -514,13 +525,19 @@ fn exit_code(process: &OwnedHandle) -> io::Result<u32> {
 }
 
 /// The output thread: forwards each read, the last being the error that
-/// ended the output, until that or until nothing receives.
-fn pump_output(source: &PipeReader, chunks: &SyncSender<io::Result<Vec<u8>>>) {
+/// ended the output, until that or until nothing receives; once
+/// `discarding`, it drops each read until the output ends.
+fn pump_output(
+    source: &PipeReader,
+    chunks: &SyncSender<io::Result<Vec<u8>>>,
+    discarding: &AtomicBool,
+) {
     let mut buffer = vec![u8::default(); CHUNK];
     let mut start_up = StartUp::default();
     while forward(
         read(source, &mut buffer).map(|count| start_up.filter(&buffer[..count])),
         chunks,
+        discarding,
     )
     .is_some()
     {}
@@ -576,9 +593,16 @@ fn after_negotiation(output: &[u8]) -> &[u8] {
         .map_or(output, after_negotiation)
 }
 
-/// Sends `chunk`; `None` once nothing receives or the chunk was the error
-/// that ended the output.
-fn forward(chunk: io::Result<Vec<u8>>, chunks: &SyncSender<io::Result<Vec<u8>>>) -> Option<()> {
+/// Sends `chunk`, or drops it once `discarding`; `None` once nothing
+/// receives or the chunk was the error that ended the output.
+fn forward(
+    chunk: io::Result<Vec<u8>>,
+    chunks: &SyncSender<io::Result<Vec<u8>>>,
+    discarding: &AtomicBool,
+) -> Option<()> {
+    if discarding.load(Ordering::Relaxed) {
+        return chunk.ok().map(drop);
+    }
     let more = chunk.is_ok();
     chunks.send(chunk).ok().filter(|()| more)
 }
@@ -614,6 +638,8 @@ fn pump_input(sink: &mut PipeWriter, queued: &Receiver<Vec<u8>>) {
 struct Output {
     chunks: Receiver<io::Result<Vec<u8>>>,
     pending: RefCell<Pending>,
+    /// Set once nothing reads the output any more.
+    discarding: Arc<AtomicBool>,
 }
 
 impl Output {
@@ -625,11 +651,22 @@ impl Output {
         pending.read(bytes)
     }
 
+    /// Once discarding, only waits: no output will come.
     fn wait(&self, timeout: Duration) {
+        if self.discarding.load(Ordering::Relaxed) {
+            return std::thread::sleep(timeout);
+        }
         let mut pending = self.pending.borrow_mut();
         if pending.bytes.is_empty() {
             pending.receive(self.chunks.recv_timeout(timeout).ok());
         }
+    }
+
+    /// Makes the output thread drop what it reads, and empties the queue so
+    /// an output thread waiting for room goes on.
+    fn discard(&self) {
+        self.discarding.store(true, Ordering::Relaxed);
+        while self.chunks.try_recv().is_ok() {}
     }
 }
 

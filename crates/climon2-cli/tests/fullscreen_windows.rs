@@ -9,8 +9,8 @@
 //!   "real vim edits and saves" and "real `less` navigates and resizes",
 //!   whose place Edit takes.
 //! - `WIN-02` for the apps: `c2 kill` of a session whose command is the app
-//!   ends its attached client with the app's close status, `0xC000013A` for
-//!   each as measured (vim's `0x1` is an open question on #328).
+//!   ends its attached client with the app's close status, `0x1` for vim and
+//!   `0xC000013A` for Edit.
 //!
 //! cargo runs tests in a job that refuses breakaway, and so does the CI
 //! runner, so each test runs again outside every job
@@ -72,7 +72,14 @@ impl Driver for App {
         match self {
             Self::Vim => {
                 terminal.type_text(&format!("Go{ADDED}")).unwrap();
+                terminal
+                    .wait_for_screen(TIMEOUT, |screen| screen.contains("-- INSERT --"))
+                    .unwrap_or_else(|error| panic!("{error}"));
+                // A lone Escape, which the client passes on once no byte follows.
                 terminal.press(Key::Escape, Modifiers::NONE).unwrap();
+                terminal
+                    .wait_for_screen(TIMEOUT, |screen| !screen.contains("-- INSERT --"))
+                    .unwrap_or_else(|error| panic!("{error}"));
             }
             Self::Edit => {
                 // The document ends with a line break, so its end starts a line.
@@ -226,12 +233,9 @@ fn enter_edit_detach_reattach_resize_and_quit(app: App, model: HostModel) {
     assert!(home.sessions().is_empty(), "{}", home.logs());
 }
 
-/// Ignored until the owner decides #328's question: the client holds a lone
-/// Escape as a possible start of a paste marker until the next byte, which
-/// the session's pseudoconsole then reads as Alt with that key, so vim never
-/// leaves insert mode.
+/// vim leaves insert mode with a lone Escape, which the client passes on
+/// after `terminal::LONE_ESCAPE` with no byte after it.
 #[test]
-#[ignore = "a lone Escape never reaches the session (#328)"]
 fn vim_enters_edits_detaches_reattaches_resizes_and_quits_under_windows_terminal() {
     let name = "vim_enters_edits_detaches_reattaches_resizes_and_quits_under_windows_terminal";
     if rerun_outside(name, OUTSIDE) {
@@ -240,9 +244,7 @@ fn vim_enters_edits_detaches_reattaches_resizes_and_quits_under_windows_terminal
     enter_edit_detach_reattach_resize_and_quit(App::Vim, HostModel::WindowsTerminal);
 }
 
-/// Ignored for the same reason as the Windows Terminal form.
 #[test]
-#[ignore = "a lone Escape never reaches the session (#328)"]
 fn vim_enters_edits_detaches_reattaches_resizes_and_quits_under_vs_code() {
     let name = "vim_enters_edits_detaches_reattaches_resizes_and_quits_under_vs_code";
     if rerun_outside(name, OUTSIDE) {
@@ -271,17 +273,15 @@ fn edit_enters_edits_detaches_reattaches_resizes_and_quits_under_vs_code() {
 
 /// `WIN-02` for the full-screen apps: `c2 kill` hangs up a session whose
 /// command is the app, and its attached client exits with the app's close
-/// status through the CLI and the launcher. Both report `0xC000013A`: Edit
-/// exits so on the close, and vim, whose own close handler exits `0x1` at
-/// once outside a session, does not finish it within the grace in one, so
-/// the session job ends it (an open question on #328).
+/// status through the CLI and the launcher: vim's own `0x1` from its close
+/// handler, which writes as it ends, and Edit's `0xC000013A`.
 #[test]
 fn kill_ends_an_apps_attached_client_with_the_apps_close_status() {
     let name = "kill_ends_an_apps_attached_client_with_the_apps_close_status";
     if rerun_outside(name, OUTSIDE) {
         return;
     }
-    for (app, status) in [(App::Vim, 0xC000_013A_u32), (App::Edit, 0xC000_013A_u32)] {
+    for (app, status) in [(App::Vim, 0x1), (App::Edit, 0xC000_013A_u32)] {
         let (package, home) = (Package::new(), Home::new());
         let document = home.0.path().join("document.txt");
         fs::write(&document, format!("{ORIGINAL}\r\n")).unwrap();
