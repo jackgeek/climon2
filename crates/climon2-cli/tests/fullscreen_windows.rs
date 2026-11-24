@@ -219,6 +219,8 @@ fn enter_edit_detach_reattach_resize_and_quit(app: App, model: HostModel) {
         "{saved:?}"
     );
 
+    // The shell may not read keys typed while it redraws after the app.
+    input_reaches_the_shell(&mut terminal);
     enter(&mut terminal, "exit 7");
     wait(&mut terminal, &home, "ATTACH-STATUS=7");
     assert!(home.sessions().is_empty(), "{}", home.logs());
@@ -312,4 +314,19 @@ fn kill_ends_an_apps_attached_client_with_the_apps_close_status() {
         );
         assert!(home.sessions().is_empty(), "{app:?}");
     }
+}
+
+/// Types a line that shows a number until the session's shell shows it.
+fn input_reaches_the_shell(terminal: &mut Terminal) {
+    for attempt in 1..=10 {
+        enter(terminal, &format!("4000000 + {attempt}"));
+        let shown = (4_000_000 + attempt).to_string();
+        if terminal
+            .wait_for_text(&shown, Duration::from_secs(2))
+            .is_ok()
+        {
+            return;
+        }
+    }
+    panic!("typed input never reached the shell: {}", terminal.screen());
 }
