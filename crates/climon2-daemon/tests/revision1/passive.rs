@@ -104,14 +104,15 @@ fn hello_advertises_revision1_beside_the_frozen_tokens_and_state() {
     assert_eq!(reply.type_code(), 0x01);
     let expected = format!(
         concat!(
-            r#"{{"session_id":"{}","climon2_version":"0.1.0","protocol":1,"#,
+            r#"{{"session_id":"{}","climon2_version":"{}","protocol":1,"#,
             r#""capabilities":["attach","kill","state-v1","client-startup-v1","#,
             r#""daemon-wire-v1","monitor-v1","title-v1","status-v1","notification-v1","#,
             r#""progress-v1","focus-v1"],"#,
             r#""state":{{"lifecycle":"starting","attachments":0,"controlled":false}},"#,
             r#""daemon_wire_v1":{{"max_request_frame_bytes":1048576,"max_server_frame_bytes":1048576}}}}"#
         ),
-        ID
+        ID,
+        crate::VERSION
     );
     assert_eq!(std::str::from_utf8(reply.body()).unwrap(), expected);
     end_through_attachment(&mut session, b"go\n", &exited(42));

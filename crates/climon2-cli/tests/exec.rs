@@ -27,7 +27,7 @@ impl Installation {
             .prefix("binaries-")
             .tempdir_in(std::env::current_dir().unwrap())
             .unwrap();
-        let version = directory.path().join("exe/0.1.0");
+        let version = directory.path().join("exe").join(env!("CARGO_PKG_VERSION"));
         fs::create_dir_all(&version).unwrap();
         for binary in ["climon2-cli", "climon2-client", "climon2-daemon"] {
             copy_executable(&bin_path(binary), &version.join(binary));
@@ -49,7 +49,7 @@ impl Installation {
     }
 
     fn version(&self) -> PathBuf {
-        self.0.path().join("exe/0.1.0")
+        self.0.path().join("exe").join(env!("CARGO_PKG_VERSION"))
     }
 }
 
@@ -705,7 +705,11 @@ fn missing_client_after_ready_cleans_command_and_names_version_with_logs() {
     let mut terminal = Terminal::spawn(command, 24, 120).unwrap();
     terminal
         .wait_for_text(
-            "needs climon2 0.1.0, which is not installed",
+            concat!(
+                "needs climon2 ",
+                env!("CARGO_PKG_VERSION"),
+                ", which is not installed"
+            ),
             Duration::from_secs(10),
         )
         .unwrap();
@@ -1101,7 +1105,7 @@ fn unconfirming_session(layout: &Layout) -> climon2_core::metadata::SessionMetad
             "daemon_pid":pid,
             "daemon_start_time":climon2_platform::process::start_time(pid).unwrap().unwrap(),
             "command":"bash","args":[],"cwd":home,"depth":1,
-            "created_at":"2026-10-28T07:21:02.930Z","climon2_version":"0.1.0"
+            "created_at":"2026-10-28T07:21:02.930Z","climon2_version":env!("CARGO_PKG_VERSION")
         }))
         .unwrap();
     fs::create_dir_all(home.join("sessions")).unwrap();

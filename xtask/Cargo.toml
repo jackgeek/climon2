@@ -19,7 +19,7 @@ climon2-platform = { path = "../crates/climon2-platform" }
 # (docs/for-humans/windows/quality.md); the other release commands need the Unix
 # installer.
 [target.'cfg(unix)'.dependencies]
-climon2-install = { version = "0.1.0", path = "../crates/climon2-install" }
+climon2-install = { path = "../crates/climon2-install" }
 libc = "0.2.191"
 
 # The Windows dist ships the ConPTY files the harness fetches and verifies
