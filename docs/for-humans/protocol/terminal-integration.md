@@ -539,7 +539,7 @@ snapshot; wrong types/null or duplicate known fields fail before terminal setup.
 Disabling it does not hide toasts or suppress monitor-generated OSC 7501 reports.
 The [selector reference](../behaviour/monitor/selector.md#toasts-and-bell) defines the
 three-row title toast/four-row hinted toast and clockwise draw/fade/erase order.
-The [README configuration example](../../../README.md#configuration) documents both
+The [configuration guide](../guide/configuration.md) documents both
 fields, which the current parser validates.
 
 ## Required implementation evidence

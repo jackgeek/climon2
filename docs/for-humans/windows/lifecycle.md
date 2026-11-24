@@ -343,9 +343,9 @@ the identity check.
 Self-attach refusal, nested sessions, 127 for a missing command, the
 five-second grace and the leave policy keep their Unix behaviour.
 
-## Limitations the README publishes
+## Limitations the user guide publishes
 
-The README's [Windows limitations](../../../README.md#windows-limitations)
+The user guide's [Windows limitations](../guide/terminals.md#windows-limitations)
 publish:
 
 - exceptions 4 to 7 above;
@@ -355,5 +355,5 @@ publish:
 - what the bundled ConPTY is observed to rewrite or drop: its start-up
   negotiation, which the daemon drops (see [Client console](#client-console)),
   and keys plain VT input cannot express, such as Shift+Enter, which arrives
-  as Enter. The README also notes the focus-reporting pair that the host's
+  as Enter. The guide also notes the focus-reporting pair that the host's
   own pseudoconsole, not the bundled one, sends.
