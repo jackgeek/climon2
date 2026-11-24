@@ -88,6 +88,11 @@ How the commands behave on Windows is in [Commands](commands.md#on-windows).
 - **Ctrl+Break does nothing in the VS Code integrated terminal.** That terminal
   delivers neither an event nor a key for it. In Windows Terminal, Ctrl+Break
   reaches the session's command as it would outside climon2.
+- **Reloading the VS Code window ends a session started from a task.** VS Code
+  ends a task terminal's programs on "Reload Window", so the attached client
+  is lost and an ordinary session ends with it. A session in a regular
+  integrated terminal survives the reload. To keep a task's session, start it
+  headless (`c2 exec --headless`) and attach from the task.
 - **Sign-out and shutdown end every session.** Windows ends every process you
   own, and no exit status is promised. The next `c2 list` cleans up what they
   leave behind.
