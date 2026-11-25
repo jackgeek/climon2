@@ -13,7 +13,6 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 fn printer(options: Options) -> Terminal {
     let mut command = CommandBuilder::new("/bin/sh");
     command.env_clear();
-    command.env("SHELL", climon2_test_term::harness_shell());
     command.args([
         "-c",
         "printf 'MARK-ONE\\n'; read line; printf 'MARK-TWO MARK-ONE\\n'; read line",

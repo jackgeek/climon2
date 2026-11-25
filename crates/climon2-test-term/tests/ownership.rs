@@ -26,7 +26,6 @@ fn terminal_descendants_remain_owned_after_removing_the_environment_marker() {
     let unrelated = Isolation::new();
     let mut command = CommandBuilder::new("/bin/sh");
     command.env_clear();
-    command.env("SHELL", climon2_test_term::harness_shell());
     command.env("CLIMON2_TEST_ID", isolation.id());
     command.args([
         "-c",

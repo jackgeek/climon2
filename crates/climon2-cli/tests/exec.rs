@@ -97,7 +97,6 @@ impl Layout {
         command.env("CLIMON2_HOME", self.home());
         command.env("PATH", "/usr/bin:/bin");
         command.env("CLIMON2_TEST_ID", self.marker());
-        command.env("SHELL", climon2_test_term::harness_shell());
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }
@@ -808,6 +807,8 @@ fn zero_initial_terminal_size_falls_back_to_80_by_24() {
         unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
         0
     );
+    // Spawned outside Terminal, which would otherwise supply SHELL (#170).
+    command.env("SHELL", climon2_test_term::harness_shell());
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     let mut output = Vec::new();
