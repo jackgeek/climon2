@@ -278,34 +278,10 @@ mod unix {
         })
     }
 
-    /// The terminal's input while the monitor reads it, after its wait slot
-    /// is ready. Reading 0 bytes means the terminal hung up.
-    pub struct Input(File);
-
-    impl Input {
-        pub fn new(terminal: File) -> io::Result<Self> {
-            Ok(Self(terminal))
-        }
-
-        /// The wait slot that is ready while input waits.
-        pub fn watch_input(&self) -> Watch<'_> {
-            Watch::new(self.0.as_fd(), Interest::Read)
-        }
-
-        pub fn size(&self) -> io::Result<TerminalSize> {
-            size(&self.0)
-        }
-    }
-
-    impl Read for Input {
-        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            read_terminal(&mut self.0, bytes)
-        }
-    }
-
-    /// The terminal while a client bridges it: input read and output written
-    /// without blocking, each with the wait slot that is ready when it can
-    /// make progress. Reading 0 bytes means the terminal hung up.
+    /// The terminal while a client bridges it or the monitor owns it (#285):
+    /// input read and output written without blocking, each with the wait
+    /// slot that is ready when it can make progress. Reading 0 bytes means
+    /// the terminal hung up.
     pub struct Bridged {
         input: File,
         /// An owned duplicate of stdout: the same open-file description, so

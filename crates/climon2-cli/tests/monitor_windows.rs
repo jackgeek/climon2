@@ -72,8 +72,9 @@ $e = [char]27; $b = [char]7
 [Console]::Write("$e]7501;state=working$e\")
 [Console]::Write("$e]2;$Name$b")
 [Console]::Write("$Name READY`r`n")
-$p = ''; $w = ''
+$p = ''; $w = ''; $i = 0
 while (-not (Test-Path "$Dir\finish")) {
+    if (Test-Path "$Dir\$Name.flood") { $i++; [Console]::Write("tick $i $('x' * 2000)`r`n") }
     $s = "$([Console]::WindowHeight) $([Console]::WindowWidth)"
     if ($s -ne $p) { [Console]::Write("$e" + "7$e[2;1HSIZE $s$e[K$e" + "8"); $p = $s }
     $r = $null; if (Test-Path "$Dir\$Name.state") { $r = [IO.File]::ReadAllText("$Dir\$Name.state") }
@@ -378,6 +379,56 @@ fn opens_lists_switches_and_types_only_into_the_selected_session_under_vs_code()
     let name = "opens_lists_switches_and_types_only_into_the_selected_session_under_vs_code";
     if !rerun_outside(name, OUTSIDE) {
         opens_lists_switches_and_types_only_into_the_selected_session(HostModel::VsCode);
+    }
+}
+
+/// LIM-06 (Monitor: a host that stops reading; #285), on Windows: the
+/// console's output goes through its writer thread, so a host that reads
+/// nothing for 5 s while the selected session prints 2 KB lines leaves the
+/// monitor waiting on the console's room, not stuck in a write. A console
+/// whose output nobody reads takes no input and starts no thread in any
+/// process attached to it, so keys and new sessions wait for the host
+/// there. Once the host reads again, the session is still controlled, its
+/// newer output shows, keys reach it and prefix+x exits.
+fn a_host_that_stops_reading_recovers_once_it_reads_again(model: HostModel) {
+    let Some((package, home, pwsh)) = setup() else {
+        return;
+    };
+    headless(&package, &home, &pwsh, "Flood");
+    let mut terminal = outer(&package, &home, &pwsh, model, "c2 m");
+    select(&mut terminal, &home, "Flood");
+    keys_flow(&mut terminal, &home, "Flood");
+    fs::write(work(&home).join("Flood.flood"), b"").unwrap();
+    wait(&mut terminal, &home, "tick 5");
+    terminal.stop_reading();
+    std::thread::sleep(Duration::from_secs(5));
+    terminal.resume_reading();
+    // Frames skip ticks, so any tick from 100 on shows the newer output.
+    let newer = |screen: &str| {
+        screen.split("tick ").skip(1).any(|rest| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u32>().is_ok_and(|tick| tick >= 100)
+        })
+    };
+    terminal
+        .wait_for_screen(TIMEOUT, newer)
+        .unwrap_or_else(|error| panic!("{error}\nLOGS:\n{}", home.logs()));
+    top_row_starts(&mut terminal, &home, "Flood");
+    terminal.send("ab").unwrap();
+    got_exactly(&home, "Flood", "97 98 ");
+    let top = terminal.screen().lines().next().unwrap().to_owned();
+    assert!(top.contains("| Controlling"), "{top}");
+    let logs = home.logs();
+    assert!(!logs.contains("client failed"), "{logs}");
+    exit_monitor(&mut terminal, &home);
+    finish(&home);
+}
+
+#[test]
+fn a_host_that_stops_reading_recovers_once_it_reads_again_under_windows_terminal() {
+    let name = "a_host_that_stops_reading_recovers_once_it_reads_again_under_windows_terminal";
+    if !rerun_outside(name, OUTSIDE) {
+        a_host_that_stops_reading_recovers_once_it_reads_again(HostModel::WindowsTerminal);
     }
 }
 

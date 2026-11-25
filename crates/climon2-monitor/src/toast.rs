@@ -147,21 +147,28 @@ impl Toasts {
         });
     }
 
-    /// Whether the frame drawn at `now` in `area` is the first to show the
-    /// shown toast's full title: once it has been written to the host, the
-    /// hold starts and the bell rings ([`Toasts::titled`]).
-    pub(crate) fn titling(&self, now: Instant, area: Rect) -> bool {
+    /// The shown toast, by when it began, while the frame drawn at `now`
+    /// in `area` shows its full title for the first time: once that frame
+    /// has been written to the host, the hold starts and the bell rings
+    /// ([`Toasts::titled`]).
+    pub(crate) fn titling(&self, now: Instant, area: Rect) -> Option<Instant> {
         let shown = self.shown.as_ref().filter(|_| self.rect(area).is_some());
-        shown.is_some_and(|shown| shown.titled.is_none() && shown.text(now) == Text::Shown)
+        let titling =
+            shown.filter(|shown| shown.titled.is_none() && shown.text(now) == Text::Shown);
+        titling.map(|shown| shown.began)
     }
 
-    /// The frame showing the shown toast's full title finished writing to
-    /// the host at `at`: its hold starts then, once.
-    pub(crate) fn titled(&mut self, at: Instant) {
-        if let Some(shown) = &mut self.shown {
-            let after = at.saturating_duration_since(shown.began);
-            shown.titled.get_or_insert(after);
-        }
+    /// A frame showing the full title of the toast that began at `toast`
+    /// finished writing to the host at `at`: its hold starts then, once,
+    /// unless it was dismissed first. Whether it did, so the bell rings.
+    pub(crate) fn titled(&mut self, toast: Instant, at: Instant) -> bool {
+        let shown = self.shown.as_mut().filter(|shown| shown.began == toast);
+        let Some(shown) = shown.filter(|shown| shown.titled.is_none() && shown.dismissed.is_none())
+        else {
+            return false;
+        };
+        shown.titled = Some(at.saturating_duration_since(shown.began));
+        true
     }
 
     /// The cells the shown toast occupies in `area`, if one shows there.
@@ -471,6 +478,13 @@ mod tests {
     /// More toasts than any test queues: the waiting ones, then [`MORE`].
     const SHOWN_AT_MOST: usize = 8;
 
+    /// The frame showing the shown toast's full title finished writing at
+    /// `at`.
+    fn title(toasts: &mut Toasts, at: Instant) -> bool {
+        let began = toasts.shown.as_ref().unwrap().began;
+        toasts.titled(began, at)
+    }
+
     /// Whether a toast begins in the frame at `now`.
     fn begins(toasts: &mut Toasts, now: Instant) -> bool {
         let before = toasts.shown.as_ref().map(|shown| shown.began);
@@ -488,7 +502,7 @@ mod tests {
         let mut now = start;
         while labels.len() < SHOWN_AT_MOST && begins(toasts, now) {
             labels.push(toasts.shown.as_ref().unwrap().content.label.clone());
-            toasts.titled(now + DRAW);
+            title(toasts, now + DRAW);
             now += ms(3100);
         }
         labels
@@ -554,7 +568,9 @@ mod tests {
     /// is written as soon as it is drawn.
     fn began(toasts: &mut Toasts, now: Instant) -> Option<String> {
         let began = begins(toasts, now);
-        toasts.titled(now + DRAW);
+        if began {
+            title(toasts, now + DRAW);
+        }
         began.then(|| toasts.shown.as_ref().unwrap().content.label.clone())
     }
 
@@ -651,21 +667,23 @@ mod tests {
         let mut toasts = Toasts::new(None);
         let start = Instant::now();
         let host = area(120, 30);
-        assert!(!toasts.titling(start + DRAW, host));
+        assert_eq!(toasts.titling(start + DRAW, host), None);
+        assert!(!toasts.titled(start, start + DRAW));
         toasts.announce(&id(1), News::Final, "Build".to_owned(), false);
         toasts.frame(start, host);
-        assert!(!toasts.titling(start + ms(399), host));
-        assert!(toasts.titling(start + DRAW, host));
-        assert!(!toasts.titling(start + DRAW, area(12, 30)));
+        assert_eq!(toasts.titling(start + ms(399), host), None);
+        assert_eq!(toasts.titling(start + DRAW, host), Some(start));
+        assert_eq!(toasts.titling(start + DRAW, area(12, 30)), None);
         let late = start + ms(5000);
         toasts.frame(late, host);
         let shown = toasts.shown.as_ref().unwrap();
         assert_eq!(shown.text(late), Text::Shown);
-        assert!(toasts.titling(late, host));
-        toasts.titled(late);
-        toasts.titled(late + ms(1000));
-        assert!(!toasts.titling(late + ms(1), host));
-        assert!(!toasts.titling(late + ms(1), area(100, 20)));
+        assert_eq!(toasts.titling(late, host), Some(start));
+        assert!(!toasts.titled(start + ms(1), late));
+        assert!(toasts.titled(start, late));
+        assert!(!toasts.titled(start, late + ms(1000)));
+        assert_eq!(toasts.titling(late + ms(1), host), None);
+        assert_eq!(toasts.titling(late + ms(1), area(100, 20)), None);
         let shown = toasts.shown.as_ref().unwrap();
         assert_eq!(shown.titled, Some(ms(5000)));
         assert_eq!(shown.text(late + ms(1999)), Text::Shown);
@@ -692,8 +710,11 @@ mod tests {
             toasts.frame(start, host);
             toasts.dismiss(start + ms(dismissed));
             for later in [dismissed, 400.max(dismissed), 600] {
-                assert!(!toasts.titling(start + ms(later), host), "{later}");
+                assert_eq!(toasts.titling(start + ms(later), host), None, "{later}");
             }
+            // A frame with its title, drawn before the dismissal, finished
+            // writing after it.
+            assert!(!toasts.titled(start, start + ms(600)));
             assert_eq!(toasts.shown.as_ref().unwrap().schedule().end, ms(end));
         }
         let titled = schedule(Some(ms(400)), Some(ms(450)));
@@ -849,7 +870,7 @@ mod tests {
         toasts.announce(&id(1), News::Attention(1), "Long label".to_owned(), false);
         let start = Instant::now();
         toasts.frame(start, area(20, 6));
-        toasts.titled(start + DRAW);
+        title(&mut toasts, start + DRAW);
         let (_, early) = drawn(&toasts, start, 100);
         assert_eq!(
             early[1..],

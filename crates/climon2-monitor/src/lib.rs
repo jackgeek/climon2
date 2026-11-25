@@ -42,7 +42,7 @@ use climon2_vt::{
 };
 use delete::{Asking, Confirmation, Decision};
 use discovery::{Discovery, Found};
-use host::{Ending, Event, Host};
+use host::{Ending, Event, Host, Output};
 use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
@@ -123,12 +123,12 @@ fn owned(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::
     let (mut host, size) = Host::enter()?;
     let monitor = Monitor::start(size, startup, dispatch, filter);
     let reported = monitor.is_ok();
-    let (served, verdict) = match monitor {
+    let (served, verdict, output) = match monitor {
         Ok(monitor) => monitor.serve(&mut host),
-        Err(error) => (Err(error), Verdict::Clean),
+        Err(error) => (Err(error), Verdict::Clean, Output::default()),
     };
     let watchdog = failstop::Watchdog::arm(final_host, dispatch.clone());
-    let released = host.release();
+    let released = host.release(output);
     let cleared = cleared(reported);
     let status = served.and_then(|ending| released.and(cleared).map(|()| ending.status()));
     let status = judged(status, verdict, &log);
@@ -221,6 +221,8 @@ struct Monitor {
     bell: bool,
     /// When the next frame may be painted: at most `ui.fps` a second.
     frames: cadence::Frames,
+    /// What the host has been handed and not yet taken (#285).
+    output: Output,
     /// Client reports waiting to be applied, in fair turns within the work
     /// quanta (#119).
     work: cadence::Work<SessionId, ClientEvent>,
@@ -302,6 +304,7 @@ impl Monitor {
             toasts: Toasts::new(jump),
             bell: config.settings().bell,
             frames: cadence::Frames::new(limits.cadence().fps),
+            output: Output::default(),
             work: work(limits.cadence()),
             memory: limits.memory(),
             inspected: BTreeMap::new(),
@@ -310,16 +313,17 @@ impl Monitor {
     }
 
     /// Acts on host events until an ending, or a failure of the host or
-    /// rendering, then shuts down: why it ended, and what the shutdown
-    /// proved. Consuming the monitor drops its screen before the host is
-    /// released.
-    fn serve(mut self, host: &mut Host) -> (io::Result<Ending>, Verdict) {
+    /// rendering, then shuts down: why it ended, what the shutdown proved,
+    /// and what the host has yet to take. Consuming the monitor drops its
+    /// screen before the host is released.
+    fn serve(mut self, host: &mut Host) -> (io::Result<Ending>, Verdict, Output) {
         let ending = self.events(host);
         let (hosted, report) = self.shut_down(host, ending.is_ok());
         report.log();
         (
             ending.and_then(|ending| hosted.map(|()| ending)),
             report.verdict(),
+            self.output,
         )
     }
 
@@ -358,13 +362,14 @@ impl Monitor {
             return Ok(());
         }
         self.screen.exiting(waiting)?;
+        self.pump(host)?;
         self.resized(host)
     }
 
     /// One wait for host input during exit: a resize resizes the exit
     /// screen, and anything else is ignored.
     fn resized(&mut self, host: &mut Host) -> io::Result<()> {
-        if let Event::Resize(size) = host.next()? {
+        if let Event::Resize(size) = host.next(&self.output)? {
             self.screen.resize(size);
         }
         Ok(())
@@ -379,18 +384,27 @@ impl Monitor {
     }
 
     /// Handles the next host event, then, unless it ends the monitor, what
-    /// discovery and the supervisor reported meanwhile.
+    /// discovery and the supervisor reported meanwhile, and writes what the
+    /// host takes of the frame.
     fn step(&mut self, host: &mut Host) -> io::Result<Option<Ending>> {
-        let event = host.next()?;
+        let event = host.next(&self.output)?;
         let read = matches!(event, Event::Input(_));
         let ending = self.handle(event)?;
         if ending.is_none() {
-            self.collect();
-            self.relieve();
-            self.retarget();
-            self.frame(read)?;
+            self.turn(host, read)?;
         }
         Ok(ending)
+    }
+
+    /// The rest of a step that did not end the monitor: what discovery and
+    /// the supervisor reported, the frame, if one is due or `read` asks for
+    /// it at once, and what the host takes of it.
+    fn turn(&mut self, host: &mut Host, read: bool) -> io::Result<()> {
+        self.collect();
+        self.relieve();
+        self.retarget();
+        self.frame(read)?;
+        self.pump(host)
     }
 
     /// A target change since the last read discards a pending prefix (spec
@@ -483,9 +497,33 @@ impl Monitor {
             now,
             session,
         };
-        self.screen.show(&scene)?;
-        self.title(titling)?;
-        self.attend()
+        self.screen.show(&scene, titling)?;
+        self.attend();
+        Ok(())
+    }
+
+    /// Writes what the host takes now, never waiting for it (#285). Each
+    /// time it has taken everything it was handed, a toast whose full title
+    /// that showed begins its hold, and the newest frame is handed on, so
+    /// frames drawn meanwhile never queue.
+    fn pump(&mut self, host: &mut Host) -> io::Result<()> {
+        host.write(&mut self.output)?;
+        while self.output.idle() && self.hand_on() {
+            host.write(&mut self.output)?;
+        }
+        Ok(())
+    }
+
+    /// The host has written everything it was handed: hands it the newest
+    /// frame and any bell, and says whether it handed anything.
+    fn hand_on(&mut self) -> bool {
+        if let Some(toast) = self.screen.written() {
+            self.title(toast);
+        }
+        if let Some(bytes) = self.screen.commit() {
+            self.output.queue(&bytes);
+        }
+        !self.output.idle()
     }
 
     /// While a menu is open, every pending attention episode that was
@@ -507,24 +545,22 @@ impl Monitor {
         self.toasts.announce(id, news, label, viewed);
     }
 
-    /// Once the frame first showing a toast's full title (`titling`) has
-    /// been written to the host, the toast's hold starts and, while
-    /// `monitor.bell` is on, one BEL rings (owner decision on #115,
-    /// 2026-11-17; docs/for-humans/protocol/monitor-host/bell.md).
-    fn title(&mut self, titling: bool) -> io::Result<()> {
-        if !titling {
-            return Ok(());
+    /// Once a frame showing the full title of the toast that began at
+    /// `toast` has been written to the host, the toast's hold starts and,
+    /// while `monitor.bell` is on, one BEL rings, unless it was dismissed
+    /// first (owner decision on #115, 2026-11-17;
+    /// docs/for-humans/protocol/monitor-host/bell.md).
+    fn title(&mut self, toast: Instant) {
+        if self.toasts.titled(toast, Instant::now()) {
+            self.ring();
         }
-        self.toasts.titled(Instant::now());
-        self.ring()
     }
 
     /// One BEL, while `monitor.bell` is on.
-    fn ring(&self) -> io::Result<()> {
+    fn ring(&mut self) {
         if self.bell {
-            return host::write_host(BEL);
+            self.output.queue(BEL);
         }
-        Ok(())
     }
 
     /// Once a frame is painted (spec #73, "Viewing, focus, acknowledgement
@@ -533,7 +569,7 @@ impl Monitor {
     /// target is viewed, after that viewing was submitted (Set viewing is
     /// coalesced, so it can lag the frame: owner decision on #114), and the
     /// host hears whether any connected session needs attention.
-    fn attend(&mut self) -> io::Result<()> {
+    fn attend(&mut self) {
         self.reacknowledge();
         let viewed = self.viewed().cloned();
         for (id, terminal) in &mut self.terminals {
@@ -544,9 +580,9 @@ impl Monitor {
         let reported = viewed.and_then(|id| self.terminals.get(&id));
         self.acknowledge(reported.is_some_and(Terminal::viewing_reported));
         let pending = self.registry.attention().is_some();
-        self.host_report
-            .report(pending)
-            .map_or(Ok(()), host::write_host)
+        if let Some(report) = self.host_report.report(pending) {
+            self.output.queue(report);
+        }
     }
 
     /// An acknowledgement that a newer restoration of its control period
@@ -1001,8 +1037,9 @@ impl Monitor {
             .take_if(|pasting| Some(&pasting.target) != current);
         if let Some(Pasting {
             target: (id, authority),
-            bracketed: true,
+            bracketed,
         }) = cut
+            && bracketed
         {
             self.terminal(&id).cut_paste(authority);
         }
@@ -1741,13 +1778,9 @@ mod tests {
         }
     }
 
-    /// REC-01 (Monitor: a gone daemon, pure supplement, #116): a request
-    /// the stream's end cancelled while control was held leaves the
-    /// terminal's own error, but once discovery proves the daemon gone the
-    /// top row's error slot says `Session no longer exists`, as the
-    /// overlay over its history does (owner decision on #116).
-    #[test]
-    fn a_gone_session_says_so_in_its_error_slot_over_a_cancelled_request() {
+    /// A controlled terminal whose Viewing request was answered as never
+    /// executed, its stream then ended if `ended`.
+    fn cancelled(ended: bool) -> Terminal {
         let mut parser = climon2_vt::Parser::new();
         let mut terminal = Terminal::new(climon2_vt::Limits {
             bytes: 64 << 20,
@@ -1768,14 +1801,27 @@ mod tests {
             &mut parser,
             Presentation::Answered(viewing, Err(cancelled.into())),
         );
-        terminal.present(&mut parser, Presentation::Ended);
+        if ended {
+            terminal.present(&mut parser, Presentation::Ended);
+        }
+        terminal
+    }
+
+    /// REC-01 (Monitor: a gone daemon, pure supplement, #116): a request
+    /// the stream's end cancelled while control was held leaves the
+    /// terminal's own error, but once discovery proves the daemon gone the
+    /// top row's error slot says `Session no longer exists`, as the
+    /// overlay over its history does (owner decision on #116); a retry's
+    /// reason never covers the terminal's own error.
+    #[test]
+    fn a_gone_session_says_so_in_its_error_slot_over_a_cancelled_request() {
         let row = View {
             id: SessionId::from_bytes([1; 16]),
             status: "Unavailable".into(),
             label: "Lost".into(),
             since: std::time::SystemTime::UNIX_EPOCH,
         };
-        let error = |recovery| {
+        let error = |terminal: &Terminal, recovery| {
             let shown = Shown {
                 kind: Kind::Unconnected,
                 finished: false,
@@ -1783,13 +1829,24 @@ mod tests {
                 condition: None,
                 refused: None,
             };
-            selected(&row, shown, Some(&terminal)).error
+            selected(&row, shown, Some(terminal))
+                .error
+                .map(str::to_owned)
         };
+        let retrying = Recovery::Retrying("transport io_error: reset".into());
+        let gone = "Session no longer exists";
         // The connection's end also ended the terminal's errors, so the
         // cancelled request no longer shows either way.
-        let retrying = Recovery::Retrying("transport io_error: reset".into());
-        assert_eq!(error(&retrying), Some("transport io_error: reset"));
-        assert_eq!(error(&Recovery::Gone), Some("Session no longer exists"));
+        let ended = cancelled(true);
+        assert_eq!(
+            error(&ended, &retrying).as_deref(),
+            Some("transport io_error: reset")
+        );
+        assert_eq!(error(&ended, &Recovery::Gone).as_deref(), Some(gone));
+        let open = cancelled(false);
+        let own = "the request was accepted but never executed";
+        assert_eq!(error(&open, &retrying).as_deref(), Some(own));
+        assert_eq!(error(&open, &Recovery::Gone).as_deref(), Some(gone));
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the
