@@ -21,7 +21,8 @@ const STAND_IN: &str = "MUTATION_CLEANUP_STAND_IN";
 /// its own and keeps the run's output, as `climon2-daemon` keeps its stderr. Then the run
 /// hangs when `MUTATION_CLEANUP_MODE` is `hang`. When it is `reap`, the run kills the
 /// daemon and fails unless it is gone within five seconds, as `climon2-fixtures`' leak
-/// tests wait for the orphans they kill. Otherwise the run passes.
+/// tests wait for the orphans they kill. Otherwise the run passes. Each test run records
+/// its temporary-folder variables in `temp.txt`.
 const CARGO: &str = r#"
 import os
 from pathlib import Path
@@ -32,6 +33,10 @@ import time
 
 if "--no-run" in sys.argv:
     raise SystemExit(0)
+if sys.argv[1:] != ["start"]:
+    Path("temp.txt").write_text(
+        "\n".join(os.environ.get(name, "") for name in ["TMPDIR", "TMP", "TEMP"])
+    )
 if sys.argv[1:] == ["start"]:
     if os.name == "nt":
         options = {"creationflags": 0x00000008 | 0x00000200}  # DETACHED_PROCESS, new group
@@ -108,6 +113,16 @@ impl Fixture {
     /// A mutant's run in `mode`, under `timeouts` when given, with its output piped as the
     /// mutator pipes it.
     fn run(&self, mode: &str, timeouts: Option<&str>) -> Run {
+        self.run_with(mode, timeouts, |_| {})
+    }
+
+    /// As [`Fixture::run`], with `configure` applied to the runner's command.
+    fn run_with(
+        &self,
+        mode: &str,
+        timeouts: Option<&str>,
+        configure: impl FnOnce(&mut Command),
+    ) -> Run {
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -134,6 +149,7 @@ impl Fixture {
             command.env("CLIMON2_MUTATION_STAGE_TIMEOUTS", path);
         }
         in_own_group(&mut command);
+        configure(&mut command);
         let started = Instant::now();
         let mut child = command.spawn().unwrap();
         let output = drain(&mut child);
@@ -337,4 +353,30 @@ fn an_orphan_the_tests_kill_is_reaped_while_they_run() {
         let run = Fixture::new().run("reap", timeouts);
         assert!(run.status.success(), "{timeouts:?}: {}", run.output);
     }
+}
+
+/// #415: the tests get a temporary folder of their own, yet barely longer than the
+/// caller's, as tests that bind a socket under it have a 107-byte budget for its path
+/// (the Windows runtime tests need the caller's own folder plus at most 6 bytes).
+#[test]
+fn the_tests_private_temporary_folder_is_at_most_four_bytes_longer_than_the_callers() {
+    let fixture = Fixture::new();
+    let caller = fixture.temp.path().join("caller-temp");
+    fs::create_dir(&caller).unwrap();
+    let run = fixture.run_with("pass", None, |command| {
+        for name in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(name, &caller);
+        }
+    });
+    assert!(run.status.success(), "{}", run.output);
+
+    let recorded = fs::read_to_string(fixture.workspace().join("temp.txt")).unwrap();
+    let names: Vec<_> = recorded.lines().collect();
+    assert_eq!(names.len(), 3, "{recorded}");
+    assert!(names.iter().all(|name| *name == names[0]), "{recorded}");
+    let private = Path::new(names[0]);
+    assert_eq!(private.parent(), Some(caller.as_path()), "{recorded}");
+    let added = private.as_os_str().len() - caller.as_os_str().len();
+    assert!(added <= 4, "{} adds {added} bytes", private.display());
+    assert!(!private.exists(), "{} outlived the run", private.display());
 }

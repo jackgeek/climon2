@@ -133,8 +133,14 @@ fn a_socket_path_over_107_bytes_is_refused_and_fails_with_125() {
     let parent = tempfile::tempdir().unwrap();
     // `<root>\c2\<hash8>\<uuid>.sock` adds 1 + 2 + 1 + 8 + 1 + 41 bytes.
     let fixed = parent.path().as_os_str().len() + 1;
-    for length in [107, 108] {
-        let root = parent.path().join("r".repeat(length - fixed - 54));
+    for length in [107_usize, 108] {
+        let padding = (length - 54).checked_sub(fixed).unwrap_or_else(|| {
+            panic!(
+                "the temporary folder {} is over 52 bytes, too long for a {length}-byte socket path",
+                parent.path().display()
+            )
+        });
+        let root = parent.path().join("r".repeat(padding));
         with_local_app_data(
             "a_socket_path_over_107_bytes_is_refused_and_fails_with_125",
             root.as_os_str(),
