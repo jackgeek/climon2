@@ -29,6 +29,8 @@ use windows_sys::{
 
 /// Room for `MachineGuid`: a 36-character GUID and its terminating NUL.
 const MACHINE_GUID_UNITS: usize = 64;
+/// The same room in bytes, as `RegGetValueW` measures it.
+const MACHINE_GUID_BYTES: u32 = (MACHINE_GUID_UNITS * size_of::<u16>()) as u32;
 
 /// The most handles one process can hold: the kernel's per-process handle
 /// table, 2^24 entries. Windows has no soft limit below it.
@@ -53,8 +55,16 @@ pub fn is_same_daemon(metadata: &SessionMetadata) -> io::Result<bool> {
 /// climon2 home on a network share can be read from another machine, whose
 /// PIDs say nothing about this one's daemons. Windows has no PID namespaces.
 pub fn origin() -> io::Result<SessionOrigin> {
+    let machine = machine_guid()?.parse().map_err(io::Error::other)?;
+    Ok(SessionOrigin {
+        machine_id: Some(machine),
+        pid_namespace: None,
+    })
+}
+
+fn machine_guid() -> io::Result<String> {
     let mut units = [0u16; MACHINE_GUID_UNITS];
-    let mut bytes = u32::try_from(size_of_val(&units)).map_err(io::Error::other)?;
+    let mut bytes = MACHINE_GUID_BYTES;
     // SAFETY: both names are NUL-terminated literals, and `bytes` is the size
     // of the writable `units`.
     let status = unsafe {
@@ -71,12 +81,9 @@ pub fn origin() -> io::Result<SessionOrigin> {
     if status != ERROR_SUCCESS {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
-    let text = String::from_utf16(&units).map_err(io::Error::other)?;
-    let machine = text.trim_end_matches('\0').parse();
-    Ok(SessionOrigin {
-        machine_id: Some(machine.map_err(io::Error::other)?),
-        pid_namespace: None,
-    })
+    // The value is NUL-terminated and the rest of `units` stays zero.
+    let text = String::from_utf16_lossy(&units);
+    Ok(text.trim_end_matches('\0').to_owned())
 }
 
 /// Errors, such as a process the caller may not open, are not evidence of death.
