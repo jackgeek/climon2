@@ -19,10 +19,13 @@ const STAND_IN: &str = "MUTATION_CLEANUP_STAND_IN";
 /// A stand-in for Cargo. Its test run starts the stand-in daemon through a process that
 /// exits at once, so the daemon has no live parent; on Unix the daemon leads a session of
 /// its own and keeps the run's output, as `climon2-daemon` keeps its stderr. Then the run
-/// hangs when `MUTATION_CLEANUP_MODE` is `hang`, and otherwise passes.
+/// hangs when `MUTATION_CLEANUP_MODE` is `hang`. When it is `reap`, the run kills the
+/// daemon and fails unless it is gone within five seconds, as `climon2-fixtures`' leak
+/// tests wait for the orphans they kill. Otherwise the run passes.
 const CARGO: &str = r#"
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +46,19 @@ if sys.argv[1:] == ["start"]:
 subprocess.run([sys.executable, __file__, "start"], check=True)
 if os.environ["MUTATION_CLEANUP_MODE"] == "hang":
     time.sleep(600)
+if os.environ["MUTATION_CLEANUP_MODE"] == "reap":
+    daemon = int(Path("daemon.pid").read_text())
+    os.kill(daemon, signal.SIGKILL)
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            # Succeeds for a zombie, as Rust's `kill(pid, None)` does.
+            os.kill(daemon, 0)
+        except ProcessLookupError:
+            break
+        if time.monotonic() > deadline:
+            raise SystemExit(f"killed orphan {daemon} survived")
+        time.sleep(0.01)
 "#;
 
 /// Not a test: the stand-in daemon, a copy of this binary, run with `STAND_IN` set.
@@ -307,5 +323,18 @@ fn a_passing_run_leaves_no_process_behind() {
         let run = fixture.run("pass", timeouts);
         assert!(run.status.success(), "{timeouts:?}: {}", run.output);
         assert!(run.seconds < 20.0, "{timeouts:?}: took {}s", run.seconds);
+    }
+}
+
+/// #401: a test may kill a process it orphaned and wait until it is gone, as
+/// `climon2-fixtures`' leak tests do. On Linux the script adopts orphans, so it must reap
+/// them while the tests run, or the killed orphan stays a zombie and the test fails; with
+/// no stage timeouts, as the gate's measurement runs, too.
+#[cfg(unix)]
+#[test]
+fn an_orphan_the_tests_kill_is_reaped_while_they_run() {
+    for timeouts in [Some(r#"{"suite": 60.0}"#), None] {
+        let run = Fixture::new().run("reap", timeouts);
+        assert!(run.status.success(), "{timeouts:?}: {}", run.output);
     }
 }
