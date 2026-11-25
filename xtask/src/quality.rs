@@ -720,6 +720,7 @@ fn shipped_sources(root: &Path) -> io::Result<Vec<PathBuf>> {
 pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
     match path.to_str() {
         Some("crates/climon2-platform/src/process/linux.rs")
+        | Some("crates/climon2-platform/src/origin/linux.rs")
         | Some("crates/climon2-platform/src/peer/linux.rs")
         | Some("crates/climon2-platform/src/runtime/linux.rs")
         | Some("crates/climon2-platform/src/library/linux.rs")
@@ -728,6 +729,7 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-install/src/platform/linux.rs")
         | Some("crates/climon2-client/src/library/linux.rs") => Some("linux"),
         Some("crates/climon2-platform/src/process/macos.rs")
+        | Some("crates/climon2-platform/src/origin/macos.rs")
         | Some("crates/climon2-platform/src/peer/macos.rs")
         | Some("crates/climon2-platform/src/runtime/macos.rs")
         | Some("crates/climon2-platform/src/library/macos.rs")
@@ -739,6 +741,7 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-launcher/src/handoff/windows.rs")
         | Some("crates/climon2-cli/src/windows.rs")
         | Some("crates/climon2-platform/src/process/windows.rs")
+        | Some("crates/climon2-platform/src/origin/windows.rs")
         | Some("crates/climon2-platform/src/runtime/windows.rs")
         | Some("crates/climon2-platform/src/waiting/windows.rs")
         | Some("crates/climon2-platform/src/presentation/windows.rs")

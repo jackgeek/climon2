@@ -7,7 +7,7 @@ use climon2_core::{
     metadata::SessionMetadata,
     protocol::HELLO_TIMEOUT,
 };
-use climon2_platform::{connection, process, runtime};
+use climon2_platform::{connection, origin, process, runtime};
 use std::{fs, io, path::Path, time::Instant};
 
 /// A session whose daemon answered the frozen hello with this session's ID.
@@ -200,7 +200,7 @@ fn daemon(metadata: &SessionMetadata) -> io::Result<Daemon> {
 /// Two origins are the same place only when they are equal (ADR 0005).
 fn created_elsewhere(metadata: &SessionMetadata) -> io::Result<bool> {
     match &metadata.daemon_origin {
-        Some(origin) => Ok(process::origin()? != *origin),
+        Some(recorded) => Ok(origin::current()? != *recorded),
         None => Ok(false),
     }
 }

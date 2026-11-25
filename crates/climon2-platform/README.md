@@ -96,7 +96,9 @@ dispatch or shell-specific logic.
   `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
   conversion is clock-sensitive and is not stale-cleanup authority.
   Missing stable identity makes Linux cleanup fail safely, retaining metadata.
-- `process::origin() -> io::Result<SessionOrigin>` is where this process runs,
+- `origin::current() -> io::Result<SessionOrigin>`, in its own module with a
+  native file per OS (`src/origin/{linux,macos,windows}.rs`), is where this
+  process runs,
   which a daemon records as `daemon_origin` (#133, ADR 0005): on Linux the
   machine ID from `/etc/machine-id` (absent when there is none) and the PID
   namespace as the inode of `/proc/self/ns/pid`; on macOS the hardware UUID
@@ -299,11 +301,12 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   `WaitForMultipleObjects` takes at most 64 events, so a wait on more watches
   the first 64, and any event already signalled, beyond them too, ends it at
   once (#327, the monitor's instances).
+- `src/origin/windows.rs`: `origin::current`, the machine's `MachineGuid`
+  from `HKLM\SOFTWARE\Microsoft\Cryptography` (#133): a climon2 home on a
+  network share is read from other machines.
 - `src/process/windows.rs`: `start_time`, `is_same_process` and
-  `is_same_daemon`, and `origin`, the machine's `MachineGuid` from
-  `HKLM\SOFTWARE\Microsoft\Cryptography` (#133): a climon2 home on a network
-  share is read from other machines. A daemon is its PID plus its
-  `GetProcessTimes` creation time in epoch microseconds. Only "no such process"
+  `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
+  time in epoch microseconds. Only "no such process"
   (`ERROR_INVALID_PARAMETER`) or a process that has exited while its object
   is still held reads as gone; any other failure, such as access denied, is
   an error and never evidence of death. `descriptor_limit` is the kernel's

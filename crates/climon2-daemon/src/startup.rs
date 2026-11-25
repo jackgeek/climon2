@@ -157,7 +157,7 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
         daemon_start_time,
         daemon_linux_identity,
         // Optional (#133): without it, readers judge the record as before.
-        daemon_origin: process::origin().ok(),
+        daemon_origin: climon2_platform::origin::current().ok(),
         command: display.command,
         args: display.args,
         cwd: display.cwd,

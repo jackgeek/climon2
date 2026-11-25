@@ -349,7 +349,7 @@ fn the_origin_is_this_machines_machine_guid() {
         .strip_prefix("REG_SZ")
         .unwrap()
         .trim();
-    let origin = process::origin().unwrap();
+    let origin = climon2_platform::origin::current().unwrap();
     assert_eq!(origin.machine_id.unwrap().as_str(), guid);
     assert_eq!(origin.pid_namespace, None);
 }

@@ -21,11 +21,11 @@ mod unix {
     #[cfg(target_os = "linux")]
     use super::linux::listed_pids;
     #[cfg(target_os = "linux")]
-    pub use super::linux::{is_same_daemon, linux_identity, origin, start_time};
+    pub use super::linux::{is_same_daemon, linux_identity, start_time};
     #[cfg(target_os = "macos")]
     use super::macos::listed_pids;
     #[cfg(target_os = "macos")]
-    pub use super::macos::{before_fork, is_same_daemon, linux_identity, origin, start_time};
+    pub use super::macos::{before_fork, is_same_daemon, linux_identity, start_time};
     use climon2_core::{exit::ExitStatus, protocol::HANGUP_GRACE};
     use std::{
         io,

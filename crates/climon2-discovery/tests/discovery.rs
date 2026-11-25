@@ -741,7 +741,7 @@ fn linux_daemon_identity_alone_proves_a_session_stale() {
 fn only_a_daemon_created_here_can_be_proven_gone() {
     use climon2_core::metadata::SessionOrigin;
     let (_directory, home) = home();
-    let here = process::origin().unwrap();
+    let here = climon2_platform::origin::current().unwrap();
     let mut other_machine = record(&home, 0x71, CREATED);
     other_machine.daemon_origin = Some(SessionOrigin {
         machine_id: Some("another-machine".parse().unwrap()),

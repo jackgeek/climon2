@@ -38,7 +38,7 @@ matter most:
   compiled only on Windows.
 - A **registered native file** is a source file listed in xtask's native-source
   registry as belonging to one operating system. Today the registry lists
-  `linux.rs` and `macos.rs` files, and twenty-two `windows.rs` files:
+  `linux.rs` and `macos.rs` files, and twenty-three `windows.rs` files:
   `crates/climon2-platform/src/home/windows.rs`, which names the Windows
   homes; `crates/climon2-platform/src/private/windows.rs`, which creates the
   files and folders only their user may open
@@ -49,6 +49,9 @@ matter most:
   `crates/climon2-platform/src/presentation/windows.rs`, the runtime
   directory, sockets, waiting, daemon identity and `list`'s presentation
   ([#316](https://github.com/jackgeek/climon2/issues/316));
+  `crates/climon2-platform/src/origin/windows.rs`, which reads the machine's
+  `MachineGuid` for a session's origin
+  ([#133](https://github.com/jackgeek/climon2/issues/133));
   `crates/climon2-platform/src/daemon/windows.rs`, which starts the session
   daemon; `crates/climon2-platform/src/pty/windows.rs`, which hosts the
   session's command in the bundled ConPTY and its session job;

@@ -3,34 +3,21 @@
 //! `GetProcessTimes`, in epoch microseconds as the frozen `daemon_start_time`
 //! (ADR 0005). Only "no such process" or an exited process proves it gone;
 //! any other failure to look is an error, never evidence of death.
-use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata, SessionOrigin};
+use climon2_core::metadata::{LinuxProcessIdentity, SessionMetadata};
 use std::{
     io,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    ptr,
 };
-use windows_sys::{
-    Win32::{
-        Foundation::{
-            ERROR_INVALID_PARAMETER, ERROR_SUCCESS, ERROR_TOO_MANY_OPEN_FILES, FALSE, FILETIME,
-            WAIT_OBJECT_0,
-        },
-        Networking::WinSock::WSAEMFILE,
-        System::{
-            Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW},
-            Threading::{
-                GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-                PROCESS_SYNCHRONIZE, TerminateProcess, WaitForSingleObject,
-            },
-        },
+use windows_sys::Win32::{
+    Foundation::{
+        ERROR_INVALID_PARAMETER, ERROR_TOO_MANY_OPEN_FILES, FALSE, FILETIME, WAIT_OBJECT_0,
     },
-    w,
+    Networking::WinSock::WSAEMFILE,
+    System::Threading::{
+        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, TerminateProcess, WaitForSingleObject,
+    },
 };
-
-/// Room for `MachineGuid`: a 36-character GUID and its terminating NUL.
-const MACHINE_GUID_UNITS: usize = 64;
-/// The same room in bytes, as `RegGetValueW` measures it.
-const MACHINE_GUID_BYTES: u32 = (MACHINE_GUID_UNITS * size_of::<u16>()) as u32;
 
 /// The most handles one process can hold: the kernel's per-process handle
 /// table, 2^24 entries. Windows has no soft limit below it.
@@ -48,42 +35,6 @@ pub fn linux_identity(_pid: u32) -> io::Result<Option<LinuxProcessIdentity>> {
 
 pub fn is_same_daemon(metadata: &SessionMetadata) -> io::Result<bool> {
     is_same_process(metadata.daemon_pid, metadata.daemon_start_time)
-}
-
-/// Where this process runs (#133): the machine, by the `MachineGuid` Windows
-/// keeps under `HKLM\SOFTWARE\Microsoft\Cryptography` across reboots. A
-/// climon2 home on a network share can be read from another machine, whose
-/// PIDs say nothing about this one's daemons. Windows has no PID namespaces.
-pub fn origin() -> io::Result<SessionOrigin> {
-    let machine = machine_guid()?.parse().map_err(io::Error::other)?;
-    Ok(SessionOrigin {
-        machine_id: Some(machine),
-        pid_namespace: None,
-    })
-}
-
-fn machine_guid() -> io::Result<String> {
-    let mut units = [0u16; MACHINE_GUID_UNITS];
-    let mut bytes = MACHINE_GUID_BYTES;
-    // SAFETY: both names are NUL-terminated literals, and `bytes` is the size
-    // of the writable `units`.
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            w!("SOFTWARE\\Microsoft\\Cryptography"),
-            w!("MachineGuid"),
-            RRF_RT_REG_SZ,
-            ptr::null_mut(),
-            units.as_mut_ptr().cast(),
-            &mut bytes,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(io::Error::from_raw_os_error(status as i32));
-    }
-    // The value is NUL-terminated and the rest of `units` stays zero.
-    let text = String::from_utf16_lossy(&units);
-    Ok(text.trim_end_matches('\0').to_owned())
 }
 
 /// Errors, such as a process the caller may not open, are not evidence of death.
