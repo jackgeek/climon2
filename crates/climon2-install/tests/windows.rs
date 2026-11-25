@@ -8,9 +8,9 @@
 //! `HKEY_CURRENT_USER` to a registry key of the test's own, then runs the
 //! installer library as `install.exe` does. The real user PATH is therefore
 //! never touched, whatever the installer does. Each install also gets its own
-//! `LOCALAPPDATA` and working directory. Run with `ROLE=hold`, the binary is a
-//! program that runs until its standard input closes, so a test can make a
-//! file of the home "running".
+//! `LOCALAPPDATA` and working directory, and can count its own broadcasts.
+//! Run with `ROLE=hold`, the binary is a program that runs until its standard
+//! input closes, so a test can make a file of the home "running".
 #![cfg_attr(not(windows), allow(dead_code))]
 
 #[cfg(not(windows))]
@@ -163,7 +163,7 @@ mod support {
             unsafe { RegOverridePredefKey(HKEY_CURRENT_USER, key) },
             ERROR_SUCCESS
         );
-        match climon2_install::run(std::env::args_os().skip(1)) {
+        match crate::broadcast::counted(|| climon2_install::run(std::env::args_os().skip(1))) {
             Ok(()) => std::process::exit(0),
             Err(error) => {
                 eprintln!("climon2: error: {error}");
@@ -495,34 +495,28 @@ mod support {
     }
 }
 
-/// Watches for the broadcast that the environment changed, from a hidden
-/// top-level window, which every broadcast reaches.
+/// Counts the broadcasts that the environment changed which an install sends
+/// itself, from a hidden top-level window on the thread that runs it. Every
+/// broadcast reaches the window, but only the install's own calls its
+/// procedure directly; another program's, a test's or a worker's, arrives
+/// from another thread. A broadcast waits for the window's answer, so the
+/// count is complete when the installer returns.
 #[cfg(windows)]
 mod broadcast {
-    use std::{
-        sync::{
-            Once,
-            atomic::{AtomicBool, AtomicU32, Ordering},
-        },
-        time::Duration,
-    };
+    use std::sync::atomic::{AtomicU32, Ordering};
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, MSG, RegisterClassW,
+            CreateWindowExW, DefWindowProcW, ISMEX_NOSEND, InSendMessageEx, RegisterClassW,
             WM_SETTINGCHANGE, WNDCLASSW, WS_OVERLAPPED,
         },
     };
 
-    /// How long the window holds up each sender while armed. A broadcast
-    /// waits for every window's answer, so an install that broadcasts takes
-    /// at least this long, and one that does not, far less.
-    pub const HOLD: Duration = Duration::from_secs(4);
-    static ARMED: AtomicBool = AtomicBool::new(false);
+    /// The environment variable naming the file an install writes the
+    /// number of its own broadcasts to.
+    pub const COUNT: &str = "CLIMON2_INSTALL_TEST_BROADCASTS";
     static SEEN: AtomicU32 = AtomicU32::new(0);
-    static STARTED: Once = Once::new();
-    static READY: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "system" fn procedure(
         window: HWND,
@@ -530,18 +524,21 @@ mod broadcast {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        // A change to the environment names it and carries no system setting.
-        if message == WM_SETTINGCHANGE
+        // Not sent from another thread: sent by this one, the installer's.
+        let own = unsafe { InSendMessageEx(std::ptr::null_mut()) } == ISMEX_NOSEND;
+        if own && unsafe { environment(message, wparam, lparam) } {
+            SEEN.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe { DefWindowProcW(window, message, wparam, lparam) }
+    }
+
+    /// Whether the message says the environment changed: it names the
+    /// environment and carries no system setting.
+    unsafe fn environment(message: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+        message == WM_SETTINGCHANGE
             && wparam == 0
             && lparam != 0
             && unsafe { area(lparam) } == "Environment"
-        {
-            SEEN.fetch_add(1, Ordering::SeqCst);
-            if ARMED.load(Ordering::SeqCst) {
-                std::thread::sleep(HOLD);
-            }
-        }
-        unsafe { DefWindowProcW(window, message, wparam, lparam) }
     }
 
     /// The text a settings change names.
@@ -553,47 +550,45 @@ mod broadcast {
         String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, length) })
     }
 
-    /// Starts the window once, and arms or disarms it.
-    pub fn arm(armed: bool) {
-        STARTED.call_once(|| {
-            std::thread::spawn(|| unsafe {
-                let class = super::support::wide("climon2-install-tests");
-                let instance = GetModuleHandleW(std::ptr::null());
-                let mut description: WNDCLASSW = std::mem::zeroed();
-                description.lpfnWndProc = Some(procedure);
-                description.hInstance = instance;
-                description.lpszClassName = class.as_ptr();
-                assert_ne!(RegisterClassW(&description), 0);
-                let window = CreateWindowExW(
-                    0,
-                    class.as_ptr(),
-                    class.as_ptr(),
-                    WS_OVERLAPPED,
-                    0,
-                    0,
-                    0,
-                    0,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    instance,
-                    std::ptr::null(),
-                );
-                assert!(!window.is_null());
-                READY.store(true, Ordering::SeqCst);
-                let mut message: MSG = std::mem::zeroed();
-                while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
-                    DispatchMessageW(&message);
-                }
-            });
-            while !READY.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        });
-        ARMED.store(armed, Ordering::SeqCst);
+    /// Runs `install`, and when the test names a file, starts the window on
+    /// this thread first and writes the count to the file after.
+    pub fn counted<T>(install: impl FnOnce() -> T) -> T {
+        let Some(file) = std::env::var_os(COUNT) else {
+            return install();
+        };
+        watch();
+        let result = install();
+        std::fs::write(file, SEEN.load(Ordering::SeqCst).to_string()).unwrap();
+        result
     }
 
-    pub fn seen() -> u32 {
-        SEEN.load(Ordering::SeqCst)
+    /// Creates the window on this thread, which only answers messages while
+    /// it waits in a send of its own.
+    fn watch() {
+        unsafe {
+            let class = super::support::wide("climon2-install-tests");
+            let instance = GetModuleHandleW(std::ptr::null());
+            let mut description: WNDCLASSW = std::mem::zeroed();
+            description.lpfnWndProc = Some(procedure);
+            description.hInstance = instance;
+            description.lpszClassName = class.as_ptr();
+            assert_ne!(RegisterClassW(&description), 0);
+            let window = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                WS_OVERLAPPED,
+                0,
+                0,
+                0,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            );
+            assert!(!window.is_null());
+        }
     }
 }
 
@@ -991,20 +986,17 @@ mod tests {
     }
 
     pub fn a_path_change_is_broadcast_to_running_programs() {
-        use crate::broadcast::{HOLD, arm, seen};
-        let world = World::new();
-        arm(true);
-        let before = seen();
-        let outcome = world.install(&["--no-modify-path"]);
-        assert!(outcome.succeeded().took < HOLD, "{outcome:#?}");
-        let outcome = world.install(&[]);
-        arm(false);
-        assert!(outcome.succeeded().took >= HOLD, "{outcome:#?}");
-        assert!(seen() > before);
+        let mut world = World::new();
+        let count = world.root().join("broadcasts");
+        world.set(crate::broadcast::COUNT, &count);
+        // How many times an install with `args` broadcast the change itself.
+        let broadcasts = |args: &[&str]| {
+            world.install(args).succeeded();
+            fs::read_to_string(&count).unwrap()
+        };
+        assert_eq!(broadcasts(&["--no-modify-path"]), "0");
+        assert_eq!(broadcasts(&[]), "1");
         // A reinstall changes nothing, so it broadcasts nothing.
-        arm(true);
-        let outcome = world.install(&[]);
-        arm(false);
-        assert!(outcome.succeeded().took < HOLD, "{outcome:#?}");
+        assert_eq!(broadcasts(&[]), "0");
     }
 }
