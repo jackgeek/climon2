@@ -6476,8 +6476,8 @@ fn failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good() {
     let library = package
         .executable_home()
         .join(VERSION)
-        .join("libclimon2_client.so");
-    let moved = library.with_extension("so.moved");
+        .join(support::LIBRARY);
+    let moved = library.with_file_name(format!("{}.moved", support::LIBRARY));
     fs::rename(&library, &moved).unwrap();
     let mut terminal = outer(&package, "c2 monitor");
     terminal.send("\x1ds").unwrap();
@@ -10039,8 +10039,7 @@ fn debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance()
         fs::read(home.join("before")).unwrap(),
         "termios never restored"
     );
-    terminal.send("plain words\n").unwrap();
-    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    end_unrestored(&mut terminal);
     let log = monitor_log(&package);
     assert!(
         log.contains("final host restoration unfinished within_ms=300"),
@@ -10048,6 +10047,22 @@ fn debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance()
     );
     assert!(!log.contains("monitor stopped"), "{log}");
     package.assert_clean();
+}
+
+/// Ends the outer shell after a monitor that left the host unrestored,
+/// possibly with the terminal's shared open-file description still
+/// non-blocking (`O_NONBLOCK`). The shell's `read` then either waits for the
+/// typed line, or has already failed with `EAGAIN` (macOS's bash 3.2) and
+/// the shell has printed an empty `TYPED=` and exited. On macOS the exited
+/// session leader revokes the terminal, so typing then fails with `EIO`
+/// (#419).
+fn end_unrestored(terminal: &mut Terminal) {
+    if let Err(error) = terminal.send("plain words\n") {
+        terminal
+            .wait_for_text("TYPED=", TIMEOUT)
+            .unwrap_or_else(|_| panic!("the line was not typed: {error}"));
+    }
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
 }
 
 /// LIB-06 (Monitor, Fault; #118; hooked library only): a native crash in
@@ -10077,8 +10092,7 @@ fn a_native_abort_in_a_client_library_ends_the_whole_monitor() {
     );
     terminal.wait_for_bytes(b"OUTER-DONE=134", TIMEOUT).unwrap();
     assert!(!monitor_log(&package).contains("monitor stopped"));
-    terminal.send("plain words\n").unwrap();
-    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
+    end_unrestored(&mut terminal);
     drop(fake);
     package.assert_clean();
 }
