@@ -96,6 +96,11 @@ workflow artifact. The Release workflow publishes that zip and its stamped
 `install.ps1` with the release
 ([#330](https://github.com/jackgeek/climon2/issues/330)).
 
+`cargo xtask install [--dir <directory>]` builds and checks the same files,
+then runs their `install.exe` with `--no-modify-path` without making the zip.
+It is the quick way to install a local build; see
+[Building release archives](../development.md#building-release-archives).
+
 - **Static C runtime.** Every climon2 program is built with the C runtime
   linked in, so a clean Windows 11 needs nothing installed first. The
   workspace's Cargo configuration (`.cargo/config.toml`) sets this for every

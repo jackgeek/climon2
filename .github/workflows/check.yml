@@ -420,10 +420,12 @@ jobs:
           key: dist-windows-x86_64-msvc
       - name: Require native architecture
         run: test "$PROCESSOR_ARCHITECTURE" = AMD64
-      - name: Test the Windows dist, its PE checks and this job
+      # The install tests run `cargo xtask install`, which builds the same
+      # release files the next step zips.
+      - name: Test the Windows dist and install, the PE checks and this job
         run: |
           cargo test --locked -p xtask --bin xtask -- pe:: dist::
-          cargo test --locked -p xtask --test dist --test workflows
+          cargo test --locked -p xtask --test dist --test install --test workflows
       - name: Build and verify the Windows release zip
         run: cargo xtask dist
       - uses: actions/upload-artifact@v4

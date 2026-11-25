@@ -113,7 +113,7 @@ number.
 | --- | --- |
 | Test | Every workspace test, including the harness's host-model scenarios. It waits for Dist and runs the smoke test against its zip ([#321](https://github.com/jackgeek/climon2/issues/321)) |
 | Quality | The native-only gate over registered Windows files; during development, only when its own switch is on (see [The Quality job during development](#the-quality-job-during-development)) |
-| Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks |
+| Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks and `cargo xtask install` |
 | Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip, under Windows PowerShell 5.1 and PowerShell 7 |
 | Neutral (existing) | Its Windows leg stays: `climon2-core`'s tests on Windows |
 
