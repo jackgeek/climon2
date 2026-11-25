@@ -338,6 +338,18 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
     }
 }
 
+/// A hung gate must not hold its machine, whose one runner every push shares, for GitHub's
+/// six hours (#401). Each job fails at a timeout with a clear margin over its platform's
+/// longest passing gate: 171 min on Linux and 68 min on Windows by 2026-11-25.
+#[test]
+fn own_hardware_gates_time_out() {
+    let quality = workflow("quality.yml");
+    for (name, minutes) in [("linux", 240), ("windows", 120), ("macos", 120)] {
+        let line = format!("    timeout-minutes: {minutes}");
+        assert!(job(&quality, name).contains(&line.as_str()), "{name}");
+    }
+}
+
 /// #330: Windows is the fourth qualification platform. Its job qualifies the
 /// exact zip on windows-2025 whatever the Windows switches say, records with
 /// `--platform windows-x86_64`, takes the latest release candidate's

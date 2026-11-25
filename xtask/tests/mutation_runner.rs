@@ -283,8 +283,8 @@ fn surviving_fast_tests_always_reach_the_full_workspace() {
     }
 }
 
-/// The mutator's baseline runs in the unmutated root: only the full workspace, with no stage
-/// timeout, so the mutator's timeout for the whole command stays ten times that run.
+/// The mutator's baseline runs in the unmutated root: only the full workspace, so the
+/// mutator's timeout for the whole command stays ten times that run.
 #[test]
 fn the_unmutated_baseline_still_runs_the_full_workspace() {
     let fixture = Fixture::new()
@@ -328,10 +328,11 @@ fn a_failed_warm_build_copy_stops_the_worker() {
 }
 
 /// Gate speed-up (#73, 2026-11-16): a test that hangs in an earlier stage kills the mutant at
-/// that stage's own timeout, with its whole process group, rather than holding the worker
-/// until the mutator's timeout for the whole command; later stages never run.
+/// that stage's own timeout, with every process it started, rather than holding the worker
+/// until the mutator's timeout for the whole command; later stages never run. A test that
+/// hangs in the full workspace kills it at the suite's timeout (#401).
 #[test]
-fn a_hung_stage_is_killed_with_its_process_group_at_its_own_timeout() {
+fn a_hung_stage_is_killed_with_every_process_it_started_at_its_own_timeout() {
     for (hung, limit, stages) in [
         ("unit", 2.0, vec!["build-unit", "unit"]),
         (
@@ -339,10 +340,22 @@ fn a_hung_stage_is_killed_with_its_process_group_at_its_own_timeout() {
             2.5,
             vec!["build-unit", "unit", "build-integration", "integration"],
         ),
+        (
+            "full",
+            4.0,
+            vec![
+                "build-unit",
+                "unit",
+                "build-integration",
+                "integration",
+                "build-full",
+                "full",
+            ],
+        ),
     ] {
         let fixture = Fixture::new()
             .with("MUTATION_RUNNER_HANG", hung)
-            .timeouts(&[("--lib", 2.0), ("--test terminal", 2.5)]);
+            .timeouts(&[("--lib", 2.0), ("--test terminal", 2.5), ("suite", 4.0)]);
         let run = fixture.run(&fixture.workspace(OVERLAY));
         assert!(!run.status.success(), "{hung}: {}", run.output);
         assert_eq!(run.stages(), stages, "{hung}");
@@ -366,14 +379,14 @@ fn a_hung_stage_is_killed_with_its_process_group_at_its_own_timeout() {
 }
 
 /// Stages that finish within their own timeouts pass on, and the full workspace, bounded only
-/// by the mutator's timeout for the whole command, may run longer than any stage timeout.
+/// by the suite's timeout for the whole run, may run longer than any stage timeout.
 #[test]
 fn slow_passing_stages_reach_the_full_workspace_which_keeps_the_mutators_timeout() {
     let fixture = Fixture::new()
         .with("MUTATION_RUNNER_SLEEP_unit", "1")
         .with("MUTATION_RUNNER_SLEEP_integration", "1")
         .with("MUTATION_RUNNER_SLEEP_full", "3")
-        .timeouts(&[("--lib", 2.0), ("--test terminal", 2.0)]);
+        .timeouts(&[("--lib", 2.0), ("--test terminal", 2.0), ("suite", 30.0)]);
     let run = fixture.run(&fixture.workspace(OVERLAY));
     assert!(run.status.success(), "{}", run.output);
     assert_eq!(
@@ -383,21 +396,24 @@ fn slow_passing_stages_reach_the_full_workspace_which_keeps_the_mutators_timeout
             "unit",
             "build-integration",
             "integration",
+            "build-full",
             "full"
         ]
     );
     assert_eq!(
-        run.calls[4],
+        run.calls[5],
         "full test --workspace --locked --target-dir target/mutation-tests"
     );
 }
 
 /// Each earlier stage's timeout is the timeout factor times one unloaded run of that stage in
-/// the warm build, never under two seconds. Stages that sources share are timed once, and the
-/// full workspace is never timed here.
+/// the warm build, never under two seconds, and so is the suite's. Stages that sources share
+/// are timed once.
 #[test]
 fn measurement_times_each_earlier_stage_once_in_the_warm_build() {
-    let fixture = Fixture::new().with("MUTATION_RUNNER_SLEEP_unit", "0.3");
+    let fixture = Fixture::new()
+        .with("MUTATION_RUNNER_SLEEP_unit", "0.3")
+        .with("MUTATION_RUNNER_SLEEP_full", "0.4");
     fixture.add_crate(fixture.root(), "example");
     fixture.add_crate(fixture.root(), "other");
     fs::write(fixture.root().join("crates/example/src/more.rs"), "").unwrap();
@@ -416,17 +432,49 @@ fn measurement_times_each_earlier_stage_once_in_the_warm_build() {
             "build-full test --workspace --locked --target-dir target/mutation-tests --no-run",
             "unit test --workspace --locked --target-dir target/mutation-tests --lib",
             "integration test --workspace --locked --target-dir target/mutation-tests --test terminal",
+            "full test --workspace --locked --target-dir target/mutation-tests",
         ]
     );
     let timeouts: BTreeMap<String, f64> =
         serde_json::from_str(&fs::read_to_string(timeouts).unwrap()).unwrap();
     assert_eq!(
         timeouts.keys().collect::<Vec<_>>(),
-        ["--lib", "--test terminal"]
+        ["--lib", "--test terminal", "suite"]
     );
     let library = timeouts["--lib"];
     assert!((3.0..6.0).contains(&library), "{library}");
     assert_eq!(timeouts["--test terminal"], 2.0);
+    let suite = timeouts["suite"];
+    assert!((4.0..7.0).contains(&suite), "{suite}");
+}
+
+/// With no source to mutate, nothing is timed.
+#[test]
+fn measurement_without_sources_times_nothing() {
+    let fixture = Fixture::new();
+    let (run, timeouts) = fixture.measure("10", &[]);
+    assert!(run.status.success(), "{}", run.output);
+    assert_eq!(
+        run.calls,
+        ["build-full test --workspace --locked --target-dir target/mutation-tests --no-run"]
+    );
+    assert_eq!(fs::read_to_string(timeouts).unwrap(), "{}");
+}
+
+/// #401: the suite's timeout bounds the whole run, as the mutator's timeout does, so a run
+/// that hangs in the full workspace ends before the mutator would kill it with no cleanup.
+#[test]
+fn the_suites_timeout_counts_from_the_start_of_the_run() {
+    let fixture = Fixture::new()
+        .with("MUTATION_RUNNER_SLEEP_unit", "2")
+        .with("MUTATION_RUNNER_SLEEP_integration", "2")
+        .with("MUTATION_RUNNER_HANG", "full")
+        .timeouts(&[("--lib", 10.0), ("--test terminal", 10.0), ("suite", 6.0)]);
+    let run = fixture.run(&fixture.workspace(OVERLAY));
+    assert_eq!(run.status.code(), Some(124), "{}", run.output);
+    assert!(run.seconds >= 6.0, "cut early at {}s", run.seconds);
+    assert!(run.seconds < 9.0, "cut at {}s", run.seconds);
+    fixture.assert_hung_stage_gone();
 }
 
 /// A warm build or stage that fails unmutated has no baseline, so the measurement fails.

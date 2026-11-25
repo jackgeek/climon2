@@ -27,6 +27,8 @@ import tempfile
 import time
 
 MINIMUM_TIMEOUT = 2.0
+# The suite's timeout's key among the stage timeouts, as `test-mutation.py` writes them.
+SUITE = "suite"
 POLL_SECONDS = 0.05
 FAILED_TEST = re.compile(r"^test (.+) \.\.\. FAILED$", re.MULTILINE)
 FAILED_TARGET = re.compile(r"^error: test failed, to rerun pass `(.+)`$", re.MULTILINE)
@@ -50,10 +52,13 @@ def positive_number(value):
 
 
 def load_stages(path):
-    """The earlier stages, in the order workers run them, as `(arguments, stage timeout)`."""
+    """The earlier stages, in the order workers run them, as `(arguments, stage timeout)`.
+    The suite's timeout is not one: each suite here runs within the mutation timeout, which
+    bounds it as tightly."""
     return [
         (selection.split(), float(timeout))
         for selection, timeout in json.loads(path.read_text()).items()
+        if selection != SUITE
     ]
 
 

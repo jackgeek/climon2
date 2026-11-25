@@ -59,9 +59,12 @@ const MUTATION_LOAD_ROUNDS: &str = "5";
 const TICKET_MUTATION_LOAD_ROUNDS: &str = "1";
 /// A mutant's test run times out, counting as killed, after this multiple of the baseline run;
 /// each earlier test stage likewise after this multiple of its own baseline run.
+/// `tools/test-mutation.py` ends a mutant's whole run after this multiple of the suite's
+/// unloaded run, so that it, not the mutator, kills a hung run with every process the run
+/// started (#401).
 const MUTATION_TIMEOUT_FACTOR: &str = "10";
-/// Each earlier test stage's timeout, measured before the load rounds that rehearse it and
-/// read by the mutation workers.
+/// Each earlier test stage's timeout, and the suite's, measured before the load rounds that
+/// rehearse the stages and read by the mutation workers.
 const STAGE_TIMEOUTS: &str = "target/mutation-stage-timeouts.json";
 /// Owner-set maximum CRAP score for every shipped function (#21, amended to 5).
 pub(crate) const CRAP_THRESHOLD: &str = "5";

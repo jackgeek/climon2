@@ -242,6 +242,21 @@ gate fails unless both come out exactly so.
 process ended by `TerminateProcess` keeps its coverage counters, and fails if
 it does not; the daemon is often ended that way in tests.
 
+**Timeouts.** On Windows a mutant's tests are the `WINDOWS_SUITE` runs, in
+order. Before any mutant runs, the gate times one unloaded run of them, and
+each mutant's whole run then has 10 times that. A mutant that outlives it
+counts as killed. When each run ends, whether it passed, failed or timed out,
+`tools/test-mutation.py` ends every process the tests started, so a test that
+starts a `climon2-daemon` and hangs leaves nothing on the machine. It finds
+those processes in the process list: by parent, checked against creation
+times because Windows reuses the ID of a process that has exited, and by an
+executable in the worker's build folder or in the private temporary folder
+(`TMP` and `TEMP`) it gives the tests. The second finds a daemon whose parent
+has exited. The Quality job on the owner's VM fails after 120 minutes; its
+longest passing run took 68
+([#401](https://github.com/jackgeek/climon2/issues/401); see
+[Quality runners](../quality-runners.md)).
+
 **Cost.** When no registered Windows file changed, the gate exits before doing
 any mutation work. A release mutates every registered Windows file. That run
 is measured in the first implementation slice against a budget of 90 minutes;
