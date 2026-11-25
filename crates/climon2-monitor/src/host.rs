@@ -85,7 +85,9 @@ impl Host {
             terminal: Bridged::new(terminal)?,
             baseline: Presentation::new(size.cols, size.rows),
             buffer: [0u8; READ_BYTES],
-            signalled: false,
+            // No signal yet. Spelled `bool::default()`, false: a line
+            // holding only a literal has no coverage region of its own.
+            signalled: bool::default(),
         })
     }
 

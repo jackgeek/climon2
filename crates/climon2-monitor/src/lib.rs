@@ -1037,8 +1037,9 @@ impl Monitor {
             .take_if(|pasting| Some(&pasting.target) != current);
         if let Some(Pasting {
             target: (id, authority),
-            bracketed: true,
+            bracketed,
         }) = cut
+            && bracketed
         {
             self.terminal(&id).cut_paste(authority);
         }
@@ -1777,13 +1778,9 @@ mod tests {
         }
     }
 
-    /// REC-01 (Monitor: a gone daemon, pure supplement, #116): a request
-    /// the stream's end cancelled while control was held leaves the
-    /// terminal's own error, but once discovery proves the daemon gone the
-    /// top row's error slot says `Session no longer exists`, as the
-    /// overlay over its history does (owner decision on #116).
-    #[test]
-    fn a_gone_session_says_so_in_its_error_slot_over_a_cancelled_request() {
+    /// A controlled terminal whose Viewing request was answered as never
+    /// executed, its stream then ended if `ended`.
+    fn cancelled(ended: bool) -> Terminal {
         let mut parser = climon2_vt::Parser::new();
         let mut terminal = Terminal::new(climon2_vt::Limits {
             bytes: 64 << 20,
@@ -1804,14 +1801,27 @@ mod tests {
             &mut parser,
             Presentation::Answered(viewing, Err(cancelled.into())),
         );
-        terminal.present(&mut parser, Presentation::Ended);
+        if ended {
+            terminal.present(&mut parser, Presentation::Ended);
+        }
+        terminal
+    }
+
+    /// REC-01 (Monitor: a gone daemon, pure supplement, #116): a request
+    /// the stream's end cancelled while control was held leaves the
+    /// terminal's own error, but once discovery proves the daemon gone the
+    /// top row's error slot says `Session no longer exists`, as the
+    /// overlay over its history does (owner decision on #116); a retry's
+    /// reason never covers the terminal's own error.
+    #[test]
+    fn a_gone_session_says_so_in_its_error_slot_over_a_cancelled_request() {
         let row = View {
             id: SessionId::from_bytes([1; 16]),
             status: "Unavailable".into(),
             label: "Lost".into(),
             since: std::time::SystemTime::UNIX_EPOCH,
         };
-        let error = |recovery| {
+        let error = |terminal: &Terminal, recovery| {
             let shown = Shown {
                 kind: Kind::Unconnected,
                 finished: false,
@@ -1819,13 +1829,24 @@ mod tests {
                 condition: None,
                 refused: None,
             };
-            selected(&row, shown, Some(&terminal)).error
+            selected(&row, shown, Some(terminal))
+                .error
+                .map(str::to_owned)
         };
+        let retrying = Recovery::Retrying("transport io_error: reset".into());
+        let gone = "Session no longer exists";
         // The connection's end also ended the terminal's errors, so the
         // cancelled request no longer shows either way.
-        let retrying = Recovery::Retrying("transport io_error: reset".into());
-        assert_eq!(error(&retrying), Some("transport io_error: reset"));
-        assert_eq!(error(&Recovery::Gone), Some("Session no longer exists"));
+        let ended = cancelled(true);
+        assert_eq!(
+            error(&ended, &retrying).as_deref(),
+            Some("transport io_error: reset")
+        );
+        assert_eq!(error(&ended, &Recovery::Gone).as_deref(), Some(gone));
+        let open = cancelled(false);
+        let own = "the request was accepted but never executed";
+        assert_eq!(error(&open, &retrying).as_deref(), Some(own));
+        assert_eq!(error(&open, &Recovery::Gone).as_deref(), Some(gone));
     }
 
     /// Owner decision on #109 (pure supplement): only a key that closes the
