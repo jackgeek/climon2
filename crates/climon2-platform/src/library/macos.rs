@@ -93,4 +93,3 @@ fn named_like(requested: &CStr) -> String {
         .collect();
     format!("a file of the same name ({})", images.join(", "))
 }
-// Probe for #416: makes the macOS own-hardware gate run; reverted before review.
