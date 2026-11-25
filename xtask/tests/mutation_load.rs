@@ -570,14 +570,15 @@ fn unit() {
 const SLOW: &str = "#[test]\nfn slow() {\n    if !load_fixture::under_load() {\n        return;\n    }\n    load_fixture::record(\"slow\");\n    std::thread::sleep(std::time::Duration::from_secs(6));\n}\n";
 
 /// A fixture whose library test does `unit_under_load` under load, with the integration test
-/// `slow`, and hand-written stage timeouts for `--lib` and `--test slow`.
+/// `slow`, and hand-written stage timeouts for `--lib` and `--test slow`, with the suite's
+/// timeout, which is too short for any run and no stage here.
 fn staged(unit_under_load: &str, library_timeout: f64) -> Fixture {
     let fixture = Fixture::new(&STAGED.replace("UNIT_UNDER_LOAD", unit_under_load));
     fs::create_dir(fixture.root().join("tests")).unwrap();
     fs::write(fixture.root().join("tests/slow.rs"), SLOW).unwrap();
     fs::write(
         fixture.root().join("stage-timeouts.json"),
-        format!(r#"{{"--lib": {library_timeout:.1}, "--test slow": 30.0}}"#),
+        format!(r#"{{"--lib": {library_timeout:.1}, "--test slow": 30.0, "suite": 0.001}}"#),
     )
     .unwrap();
     fixture
@@ -599,12 +600,14 @@ fn orders(fixture: &Fixture) -> Vec<String> {
 /// Gate speed-up (#73, 2026-11-16): each load suite rehearses a mutant's run. It runs the
 /// library stage, then each target crate's integration stage, each under its own stage
 /// timeout, then the full workspace under the mutator's timeout, which may be longer than
-/// any stage timeout.
+/// any stage timeout. The suite's timeout, which a mutant's run keeps within the mutator's,
+/// is no stage.
 #[test]
 fn each_load_suite_runs_the_workers_stages_in_order_under_their_own_timeouts() {
     let fixture = staged("", 5.0);
     let (success, output) = fixture.measure(2, 1);
     assert!(success, "{output}");
+    assert!(!output.contains("`suite`"), "{output}");
     assert_eq!(
         orders(&fixture),
         ["unit\nslow\nunit\nslow\n", "unit\nslow\nunit\nslow\n"],
