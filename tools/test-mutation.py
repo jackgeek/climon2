@@ -35,6 +35,7 @@ from collections import defaultdict
 from contextlib import suppress
 import ctypes
 import functools
+import itertools
 import json
 import os
 from pathlib import Path
@@ -210,8 +211,7 @@ def contain(command, timeout):
     """Runs `command` with its output in a file and a temporary directory of its own, and
     returns its status, or TIMED_OUT once it outlives `timeout` seconds. Either way, every
     process it started is gone before this returns, so none holds the mutator's pipe."""
-    # Short, as some tests bind Unix sockets under the temporary directory.
-    scratch = Path(tempfile.mkdtemp(prefix="m"))
+    scratch = short_directory(Path(tempfile.gettempdir()))
     environment = dict(os.environ, TMPDIR=str(scratch), TMP=str(scratch), TEMP=str(scratch))
     try:
         with tempfile.TemporaryFile() as output:
@@ -230,6 +230,20 @@ def contain(command, timeout):
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     return code
+
+
+def short_directory(parent):
+    """A new directory in `parent`, private to this process, named as briefly as the
+    directories already there allow. Tests bind sockets under the temporary directory, and
+    a socket path has a budget of 104 to 108 bytes: a Windows runtime test needs the
+    caller's own temporary directory plus at most 6 bytes, where `mkdtemp` adds 10 (#415)."""
+    for number in itertools.count():
+        directory = parent / f"m{number}"
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        return directory
 
 
 def wait(process, timeout):
