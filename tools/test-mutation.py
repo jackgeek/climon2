@@ -27,7 +27,8 @@ started is killed:
 their descendants, and any process whose executable lies in the stage's build or temporary
 directory, with its descendants. That finds a daemon that left its session, which a
 process group does not, and whose parent has exited (#401). On Linux this process also
-adopts orphans, so descent alone finds them.
+adopts orphans, so descent alone finds them. It reaps them while the tests run, as an
+orphan a test kills stays a zombie until reaped, and a test may wait for it to be gone.
 """
 
 from collections import defaultdict
@@ -54,6 +55,8 @@ TIMED_OUT = 124
 # A dying process can start another, so a sweep repeats until none is left.
 SWEEP_ROUNDS = 100
 SWEEP_PAUSE = 0.05
+# How often a stage's wait reaps adopted orphans.
+REAP_PAUSE = 0.02
 PR_SET_CHILD_SUBREAPER = 36
 WINDOWS_STILL_ACTIVE = 259
 
@@ -216,9 +219,7 @@ def contain(command, timeout):
                 command, stdout=output, stderr=subprocess.STDOUT, env=environment
             )
             try:
-                code = process.wait(timeout)
-            except subprocess.TimeoutExpired:
-                code = TIMED_OUT
+                code = wait(process, timeout)
             finally:
                 sweep([Path(TARGET), scratch])
                 process.wait()
@@ -229,6 +230,37 @@ def contain(command, timeout):
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     return code
+
+
+def wait(process, timeout):
+    """`process`'s status, or TIMED_OUT once it outlives `timeout` seconds. Meanwhile
+    reaps the orphans this process adopted, so none that dies stays a zombie: a test that
+    kills its orphan waits until it is gone."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        code = process.poll()
+        if code is not None:
+            return code
+        if deadline is not None and time.monotonic() >= deadline:
+            return TIMED_OUT
+        reap_adopted(process.pid)
+        time.sleep(REAP_PAUSE)
+
+
+def reap_adopted(spare):
+    """Reaps every exited child but `spare`, whose status its Popen collects. Only Linux
+    adopts orphans; elsewhere this process's only child is `spare`."""
+    if sys.platform != "linux":
+        return
+    while True:
+        try:
+            exited = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return
+        if exited is None or exited.si_pid == spare:
+            return
+        with suppress(ChildProcessError):
+            os.waitpid(exited.si_pid, 0)
 
 
 class Process(NamedTuple):
