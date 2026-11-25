@@ -42,7 +42,7 @@ use climon2_vt::{
 };
 use delete::{Asking, Confirmation, Decision};
 use discovery::{Discovery, Found};
-use host::{Ending, Event, Host};
+use host::{Ending, Event, Host, Output};
 use initial::Initial;
 use introduction::KeyIntroduction;
 use keys::Action;
@@ -123,12 +123,12 @@ fn owned(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io::
     let (mut host, size) = Host::enter()?;
     let monitor = Monitor::start(size, startup, dispatch, filter);
     let reported = monitor.is_ok();
-    let (served, verdict) = match monitor {
+    let (served, verdict, output) = match monitor {
         Ok(monitor) => monitor.serve(&mut host),
-        Err(error) => (Err(error), Verdict::Clean),
+        Err(error) => (Err(error), Verdict::Clean, Output::default()),
     };
     let watchdog = failstop::Watchdog::arm(final_host, dispatch.clone());
-    let released = host.release();
+    let released = host.release(output);
     let cleared = cleared(reported);
     let status = served.and_then(|ending| released.and(cleared).map(|()| ending.status()));
     let status = judged(status, verdict, &log);
@@ -221,6 +221,10 @@ struct Monitor {
     bell: bool,
     /// When the next frame may be painted: at most `ui.fps` a second.
     frames: cadence::Frames,
+    /// What the host has been handed and not yet taken (#285).
+    output: Output,
+    /// The toasts whose full titles the frames on their way show.
+    titles: Titles,
     /// Client reports waiting to be applied, in fair turns within the work
     /// quanta (#119).
     work: cadence::Work<SessionId, ClientEvent>,
@@ -232,6 +236,30 @@ struct Monitor {
 
 /// A session under the authority it takes input with.
 type Target = (SessionId, Authority);
+
+/// The toast, by when it began, whose full title a frame on its way to the
+/// host shows: its hold starts once that frame has been written (owner
+/// decision on #115, 2026-11-17).
+#[derive(Default)]
+struct Titles {
+    /// The frame waiting to be handed to the host.
+    next: Option<Instant>,
+    /// The bytes being written.
+    writing: Option<Instant>,
+}
+
+impl Titles {
+    /// A frame showing the full title of `titling`, if any, was drawn: it
+    /// waits, or it is the frame the host was handed last.
+    fn drawn(&mut self, waits: bool, titling: Option<Instant>) {
+        if waits {
+            self.next = titling;
+        } else {
+            self.next = None;
+            self.writing = self.writing.or(titling);
+        }
+    }
+}
 
 /// The selected session, whether a modal covers it, and the authority its
 /// control period and restoration hold, if any: any change is a target
@@ -302,6 +330,8 @@ impl Monitor {
             toasts: Toasts::new(jump),
             bell: config.settings().bell,
             frames: cadence::Frames::new(limits.cadence().fps),
+            output: Output::default(),
+            titles: Titles::default(),
             work: work(limits.cadence()),
             memory: limits.memory(),
             inspected: BTreeMap::new(),
@@ -310,16 +340,17 @@ impl Monitor {
     }
 
     /// Acts on host events until an ending, or a failure of the host or
-    /// rendering, then shuts down: why it ended, and what the shutdown
-    /// proved. Consuming the monitor drops its screen before the host is
-    /// released.
-    fn serve(mut self, host: &mut Host) -> (io::Result<Ending>, Verdict) {
+    /// rendering, then shuts down: why it ended, what the shutdown proved,
+    /// and what the host has yet to take. Consuming the monitor drops its
+    /// screen before the host is released.
+    fn serve(mut self, host: &mut Host) -> (io::Result<Ending>, Verdict, Output) {
         let ending = self.events(host);
         let (hosted, report) = self.shut_down(host, ending.is_ok());
         report.log();
         (
             ending.and_then(|ending| hosted.map(|()| ending)),
             report.verdict(),
+            self.output,
         )
     }
 
@@ -357,14 +388,16 @@ impl Monitor {
             thread::sleep(TICK);
             return Ok(());
         }
-        self.screen.exiting(waiting)?;
+        let waits = self.screen.exiting(waiting)?;
+        self.titles.drawn(waits, None);
+        self.pump(host)?;
         self.resized(host)
     }
 
     /// One wait for host input during exit: a resize resizes the exit
     /// screen, and anything else is ignored.
     fn resized(&mut self, host: &mut Host) -> io::Result<()> {
-        if let Event::Resize(size) = host.next()? {
+        if let Event::Resize(size) = host.next(&self.output)? {
             self.screen.resize(size);
         }
         Ok(())
@@ -378,10 +411,12 @@ impl Monitor {
         }
     }
 
-    /// Handles the next host event, then, unless it ends the monitor, what
-    /// discovery and the supervisor reported meanwhile.
+    /// Writes what the host takes, handles the next host event, then,
+    /// unless it ends the monitor, what discovery and the supervisor
+    /// reported meanwhile.
     fn step(&mut self, host: &mut Host) -> io::Result<Option<Ending>> {
-        let event = host.next()?;
+        self.pump(host)?;
+        let event = host.next(&self.output)?;
         let read = matches!(event, Event::Input(_));
         let ending = self.handle(event)?;
         if ending.is_none() {
@@ -483,9 +518,35 @@ impl Monitor {
             now,
             session,
         };
-        self.screen.show(&scene)?;
-        self.title(titling)?;
-        self.attend()
+        let waits = self.screen.show(&scene)?;
+        self.titles.drawn(waits, titling);
+        self.attend();
+        Ok(())
+    }
+
+    /// Writes what the host takes now, never waiting for it (#285). Each
+    /// time it has taken everything it was handed, a toast whose full title
+    /// that showed begins its hold, and the newest frame is handed on, so
+    /// frames drawn meanwhile never queue.
+    fn pump(&mut self, host: &mut Host) -> io::Result<()> {
+        host.write(&mut self.output)?;
+        while self.output.idle() && self.hand_on() {
+            host.write(&mut self.output)?;
+        }
+        Ok(())
+    }
+
+    /// The host has written everything it was handed: hands it the newest
+    /// frame and any bell, and says whether it handed anything.
+    fn hand_on(&mut self) -> bool {
+        if let Some(toast) = self.titles.writing.take() {
+            self.title(toast);
+        }
+        if let Some(bytes) = self.screen.commit() {
+            self.output.queue(&bytes);
+            self.titles.writing = self.titles.next.take();
+        }
+        !self.output.idle()
     }
 
     /// While a menu is open, every pending attention episode that was
@@ -507,24 +568,22 @@ impl Monitor {
         self.toasts.announce(id, news, label, viewed);
     }
 
-    /// Once the frame first showing a toast's full title (`titling`) has
-    /// been written to the host, the toast's hold starts and, while
-    /// `monitor.bell` is on, one BEL rings (owner decision on #115,
-    /// 2026-11-17; docs/for-humans/protocol/monitor-host/bell.md).
-    fn title(&mut self, titling: bool) -> io::Result<()> {
-        if !titling {
-            return Ok(());
+    /// Once a frame showing the full title of the toast that began at
+    /// `toast` has been written to the host, the toast's hold starts and,
+    /// while `monitor.bell` is on, one BEL rings, unless it was dismissed
+    /// first (owner decision on #115, 2026-11-17;
+    /// docs/for-humans/protocol/monitor-host/bell.md).
+    fn title(&mut self, toast: Instant) {
+        if self.toasts.titled(toast, Instant::now()) {
+            self.ring();
         }
-        self.toasts.titled(Instant::now());
-        self.ring()
     }
 
     /// One BEL, while `monitor.bell` is on.
-    fn ring(&self) -> io::Result<()> {
+    fn ring(&mut self) {
         if self.bell {
-            return host::write_host(BEL);
+            self.output.queue(BEL);
         }
-        Ok(())
     }
 
     /// Once a frame is painted (spec #73, "Viewing, focus, acknowledgement
@@ -533,7 +592,7 @@ impl Monitor {
     /// target is viewed, after that viewing was submitted (Set viewing is
     /// coalesced, so it can lag the frame: owner decision on #114), and the
     /// host hears whether any connected session needs attention.
-    fn attend(&mut self) -> io::Result<()> {
+    fn attend(&mut self) {
         self.reacknowledge();
         let viewed = self.viewed().cloned();
         for (id, terminal) in &mut self.terminals {
@@ -544,9 +603,9 @@ impl Monitor {
         let reported = viewed.and_then(|id| self.terminals.get(&id));
         self.acknowledge(reported.is_some_and(Terminal::viewing_reported));
         let pending = self.registry.attention().is_some();
-        self.host_report
-            .report(pending)
-            .map_or(Ok(()), host::write_host)
+        if let Some(report) = self.host_report.report(pending) {
+            self.output.queue(report);
+        }
     }
 
     /// An acknowledgement that a newer restoration of its control period

@@ -17,11 +17,7 @@ use ratatui::{
     text::Line,
     widgets::{Paragraph, Widget},
 };
-use std::{
-    io::{self, Write},
-    num::NonZeroU16,
-    time::Instant,
-};
+use std::{io, num::NonZeroU16, time::Instant};
 use unicode_width::UnicodeWidthStr;
 
 /// The permanent top row's height.
@@ -174,7 +170,8 @@ impl Scene<'_> {
     }
 }
 
-/// Paints frames on the monitor-owned host output. It never asks the host
+/// Draws frames for the monitor-owned host output, and hands each on once
+/// the host has taken the one before (#285). It never asks the host
 /// anything.
 pub(crate) struct Screen {
     /// The empty state's key hint, unless key hints are off.
@@ -186,8 +183,12 @@ pub(crate) struct Screen {
     /// and key hints are on.
     takeover: Option<String>,
     size: TerminalSize,
-    /// The frame last painted.
+    /// The frame last handed to the host.
     painted: Frame,
+    /// The newest frame drawn since, waiting for the host to take the one
+    /// before: a newer one replaces it, so the host never receives an
+    /// obsolete frame (#285).
+    next: Option<Frame>,
     /// The selected session's canvas as last painted from a view with no
     /// synchronized update open: it stays while one is.
     coherent: Option<Coherent>,
@@ -222,6 +223,7 @@ impl Screen {
                 .map(|key| format!("Press {key} to take control")),
             size,
             painted: Frame::default(),
+            next: None,
             coherent: None,
         }
     }
@@ -266,8 +268,9 @@ impl Screen {
         !covered && self.desire().is_some()
     }
 
-    /// Paints `scene` unless its frame is the one painted.
-    pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<()> {
+    /// Draws `scene`'s frame to go to the host next, and whether it is
+    /// new: one the host was handed last waits for nothing.
+    pub(crate) fn show(&mut self, scene: &Scene<'_>) -> io::Result<bool> {
         let frame = self.frame(scene);
         self.present(frame)
     }
@@ -275,7 +278,7 @@ impl Screen {
     /// The exit screen while shutdown waits for `waiting` sessions (owner
     /// decision on #118), alone in the middle of the host: nothing else is
     /// shown or takes input any more.
-    pub(crate) fn exiting(&mut self, waiting: usize) -> io::Result<()> {
+    pub(crate) fn exiting(&mut self, waiting: usize) -> io::Result<bool> {
         let frame = self.exit_frame(waiting);
         self.present(frame)
     }
@@ -291,28 +294,26 @@ impl Screen {
         }
     }
 
-    /// Paints `frame` unless it is the one painted.
-    fn present(&mut self, frame: Frame) -> io::Result<()> {
-        if frame == self.painted {
-            return Ok(());
-        }
-        self.paint(frame)
-    }
-
-    /// Paints every cell of `frame`, so whatever the host showed is
-    /// overwritten in place: nothing is erased first, and no blank screen
-    /// shows between two frames.
-    fn paint(&mut self, frame: Frame) -> io::Result<()> {
+    /// `frame` goes to the host next, in place of any frame still waiting,
+    /// unless it is the one handed to the host last: whether it waits.
+    fn present(&mut self, frame: Frame) -> io::Result<bool> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
+        self.next = Some(frame).filter(|frame| *frame != self.painted);
+        Ok(self.next.is_some())
+    }
+
+    /// The bytes that paint the waiting frame, if any, which the host is
+    /// now handed: every cell, so whatever the host showed is overwritten
+    /// in place, with nothing erased first and no blank screen between two
+    /// frames.
+    pub(crate) fn commit(&mut self) -> Option<Vec<u8>> {
+        let frame = self.next.take()?;
         let mut bytes = keypad_mode(self.painted.keypad, frame.keypad).to_vec();
         bytes.extend(tracking_mode(self.painted.tracking, frame.tracking));
         bytes.extend(paint(&frame));
-        let mut output = io::stdout().lock();
-        output.write_all(&bytes)?;
-        output.flush()?;
         self.painted = frame;
-        Ok(())
+        Some(bytes)
     }
 
     /// The permanent top row, and below it the selected session's canvas or
