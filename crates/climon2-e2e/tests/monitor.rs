@@ -7756,8 +7756,9 @@ fn a_backed_up_host_receives_only_the_newest_frame_once_it_drains() {
 /// under a stalled host): a host that reads nothing for longer than the
 /// operation and delivery-stall deadlines (2 s here) stalls nothing but its
 /// own output. Keys typed meanwhile reach the selected session, another
-/// session's attention report is applied, and prefix+x shuts every client
-/// down within the shutdown deadline while the host still reads nothing.
+/// session's attention report is applied, a session started meanwhile is
+/// admitted and its client started, and prefix+x shuts every client down
+/// within the shutdown deadline while the host still reads nothing.
 /// Once it reads again, it hears the attention report and is released,
 /// and the monitor exits 0.
 #[test]
@@ -7776,14 +7777,17 @@ fn a_host_that_stops_reading_stalls_only_its_own_output() {
             "final_host_ms": 300_000,
         }}),
     );
+    // Flood, the newer, is the initial selection.
+    let beta = headless(&package, &watched("Beta"), "finish");
     let flood = headless(&package, &flooding("Flood"), "finish");
     let mut terminal = outer(&package, "c2 monitor");
     flooded(&terminal, "Flood");
-    let beta = headless(&package, &watched("Beta"), "finish");
-    terminal.send("\x1ds").unwrap();
-    listed_with(&terminal, RUNNING, "Beta");
-    terminal.send(ESCAPE).unwrap();
-    selector_closed(&terminal);
+    let published = format!("client published session={beta}");
+    let connected = Instant::now() + TIMEOUT;
+    while !monitor_log(&package).contains(&published) {
+        assert!(Instant::now() < connected, "{}", monitor_log(&package));
+        thread::sleep(Duration::from_millis(10));
+    }
 
     terminal.stop_reading();
     terminal.wait_for_output_blocked(TIMEOUT).unwrap();
@@ -7799,11 +7803,18 @@ fn a_host_that_stops_reading_stalls_only_its_own_output() {
         thread::sleep(Duration::from_millis(10));
     }
     report_state(&package, "Beta", "idle");
+    let late = headless(&package, &watched("Late"), "finish");
+    let starting = format!("client starting session={late} ");
+    let admitted = Instant::now() + TIMEOUT;
+    while !monitor_log(&package).contains(&starting) {
+        assert!(Instant::now() < admitted, "{}", monitor_log(&package));
+        thread::sleep(Duration::from_millis(10));
+    }
     thread::sleep((2 * deadline).saturating_sub(stalled.elapsed()));
     terminal.send("\x1dx").unwrap();
     let exiting = Instant::now();
     let left = Instant::now() + TIMEOUT;
-    while ![&flood, &beta].iter().all(|id| {
+    while ![&flood, &beta, &late].iter().all(|id| {
         monitor_log(&package).contains(&format!("client shutdown evidence session={id} "))
     }) {
         assert!(Instant::now() < left, "{}", monitor_log(&package));

@@ -411,11 +411,10 @@ impl Monitor {
         }
     }
 
-    /// Writes what the host takes, handles the next host event, then,
-    /// unless it ends the monitor, what discovery and the supervisor
-    /// reported meanwhile.
+    /// Handles the next host event, then, unless it ends the monitor, what
+    /// discovery and the supervisor reported meanwhile, and writes what the
+    /// host takes of the frame.
     fn step(&mut self, host: &mut Host) -> io::Result<Option<Ending>> {
-        self.pump(host)?;
         let event = host.next(&self.output)?;
         let read = matches!(event, Event::Input(_));
         let ending = self.handle(event)?;
@@ -424,6 +423,7 @@ impl Monitor {
             self.relieve();
             self.retarget();
             self.frame(read)?;
+            self.pump(host)?;
         }
         Ok(ending)
     }
