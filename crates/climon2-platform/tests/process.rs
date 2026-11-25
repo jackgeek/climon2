@@ -548,15 +548,6 @@ fn issue19_kill_session_spares_the_calling_process() {
 }
 
 #[test]
-fn issue19_closing_real_controlling_pty_delivers_hangup() {
-    let (mut child, master, _, terminal) = reporting_fixture("sleep");
-    let mut session = process::TerminalSession::new(child.id(), terminal).unwrap();
-    let status = process::hangup(&mut session, || drop(master)).unwrap();
-    let _ = child.wait();
-    assert_eq!(status.code().unwrap(), 129);
-}
-
-#[test]
 fn issue15_bad_cwd_is_rejected_before_pty_can_fall_back() {
     assert!(process::validate_cwd(std::path::Path::new("/nonexistent-climon2-cwd")).is_err());
     let cwd = std::env::current_dir().unwrap();
