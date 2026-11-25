@@ -180,6 +180,41 @@ To restart it after changing `.env`, run
 Stop the Mac sleeping while it is plugged in (System Settings > Battery >
 Options, or `sudo pmset -c sleep 0`), or a job waits until it wakes.
 
+## Timeouts
+
+A hung test once held the Linux runner for six hours while every other push
+waited ([#401](https://github.com/jackgeek/climon2/issues/401)). Two kinds of
+timeout now bound a gate.
+
+The first bounds each mutant. A mutant's tests run in **stages**: its library
+tests, then its crate's integration tests, then the whole suite, which is the
+full workspace except on Windows. Before any mutant runs,
+`tools/test-mutation.py` times each stage once, unloaded. Each earlier stage
+then gets 10 times its run, and the mutant's whole run gets 10 times one run
+of the suite, which keeps it inside the mutator's own timeout. A mutant that
+outlives a timeout counts as killed, as one that fails a test does.
+
+When a stage ends, whether it passed, failed or timed out, the script ends
+every process its tests started. That includes a `climon2-daemon` that left
+the test's session and whose parent has exited, which killing a process group
+misses. The hung runs left exactly such daemons, still holding the mutator's
+output pipe, so the mutator waited for them. The script finds these processes
+by parent and by an executable in the worker's build folder or in the
+private temporary folder (`TMPDIR`, or `TMP` and `TEMP`) it gives the tests.
+On Linux it also adopts orphaned processes, so parents alone find them. The
+tests write to a file rather than to the mutator's pipe, so a process the
+search missed could not stall the mutator either.
+
+The second bounds each job. `quality.yml` gives each a `timeout-minutes`, a
+clear margin over the longest passing run of its gate. GitHub fails a job
+that reaches it, ends the job's processes, and the runner takes the next job.
+
+| Gate | Longest passing run, by 2026-11-25 | Timeout |
+| --- | --- | --- |
+| Linux | 171 min, 287 mutants; the others 4-109 min | 240 min |
+| Windows | 68 min | 120 min |
+| macOS | none yet | 120 min |
+
 ## Sharing the PC
 
 The Linux gate and the Windows gate run on the same PC, the Windows one
