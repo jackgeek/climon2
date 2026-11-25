@@ -1,5 +1,6 @@
 //! `cargo xtask dist` on Windows: the release zip
-//! (docs/for-humans/windows/distribution.md, "The archive").
+//! (docs/for-humans/windows/distribution.md, "The archive"). `cargo xtask
+//! install` runs the same checked files' installer without making the zip.
 //!
 //! It builds the shipped packages for x86_64 MSVC, takes `conpty.dll` and
 //! `OpenConsole.exe` from the pinned package the harness also uses, lays the
@@ -20,7 +21,9 @@ use climon2_test_term::ConPty;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    env, fs, io,
+    env,
+    ffi::OsString,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -129,7 +132,15 @@ impl Sources {
     }
 }
 
-pub fn run(root: &Path) -> io::Result<()> {
+/// A release's files, laid out and checked in a scratch folder under `target`.
+struct BuiltPayload {
+    scratch: tempfile::TempDir,
+    /// The archive's folder name, inside `scratch`.
+    name: String,
+    files: Vec<Shipped>,
+}
+
+fn build_payload(root: &Path) -> io::Result<BuiltPayload> {
     let version = env!("CARGO_PKG_VERSION");
     release::validate_versions(root, version, PACKAGES)?;
     let conpty = ConPty::provide_files(&root.join("target/conpty"))?;
@@ -149,6 +160,33 @@ pub fn run(root: &Path) -> io::Result<()> {
     let files = shipped(version);
     lay_out(&sources, &scratch.path().join(&name), &files)?;
     verify_library(&scratch.path().join(&name), version)?;
+    Ok(BuiltPayload {
+        scratch,
+        name,
+        files,
+    })
+}
+
+/// `cargo xtask install`: runs the checked payload's `install.exe` with
+/// `args`. As on Unix, where the installer never edits shell start-up files,
+/// it leaves the user's `PATH` alone and the installer prints the entry to add.
+pub fn install(root: &Path, args: &[OsString]) -> io::Result<()> {
+    let payload = build_payload(root)?;
+    let installer = payload
+        .scratch
+        .path()
+        .join(&payload.name)
+        .join("install.exe");
+    quality::run(Command::new(installer).arg("--no-modify-path").args(args))
+}
+
+pub fn run(root: &Path) -> io::Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    let BuiltPayload {
+        scratch,
+        name,
+        files,
+    } = build_payload(root)?;
     let archive = zip(scratch.path(), &name, &files)?;
     let archive_name = format!("{name}.zip");
     let script = stamped_script(&fs::read_to_string(root.join(SCRIPT))?, version)?;

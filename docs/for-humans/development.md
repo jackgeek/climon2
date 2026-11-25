@@ -18,7 +18,7 @@ cargo xtask check --print-mutation-plan
 cargo xtask check --full
 cargo xtask check --full --mutate-all
 cargo xtask dist
-cargo xtask install                      # macOS and Linux only
+cargo xtask install
 cargo xtask install --dir "$HOME/tools/climon2"
 ```
 
@@ -202,24 +202,16 @@ zip and the stamped `install.ps1`. See
 [Windows packaging and upgrades](windows/distribution.md).
 
 `xtask install` builds and checks the same release files as `dist`, then runs
-the installer without making an archive. It needs the same host and tools as
-`dist`. It installs to `~/.local/share/climon2` by default; `--dir <directory>`
-picks another folder. It keeps other versions and prints a PATH hint when
-needed. It does not touch shell start-up files.
+the installer without making an archive. It works the same on every `dist`
+host, and needs the same host and tools as `dist`. By default it installs to
+`~/.local/share/climon2` on macOS and Linux and to `%LOCALAPPDATA%\climon2` on
+Windows; `--dir <directory>` picks another folder. It keeps other versions.
 
-Windows has no `xtask install`. To install a local build there, run
-`cargo xtask dist` and the `install.exe` in the zip it makes, from PowerShell:
-
-```powershell
-cargo xtask dist
-cd target\dist
-Expand-Archive .\climon2-<version>-windows-x86_64-msvc.zip -DestinationPath . -Force
-.\climon2-<version>-windows-x86_64-msvc\install.exe --dir "$env:USERPROFILE\c2test" --no-modify-path
-```
-
-Replace `<version>` with the workspace version; PowerShell does not expand a
-wildcard here. Without `--dir` and `--no-modify-path` it installs as a release
-would, to `%LOCALAPPDATA%\climon2`, and adds that folder to your user `PATH`.
+It never puts the folder on your `PATH`: it does not touch shell start-up
+files, and on Windows it runs `install.exe` with `--no-modify-path`, so your
+user `PATH` stays as it was. The installer prints the entry to add instead. To
+install on Windows as a release would, with the `PATH` change, run
+`cargo xtask dist` and the `install.exe` in the zip it makes.
 
 ## Releasing
 
