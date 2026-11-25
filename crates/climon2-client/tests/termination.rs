@@ -493,7 +493,9 @@ fn a_missing_wrong_release_or_faulty_library_fails_before_any_connection() {
     );
     peer.assert_never_connected();
 
-    let library = peer.library();
+    // The client names the library under its own canonical path (ADR 0001),
+    // which on macOS is under `/private/tmp`.
+    let library = fs::canonicalize(peer.library()).unwrap();
     let named = format!("cannot load the client library {}: ", library.display());
     fs::remove_file(&library).unwrap();
     let message = failed(peer.client());
