@@ -461,8 +461,16 @@ Built so far ([#327](https://github.com/jackgeek/climon2/issues/327)): the
 CLI's `tests/monitor_windows.rs` runs the monitor's Windows scenarios against
 the packaged product: the console refusals, listing, switching and input
 routing, resize, toasts with the bell and the host attention reports,
-prefix+j, exit and console close leaving sessions running, and a stalled
-library load. Each terminal-facing one runs under both host models. The
+prefix+j, exit and console close leaving sessions running, a stalled
+library load, and a host that stops reading the console's output
+([#285](https://github.com/jackgeek/climon2/issues/285)). Each
+terminal-facing one runs under both host models.
+
+A console whose output nobody reads takes no input and starts no thread in
+any process attached to it until its host reads again: ConPTY's console
+host waits for its output pipe. So on Windows, unlike Unix, keys typed and
+sessions started while the host reads nothing reach the monitor only once
+it reads again; the monitor itself never waits in a write. The
 Unix monitor, client-library and headless `exec` suites themselves do not
 build on Windows yet.
 

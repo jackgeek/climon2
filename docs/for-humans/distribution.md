@@ -89,7 +89,11 @@ round and mutates only added or changed functions; the full gate
 runs five rounds and mutates whole changed files. First, unloaded in the warm
 mutation build, each target's earlier mutant stages (library tests, then its
 crate's integration tests) are timed once; each stage timeout is 10 times its
-run, at least 2 s. After timing one unloaded full-workspace run, each round
+run, at least 2 s. The full workspace is timed once too, and 10 times that
+bounds each mutant's whole run. When a stage ends, every process its tests
+started is ended, detached daemons included
+([Quality runners](quality-runners.md#timeouts)). After timing one unloaded
+full-workspace run, each round
 runs 8 suites concurrently, each in a private warm-build copy and its own
 session. Each suite rehearses a mutant's run on the unchanged workspace: the
 earlier stages in order under their stage timeouts, then the full workspace,

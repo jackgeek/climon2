@@ -575,9 +575,17 @@ showing the full title (with any ellipsis) has finished writing to the host,
 and the toast's one bell rings then (owner decision on #115, 2026-11-17): a
 host that accepts output late still sees every title for its whole hold.
 Drawing, fading and erasure use elapsed time and skip obsolete animation
-paints; never accumulate frames or block input/exit. The host write itself
-still blocks the monitor while the host refuses output; render pacing
-(#119) did not make it non-blocking, which remains follow-up work. Over-limit search/
+paints; never accumulate frames or block input/exit.
+
+Host output never blocks the monitor (#285). The monitor writes to the host
+only what it takes at once, and its one wait for host input also ends once
+the host has room again. A frame the host has begun taking is finished
+before anything else; while the host is backed up, each newer frame
+replaces the one still waiting, so the host receives at most one frame
+behind it once it reads again, never a backlog. Meanwhile keys, session
+records, admission and timers are served as usual, and exit and shutdown
+keep their deadlines. Only the final host phase waits for the host to take
+the rest, within `deadlines.final_host_ms`. Over-limit search/
 paste text is rejected visibly, without leaking to an application.
 
 Snapshot accounting permits one retained viewport character baseline and one

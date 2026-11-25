@@ -116,7 +116,7 @@ number.
 | --- | --- |
 | Test | Every workspace test, including the harness's host-model scenarios. It waits for Dist and runs the smoke test against its zip ([#321](https://github.com/jackgeek/climon2/issues/321)) |
 | Quality | The native-only gate over registered Windows files; during development, only when its own switch is on (see [The Quality job during development](#the-quality-job-during-development)) |
-| Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks |
+| Dist | Builds the release zip with `cargo xtask dist`, after testing that command's own checks and `cargo xtask install` |
 | Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip, under Windows PowerShell 5.1 and PowerShell 7 |
 | Neutral (existing) | Its Windows leg stays: `climon2-core`'s tests on Windows |
 
@@ -244,6 +244,21 @@ gate fails unless both come out exactly so.
 `-runtime-counter-relocation`. The gate starts with a probe showing that a
 process ended by `TerminateProcess` keeps its coverage counters, and fails if
 it does not; the daemon is often ended that way in tests.
+
+**Timeouts.** On Windows a mutant's tests are the `WINDOWS_SUITE` runs, in
+order. Before any mutant runs, the gate times one unloaded run of them, and
+each mutant's whole run then has 10 times that. A mutant that outlives it
+counts as killed. When each run ends, whether it passed, failed or timed out,
+`tools/test-mutation.py` ends every process the tests started, so a test that
+starts a `climon2-daemon` and hangs leaves nothing on the machine. It finds
+those processes in the process list: by parent, checked against creation
+times because Windows reuses the ID of a process that has exited, and by an
+executable in the worker's build folder or in the private temporary folder
+(`TMP` and `TEMP`) it gives the tests. The second finds a daemon whose parent
+has exited. The Quality job on the owner's VM fails after 120 minutes; its
+longest passing run took 68
+([#401](https://github.com/jackgeek/climon2/issues/401); see
+[Quality runners](../quality-runners.md)).
 
 **Cost.** When no registered Windows file changed, the gate exits before doing
 any mutation work. A release mutates every registered Windows file. That run

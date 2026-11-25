@@ -1,4 +1,4 @@
-// Off Unix only the source check, the native-only gate and dist are built
+// Off Unix only the source check, the native-only gate, dist and install are built
 // (docs/for-humans/windows/quality.md), so the release tooling they share goes unused.
 #![cfg_attr(not(unix), allow(dead_code))]
 use std::{
@@ -53,7 +53,8 @@ tooling-probe proves staged coverage, complexity counting and covered mutation g
 release-check proves per-package releases exclude hooks and preserve test binaries.
 dist builds verified universal macOS release artifacts (arm64 host), x86_64 GNU/Linux artifacts
 or the x86_64 Windows zip in target/dist.
-install builds verified production artifacts and runs their installer (optional --dir).
+install builds verified production artifacts and runs their installer (optional --dir) on
+every dist host; it leaves PATH and shell start-up files alone and prints the PATH entry to add.
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source.
 measure runs the PERF-01 matrix on an exact candidate archive (climon2-measure; see its README):
@@ -68,7 +69,7 @@ qualify candidate names a final tag's latest release candidate, whose checklist 
 and fails unless the tag differs from it only in the version stamp and qualification/.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
 On Windows it tests only what builds there, after the sentinel and a probe that a killed
-process keeps its coverage. Windows builds no check, tooling-probe, release-check or install.
+process keeps its coverage. Windows builds no check, tooling-probe or release-check.
 Each load round runs 8 workspace suites at once before mutating, even with nothing to mutate;
 mutate skips it. Logs remain in target/flake-logs.
 Cross-architecture execution of the same final archive is enforced in CI.";
@@ -87,6 +88,10 @@ fn main() -> ExitCode {
         windows_source::changed(workspace_root(), &args[1].to_string_lossy())
     } else if args == ["dist"] {
         dist::run(workspace_root())
+    } else if args == ["install"] {
+        dist::install(workspace_root(), &[])
+    } else if args.len() == 3 && args[0] == "install" && args[1] == "--dir" && !args[2].is_empty() {
+        dist::install(workspace_root(), &args[1..])
     } else if args == ["setup-quality"] {
         quality::setup(workspace_root())
     } else if args == ["mutation-probe"] {
@@ -118,8 +123,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// The commands that need the Unix installer and release tooling: everything
-/// but the source check and the native-only gate, which Windows CI runs.
+/// The commands that need the Unix release tooling: the gate, its tooling
+/// proofs and the per-package release check.
 #[cfg(unix)]
 fn unix_command(args: &[OsString]) -> Option<io::Result<()>> {
     Some(if let Some(options) = CheckOptions::parse(args) {
@@ -128,10 +133,6 @@ fn unix_command(args: &[OsString]) -> Option<io::Result<()>> {
         quality::tooling_probe(workspace_root())
     } else if args == ["release-check"] {
         release::unix::check(workspace_root())
-    } else if args == ["install"] {
-        dist::install(workspace_root(), &[])
-    } else if args.len() == 3 && args[0] == "install" && args[1] == "--dir" && !args[2].is_empty() {
-        dist::install(workspace_root(), &args[1..])
     } else {
         return None;
     })

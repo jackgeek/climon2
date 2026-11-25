@@ -74,7 +74,9 @@ monitor's own attention reports, prefix+j jumps to it, and prefix+x exits 0
 leaving every session running. Each of these runs under both the Windows
 Terminal and the VS Code host models. Closing the console ends the monitor
 and leaves sessions running, and a library load held by an oplock leaves
-the monitor responsive until it completes. It needs the monitor binary
+the monitor responsive until it completes. A host that stops reading the
+console's output for 5 s leaves the selected session controlled, and once
+it reads again keys reach the session and prefix+x exits (#285). It needs the monitor binary
 built first (`cargo test -p climon2-monitor`).
 `tests/support/mod.rs` holds the packaged layout, home and `pwsh` profile
 it shares with the smoke test.

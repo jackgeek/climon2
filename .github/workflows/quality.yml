@@ -69,7 +69,10 @@ jobs:
     needs: base
     if: contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
     runs-on: [self-hosted, Linux, X64, climon2-quality]
-    timeout-minutes: 360
+    # A hung gate holds the only Linux runner, so every other push waits on it
+    # (#401). The longest passing Linux gate took 171 min (287 mutants,
+    # 2026-11-24); the others took 4-109 min.
+    timeout-minutes: 240
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
       # The Linux and Windows gates share the owner's PC. One worker left it
@@ -110,7 +113,8 @@ jobs:
     needs: base
     if: contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
     runs-on: [self-hosted, Windows, X64, climon2-quality]
-    timeout-minutes: 360
+    # The longest passing Windows gate took 68 min (2026-11-23) (#401).
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -156,7 +160,9 @@ jobs:
     needs: base
     if: contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
     runs-on: [self-hosted, macOS, X64, climon2-quality]
-    timeout-minutes: 360
+    # No macOS gate has run here yet; as Windows, which also qualifies only
+    # native source (#401).
+    timeout-minutes: 120
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
     steps:

@@ -1,15 +1,48 @@
 #![cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"),
+    all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
 ))]
 
-use std::{fs, path::Path, process::Command};
+use std::{
+    env::consts::EXE_SUFFIX,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 /// The client library's file name in every version folder (library embedding).
 #[cfg(target_os = "macos")]
 const LIBRARY: &str = "libclimon2_client.dylib";
 #[cfg(target_os = "linux")]
 const LIBRARY: &str = "libclimon2_client.so";
+#[cfg(windows)]
+const LIBRARY: &str = "climon2_client.dll";
+
+/// What the installer prints for a home that is not on `PATH`. No platform's
+/// `xtask install` puts it there.
+#[cfg(unix)]
+const PATH_HINT: &str = "export PATH=";
+#[cfg(windows)]
+const PATH_HINT: &str = "climon2: PATH was not changed.";
+
+/// The variable naming the folder the installer's default home is under, and
+/// that home inside the folder.
+#[cfg(unix)]
+const DEFAULT_HOME: (&str, &str) = ("HOME", ".local/share/climon2");
+#[cfg(windows)]
+const DEFAULT_HOME: (&str, &str) = ("LOCALAPPDATA", "climon2");
+
+/// The user's own folder, where rustup and Cargo keep theirs by default.
+fn user_folder() -> PathBuf {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .unwrap()
+        .into()
+}
+
+fn program(folder: &Path, name: &str) -> PathBuf {
+    folder.join(format!("{name}{EXE_SUFFIX}"))
+}
 
 fn xtask() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
@@ -29,11 +62,11 @@ fn assert_installed(destination: &Path) {
         version
     );
     for path in [
-        destination.join("c2"),
-        destination.join(version).join("climon2-cli"),
-        destination.join(version).join("climon2-daemon"),
-        destination.join(version).join("climon2-client"),
-        destination.join(version).join("climon2-monitor"),
+        program(destination, "c2"),
+        program(&destination.join(version), "climon2-cli"),
+        program(&destination.join(version), "climon2-daemon"),
+        program(&destination.join(version), "climon2-client"),
+        program(&destination.join(version), "climon2-monitor"),
         destination.join(version).join(LIBRARY),
     ] {
         let bytes = fs::read(path).unwrap();
@@ -43,7 +76,7 @@ fn assert_installed(destination: &Path) {
                 .any(|window| window == b"CLIMON2_TEST_HOOKS_ENABLED")
         );
     }
-    let output = Command::new(destination.join("c2"))
+    let output = Command::new(program(destination, "c2"))
         .arg("--version")
         .output()
         .unwrap();
@@ -69,29 +102,35 @@ fn install_builds_production_artifacts_and_preserves_existing_versions() {
         fs::read_to_string(destination.join("0.0.1/preserved")).unwrap(),
         "old version"
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("export PATH="));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(PATH_HINT),
+        "{output:?}"
+    );
 }
 
 #[test]
 fn install_uses_the_installers_default_destination() {
     let temporary = tempfile::tempdir().unwrap();
-    let home = std::env::var_os("HOME").unwrap();
+    let home = user_folder();
+    let (variable, folder) = DEFAULT_HOME;
     let output = xtask()
         .env(
             "RUSTUP_HOME",
-            std::env::var_os("RUSTUP_HOME")
-                .unwrap_or_else(|| Path::new(&home).join(".rustup").into()),
+            std::env::var_os("RUSTUP_HOME").unwrap_or_else(|| home.join(".rustup").into()),
         )
         .env(
             "CARGO_HOME",
-            std::env::var_os("CARGO_HOME")
-                .unwrap_or_else(|| Path::new(&home).join(".cargo").into()),
+            std::env::var_os("CARGO_HOME").unwrap_or_else(|| home.join(".cargo").into()),
         )
-        .env("HOME", temporary.path())
+        .env(variable, temporary.path())
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert_installed(&temporary.path().join(".local/share/climon2"));
+    assert_installed(&temporary.path().join(folder));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(PATH_HINT),
+        "{output:?}"
+    );
 }
 
 #[test]
