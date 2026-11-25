@@ -223,8 +223,6 @@ struct Monitor {
     frames: cadence::Frames,
     /// What the host has been handed and not yet taken (#285).
     output: Output,
-    /// The toasts whose full titles the frames on their way show.
-    titles: Titles,
     /// Client reports waiting to be applied, in fair turns within the work
     /// quanta (#119).
     work: cadence::Work<SessionId, ClientEvent>,
@@ -236,30 +234,6 @@ struct Monitor {
 
 /// A session under the authority it takes input with.
 type Target = (SessionId, Authority);
-
-/// The toast, by when it began, whose full title a frame on its way to the
-/// host shows: its hold starts once that frame has been written (owner
-/// decision on #115, 2026-11-17).
-#[derive(Default)]
-struct Titles {
-    /// The frame waiting to be handed to the host.
-    next: Option<Instant>,
-    /// The bytes being written.
-    writing: Option<Instant>,
-}
-
-impl Titles {
-    /// A frame showing the full title of `titling`, if any, was drawn: it
-    /// waits, or it is the frame the host was handed last.
-    fn drawn(&mut self, waits: bool, titling: Option<Instant>) {
-        if waits {
-            self.next = titling;
-        } else {
-            self.next = None;
-            self.writing = self.writing.or(titling);
-        }
-    }
-}
 
 /// The selected session, whether a modal covers it, and the authority its
 /// control period and restoration hold, if any: any change is a target
@@ -331,7 +305,6 @@ impl Monitor {
             bell: config.settings().bell,
             frames: cadence::Frames::new(limits.cadence().fps),
             output: Output::default(),
-            titles: Titles::default(),
             work: work(limits.cadence()),
             memory: limits.memory(),
             inspected: BTreeMap::new(),
@@ -388,8 +361,7 @@ impl Monitor {
             thread::sleep(TICK);
             return Ok(());
         }
-        let waits = self.screen.exiting(waiting)?;
-        self.titles.drawn(waits, None);
+        self.screen.exiting(waiting)?;
         self.pump(host)?;
         self.resized(host)
     }
@@ -518,8 +490,7 @@ impl Monitor {
             now,
             session,
         };
-        let waits = self.screen.show(&scene)?;
-        self.titles.drawn(waits, titling);
+        self.screen.show(&scene, titling)?;
         self.attend();
         Ok(())
     }
@@ -539,12 +510,11 @@ impl Monitor {
     /// The host has written everything it was handed: hands it the newest
     /// frame and any bell, and says whether it handed anything.
     fn hand_on(&mut self) -> bool {
-        if let Some(toast) = self.titles.writing.take() {
+        if let Some(toast) = self.screen.written() {
             self.title(toast);
         }
         if let Some(bytes) = self.screen.commit() {
             self.output.queue(&bytes);
-            self.titles.writing = self.titles.next.take();
         }
         !self.output.idle()
     }

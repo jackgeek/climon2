@@ -113,9 +113,9 @@ impl Host {
                 return Ok(());
             }
             let mut watches = [output.watch(&self.terminal)];
-            if let Err(error) = waiting::wait(&mut watches, TICK) {
-                interrupted(error)?;
-            }
+            waiting::wait(&mut watches, TICK)
+                .map(drop)
+                .or_else(interrupted)?;
         }
     }
 
@@ -139,12 +139,10 @@ impl Host {
         self.input(output)
     }
 
-    /// Input a ready wait slot did not hold after all, as a Windows console
-    /// slot may not, is idle.
+    /// Host input after one wait, idle while none waits: the input is read
+    /// without blocking.
     fn input(&mut self, output: &Output) -> io::Result<Event<'_>> {
-        if !self.readable(output)? {
-            return Ok(Event::Idle);
-        }
+        self.wait(output)?;
         match self.read() {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Event::Idle),
             read => read.map(Event::Input),
@@ -152,18 +150,15 @@ impl Host {
     }
 
     /// Waits one tick for input, or until the host has room for `output`.
-    /// A wait that a signal interrupts finds none, and the caller checks
-    /// signals before waiting again.
-    fn readable(&self, output: &Output) -> io::Result<bool> {
+    /// A signal only ends the wait early, and the caller checks signals
+    /// before waiting again.
+    fn wait(&self, output: &Output) -> io::Result<()> {
         let mut watches = [self.terminal.watch_input(), output.watch(&self.terminal)];
         #[cfg(feature = "test-hooks")]
-        if let Err(error) = crate::hooks::wait_failure() {
-            return interrupted(error);
-        }
-        match waiting::wait(&mut watches, TICK) {
-            Err(error) => interrupted(error),
-            Ok(_) => Ok(watches[0].ready()),
-        }
+        crate::hooks::wait_failure().or_else(interrupted)?;
+        waiting::wait(&mut watches, TICK)
+            .map(drop)
+            .or_else(interrupted)
     }
 
     fn read(&mut self) -> io::Result<&[u8]> {
@@ -178,10 +173,11 @@ impl Host {
     }
 }
 
-/// An interrupted wait found no input; any other failed wait ends the monitor.
-fn interrupted(error: io::Error) -> io::Result<bool> {
+/// A wait a signal interrupted only ended early; any other failed wait ends
+/// the monitor.
+fn interrupted(error: io::Error) -> io::Result<()> {
     if error.kind() == io::ErrorKind::Interrupted {
-        return Ok(false);
+        return Ok(());
     }
     Err(io::Error::new(
         error.kind(),
