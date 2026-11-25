@@ -402,10 +402,16 @@ fn a_host_that_stops_reading_recovers_once_it_reads_again(model: HostModel) {
     wait(&mut terminal, &home, "tick 5");
     terminal.stop_reading();
     std::thread::sleep(Duration::from_secs(5));
-    let mark = terminal.received_total();
     terminal.resume_reading();
+    // Frames skip ticks, so any tick from 100 on shows the newer output.
+    let newer = |screen: &str| {
+        screen.split("tick ").skip(1).any(|rest| {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u32>().is_ok_and(|tick| tick >= 100)
+        })
+    };
     terminal
-        .wait_for_bytes_since(mark, b"tick 150", TIMEOUT)
+        .wait_for_screen(TIMEOUT, newer)
         .unwrap_or_else(|error| panic!("{error}\nLOGS:\n{}", home.logs()));
     top_row_starts(&mut terminal, &home, "Flood");
     terminal.send("ab").unwrap();

@@ -7823,7 +7823,9 @@ fn a_host_that_stops_reading_stalls_only_its_own_output() {
     assert!(exiting.elapsed() < shutdown, "{:?}", exiting.elapsed());
     let confirmed = |detached: bool| {
         format!(
-            "leave=Some(Confirmed) detached=Some({detached}) closed=Some(true)              failed=Some(false) workers=Some(true) released=true destroyed=Some(true)              joined=true"
+            "leave=Some(Confirmed) detached=Some({detached}) closed=Some(true) \
+             failed=Some(false) workers=Some(true) released=true destroyed=Some(true) \
+             joined=true"
         )
     };
     assert_eq!(evidence(&package, &flood), confirmed(true));
