@@ -36,7 +36,8 @@ pub use hello::hello_peer;
 pub use input::{Mouse, MouseButton};
 #[cfg(unix)]
 pub use isolation::{
-    Isolation, bin_path, client_library_path, copy_executable, output_within, process_command,
+    Isolation, bin_path, client_library_path, copy_executable, harness_shell, output_within,
+    process_command,
 };
 #[cfg(unix)]
 pub use shell::controlled_bash;

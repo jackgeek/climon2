@@ -113,7 +113,10 @@ fn harness_command_shell_probe() {
 /// which parallel test threads race. The harness sets it from its own SHELL.
 #[test]
 fn harness_commands_take_shell_from_the_test_process() {
-    assert_harness_shell(Some("/climon2-test/sentinel-shell"), "/climon2-test/sentinel-shell");
+    assert_harness_shell(
+        Some("/climon2-test/sentinel-shell"),
+        "/climon2-test/sentinel-shell",
+    );
 }
 
 /// #170: a test process without SHELL gives its commands /bin/sh, not a

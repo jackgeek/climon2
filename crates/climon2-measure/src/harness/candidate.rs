@@ -166,6 +166,7 @@ impl User {
         for (name, value) in self.environment() {
             command.env(name, value);
         }
+        command.env("SHELL", climon2_test_term::harness_shell());
         command.args(args);
         command
     }

@@ -97,6 +97,7 @@ impl Layout {
         command.env("CLIMON2_HOME", self.home());
         command.env("PATH", "/usr/bin:/bin");
         command.env("CLIMON2_TEST_ID", self.marker());
+        command.env("SHELL", climon2_test_term::harness_shell());
         if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }
