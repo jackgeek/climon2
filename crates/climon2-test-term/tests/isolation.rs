@@ -79,3 +79,46 @@ fn non_terminal_commands_do_not_inherit_other_tests_descriptors() {
         .unwrap();
     assert!(status.success(), "unrelated descriptor survived exec");
 }
+
+/// Runs `harness_command_shell_probe` in a child test process whose own
+/// `SHELL` is `parent` (`None` leaves it unset), and asserts the probe saw
+/// `expected` as the harness command's `SHELL`.
+fn assert_harness_shell(parent: Option<&str>, expected: &str) {
+    let mut command = climon2_test_term::process_command(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "harness_command_shell_probe", "--ignored"])
+        .env("CLIMON2_EXPECTED_SHELL", expected);
+    match parent {
+        Some(shell) => command.env("SHELL", shell),
+        None => command.env_remove("SHELL"),
+    };
+    let output = climon2_test_term::output_within(&mut command, Duration::from_secs(30));
+    assert!(
+        output.status.success(),
+        "SHELL {parent:?} did not reach the harness command as {expected:?}:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "run in a child process by harness_commands_take_shell_from_the_test_process"]
+fn harness_command_shell_probe() {
+    let expected = std::env::var_os("CLIMON2_EXPECTED_SHELL").expect("expected SHELL");
+    let command = Isolation::new().command("true");
+    assert_eq!(command.get_env("SHELL"), Some(expected.as_os_str()));
+}
+
+/// #170: without SHELL, portable-pty looks the shell up with getpwuid(3),
+/// which parallel test threads race. The harness sets it from its own SHELL.
+#[test]
+fn harness_commands_take_shell_from_the_test_process() {
+    assert_harness_shell(Some("/climon2-test/sentinel-shell"), "/climon2-test/sentinel-shell");
+}
+
+/// #170: a test process without SHELL gives its commands /bin/sh, not a
+/// password-database lookup.
+#[test]
+fn harness_commands_default_shell_to_bin_sh() {
+    assert_harness_shell(None, "/bin/sh");
+}
