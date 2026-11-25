@@ -32,7 +32,7 @@ mod unix;
 #[cfg(windows)]
 pub use crate::windows::Terminal;
 #[cfg(unix)]
-pub use unix::{InputTerminal, Terminal};
+pub use unix::{InputTerminal, Terminal, harness_shell};
 
 /// How many of the latest output bytes a terminal keeps for
 /// [`Terminal::received`]: enough for a test's whole run of monitor

@@ -11,6 +11,8 @@ use nix::{
 };
 use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty};
 use std::{
+    env,
+    ffi::OsString,
     io,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
@@ -29,12 +31,20 @@ pub struct Terminal {
     exit: Option<i32>,
 }
 
+/// The `SHELL` every harness spawn carries: the test process's own, or
+/// `/bin/sh` when it has none. A command without `SHELL` makes portable-pty
+/// look the shell up with `getpwuid(3)`, whose static buffer parallel test
+/// threads overwrite, so a spawn could see the wrong shell (#170).
+pub fn harness_shell() -> OsString {
+    env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())
+}
+
 /// A command without `SHELL` makes portable-pty look the shell up with
 /// `getpwuid(3)`, which parallel test threads race (#170), so every spawn
 /// without one gets the harness's.
 fn with_shell(mut command: CommandBuilder) -> CommandBuilder {
     if command.get_env("SHELL").is_none() {
-        command.env("SHELL", crate::isolation::harness_shell());
+        command.env("SHELL", harness_shell());
     }
     command
 }
