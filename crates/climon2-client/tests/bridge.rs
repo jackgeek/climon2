@@ -2145,12 +2145,13 @@ fn nonexistent_socket_and_bad_metadata_fail_without_touching_termios() {
 
 /// LIB-02 executable case, attach mode: a missing library fails with 125
 /// and the loader's diagnostic before raw mode and before anything connects.
+/// The diagnostic names the library the client derived from its own
+/// canonical path (ADR 0001), which on macOS is under `/private/tmp`.
 #[test]
 fn a_missing_library_fails_attach_before_any_connection() {
     let (home, metadata, listener) = setup();
     let folder = installed_client(home.path());
-    let library = folder
-        .parent()
+    let library = fs::canonicalize(folder.parent().unwrap())
         .unwrap()
         .join(client_library_path().file_name().unwrap());
     fs::remove_file(&library).unwrap();
