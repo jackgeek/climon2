@@ -148,16 +148,44 @@ impl Terminal {
         }
     }
 
+    /// Waits until a program's write to this terminal would wait, its
+    /// buffer full while [`Terminal::stop_reading`] holds the host's
+    /// reading, as the terminal device itself reports.
+    pub fn wait_for_output_blocked(&self, timeout: Duration) -> io::Result<()> {
+        let device = self.opened(std::fs::OpenOptions::new().write(true))?;
+        let deadline = Instant::now() + timeout;
+        while writable(&device)? {
+            if Instant::now() >= deadline {
+                return Err(self
+                    .screen
+                    .0
+                    .lock()
+                    .expect("screen lock")
+                    .failure(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "the terminal's output never filled",
+                    )));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
     /// The terminal device the programs read, opened without becoming anyone's
     /// controlling terminal.
     fn device(&self) -> io::Result<std::fs::File> {
+        self.opened(std::fs::OpenOptions::new().read(true))
+    }
+
+    /// The terminal device the programs use, opened as `options` say,
+    /// without becoming anyone's controlling terminal.
+    fn opened(&self, options: &mut std::fs::OpenOptions) -> io::Result<std::fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         let path = self
             .master
             .tty_name()
             .ok_or_else(|| io::Error::other("terminal device unnamed"))?;
-        std::fs::OpenOptions::new()
-            .read(true)
+        options
             .custom_flags(nix::libc::O_NOCTTY | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
             .open(path)
     }
@@ -272,6 +300,22 @@ fn unread(device: &std::fs::File) -> io::Result<usize> {
         return Err(io::Error::last_os_error());
     }
     usize::try_from(count).map_err(io::Error::other)
+}
+
+/// Whether a write to `device` would take bytes now.
+fn writable(device: &std::fs::File) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let mut entry = nix::libc::pollfd {
+        fd: device.as_raw_fd(),
+        events: nix::libc::POLLOUT,
+        revents: 0,
+    };
+    // poll reads and updates one pollfd and returns at once with a zero
+    // timeout.
+    if unsafe { nix::libc::poll(&mut entry, 1, 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(entry.revents & nix::libc::POLLOUT != 0)
 }
 
 fn terminal_is_raw(fd: i32) -> io::Result<bool> {

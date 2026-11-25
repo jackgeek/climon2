@@ -7646,6 +7646,185 @@ fn rendering_keeps_to_its_frame_rate_while_input_the_selector_and_exit_respond()
     package.assert_clean();
 }
 
+/// Bash that titles its session `title`, keeps what it is typed in
+/// `$HOME/<title>.got`, and until `$HOME/finish` exists prints `tick <n>`
+/// lines every 20 ms, each once `n` is in `$HOME/<title>.tick`: frames
+/// keep coming, so a host that stops reading soon has a full buffer.
+fn flooding(title: &str) -> String {
+    working(&format!(
+        "printf '\\033]2;{title}\\007'; stty raw -echo; cat </dev/tty >\"$HOME/{title}.got\" & i=0; \
+         until [ -e \"$HOME/finish\" ] || [ \"$SECONDS\" -ge 120 ]; do \
+         i=$((i+1)); echo \"$i\" > \"$HOME/{title}.tick\"; printf 'tick %d\\r\\n' \"$i\"; \
+         sleep 0.02; done; kill $!"
+    ))
+}
+
+/// The last tick the [`flooding`] session `title` printed, or is printing.
+fn ticked(package: &Package, title: &str) -> u64 {
+    let path = package.isolation.home().join(format!("{title}.tick"));
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        // `echo` truncates the file before writing it.
+        let tick = fs::read_to_string(&path).unwrap_or_default();
+        if let Ok(tick) = tick.trim().parse() {
+            return tick;
+        }
+        assert!(Instant::now() < deadline, "{title} never ticked");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Waits until the [`flooding`] session `title` has printed tick `tick`.
+fn ticked_to(package: &Package, title: &str, tick: u64) {
+    let deadline = Instant::now() + TIMEOUT;
+    while ticked(package, title) < tick {
+        assert!(
+            Instant::now() < deadline,
+            "{title} never reached tick {tick}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Every tick number `bytes` paint, in order.
+fn painted_ticks(bytes: &[u8]) -> Vec<u64> {
+    let text = String::from_utf8_lossy(bytes);
+    text.match_indices("tick ")
+        .filter_map(|(at, found)| {
+            let rest = &text[at + found.len()..];
+            let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            rest[..digits].parse().ok()
+        })
+        .collect()
+}
+
+/// Waits until the host shows the [`flooding`] session `title` controlled,
+/// with its ticks.
+fn flooded(terminal: &Terminal, title: &str) {
+    let top = controlled(title, RUNNING);
+    whole_frame_shows(terminal, "the ticks", |screen| {
+        screen.lines().next() == Some(top.as_str()) && screen.contains("\ntick ")
+    });
+}
+
+/// LIM-06 (Monitor: a host that stops reading; #285): while the host reads
+/// nothing, its buffer full, the selected session keeps printing and the
+/// monitor keeps applying it, drawing each newer frame in place of the one
+/// the host has not taken. Once the host reads again it receives the rest
+/// of the frame it was given before it stopped, then the newest: never a
+/// frame showing what the session printed while the host was backed up and
+/// overtook long before it read again. The monitor still exits on prefix+x.
+#[test]
+fn a_backed_up_host_receives_only_the_newest_frame_once_it_drains() {
+    let package = Package::new();
+    without_introduction(&package);
+    headless(&package, &flooding("Flood"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    flooded(&terminal, "Flood");
+    let mark = terminal.received_total();
+    terminal.stop_reading();
+    terminal.wait_for_output_blocked(TIMEOUT).unwrap();
+    let blocked = ticked(&package, "Flood");
+    ticked_to(&package, "Flood", blocked + 120);
+    terminal.resume_reading();
+    let newest = blocked + 90;
+    whole_frame_shows(&terminal, &format!("tick {newest} or later"), |_| {
+        painted_ticks(&terminal.received_tail(64 * 1024))
+            .iter()
+            .any(|tick| *tick >= newest)
+    });
+    let received = terminal.received();
+    let since = usize::try_from(terminal.received_total() - mark).unwrap();
+    let painted = painted_ticks(&received[received.len() - since..]);
+    // Frames a monitor that queued them would have sent: drawn while the
+    // host was backed up, each overtaken many ticks before it read again.
+    // The few ticks after `blocked` allow for a frame the host's buffer
+    // took as it filled.
+    let obsolete = blocked + 10..=blocked + 60;
+    let stale: Vec<_> = painted
+        .iter()
+        .filter(|tick| obsolete.contains(tick))
+        .collect();
+    assert!(stale.is_empty(), "obsolete ticks {stale:?} after {blocked}");
+    terminal.send("\x1dx").unwrap();
+    support::assert_released(&package, &mut terminal, 0);
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
+/// LIM-06 (Monitor: a host that stops reading; #285), EXT-01 (Monitor: exit
+/// under a stalled host): a host that reads nothing for longer than the
+/// operation and delivery-stall deadlines (2 s here) stalls nothing but its
+/// own output. Keys typed meanwhile reach the selected session, another
+/// session's attention report is applied, and prefix+x shuts every client
+/// down within the shutdown deadline while the host still reads nothing.
+/// Once it reads again, it hears the attention report and is released,
+/// and the monitor exits 0.
+#[test]
+fn a_host_that_stops_reading_stalls_only_its_own_output() {
+    let package = Package::new();
+    without_introduction(&package);
+    let deadline = Duration::from_secs(2);
+    let shutdown = Duration::from_secs(10);
+    limits_config(
+        &package,
+        json!({"deadlines": {
+            "operation_ms": 2000,
+            "delivery_stall_ms": 2000,
+            "shutdown_ms": 10_000,
+            // The release waits for the host to read again.
+            "final_host_ms": 300_000,
+        }}),
+    );
+    let flood = headless(&package, &flooding("Flood"), "finish");
+    let mut terminal = outer(&package, "c2 monitor");
+    flooded(&terminal, "Flood");
+    let beta = headless(&package, &watched("Beta"), "finish");
+    terminal.send("\x1ds").unwrap();
+    listed_with(&terminal, RUNNING, "Beta");
+    terminal.send(ESCAPE).unwrap();
+    selector_closed(&terminal);
+
+    terminal.stop_reading();
+    terminal.wait_for_output_blocked(TIMEOUT).unwrap();
+    let stalled = Instant::now();
+    terminal.send("typed while stalled").unwrap();
+    let got = package.isolation.home().join("Flood.got");
+    let typed = Instant::now() + TIMEOUT;
+    while !fs::read(&got)
+        .unwrap_or_default()
+        .ends_with(b"typed while stalled")
+    {
+        assert!(Instant::now() < typed, "the keys never reached Flood");
+        thread::sleep(Duration::from_millis(10));
+    }
+    report_state(&package, "Beta", "idle");
+    thread::sleep((2 * deadline).saturating_sub(stalled.elapsed()));
+    terminal.send("\x1dx").unwrap();
+    let exiting = Instant::now();
+    let left = Instant::now() + TIMEOUT;
+    while ![&flood, &beta].iter().all(|id| {
+        monitor_log(&package).contains(&format!("client shutdown evidence session={id} "))
+    }) {
+        assert!(Instant::now() < left, "{}", monitor_log(&package));
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(exiting.elapsed() < shutdown, "{:?}", exiting.elapsed());
+    let confirmed = |detached: bool| {
+        format!(
+            "leave=Some(Confirmed) detached=Some({detached}) closed=Some(true)              failed=Some(false) workers=Some(true) released=true destroyed=Some(true)              joined=true"
+        )
+    };
+    assert_eq!(evidence(&package, &flood), confirmed(true));
+    assert_eq!(evidence(&package, &beta), confirmed(false));
+    terminal.resume_reading();
+    support::assert_released(&package, &mut terminal, 0);
+    let blocked = HostSignal::Osc7501(BLOCKED.to_vec());
+    assert!(terminal.host_signals().contains(&blocked));
+    finish_sessions(&package, "finish");
+    package.assert_clean();
+}
+
 const ATTENTION: &str = "Needs attention";
 const ACKNOWLEDGED: &str = "Acknowledged";
 /// What prefix+j says when no session qualifies (owner decision on #114).

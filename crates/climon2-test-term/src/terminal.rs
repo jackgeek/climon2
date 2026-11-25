@@ -168,6 +168,9 @@ pub(crate) struct Screen {
     /// How many output bytes arrived in all, kept or not.
     total: u64,
     pub(crate) eof: bool,
+    /// The reader takes nothing more until this is false again
+    /// ([`Terminal::stop_reading`]).
+    paused: bool,
     error: Option<io::Error>,
     #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) last_output: Instant,
@@ -283,6 +286,7 @@ pub(crate) fn new_screen(
             recent: Vec::new(),
             total: 0,
             eof: false,
+            paused: false,
             error: None,
             last_output: Instant::now(),
         }),
@@ -322,6 +326,11 @@ pub(crate) fn spawn_reader(
         let mut parser: Processor = Processor::new();
         let mut buffer = [0; 4096];
         loop {
+            drop(
+                changed
+                    .wait_while(screen.lock().expect("screen lock"), |state| state.paused)
+                    .expect("screen wait"),
+            );
             let result = input.read(&mut buffer);
             let mut state = screen.lock().expect("screen lock");
             match result {
@@ -405,6 +414,20 @@ impl Terminal {
 
     pub fn screen(&self) -> String {
         self.screen.0.lock().expect("screen lock").text()
+    }
+
+    /// Stops reading what the programs on the terminal write, as a host
+    /// that stops reading does: once the terminal's buffer is full, their
+    /// writes wait. What the reader already took is still parsed.
+    pub fn stop_reading(&self) {
+        self.screen.0.lock().expect("screen lock").paused = true;
+    }
+
+    /// Reads what the programs write again, from where reading stopped.
+    pub fn resume_reading(&self) {
+        let (screen, changed) = &*self.screen;
+        screen.lock().expect("screen lock").paused = false;
+        changed.notify_all();
     }
 
     /// The visible screen row `row` (0-based), with every column.
