@@ -391,13 +391,20 @@ impl Monitor {
         let read = matches!(event, Event::Input(_));
         let ending = self.handle(event)?;
         if ending.is_none() {
-            self.collect();
-            self.relieve();
-            self.retarget();
-            self.frame(read)?;
-            self.pump(host)?;
+            self.turn(host, read)?;
         }
         Ok(ending)
+    }
+
+    /// The rest of a step that did not end the monitor: what discovery and
+    /// the supervisor reported, the frame, if one is due or `read` asks for
+    /// it at once, and what the host takes of it.
+    fn turn(&mut self, host: &mut Host, read: bool) -> io::Result<()> {
+        self.collect();
+        self.relieve();
+        self.retarget();
+        self.frame(read)?;
+        self.pump(host)
     }
 
     /// A target change since the last read discards a pending prefix (spec
