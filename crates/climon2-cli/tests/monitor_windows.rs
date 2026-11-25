@@ -227,14 +227,15 @@ fn top_row_starts(terminal: &mut Terminal, home: &Home, start: &str) {
     }
 }
 
-/// Selects the session labelled `name` by searching the selector for it.
+/// Selects the session titled `name` by searching the selector for it.
+///
+/// It waits until every listed session runs: Enter on a session still
+/// starting selects it without taking control (spec #73, "Enter"), and a
+/// starting row's label is its whole command line, which the search may
+/// match whatever `name` is (#390).
 fn select(terminal: &mut Terminal, home: &Home, name: &str) {
     terminal.send("\x1ds").unwrap();
-    let listed = terminal.wait_for_screen(TIMEOUT, |screen| {
-        screen
-            .lines()
-            .any(|line| line.starts_with(" ║") && line.contains(name))
-    });
+    let listed = terminal.wait_for_screen(TIMEOUT, |screen| choosable(screen, name));
     if let Err(error) = listed {
         panic!("{error}\nLOGS:\n{}", home.logs());
     }
@@ -250,6 +251,19 @@ fn select(terminal: &mut Terminal, home: &Home, name: &str) {
     if let Err(error) = controlling {
         panic!("{error}\nLOGS:\n{}", home.logs());
     }
+}
+
+/// Whether the open selector on `screen` lists only running sessions, the
+/// one titled `name` among them.
+fn choosable(screen: &str, name: &str) -> bool {
+    let rows: Vec<&str> = screen
+        .lines()
+        .filter_map(|line| line.trim_end().strip_prefix(" ║")?.strip_suffix('║'))
+        .map(str::trim_end)
+        .filter(|row| !row.is_empty() && !row.starts_with("Enter: select"))
+        .collect();
+    let running = rows.iter().all(|row| row.starts_with("Running "));
+    running && rows.contains(&format!("Running {name}").as_str())
 }
 
 /// Exits the monitor with prefix+x and waits until the outer shell says its
