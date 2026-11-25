@@ -315,6 +315,10 @@ _Avoid_: Relayed session, foreign session
 A session whose session daemon runs on the same machine as the monitor presenting it.
 _Avoid_: Native session, own session
 
+**Session stream**:
+The part of a monitor link that carries one client instance's requests and deliveries for one remote session.
+_Avoid_: Channel, tunnel
+
 ## Web monitor
 
 **Web monitor**:
