@@ -460,7 +460,11 @@ impl Monitor {
     /// Paints the current scene when it differs from what the screen shows.
     /// Each terminal first learns whether this frame shows its applied
     /// restoration, so its control and input readiness describe the frame
-    /// being painted.
+    /// being painted. While the host has yet to take what it was handed,
+    /// the frame is drawn only once it has: one drawn meanwhile would only
+    /// be replaced, and a host that takes little at a time, as a macOS
+    /// terminal does, would wait for a whole frame to be drawn for each
+    /// write (#419).
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
         self.frames.painted(now);
@@ -497,7 +501,7 @@ impl Monitor {
             now,
             session,
         };
-        self.screen.show(&scene, titling)?;
+        draw(&mut self.screen, &self.output, &scene, titling)?;
         self.attend();
         Ok(())
     }
@@ -505,25 +509,39 @@ impl Monitor {
     /// Writes what the host takes now, never waiting for it (#285). Each
     /// time it has taken everything it was handed, a toast whose full title
     /// that showed begins its hold, and the newest frame is handed on, so
-    /// frames drawn meanwhile never queue.
+    /// frames never queue.
     fn pump(&mut self, host: &mut Host) -> io::Result<()> {
         host.write(&mut self.output)?;
-        while self.output.idle() && self.hand_on() {
+        while self.hand_on()? {
             host.write(&mut self.output)?;
         }
         Ok(())
     }
 
-    /// The host has written everything it was handed: hands it the newest
-    /// frame and any bell, and says whether it handed anything.
-    fn hand_on(&mut self) -> bool {
+    /// Once the host has written everything it was handed: hands it the
+    /// newest frame, drawn now if one waited for the host, and any bell, and
+    /// says whether it handed anything.
+    fn hand_on(&mut self) -> io::Result<bool> {
+        if !self.output.idle() {
+            return Ok(false);
+        }
         if let Some(toast) = self.screen.written() {
             self.title(toast);
         }
+        self.redraw()?;
         if let Some(bytes) = self.screen.commit() {
             self.output.queue(&bytes);
         }
-        !self.output.idle()
+        Ok(!self.output.idle())
+    }
+
+    /// The frame that waited for the host to take what it was handed,
+    /// drawn now that it has (#419).
+    fn redraw(&mut self) -> io::Result<()> {
+        if self.screen.undrawn() {
+            return self.show();
+        }
+        Ok(())
     }
 
     /// While a menu is open, every pending attention episode that was
@@ -1504,6 +1522,22 @@ fn without_view<'a>(
 /// neither controlled nor being acquired by this monitor.
 fn placeholder(kind: Kind, control: Control) -> bool {
     kind == Kind::Connected && control == Control::NotControlling
+}
+
+/// Draws `scene` for the host, unless the host has yet to take `output`:
+/// then the frame waits until it has, since one drawn meanwhile would only
+/// be replaced (#419).
+fn draw(
+    screen: &mut Screen,
+    output: &Output,
+    scene: &Scene<'_>,
+    titling: Option<Instant>,
+) -> io::Result<()> {
+    if output.idle() {
+        return screen.show(scene, titling);
+    }
+    screen.defer();
+    Ok(())
 }
 
 /// What shutdown knows when the supervisor itself never finished: nothing
