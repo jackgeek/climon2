@@ -486,3 +486,34 @@ fn publication_includes_the_windows_zip_and_install_ps1() {
         assert!(publish.contains(&line), "{line}: {publish:#?}");
     }
 }
+
+/// #158: where the daemon tests run on macOS, a failed readiness wait's
+/// evidence (the test's wait timestamps and daemon.log) is kept and uploaded
+/// when the job fails.
+#[test]
+fn macos_test_jobs_upload_failed_tests_evidence() {
+    for file in ["check.yml", "quality.yml"] {
+        let text = workflow(file);
+        let lines = job(&text, "macos");
+        let evidence = "          CLIMON2_TEST_EVIDENCE: ${{ runner.temp }}/test-evidence";
+        assert!(lines.contains(&evidence), "{file}: {lines:#?}");
+        let upload = lines
+            .iter()
+            .position(|line| line.trim() == "- name: Upload failed tests' evidence")
+            .unwrap_or_else(|| panic!("{file}: no evidence upload"));
+        let step: Vec<_> = lines[upload + 1..]
+            .iter()
+            .take_while(|line| !line.trim_start().starts_with("- "))
+            .map(|line| line.trim())
+            .collect();
+        assert!(step.contains(&"if: failure()"), "{file}: {step:#?}");
+        assert!(
+            step.contains(&"uses: actions/upload-artifact@v4"),
+            "{file}: {step:#?}"
+        );
+        assert!(
+            step.contains(&"path: ${{ runner.temp }}/test-evidence"),
+            "{file}: {step:#?}"
+        );
+    }
+}
