@@ -7,6 +7,8 @@ pub const CLIMON2_ERROR: u32 = 125;
 pub const LAUNCH_NOT_FOUND: u32 = 127;
 pub const LAUNCH_CANNOT_RUN: u32 = 126;
 pub const TERMINAL_GONE: u32 = 129;
+/// 128 + SIGINT: Ctrl+C, as the client reports it on every platform.
+pub const INTERRUPTED: u32 = 130;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LaunchFailure {

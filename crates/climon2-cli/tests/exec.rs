@@ -1,5 +1,6 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
+use climon2_core::session::PROMPT;
 use climon2_test_term::{Terminal, bin_path, copy_executable};
 use portable_pty::CommandBuilder;
 use std::{
@@ -550,6 +551,7 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
 }
 
 /// #29: malformed enclosing depth defaults to one; ordinal exceptions are exact.
+/// #139: each waits for Enter; the overflow fails before it asks.
 #[test]
 fn nested_warning_uses_exact_ordinal_and_overflow_never_spawns() {
     let layout = Layout::new();
@@ -578,6 +580,10 @@ fn nested_warning_uses_exact_ordinal_and_overflow_never_spawns() {
                 Duration::from_secs(8),
             )
             .unwrap();
+        terminal
+            .wait_for_text(PROMPT, Duration::from_secs(8))
+            .unwrap();
+        terminal.send("\r").unwrap();
         assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
         layout.clean();
     }
@@ -611,7 +617,7 @@ fn actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_ident
         "--noprofile",
         "--norc",
         "-c",
-        "\"$1\" exec \"$2\" report",
+        "\"$1\" exec --nested \"$2\" report",
         "bash",
     ]);
     command.arg(layout.cli());
@@ -1239,4 +1245,131 @@ fn a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon() {
     let selector = metadata.session_id.as_str();
     assert_eq!(kill_session(&layout, selector).0, 0);
     layout.clean();
+}
+
+const NESTED_WARNING: &str = "Starting climon2 session nested for the 1st time";
+
+/// `c2 exec [options] <fixture> hold` inside session `outer`, in a terminal.
+fn nested_exec(layout: &Layout, options: &[&str]) -> Terminal {
+    let mut command = layout.command();
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.arg("exec");
+    command.args(options);
+    command.arg(layout.fixture());
+    command.arg("hold");
+    Terminal::spawn(command, 24, 80).unwrap()
+}
+
+/// What `exec` left in the home: session metadata and session log folders.
+fn session_traces(layout: &Layout) -> Vec<String> {
+    let names = |folder: &str| -> Vec<String> {
+        fs::read_dir(layout.home().join(folder))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut traces = names("sessions");
+    traces.extend(names("logs").into_iter().filter(|name| name != "general"));
+    traces
+}
+
+/// Ends the fixture `hold` runs once its client takes input.
+fn end_hold(terminal: &mut Terminal) {
+    type_until(terminal, "probe\n", "probe");
+    terminal.send("exit\n").unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+}
+
+/// #139: a nested ordinary start leaves its warning and prompt on screen and
+/// starts nothing, whatever else is typed, until Enter; then the session
+/// starts. Ctrl+C instead exits 130 and leaves no session, log or process.
+#[test]
+fn a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it() {
+    let layout = Layout::new();
+    let mut terminal = nested_exec(&layout, &[]);
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    terminal.send("typed, not Enter").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    let screen = terminal.screen();
+    assert!(screen.contains(NESTED_WARNING), "{screen}");
+    assert!(screen.contains(PROMPT), "{screen}");
+    assert!(!screen.contains("FIXTURE_READY"), "{screen}");
+    assert_eq!(session_traces(&layout), Vec::<String>::new());
+    terminal.send("\r").unwrap();
+    terminal
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    only_metadata(&layout);
+    end_hold(&mut terminal);
+    layout.clean();
+
+    let mut terminal = nested_exec(&layout, &[]);
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    terminal.send([0x03]).unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 130);
+    assert!(!terminal.screen().contains("FIXTURE_READY"));
+    assert_eq!(session_traces(&layout), Vec::<String>::new());
+    layout.clean();
+}
+
+/// #139: neither a top-level start nor a deliberate nested one (`--nested`,
+/// `-n`) warns or waits.
+#[test]
+fn neither_a_top_level_nor_a_deliberate_nested_start_warns_or_waits() {
+    let layout = Layout::new();
+    let (top, _) = held_session(&layout, "hold");
+    let mut started = vec![top];
+    for option in ["--nested", "-n"] {
+        let mut terminal = nested_exec(&layout, &[option]);
+        terminal
+            .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+            .unwrap();
+        started.push(terminal);
+    }
+    for mut terminal in started {
+        let received = String::from_utf8_lossy(&terminal.received()).into_owned();
+        assert!(!received.contains("nested for the"), "{received}");
+        assert!(!received.contains(PROMPT), "{received}");
+        end_hold(&mut terminal);
+    }
+    layout.clean();
+}
+
+/// #139: a nested headless start, which needs no terminal and clears no
+/// screen, warns on stderr without waiting; `--nested` silences it.
+#[test]
+fn a_nested_headless_start_warns_without_waiting_unless_deliberate() {
+    let layout = Layout::new();
+    for (options, expected) in [
+        (&["--headless"][..], format!("{NESTED_WARNING}\n")),
+        (&["--headless", "--nested"], String::new()),
+        (&["-n", "-h"], String::new()),
+    ] {
+        let output = layout
+            .process()
+            .env("CLIMON2_SESSION_ID", "outer")
+            .env("PATH", "/usr/bin:/bin")
+            .env("CLIMON2_TEST_ID", layout.marker())
+            .arg("exec")
+            .args(options)
+            .arg(layout.fixture())
+            .args(["exit", "0"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{options:?} {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            expected,
+            "{options:?}"
+        );
+        layout.clean();
+    }
 }

@@ -30,7 +30,7 @@
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).
 #![cfg(windows)]
-use climon2_core::metadata::SessionMetadata;
+use climon2_core::{metadata::SessionMetadata, session::PROMPT};
 use climon2_platform::process;
 use climon2_test_term::{ConPty, Finished, JobShape, Key, Modifiers, Outside, Terminal};
 use portable_pty::CommandBuilder;
@@ -869,4 +869,98 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
     );
     assert!(home.sessions().is_empty());
     assert!(install.daemon_stopped());
+}
+
+/// `c2 exec <options> -- <HELD>` inside session `outer`, in a pseudoconsole
+/// of its own, with this home, in its working directory.
+fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
+    let mut command = CommandBuilder::new(install.cli());
+    command.arg("exec");
+    command.args(options);
+    command.arg("--");
+    command.args(HELD);
+    command.env("CLIMON2_HOME", home.home());
+    command.env("LOCALAPPDATA", home.0.path().join("local"));
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.cwd(home.work());
+    Terminal::spawn(command, 24, 100).unwrap()
+}
+
+/// Waits until one session runs, then releases its command, which ends the
+/// session; the CLI exits with the command's status.
+fn release_the_only_session(terminal: &mut Terminal, home: &Home) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while home.sessions().len() != 1 {
+        assert!(Instant::now() < deadline, "{}", terminal.screen());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    fs::write(home.work().join("release"), b"").unwrap();
+    assert_eq!(
+        terminal.wait_exit(Duration::from_secs(30)).unwrap(),
+        0xC000_013A,
+        "{}",
+        terminal.screen()
+    );
+    fs::remove_file(home.work().join("release")).unwrap();
+}
+
+/// #139: a nested ordinary start keeps the nesting warning and its prompt on
+/// screen and starts nothing until Enter, which starts the session; Ctrl+C
+/// instead exits 130, as Ctrl+C in a client does, with no session or session
+/// log. `--nested` starts the session with neither warning nor wait.
+#[test]
+fn a_nested_start_waits_on_screen_for_enter_and_ctrl_c_cancels_it() {
+    if climon2_test_term::rerun_outside(
+        "a_nested_start_waits_on_screen_for_enter_and_ctrl_c_cancels_it",
+        Duration::from_secs(180),
+    ) {
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let warning = "Starting climon2 session nested for the 1st time";
+    let session_logs = || {
+        fs::read_dir(home.home().join("logs"))
+            .map(|entries| entries.count())
+            .unwrap_or_default()
+    };
+
+    let mut cancelled = nested_cli(&install, &home, &[]);
+    cancelled
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    cancelled.type_text("typed, not Enter").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    let screen = cancelled.screen();
+    assert!(
+        screen.contains(warning) && screen.contains(PROMPT),
+        "{screen}"
+    );
+    assert!(home.sessions().is_empty());
+    cancelled.press(Key::Char('c'), Modifiers::CTRL).unwrap();
+    assert_eq!(
+        cancelled.wait_exit(Duration::from_secs(20)).unwrap(),
+        130,
+        "{}",
+        cancelled.screen()
+    );
+    assert!(home.sessions().is_empty());
+    // Only the general log's folder.
+    assert_eq!(session_logs(), 1);
+
+    let mut started = nested_cli(&install, &home, &[]);
+    started
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(home.sessions().is_empty(), "{}", started.screen());
+    started.press(Key::Enter, Modifiers::NONE).unwrap();
+    release_the_only_session(&mut started, &home);
+    home.wait_until_ended(&install);
+
+    let mut deliberate = nested_cli(&install, &home, &["--nested"]);
+    release_the_only_session(&mut deliberate, &home);
+    let received = String::from_utf8_lossy(&deliberate.received()).into_owned();
+    assert!(!received.contains("nested for the"), "{received}");
+    assert!(!received.contains(PROMPT), "{received}");
+    home.wait_until_ended(&install);
 }

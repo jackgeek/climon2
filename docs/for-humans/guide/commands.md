@@ -15,7 +15,7 @@ c2 monitor
 ```
 
 Every command has a one-letter shortcut that works exactly like the full name.
-`-h` is short for `--headless`:
+`-h` is short for `--headless`, and `-n` for `--nested`:
 
 | Command | Shortcut |
 | --- | --- |
@@ -37,7 +37,8 @@ For help, run `c2 --help`. `-h` is taken by `exec`.
 
 Your command keeps its arguments, working directory and environment. The one
 change is that it always sees `TERM=xterm-256color` and
-`COLORTERM=truecolor`. You can run sessions inside sessions. Session data
+`COLORTERM=truecolor`. You can run sessions inside sessions (see
+[nested sessions](#sessions)). Session data
 lives in `~/.climon2` by default. Set `CLIMON2_HOME` to use another folder;
 this folder is the **climon2 home**.
 
@@ -78,6 +79,33 @@ A headless session keeps running with no clients at all. That is true from
 the start, after you detach, and after a client is lost by accident. It ends
 only when its command exits or you run `c2 kill`. `c2 list` shows it as
 `detached` whenever no client is attached.
+
+**Nested sessions.** A session started from inside another session is a
+[nested session](../../../GLOSSARY.md#sessions). Starting one is usually a
+mistake, so `exec` warns you first and waits for a key. The wait matters
+because the new session clears the screen as it starts:
+
+```text
+Starting climon2 session nested for the 1st time
+Press Enter to start it, or Ctrl+C to cancel.
+```
+
+- Enter starts the session.
+- Ctrl+C cancels it. Nothing starts, and `exec` exits 130.
+- Other keys are ignored.
+- If the terminal goes away while `exec` waits, it exits 129.
+
+A headless session needs no terminal and clears no screen, so
+`c2 exec --headless` prints the warning and starts without waiting.
+
+If you mean to nest, add `--nested` (or `-n`). Then `exec` neither warns nor
+waits, which suits scripts. `--nested` and `--headless` go before the command,
+in either order:
+
+```sh
+c2 exec --nested vim
+c2 x -n -h make test
+```
 
 **Detach** by pressing the **escape prefix**, Ctrl+], then `d`. The session
 keeps running, with no time limit. The client prints this to stderr and
@@ -193,7 +221,8 @@ Terminal settings (termios) are restored exactly.
 | 125 | climon2 failed |
 | 126, 127 | `exec` could not start the command |
 | 128 + signal | The client was ended by a signal |
-| 129 | The client's terminal went away |
+| 129 | The client's terminal went away, or `exec`'s while it waited to start a nested session |
+| 130 | Ctrl+C (SIGINT, signal 2) ended the client, or cancelled a nested session before it started |
 
 ## Listing
 

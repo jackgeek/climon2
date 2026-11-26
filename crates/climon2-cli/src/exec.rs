@@ -7,7 +7,7 @@ use climon2_core::{
     lifetime::Lifetime,
     metadata::SessionMetadata,
     protocol::TerminalSize,
-    session::SessionEnvironment,
+    session::{Answer, NestedStart, Notice, PROMPT, SessionEnvironment},
     startup_envelope::{ENVIRONMENT_VARIABLE, StartupEnvelope},
 };
 use climon2_platform::{
@@ -23,19 +23,26 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// A nested start the user cancels creates nothing, not even a log, and
+/// exits with the status [`Answer::status`] gives.
 pub fn run(
     home: &Path,
     lifetime: Lifetime,
+    nested: NestedStart,
     command: CommandArgs,
     general: &LogFile,
     filter: Option<&str>,
 ) -> Result<u32, Error> {
     let (config, layout) = prepare(home, lifetime)?;
-    let (id, session) = new_session(home, general)?;
-    let dispatch = session.dispatch(filter)?;
+    let session = NewSession::create()?;
+    if let Some(status) = confirm(session.environment.notice(lifetime, nested))? {
+        return Ok(status);
+    }
+    let log = session_log(home, &session.id, general)?;
+    let dispatch = log.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
-        launch(home, lifetime, command, &layout, &id, filter, config)
-            .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
+        launch(home, lifetime, command, &layout, session, filter, config)
+            .map_err(|error| error.logged(log.path().parent().expect("session log directory")))
     })
 }
 
@@ -45,10 +52,42 @@ fn prepare(home: &Path, lifetime: Lifetime) -> Result<(ExecConfig, ExecutableLay
     Ok((config, preflight(lifetime)?))
 }
 
-fn new_session(home: &Path, general: &LogFile) -> io::Result<(SessionId, LogFile)> {
-    let id = new_session_id()?;
-    let session = session_log(home, &id, general)?;
-    Ok((id, session))
+/// A session's ID and the environment its command gets.
+struct NewSession {
+    id: SessionId,
+    environment: SessionEnvironment,
+}
+
+impl NewSession {
+    fn create() -> Result<Self, Error> {
+        let id = new_session_id()?;
+        let inherited = std::env::vars_os().collect::<Vec<_>>();
+        let environment = SessionEnvironment::for_session(&id, &inherited)
+            .map_err(|error| Error::new(125, error))?;
+        Ok(Self { id, environment })
+    }
+}
+
+/// Shows `notice` on stderr. After the prompt, waits for its answer on the
+/// terminal: the status to exit with unless it was Enter.
+fn confirm(notice: Notice<'_>) -> io::Result<Option<u32>> {
+    match notice {
+        Notice::Quiet => Ok(None),
+        Notice::Warn(warning) => {
+            eprintln!("{warning}");
+            Ok(None)
+        }
+        Notice::Ask(warning) => ask(warning),
+    }
+}
+
+/// The terminal is raw before the prompt shows, so Ctrl+C typed once it
+/// shows is a key, never a signal; raw output needs CR LF.
+fn ask(warning: &str) -> io::Result<Option<u32>> {
+    let mut input = terminal::input()?;
+    let _raw = terminal::RawModeGuard::new(&input)?;
+    eprint!("{warning}\r\n{PROMPT}\r\n");
+    Ok(Answer::read(&mut input)?.status())
 }
 
 fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
@@ -102,23 +141,13 @@ fn launch(
     lifetime: Lifetime,
     command: CommandArgs,
     layout: &ExecutableLayout,
-    id: &SessionId,
+    session: NewSession,
     filter: Option<&str>,
     config: ExecConfig,
 ) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, id, lifetime, &config)?;
-    let inherited = std::env::vars_os().collect::<Vec<_>>();
-    let environment =
-        SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
-    warn_if_nested(&environment);
-    let daemon = startup.ready(command, environment, filter)?;
+    let startup = Startup::new(home, layout, &session.id, lifetime, &config)?;
+    let daemon = startup.ready(command, session.environment, filter)?;
     startup.finish(daemon, filter, config.client)
-}
-
-fn warn_if_nested(environment: &SessionEnvironment) {
-    if let Some(warning) = &environment.nested_warning {
-        eprintln!("{warning}");
-    }
 }
 
 impl Startup<'_> {

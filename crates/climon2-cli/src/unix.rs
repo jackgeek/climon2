@@ -19,7 +19,9 @@ pub(crate) fn logged_run(work: Work) -> Result<u32, Error> {
 
 fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> Result<u32, Error> {
     match work {
-        Work::Exec(lifetime, command) => exec::run(home, lifetime, command, general, filter),
+        Work::Exec(lifetime, nested, command) => {
+            exec::run(home, lifetime, nested, command, general, filter)
+        }
         Work::List { json } => crate::list(home, json),
         Work::Handoff(handoff) => handoff.run(home),
     }

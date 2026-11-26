@@ -1,11 +1,12 @@
 # climon2-cli
 
-CLI orchestration for `exec [--headless] COMMAND [ARG...]`, `attach SESSION-ID`,
+CLI orchestration for `exec [--headless] [--nested] COMMAND [ARG...]`, `attach SESSION-ID`,
 `kill SESSION-ID`, `list [--json]` and `monitor`. Each command has a
 single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`; `r` is
-reserved for `relay`), `-h` is the short form of `--headless`, and help has
-only `--help` (#287). The usage string is
-`usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
+reserved for `relay`), `-h` is the short form of `--headless`, `-n` of
+`--nested` (#139), and help has only `--help` (#287). exec's options come
+before the command, in either order, each at most once. The usage string is
+`usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -55,7 +56,10 @@ execution alias, in a job, and `kill` ends it (#393); elsewhere, such as on
 CI, that test prints `SKIP` and passes. Without console handles,
 `exec`, `attach` and the session's client refuse to run; Ctrl+C during `kill`
 interrupts its client, and kill exits 130 with it; an ordinary `exec` whose
-client is missing exits 125 and stops its daemon. It needs the daemon binary
+client is missing exits 125 and stops its daemon. A nested ordinary `exec`
+keeps the nesting warning and its prompt on screen and starts nothing until
+Enter; Ctrl+C exits 130 with no session or session log, and `--nested` starts
+the session with neither warning nor wait (#139). It needs the daemon binary
 built first (`cargo test -p climon2-daemon --test windows`), and the client
 binary and library (`cargo test -p climon2-client --test library_windows`).
 `tests/attach_deadline_windows.rs` (#323), with the same version folder,
@@ -133,9 +137,15 @@ general log and prunes old logs before any command. Exec reads and validates the
 whole `config.jsonc`, its `monitor` section included, then, unless headless,
 checks stdin and stdout TTYs, all before any session side effect. It resolves
 canonical companions
-from its own canonical version-layout path, generates one v4 GUID and socket,
-and switches to the linked session log. Core projects the exact OS-string
-command environment and provides depth/ordinal rules; `TERM=xterm-256color` and
+from its own canonical version-layout path and generates one v4 GUID. Core
+projects the exact OS-string command environment (a depth overflow is 125
+here). Then, for a nested start without `--nested` (#139), exec prints core's
+nesting warning to stderr; for an ordinary session it also prints core's
+`PROMPT` and reads the stdin terminal in raw mode until Enter, which starts the
+session, or Ctrl+C, which exits 130, as Ctrl+C in a client does; the end of
+input exits 129. Neither creates a session log, socket or daemon. Only then
+does exec create the socket and switch to the linked session log. Core
+provides the depth/ordinal rules; `TERM=xterm-256color` and
 `COLORTERM=truecolor` are always set. The command's inherited `CLIMON2_HOME`
 and `CLIMON2_LOG` are not rewritten. The initial size is the stdin terminal's,
 or 80x24 when stdin is not a terminal (only possible for headless exec).
@@ -225,6 +235,9 @@ client start.
 - `exec_restores_a_waiting_alternate_screen_without_application_redraw`
 - `packaged_client_can_detach_and_reattach_to_a_live_session`
 - `nested_warning_uses_exact_ordinal_and_overflow_never_spawns`
+- `a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it`,
+  `neither_a_top_level_nor_a_deliberate_nested_start_warns_or_waits`,
+  `a_nested_headless_start_warns_without_waiting_unless_deliberate` (#139)
 - `actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_identity`
 - `startup_failure_codes_and_signal_exit_are_preserved`
 - `resizing_outer_terminal_resizes_the_running_command`

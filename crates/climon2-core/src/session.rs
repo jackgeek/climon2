@@ -1,8 +1,13 @@
 //! Session environment is a pure projection of exact inherited OS strings.
-use crate::SessionId;
+use crate::{
+    SessionId,
+    exit::{INTERRUPTED, TERMINAL_GONE},
+    lifetime::Lifetime,
+};
 use std::{
     ffi::{OsStr, OsString},
     fmt,
+    io::{self, Read},
     num::NonZeroU32,
 };
 
@@ -61,6 +66,89 @@ impl SessionEnvironment {
             depth,
             nested_warning,
         })
+    }
+}
+
+impl SessionEnvironment {
+    /// What `exec` shows before it starts this session: nothing at top level
+    /// or for a deliberate nested start; otherwise the nesting warning, and
+    /// for an ordinary session, whose client clears the screen, the prompt.
+    pub fn notice(&self, lifetime: Lifetime, start: NestedStart) -> Notice<'_> {
+        let Some(warning) = self.nested_warning.as_deref() else {
+            return Notice::Quiet;
+        };
+        match (start, lifetime) {
+            (NestedStart::Deliberate, _) => Notice::Quiet,
+            (NestedStart::Warned, Lifetime::Headless) => Notice::Warn(warning),
+            (NestedStart::Warned, Lifetime::Ordinary) => Notice::Ask(warning),
+        }
+    }
+}
+
+/// How `exec` starts a session nested in another: warned by default, or
+/// deliberately, with `--nested`, which neither warns nor waits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NestedStart {
+    Warned,
+    Deliberate,
+}
+
+/// What `exec` shows on stderr before it starts a session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Notice<'a> {
+    Quiet,
+    /// The warning, then the session starts.
+    Warn(&'a str),
+    /// The warning and [`PROMPT`]; the session starts only on Enter.
+    Ask(&'a str),
+}
+
+/// The line under the nesting warning while `exec` waits for a key.
+pub const PROMPT: &str = "Press Enter to start it, or Ctrl+C to cancel.";
+
+/// The key that answered [`PROMPT`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Answer {
+    /// Enter: the session starts.
+    Start,
+    /// Ctrl+C: nothing starts.
+    Cancel,
+    /// The terminal went away before either.
+    Gone,
+}
+
+impl Answer {
+    /// Reads keys from a raw terminal until Enter or Ctrl+C, ignoring any
+    /// other; the end of input is [`Answer::Gone`].
+    pub fn read(input: &mut impl Read) -> io::Result<Self> {
+        let mut keys = [0u8; 64];
+        loop {
+            let count = input.read(&mut keys)?;
+            if count == 0 {
+                return Ok(Self::Gone);
+            }
+            if let Some(answer) = keys[..count].iter().find_map(Self::of_key) {
+                return Ok(answer);
+            }
+        }
+    }
+
+    fn of_key(key: &u8) -> Option<Self> {
+        match key {
+            b'\r' | b'\n' => Some(Self::Start),
+            0x03 => Some(Self::Cancel),
+            _ => None,
+        }
+    }
+
+    /// `exec`'s exit status when nothing starts: 130 as for Ctrl+C in a
+    /// client, or 129 as for a client's terminal that went away.
+    pub fn status(self) -> Option<u32> {
+        match self {
+            Self::Start => None,
+            Self::Cancel => Some(INTERRUPTED),
+            Self::Gone => Some(TERMINAL_GONE),
+        }
     }
 }
 
