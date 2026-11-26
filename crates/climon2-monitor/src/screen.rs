@@ -192,6 +192,10 @@ pub(crate) struct Screen {
     /// before, and the toast whose full title it shows: a newer one replaces
     /// it, so the host never receives an obsolete frame (#285).
     next: Option<(Frame, Option<Instant>)>,
+    /// A frame came due while the host was backed up and was not drawn: it
+    /// is drawn once the host has taken what it was handed, unless another
+    /// frame is drawn first (#419).
+    undrawn: bool,
     /// The selected session's canvas as last painted from a view with no
     /// synchronized update open: it stays while one is.
     coherent: Option<Coherent>,
@@ -228,6 +232,9 @@ impl Screen {
             painted: Frame::default(),
             titled: None,
             next: None,
+            // Nothing waits yet. Spelled `bool::default()`, false: a line
+            // holding only a literal has no coverage region of its own.
+            undrawn: bool::default(),
             coherent: None,
         }
     }
@@ -304,6 +311,7 @@ impl Screen {
     fn present(&mut self, frame: Frame, titling: Option<Instant>) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
         crate::hooks::fail("draw")?;
+        self.undrawn = false;
         if frame == self.painted {
             self.next = None;
             self.titled = self.titled.or(titling);
@@ -311,6 +319,17 @@ impl Screen {
             self.next = Some((frame, titling));
         }
         Ok(())
+    }
+
+    /// A frame came due while the host was backed up: it is drawn once the
+    /// host has room (#419).
+    pub(crate) fn defer(&mut self) {
+        self.undrawn = true;
+    }
+
+    /// Whether a frame waits to be drawn once the host has room.
+    pub(crate) fn undrawn(&self) -> bool {
+        self.undrawn
     }
 
     /// The host has taken the frame last handed to it: the toast whose full
@@ -1149,6 +1168,23 @@ mod tests {
         screen.resize(TerminalSize { cols: 40, rows: 9 });
         screen.exiting(1).unwrap();
         assert!(screen.commit().is_some());
+    }
+
+    /// #419 (pure supplement): a frame deferred while the host is backed
+    /// up waits to be drawn until any frame is drawn, the exit screen
+    /// included, which then goes to the host instead.
+    #[test]
+    fn a_deferred_frame_waits_until_another_is_drawn() {
+        let prefix = ControlKey::from_byte(0x1d).unwrap();
+        let mut screen = Screen::new(TerminalSize { cols: 40, rows: 9 }, prefix, None, true);
+        assert!(!screen.undrawn());
+        screen.defer();
+        assert!(screen.undrawn());
+        assert_eq!(screen.commit(), None);
+        screen.exiting(2).unwrap();
+        assert!(!screen.undrawn());
+        let painted = painted_text(&screen.commit().unwrap());
+        assert!(painted.contains("for 2 sessions"), "{painted}");
     }
 
     /// #285 and the owner decision on #115 (pure supplement): the toast

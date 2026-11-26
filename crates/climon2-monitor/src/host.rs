@@ -214,6 +214,12 @@ impl Output {
         self.written == self.bytes.len()
     }
 
+    /// What waits to be written.
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> &[u8] {
+        &self.bytes[self.written..]
+    }
+
     /// The wait slot that is ready once `terminal` has room for what waits:
     /// idle while nothing does.
     fn watch<'a>(&self, terminal: &'a Bridged) -> Watch<'a> {

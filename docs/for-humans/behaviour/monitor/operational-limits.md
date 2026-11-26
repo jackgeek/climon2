@@ -580,9 +580,12 @@ paints; never accumulate frames or block input/exit.
 Host output never blocks the monitor (#285). The monitor writes to the host
 only what it takes at once, and its one wait for host input also ends once
 the host has room again. A frame the host has begun taking is finished
-before anything else; while the host is backed up, each newer frame
-replaces the one still waiting, so the host receives at most one frame
-behind it once it reads again, never a backlog. Meanwhile keys, session
+before anything else; while the host is backed up, a frame that comes
+due is not drawn until the host has taken everything, and then only the
+newest scene is drawn, so the host receives at most one frame behind it
+once it reads again, never a backlog. The exit screen is the exception: it
+is drawn at once even while the host is backed up, and replaces any frame
+still waiting. Meanwhile keys, session
 records, admission and timers are served as usual, and exit and shutdown
 keep their deadlines. Only the final host phase waits for the host to take
 the rest, within `deadlines.final_host_ms`. Over-limit search/
