@@ -2629,6 +2629,7 @@ mod tests {
             reshaped(0),
             revoked(native::TAKEOVER),
             revoked(native::SESSION_ENDING),
+            revoked(99),
             ended,
             record(native::STATUS),
         ]
@@ -3377,6 +3378,7 @@ mod tests {
             presented(Presentation::Geometry(geometry(500, 5))),
             presented(Presentation::Revoked(Revocation::Takeover)),
             presented(Presentation::Revoked(Revocation::Ending)),
+            presented(Presentation::Revoked(Revocation::Unknown)),
             ended(Outcome::Signal(15)),
         ];
         for event in expected {

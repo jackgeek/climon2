@@ -62,17 +62,21 @@ same [placeholder](commands.md#sessions) that `c2 attach` shows:
                       Press Ctrl+T to take control
 ```
 
-The monitor can also show a session it does not control when no other
-terminal took it. If you pick a session in the selector while it is still
-starting, the monitor shows it without taking control. The same happens when
-the monitor reconnects to a session after losing its connection. Once the
-monitor is connected, the status row says `Not controlling`, and the placeholder
-says only that the monitor does not control it:
+The monitor can also show a session it does not control without knowing of
+another terminal taking it. If you pick a session in the selector while it is
+still starting, the monitor shows it without taking control. Once the monitor
+is connected, the status row says `Not controlling`, and the placeholder says
+only that the monitor does not control the session:
 
 ```text
                   This session is not controlled here.
                       Press Ctrl+T to take control
 ```
+
+The monitor shows the same placeholder when it reconnects to a session after
+losing its connection. A new connection does not tell the monitor who
+controls the session, so another terminal may control it even though the
+placeholder does not say so.
 
 In both cases, the second line names your `client.take_control_key`.
 Pressing that key takes control, and the session's screen shows. The monitor

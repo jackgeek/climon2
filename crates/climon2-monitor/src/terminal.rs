@@ -84,6 +84,9 @@ pub(crate) enum Revocation {
     Takeover,
     /// The session is ending: its command's final result follows.
     Ending,
+    /// A reason this monitor does not know: it says nothing of who
+    /// controls the session.
+    Unknown,
 }
 
 /// What the session's client reported about control and display. The
@@ -956,8 +959,9 @@ mod tests {
 
     /// #400: only a takeover's revocation says another client took control;
     /// a session never controlled, one whose connection ended, one revoked
-    /// because it is ending, and one granted again was not taken over, and
-    /// the command's end changes nothing.
+    /// because it is ending or for an unknown reason, one granted again on
+    /// request, and one handed back when the client that took it left was
+    /// not taken over, and the command's end changes nothing.
     #[test]
     fn only_a_takeover_takes_control_over() {
         let mut parser = Parser::new();
@@ -965,10 +969,12 @@ mod tests {
         assert!(!terminal.taken_over());
         terminal.present(&mut parser, Presentation::Ended);
         assert!(!terminal.taken_over());
-        let mut ending = restored(b"held");
-        ending.present(&mut parser, Presentation::Revoked(Revocation::Ending));
-        assert_eq!(ending.control(), Control::NotControlling);
-        assert!(!ending.taken_over());
+        for why in [Revocation::Ending, Revocation::Unknown] {
+            let mut revoked = restored(b"held");
+            revoked.present(&mut parser, Presentation::Revoked(why));
+            assert_eq!(revoked.control(), Control::NotControlling, "{why:?}");
+            assert!(!revoked.taken_over(), "{why:?}");
+        }
         let mut terminal = restored(b"held");
         assert!(!terminal.taken_over());
         terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
@@ -984,6 +990,12 @@ mod tests {
         assert!(!terminal.taken_over());
         terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert!(terminal.taken_over());
+        // The daemon hands control back, unasked, once the client that took
+        // it leaves and this monitor controlled most recently.
+        let handed = authority(6, 7);
+        terminal.present(&mut parser, Presentation::Granted(handed, geometry(10, 3)));
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         terminal.present(&mut parser, Presentation::Ended);
         assert!(!terminal.taken_over());
     }

@@ -4960,8 +4960,9 @@ fn read_only_shows(terminal: &Terminal, status: &str, control: &str, lines: &[&s
 /// read-only: no terminal content, its condition, nothing acquired, and
 /// typed keys reach no session, not even the one the monitor controls in
 /// the background. Once the Starting row's client connects, it shows the
-/// placeholder saying it is not controlled here, since no other client
-/// took it (#400), until the take-control key acquires it.
+/// not-controlled placeholder (`This session is not controlled here.`,
+/// #400), since no other client took it, until the take-control key
+/// acquires it.
 #[test]
 fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires() {
     const HELD: &str = "0d5c0000-0000-4000-8000-0000000000c1";
@@ -8985,8 +8986,9 @@ const RELEASE_AND_PARSER: u64 = 2_097_152 + 67_108_864;
 /// listed as `Awaiting resources` among the not-connected rows; Enter
 /// selects it read-only, with no terminal content, its condition and what
 /// is short, and never acquires. Once one session ends its reservation is
-/// freed and the blocked session is admitted: it shows the non-controller
-/// placeholder, sending no Acquire, until the take-control key acquires it.
+/// freed and the blocked session is admitted: it shows the not-controlled
+/// placeholder (#400), sending no Acquire, until the take-control key
+/// acquires it.
 #[test]
 fn a_resource_blocked_session_awaits_resources_until_capacity_is_freed() {
     let package = Package::new();
@@ -9139,7 +9141,8 @@ fn too_many_qualified_workers_is_an_explicit_rejection_before_any_create() {
 /// `resources.descriptor_headroom` (64). With the limit at 84, the
 /// release's 4 and two clients' 8 each fill it: two sessions start and a
 /// third is resource-blocked, saying so. Raising the running monitor's
-/// limit to exactly 92 admits it.
+/// limit to exactly 92 admits it, and it shows the not-controlled
+/// placeholder (#400).
 #[cfg(target_os = "linux")]
 #[test]
 fn the_operating_system_descriptor_limit_bounds_admission_until_it_rises() {
@@ -9296,7 +9299,7 @@ fn not_asking(terminal: &Terminal) {
 /// still running, and once the selector closes the first thing it receives
 /// is what is typed then. Confirmed, Bravo is killed and its row removed;
 /// the selection falls to Alpha, now at Bravo's place, which shows the
-/// placeholder, never acquired. Alpha's daemon killed and proven gone,
+/// not-controlled placeholder (#400), never acquired. Alpha's daemon killed and proven gone,
 /// Delete offers only Remove, which removes its row though its stale
 /// metadata stays: two later discovery passes, which list new sessions,
 /// never list it again. Bravo's library logs stay.
@@ -9585,7 +9588,7 @@ fn a_held_kill_is_sent_once_and_a_refused_one_keeps_its_row_with_why() {
 /// client then hears the command's final result: the monitor asks it to
 /// stop, and while its Leave is unanswered the row stays. Once answered,
 /// the row is removed and the selection falls to Next, which shows the
-/// placeholder and was never sent Acquire. Lost's daemon, still answering,
+/// not-controlled placeholder (#400) and was never sent Acquire. Lost's daemon, still answering,
 /// is probed by two more discovery passes and never listed or served again.
 #[test]
 fn a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup() {

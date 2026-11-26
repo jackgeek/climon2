@@ -333,12 +333,13 @@ fn geometry(geometry: native::Geometry) -> Option<Geometry> {
     Geometry::for_host(narrow(geometry.cols), narrow(geometry.rows))
 }
 
-/// Why control was revoked: the session's end, or otherwise a takeover.
+/// Why control was revoked: a takeover, the session's end, or a reason
+/// this monitor does not know.
 fn revocation(reason: u32) -> Revocation {
-    if reason == native::SESSION_ENDING {
-        Revocation::Ending
-    } else {
-        Revocation::Takeover
+    match reason {
+        native::TAKEOVER => Revocation::Takeover,
+        native::SESSION_ENDING => Revocation::Ending,
+        _ => Revocation::Unknown,
     }
 }
 
