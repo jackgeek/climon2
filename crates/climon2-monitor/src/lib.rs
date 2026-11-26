@@ -463,11 +463,11 @@ impl Monitor {
     /// Paints the current scene when it differs from what the screen shows.
     /// Each terminal first learns whether this frame shows its applied
     /// restoration, so its control and input readiness are in force once
-    /// this frame comes due, even when its draw waits (#420). While the host has yet to take what it was handed,
-    /// the frame is drawn only once it has: one drawn meanwhile would only
-    /// be replaced, and a host that takes little at a time, as a macOS
-    /// terminal does, would wait for a whole frame to be drawn for each
-    /// write (#419).
+    /// this frame comes due, even when its draw waits (#419). While the
+    /// host has yet to take what it was handed, the frame is drawn only
+    /// once it has: one drawn meanwhile would only be replaced, and a host
+    /// that takes little at a time, as a macOS terminal does, would wait for
+    /// a whole frame to be drawn for each write (#419).
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
         self.frames.painted(now);
@@ -1683,14 +1683,44 @@ mod tests {
         super::Monitor::start(size, startup, &dispatch, "info".to_owned()).unwrap()
     }
 
+    /// The runtime directory prepared for a home, removed when dropped
+    /// unless kept.
+    struct Runtime {
+        path: std::path::PathBuf,
+        kept: bool,
+    }
+
+    impl Runtime {
+        /// Prepares the runtime directory for `home`, as a monitor does.
+        fn prepared(home: &std::path::Path) -> Self {
+            let directory = climon2_platform::runtime::RuntimeDirectory::prepare(home).unwrap();
+            let path = directory.path().to_owned();
+            Self { path, kept: false }
+        }
+    }
+
+    impl Drop for Runtime {
+        /// Removes the directory unless it is kept; a failure to remove it
+        /// names the path and the error, after no earlier failure.
+        fn drop(&mut self) {
+            if self.kept {
+                return;
+            }
+            let removed = std::fs::remove_dir(&self.path);
+            if let (Err(error), false) = (removed, std::thread::panicking()) {
+                panic!("removing {}: {error}", self.path.display());
+            }
+        }
+    }
+
     /// A started monitor whose supervisor and discovery stop when it is
-    /// dropped, a failed assertion included, and the runtime directory it
-    /// prepared for its home, removed once they have.
-    struct Stopping(super::Monitor, std::path::PathBuf);
+    /// dropped, a failed assertion included, and its home's runtime
+    /// directory, removed once they have.
+    struct Stopping(super::Monitor, Runtime);
 
     impl Drop for Stopping {
-        /// Stops the supervisor and discovery, waits for both, at most
-        /// 10 s, and once both have stopped removes the runtime directory.
+        /// Stops the supervisor and discovery and waits for both, at most
+        /// 10 s; the runtime directory is kept when they have not stopped.
         fn drop(&mut self) {
             let monitor = &mut self.0;
             monitor.supervisor.shut_down();
@@ -1702,16 +1732,13 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             let stopped = report.is_some() && monitor.discovery.join();
-            let removed = stopped.then(|| std::fs::remove_dir(&self.1));
+            self.1.kept = !stopped;
             if !std::thread::panicking() {
-                let runtime = self.1.display();
+                let runtime = self.1.path.display();
                 assert!(
                     stopped,
                     "the supervisor or discovery never stopped; {runtime} is left"
                 );
-                if let Some(Err(error)) = removed {
-                    panic!("removing {runtime}: {error}");
-                }
             }
         }
     }
@@ -1724,8 +1751,9 @@ mod tests {
     fn a_frame_due_while_the_host_is_backed_up_is_drawn_once_it_has_room() {
         let directory = tempfile::tempdir().unwrap();
         let home = std::fs::canonicalize(directory.path()).unwrap();
-        let runtime = climon2_platform::runtime::RuntimeDirectory::prepare(&home).unwrap();
-        let mut stopping = Stopping(started(&home), runtime.path().to_owned());
+        let runtime = Runtime::prepared(&home);
+        let path = runtime.path.clone();
+        let mut stopping = Stopping(started(&home), runtime);
         let monitor = &mut stopping.0;
         // The host takes the first attention report, and the key
         // introduction closes.
@@ -1750,7 +1778,7 @@ mod tests {
         let newest = String::from_utf8_lossy(monitor.output.pending()).into_owned();
         assert!(newest.contains(NO_ATTENTION), "{newest}");
         drop(stopping);
-        assert!(!runtime.path().exists(), "{}", runtime.path().display());
+        assert!(!path.exists(), "{}", path.display());
     }
 
     /// EXT-03 (pure supplement, #118): a shutdown's failure is said after
