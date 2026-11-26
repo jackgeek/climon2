@@ -307,6 +307,10 @@ _Avoid_: Slave, relay monitor, agent, proxy
 What a relay produces and a hub monitor consumes to establish a monitor link for the first time.
 _Avoid_: Connection string, token, pairing code
 
+**Link hold**:
+A relay's state, entered when its user cuts a monitor link, in which it refuses every remembered hub monitor until its user accepts links again.
+_Avoid_: Pause, block, lockout
+
 **Link revision**:
 A numbered, frozen edition of everything two ends of a monitor link say to each other, from pairing to relayed records.
 _Avoid_: Link version, protocol version
