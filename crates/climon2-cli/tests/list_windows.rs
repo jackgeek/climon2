@@ -9,7 +9,7 @@ use climon2_core::{
     protocol::{Frame, read_frame, write_frame},
 };
 use climon2_platform::{process, runtime};
-use climon2_test_term::Terminal;
+use climon2_test_term::{Terminal, local_app_data};
 use portable_pty::CommandBuilder;
 use std::{
     fs,
@@ -18,13 +18,14 @@ use std::{
     time::Duration,
 };
 
-/// `climon2-cli list`, its climon2 home and runtime root inside `root`.
-fn list(root: &Path, arguments: &[&str]) -> Output {
+/// `climon2-cli list`, its climon2 home inside `root` and its runtime root
+/// `local`.
+fn list(root: &Path, local: &Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_climon2-cli"))
         .arg("list")
         .args(arguments)
         .env("CLIMON2_HOME", root.join("home"))
-        .env("LOCALAPPDATA", root.join("local"))
+        .env("LOCALAPPDATA", local)
         .output()
         .unwrap()
 }
@@ -85,10 +86,10 @@ fn stale_socket(path: &Path) {
 
 #[test]
 fn list_with_no_sessions_says_so() {
-    let root = tempfile::tempdir().unwrap();
+    let (root, local) = (tempfile::tempdir().unwrap(), local_app_data());
 
-    let table = list(root.path(), &[]);
-    let json = list(root.path(), &["--json"]);
+    let table = list(root.path(), local.path(), &[]);
+    let json = list(root.path(), local.path(), &["--json"]);
 
     assert_eq!(table.status.code(), Some(0), "{table:?}");
     assert_eq!(table.stdout, b"No climon2 sessions running.\n");
@@ -99,13 +100,13 @@ fn list_with_no_sessions_says_so() {
 
 #[test]
 fn list_reclaims_a_stale_session_whose_daemon_is_gone() {
-    let root = tempfile::tempdir().unwrap();
+    let (root, local) = (tempfile::tempdir().unwrap(), local_app_data());
     let home = home(root.path());
     let socket = root.path().join("stale.sock");
     stale_socket(&socket);
     let (_, metadata) = save(&home, 1, gone_daemon(), &socket);
 
-    let output = list(root.path(), &[]);
+    let output = list(root.path(), local.path(), &[]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(output.stdout, b"No climon2 sessions running.\n");
@@ -116,13 +117,13 @@ fn list_reclaims_a_stale_session_whose_daemon_is_gone() {
 /// A refusing socket alone proves nothing while the recorded daemon runs.
 #[test]
 fn list_keeps_a_refusing_session_whose_daemon_still_runs() {
-    let root = tempfile::tempdir().unwrap();
+    let (root, local) = (tempfile::tempdir().unwrap(), local_app_data());
     let home = home(root.path());
     let socket = root.path().join("refusing.sock");
     stale_socket(&socket);
     let (_, metadata) = save(&home, 2, this_process(), &socket);
 
-    let output = list(root.path(), &[]);
+    let output = list(root.path(), local.path(), &[]);
 
     assert_eq!(output.stdout, b"No climon2 sessions running.\n");
     assert!(metadata.exists());
@@ -133,13 +134,13 @@ fn list_keeps_a_refusing_session_whose_daemon_still_runs() {
 /// one, so the stale session's metadata stays too.
 #[test]
 fn list_leaves_a_stale_session_whose_socket_path_is_not_a_socket() {
-    let root = tempfile::tempdir().unwrap();
+    let (root, local) = (tempfile::tempdir().unwrap(), local_app_data());
     let home = home(root.path());
     let socket = root.path().join("file.sock");
     fs::write(&socket, "not a socket").unwrap();
     let (_, metadata) = save(&home, 3, gone_daemon(), &socket);
 
-    let output = list(root.path(), &[]);
+    let output = list(root.path(), local.path(), &[]);
 
     assert_eq!(output.stdout, b"No climon2 sessions running.\n");
     assert!(metadata.exists());
@@ -151,7 +152,7 @@ fn list_leaves_a_stale_session_whose_socket_path_is_not_a_socket() {
 /// local.
 #[test]
 fn list_shows_a_live_session_to_the_consoles_width() {
-    let root = tempfile::tempdir().unwrap();
+    let (root, local) = (tempfile::tempdir().unwrap(), local_app_data());
     let home = home(root.path());
     let socket = root.path().join("live.sock");
     let listener = runtime::bind(&socket).unwrap();
@@ -167,7 +168,7 @@ fn list_shows_a_live_session_to_the_consoles_width() {
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_climon2-cli"));
     command.arg("list");
     command.env("CLIMON2_HOME", root.path().join("home"));
-    command.env("LOCALAPPDATA", root.path().join("local"));
+    command.env("LOCALAPPDATA", local.path());
 
     let mut terminal = Terminal::spawn(command, 24, 100).unwrap();
 
