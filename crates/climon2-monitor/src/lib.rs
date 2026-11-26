@@ -525,10 +525,13 @@ impl Monitor {
         if !self.output.idle() {
             return Ok(false);
         }
-        if let Some(toast) = self.screen.written() {
+        // The waiting frame is drawn before any bell is queued, which would
+        // leave the host with something to take again.
+        let written = self.screen.written();
+        self.redraw()?;
+        if let Some(toast) = written {
             self.title(toast);
         }
-        self.redraw()?;
         if let Some(bytes) = self.screen.commit() {
             self.output.queue(&bytes);
         }
@@ -1653,8 +1656,73 @@ mod tests {
         Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, View, also, cache,
         control, inspected, placeholder, retained, revealed, selected, terminal, without_view,
     };
+    use crate::attention::NO_ATTENTION;
     use climon2_core::SessionId;
     use std::time::Instant;
+
+    /// A monitor on an empty home in `directory`, as `c2 monitor` starts it
+    /// at 60x12, without a host.
+    fn started(directory: &std::path::Path) -> super::Monitor {
+        let layout = climon2_core::layout::HomeLayout::at(directory).unwrap();
+        let log = climon2_platform::logging::LogFile::monitor(directory).unwrap();
+        let dispatch = log.dispatch(Some("info")).unwrap();
+        let startup = super::Startup {
+            log,
+            version: "0.1.0".parse().unwrap(),
+            preference: crate::preference::Preference::read(&layout),
+            home: layout,
+            executable: climon2_core::layout::ExecutableHome::new(directory).unwrap(),
+            config: climon2_core::config::MonitorConfig::parse(b"{}").unwrap(),
+        };
+        let size = climon2_core::protocol::TerminalSize { cols: 60, rows: 12 };
+        super::Monitor::start(size, startup, &dispatch, "info".to_owned()).unwrap()
+    }
+
+    /// Stops `monitor`'s supervisor and discovery, and waits for both.
+    fn stopped(mut monitor: super::Monitor) {
+        monitor.supervisor.shut_down();
+        monitor.discovery.stop();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let mut report = None;
+        while !(report.is_some() && monitor.discovery.join()) && Instant::now() < deadline {
+            report = report.or_else(|| monitor.supervisor.report());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(report.is_some(), "the supervisor never stopped");
+    }
+
+    /// #419 (Monitor supplement): while the host has yet to take what it
+    /// was handed, a due frame is not drawn; once the host has taken it,
+    /// handing on draws the scene as it is then and hands that frame to the
+    /// host.
+    #[test]
+    fn a_frame_due_while_the_host_is_backed_up_is_drawn_once_it_has_room() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut monitor = started(&std::fs::canonicalize(directory.path()).unwrap());
+        // The host takes the first attention report, and the key
+        // introduction closes.
+        monitor.output = super::Output::default();
+        monitor.introduction.close();
+        monitor.show().unwrap();
+        assert!(monitor.hand_on().unwrap(), "the first frame");
+        let first = String::from_utf8_lossy(monitor.output.pending()).into_owned();
+        assert!(!first.contains(NO_ATTENTION), "{first}");
+        // The host has not taken the first frame when prefix+j finds no
+        // session needing attention.
+        monitor.notice.show(Instant::now());
+        monitor.show().unwrap();
+        assert!(monitor.screen.undrawn());
+        assert_eq!(monitor.screen.commit(), None);
+        assert!(!monitor.hand_on().unwrap());
+        assert_eq!(monitor.output.pending(), first.as_bytes());
+        // The host takes everything.
+        monitor.output = super::Output::default();
+        assert!(monitor.hand_on().unwrap());
+        assert!(!monitor.screen.undrawn());
+        let newest = String::from_utf8_lossy(monitor.output.pending()).into_owned();
+        assert!(newest.contains(NO_ATTENTION), "{newest}");
+        stopped(monitor);
+    }
 
     /// EXT-03 (pure supplement, #118): a shutdown's failure is said after
     /// any earlier failure, such as a render failure, in one diagnostic.

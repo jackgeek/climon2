@@ -10055,12 +10055,17 @@ fn debug_hook_unfinished_host_restoration_fails_after_the_final_host_allowance()
 /// typed line, or has already failed with `EAGAIN` (macOS's bash 3.2) and
 /// the shell has printed an empty `TYPED=` and exited. On macOS the exited
 /// session leader revokes the terminal, so typing then fails with `EIO`
-/// (#419).
+/// (#419); nothing else may fail it.
 fn end_unrestored(terminal: &mut Terminal) {
-    if let Err(error) = terminal.send("plain words\n") {
-        terminal
-            .wait_for_text("TYPED=", TIMEOUT)
-            .unwrap_or_else(|_| panic!("the line was not typed: {error}"));
+    if let Err(sent) = terminal.send("plain words\n") {
+        let revoked = cfg!(target_os = "macos")
+            && sent
+                .to_string()
+                .contains(&format!("(os error {})", libc::EIO));
+        assert!(revoked, "typing the line failed: {sent}");
+        if let Err(waited) = terminal.wait_for_text("TYPED=", TIMEOUT) {
+            panic!("typing the line failed: {sent}\nand the shell never ended its read: {waited}");
+        }
     }
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0);
 }
