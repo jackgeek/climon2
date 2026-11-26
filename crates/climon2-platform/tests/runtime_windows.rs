@@ -132,14 +132,20 @@ fn a_relative_local_app_data_is_refused() {
 fn a_socket_path_over_107_bytes_is_refused_and_fails_with_125() {
     for length in [107_usize, 108] {
         let padded = |folder: &Path| {
-            // `<root>\c2\<hash8>\<uuid>.sock` adds 1 + 2 + 1 + 8 + 1 + 41 bytes.
+            // `LOCALAPPDATA` is `<folder>\r...`, with at least one `r`: joining
+            // an empty name would leave a trailing `\` the runtime root drops.
+            // `<root>\c2\<hash8>\<uuid>.sock` then adds 1 + 2 + 1 + 8 + 1 + 41
+            // bytes.
             let fixed = folder.as_os_str().len() + 1;
-            let padding = (length - 54).checked_sub(fixed).unwrap_or_else(|| {
-                panic!(
-                    "{} is over 52 bytes, too long for a {length}-byte socket path",
-                    folder.display()
-                )
-            });
+            let padding = (length - 54)
+                .checked_sub(fixed)
+                .filter(|padding| *padding >= 1)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} is over 51 bytes, too long for a {length}-byte socket path",
+                        folder.display()
+                    )
+                });
             folder.join("r".repeat(padding)).into()
         };
         with_local_app_data(

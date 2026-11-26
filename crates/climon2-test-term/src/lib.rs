@@ -48,6 +48,7 @@ pub use terminal::harness_shell;
 pub use terminal::{Modes, Options, Terminal};
 #[cfg(windows)]
 pub use windows::{
-    App, ConPty, Finished, HostModel, HostSettings, JobShape, Key, Modifiers, Outside, PWSH_PROMPT,
-    controlled_pwsh, end_process, local_app_data, pwsh, relay_outside, rerun_outside,
+    App, ConPty, Finished, HostModel, HostSettings, JobShape, Key, LocalAppData, Modifiers,
+    Outside, PWSH_PROMPT, SHORT_ROOT, controlled_pwsh, end_process, local_app_data, pwsh,
+    relay_outside, rerun_outside,
 };

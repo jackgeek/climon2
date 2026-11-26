@@ -159,7 +159,7 @@ fn place(from: &Path, to: &Path) {
 /// A climon2 home of its own, and a runtime root short enough for a socket
 /// path. Dropping it ends every daemon its sessions name, so a failed test
 /// leaves nothing running.
-struct Home(tempfile::TempDir, tempfile::TempDir);
+struct Home(tempfile::TempDir, climon2_test_term::LocalAppData);
 
 impl Home {
     fn new() -> Self {

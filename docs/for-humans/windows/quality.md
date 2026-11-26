@@ -259,9 +259,12 @@ longest passing run took 68
 
 **Runtime folders.** Tests that start sessions set `LOCALAPPDATA` to a folder
 of their own in `%LOCALAPPDATA%\c2t`, not in the private temporary folder,
-which is too long for a 107-byte socket path. Each new folder first removes
-any in `c2t` over an hour old, which a killed run left behind
-([#422](https://github.com/jackgeek/climon2/issues/422)).
+which is too long for a 107-byte socket path. The folder may be at most 51
+bytes; where `%LOCALAPPDATA%` is too long for that, set
+`CLIMON2_TEST_SHORT_ROOT` to a shorter folder to use instead of `c2t`. Each
+folder holds a lock file open while its test runs. Each new folder first
+removes any over an hour old whose lock no one holds, which a killed run left
+behind ([#422](https://github.com/jackgeek/climon2/issues/422)).
 
 **Cost.** When no registered Windows file changed, the gate exits before doing
 any mutation work. A release mutates every registered Windows file. That run

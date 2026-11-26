@@ -12,12 +12,10 @@ use climon2_test_term::{ConPty, Terminal, end_process, local_app_data};
 use portable_pty::CommandBuilder;
 use std::{
     env, fs,
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 
 /// Every step waits this long at most; a failed hand-off can spend the
 /// five-second start-up and leave budgets.
@@ -128,7 +126,7 @@ fn place(from: &Path, to: &Path) {
 /// A climon2 home of its own, and a runtime root short enough for a socket
 /// path. Dropping it ends every daemon its sessions name, so a failed test
 /// leaves nothing running.
-pub struct Home(pub tempfile::TempDir, tempfile::TempDir);
+pub struct Home(pub tempfile::TempDir, climon2_test_term::LocalAppData);
 
 impl Home {
     pub fn new() -> Self {
@@ -189,16 +187,6 @@ impl Drop for Home {
                 end_process(session.daemon_pid);
             }
         }
-    }
-}
-
-pub fn terminate(pid: u32) {
-    // Opening by PID has no preconditions.
-    let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if !process.is_null() {
-        // A new handle, open with PROCESS_TERMINATE, closed here.
-        let process = unsafe { OwnedHandle::from_raw_handle(process) };
-        unsafe { TerminateProcess(process.as_raw_handle(), 1) };
     }
 }
 

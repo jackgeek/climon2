@@ -49,7 +49,7 @@ const WRITES_ITS_PID: &[&str] = &[
 /// client and library and the pinned ConPTY, a home and a working directory,
 /// all outside the crate folder, and a runtime root short enough for a
 /// socket path. Dropping it ends every daemon its sessions name.
-struct Install(tempfile::TempDir, tempfile::TempDir);
+struct Install(tempfile::TempDir, climon2_test_term::LocalAppData);
 
 impl Install {
     fn new() -> Self {

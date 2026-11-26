@@ -125,7 +125,7 @@ impl Install {
 /// A climon2 home and working directory outside the crate folder, and a
 /// runtime root short enough for a socket path. Dropping it ends every daemon
 /// its sessions name, so a failed test leaves nothing running.
-struct Home(tempfile::TempDir, tempfile::TempDir);
+struct Home(tempfile::TempDir, climon2_test_term::LocalAppData);
 
 impl Home {
     fn new() -> Self {
@@ -318,7 +318,7 @@ impl Drop for Held {
 impl Drop for Install {
     fn drop(&mut self) {
         for pid in processes_under(self.0.path()) {
-            terminate(pid);
+            end_process(pid);
         }
     }
 }
@@ -338,13 +338,6 @@ fn open(pid: u32, access: u32) -> Option<OwnedHandle> {
     let raw = unsafe { OpenProcess(access, 0, pid) };
     // A new handle nothing else owns.
     (!raw.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(raw) })
-}
-
-fn terminate(pid: u32) {
-    if let Some(process) = open(pid, PROCESS_TERMINATE) {
-        // The handle is open with PROCESS_TERMINATE.
-        unsafe { TerminateProcess(process.as_raw_handle(), 1) };
-    }
 }
 
 /// The running processes whose executable is in `folder`.

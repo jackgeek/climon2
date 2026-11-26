@@ -5,13 +5,19 @@
 //! `TEMP` is 38 bytes, and a `tempfile` folder in it with `\local` is 55.
 //!
 //! The folders go in `%LOCALAPPDATA%\c2t`, the real one, which only its user
-//! can use and whose length does not depend on `TEMP`. A run that is killed
-//! leaves its folder behind, so each new folder first sweeps those older than
-//! any test runs.
+//! can use and whose length does not depend on `TEMP`; `CLIMON2_TEST_SHORT_ROOT`
+//! names another parent where that is too long. Each folder holds a lock file
+//! open while it is in use. A run that is killed leaves its folder behind, so
+//! each new folder first sweeps those older than any test runs whose lock no
+//! one holds.
 
 use std::{
-    fs,
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    fs::{self, File, OpenOptions},
+    io,
+    os::windows::{
+        fs::OpenOptionsExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    },
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -23,28 +29,57 @@ use windows_sys::Win32::{
     },
 };
 
-/// The bytes `%LOCALAPPDATA%\c2\<hash8>\<uuid>.sock` adds to `LOCALAPPDATA`.
-const SOCKET_SUFFIX: usize = 54;
-/// `sun_path` holds 108 bytes of UTF-8 with its NUL.
-const SOCKET_PATH_MAX: usize = 107;
+/// Names the folder to make test folders in, instead of `%LOCALAPPDATA%\c2t`.
+pub const SHORT_ROOT: &str = "CLIMON2_TEST_SHORT_ROOT";
+/// The longest folder this makes: a socket path, at most 107 bytes, adds 54
+/// to `LOCALAPPDATA`, and the socket-length test sets `LOCALAPPDATA` to the
+/// folder plus at least `\r`.
+const FOLDER_MAX: usize = 107 - 54 - 2;
 /// No test runs this long, so a folder this old belongs to a run that ended
 /// without removing it.
 const STALE: Duration = Duration::from_secs(60 * 60);
+/// The file each folder holds open while it is in use. Windows refuses to
+/// delete a file that is open without delete sharing.
+const LOCK: &str = ".lock";
 /// How long [`end_process`] waits for a process to exit.
 const EXIT_WAIT: Duration = Duration::from_secs(10);
 
-/// `%LOCALAPPDATA%\c2t`, where every test's folder goes.
+/// A test's `LOCALAPPDATA`: a new, empty folder but for its lock file, removed
+/// when dropped.
+pub struct LocalAppData {
+    // Declared first, so it is closed before the folder is removed.
+    _lock: File,
+    folder: TempDir,
+}
+
+impl LocalAppData {
+    pub fn path(&self) -> &Path {
+        self.folder.path()
+    }
+}
+
+/// [`SHORT_ROOT`] when set, else `%LOCALAPPDATA%\c2t`.
 fn parent() -> PathBuf {
+    if let Some(root) = std::env::var_os(SHORT_ROOT) {
+        let root = PathBuf::from(root);
+        assert!(
+            root.is_absolute(),
+            "{SHORT_ROOT} must name an absolute folder"
+        );
+        return root;
+    }
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .filter(|base| base.is_absolute())
-        .unwrap_or_else(|| panic!("LOCALAPPDATA must name an absolute directory for the tests"));
+        .unwrap_or_else(|| {
+            panic!("LOCALAPPDATA must name an absolute folder, or set {SHORT_ROOT}")
+        });
     base.join("c2t")
 }
 
-/// A new, empty folder in `%LOCALAPPDATA%\c2t`, removed when dropped, to set
-/// as a test's `LOCALAPPDATA` whatever `TEMP` is.
-pub fn local_app_data() -> TempDir {
+/// A new folder in [`parent`], to set as a test's `LOCALAPPDATA` whatever
+/// `TEMP` is.
+pub fn local_app_data() -> LocalAppData {
     let parent = parent();
     fs::create_dir_all(&parent)
         .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
@@ -53,17 +88,47 @@ pub fn local_app_data() -> TempDir {
         .prefix("")
         .tempdir_in(&parent)
         .unwrap_or_else(|error| panic!("cannot create a folder in {}: {error}", parent.display()));
-    let length = folder.path().as_os_str().len();
-    assert!(
-        length + SOCKET_SUFFIX <= SOCKET_PATH_MAX,
-        "{} is {length} bytes, too long for a {SOCKET_PATH_MAX}-byte socket path",
-        folder.path().display()
-    );
-    folder
+    if let Some(refusal) = too_long(folder.path()) {
+        panic!("{refusal}");
+    }
+    let lock = hold(&folder.path().join(LOCK)).unwrap_or_else(|error| {
+        panic!(
+            "cannot create a lock in {}: {error}",
+            folder.path().display()
+        )
+    });
+    LocalAppData {
+        _lock: lock,
+        folder,
+    }
+}
+
+/// Why `folder` cannot be a test's `LOCALAPPDATA`, if it is too long.
+fn too_long(folder: &Path) -> Option<String> {
+    let length = folder.as_os_str().len();
+    (length > FOLDER_MAX).then(|| {
+        format!(
+            "{} is {length} bytes, over the {FOLDER_MAX} a 107-byte socket path leaves; \
+             set {SHORT_ROOT} to a shorter folder",
+            folder.display()
+        )
+    })
+}
+
+/// Creates the lock file at `path` and holds it open with no sharing, so no
+/// one else can open or delete it until it is closed.
+fn hold(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(0)
+        .open(path)
 }
 
 /// Removes what `parent` holds that was made [`STALE`] or longer before
-/// `now`. Anything still in use cannot be removed and stays.
+/// `now` and whose lock no one holds. Anything else in use cannot be removed
+/// and stays.
 fn sweep(parent: &Path, now: SystemTime) {
     let Ok(entries) = fs::read_dir(parent) else {
         return;
@@ -75,14 +140,18 @@ fn sweep(parent: &Path, now: SystemTime) {
         let Ok(made) = metadata.created().or_else(|_| metadata.modified()) else {
             continue;
         };
-        if now.duration_since(made).is_ok_and(|age| age >= STALE) {
-            let path = entry.path();
-            let _ = if metadata.is_dir() {
-                fs::remove_dir_all(&path)
-            } else {
-                fs::remove_file(&path)
-            };
+        if !now.duration_since(made).is_ok_and(|age| age >= STALE) {
+            continue;
         }
+        let path = entry.path();
+        let _ = if metadata.is_dir() {
+            match fs::remove_file(path.join(LOCK)) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => continue,
+                _ => fs::remove_dir_all(&path),
+            }
+        } else {
+            fs::remove_file(&path)
+        };
     }
 }
 
@@ -110,40 +179,66 @@ pub fn end_process(pid: u32) {
 mod tests {
     use super::*;
 
-    /// Whatever `TEMP` is, the folder is in `%LOCALAPPDATA%\c2t`, leaves a
-    /// socket path within budget, and is gone once dropped.
+    /// Whatever `TEMP` is, the folder is in the parent, leaves a socket path
+    /// within budget, and is gone once dropped.
     #[test]
-    fn the_folder_is_in_c2t_short_enough_and_removed() {
+    fn the_folder_is_in_the_parent_short_enough_and_removed() {
         let folder = local_app_data();
         let path = folder.path().to_owned();
 
         assert_eq!(path.parent(), Some(parent().as_path()));
-        assert!(path.as_os_str().len() + SOCKET_SUFFIX <= SOCKET_PATH_MAX);
-        assert!(path.is_dir());
+        assert!(path.as_os_str().len() <= FOLDER_MAX);
+        assert!(path.join(LOCK).is_file());
         drop(folder);
         assert!(!path.exists());
     }
 
-    /// A sweep removes only what is at least an hour old.
     #[test]
-    fn a_sweep_removes_only_stale_entries() {
+    fn a_folder_too_long_is_refused_naming_its_length_the_limit_and_the_override() {
+        let folder = PathBuf::from(format!("C:\\{}", "x".repeat(FOLDER_MAX - 3)));
+        assert_eq!(too_long(&folder), None);
+
+        let longer = folder.with_file_name("x".repeat(FOLDER_MAX - 2));
+        let refusal = too_long(&longer).unwrap();
+
+        assert!(
+            refusal.contains(&format!("is {} bytes", FOLDER_MAX + 1)),
+            "{refusal}"
+        );
+        assert!(refusal.contains("over the 51"), "{refusal}");
+        assert!(refusal.contains(SHORT_ROOT), "{refusal}");
+    }
+
+    /// A sweep removes only what is at least an hour old and not locked.
+    #[test]
+    fn a_sweep_removes_only_stale_unlocked_entries() {
         let parent = tempfile::tempdir().unwrap();
-        let folder = parent.path().join("folder");
-        fs::create_dir_all(folder.join("inner")).unwrap();
+        let unlocked = parent.path().join("unlocked");
+        fs::create_dir_all(unlocked.join("inner")).unwrap();
+        File::create(unlocked.join(LOCK)).unwrap();
+        let locked = parent.path().join("locked");
+        fs::create_dir_all(locked.join("inner")).unwrap();
+        let held = hold(&locked.join(LOCK)).unwrap();
         let file = parent.path().join("file");
         fs::write(&file, "").unwrap();
 
         sweep(parent.path(), SystemTime::now());
-        assert!(folder.is_dir() && file.is_file());
+        assert!(unlocked.is_dir() && locked.is_dir() && file.is_file());
 
         sweep(parent.path(), SystemTime::now() + STALE);
-        assert!(!folder.exists() && !file.exists());
+        assert!(!unlocked.exists() && !file.exists());
+        assert!(locked.join("inner").is_dir() && locked.join(LOCK).is_file());
+
+        drop(held);
+        sweep(parent.path(), SystemTime::now() + STALE);
+        assert!(!locked.exists());
     }
 
     #[test]
     fn ending_a_process_waits_for_its_exit() {
-        let mut child = std::process::Command::new("cmd")
-            .args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"])
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
 
