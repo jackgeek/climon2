@@ -65,15 +65,15 @@ pub struct SessionOrigin {
 }
 
 impl SessionOrigin {
-    /// Whether two origins are the same host (ADR 0011): the same PID
-    /// namespace, and the same machine ID when both record one. Without a
-    /// stable machine ID on either side, the PID namespace alone decides.
+    /// Whether two origins are the same host (ADR 0011): when both have a
+    /// stable machine ID, it alone decides, since WSL2, LXC/LXD,
+    /// systemd-nspawn and Flatpak get a new PID namespace at every start.
+    /// Otherwise the PID namespace decides.
     pub fn is_same_place(&self, other: &Self) -> bool {
-        let machines = match (&self.machine_id, &other.machine_id) {
+        match (&self.machine_id, &other.machine_id) {
             (Some(machine), Some(other)) => machine == other,
-            _ => true,
-        };
-        machines && self.pid_namespace == other.pid_namespace
+            _ => self.pid_namespace == other.pid_namespace,
+        }
     }
 }
 

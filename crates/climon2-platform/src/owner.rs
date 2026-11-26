@@ -75,11 +75,47 @@ fn claim(home: &Path, here: io::Result<SessionOrigin>) -> Result<(), Refusal> {
 
 /// The owner the home records, if it records one.
 fn recorded(home: &Path) -> Result<Option<SessionOrigin>, Refusal> {
+    read(home).map_err(|error| Refusal::Unreadable {
+        path: home.join(OWNER_FILE),
+        error,
+    })
+}
+
+/// The owner the home at `home` records, without checking or claiming
+/// anything: `None` when it records none, and an error when its record is not
+/// a plain, valid file. For `c2 home`.
+pub fn read(home: &Path) -> io::Result<Option<SessionOrigin>> {
     match load(&home.join(OWNER_FILE)) {
         Ok(owner) => Ok(Some(owner)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(Refusal::Unreadable(error)),
+        Err(error) => Err(error),
     }
+}
+
+/// What `release` removed.
+#[derive(Debug)]
+pub enum Released {
+    /// The home had no owner record.
+    Nothing,
+    /// The record of this owner.
+    Owner(SessionOrigin),
+    /// A record that was not a plain, valid file, for this reason: a symlink is
+    /// removed itself, never its target.
+    Unreadable(io::Error),
+}
+
+/// Removes the home's owner record, whoever it names, so the next command
+/// claims the home afresh. Nothing is checked first: this is how a home is
+/// moved, or recovered when its owner is gone, and how a bad record is
+/// cleared.
+pub fn release(home: &Path) -> io::Result<Released> {
+    let released = match read(home) {
+        Ok(Some(owner)) => Released::Owner(owner),
+        Ok(None) => return Ok(Released::Nothing),
+        Err(error) => Released::Unreadable(error),
+    };
+    fs::remove_file(home.join(OWNER_FILE))?;
+    Ok(released)
 }
 
 fn load(path: &Path) -> io::Result<SessionOrigin> {

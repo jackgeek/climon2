@@ -30,25 +30,39 @@ fn fixture(directory: &Path, machine: Option<&str>, mounts: &[&str]) -> Sources 
     sources
 }
 
-/// Only systemd's mount of `/run/machine-id` makes the machine ID transient,
-/// and so absent: not a bind mount of a real file, not a mount with another
-/// root or file system, and not a mount that a later one at the same place
-/// hides. A missing `/etc/machine-id` is absent too, and the PID namespace is
-/// the inode of its file.
+/// The machine ID is not stable, and so absent, when the last mount that
+/// holds `/etc/machine-id` (the file, `/etc` or the root) is a tmpfs or an
+/// overlay: systemd's transient `/run/machine-id` mount, or the root of a live
+/// system. A bind mount of a real file over a volatile root, or a real `/etc`,
+/// keeps it, and a later mount at the same place decides. A missing or
+/// malformed `/etc/machine-id` is absent too, and the PID namespace is the
+/// inode of its file.
 #[test]
 fn issue133_only_a_stable_machine_id_is_part_of_the_origin() {
+    let overlay_root = "1 0 0:30 / / rw,relatime - overlay overlay rw,lowerdir=/l";
+    let tmpfs_root = "1 0 0:31 / / rw - tmpfs tmpfs rw";
+    let tmpfs_etc = "40 25 0:32 / /etc rw - tmpfs tmpfs rw";
+    let real_etc = "40 25 8:2 / /etc rw - ext4 /dev/sda2 rw";
     let other_root = "612 600 8:1 /machine-id /etc/machine-id ro - ext4 /dev/sda1 rw";
-    let other_kind = "612 600 0:5 /etc/machine-id /etc/machine-id ro - tmpfs tmpfs rw";
+    let tmpfs_file = "612 600 0:5 /etc/machine-id /etc/machine-id ro - tmpfs tmpfs rw";
+    let elsewhere = "50 25 0:33 / /etc/machine-id.d rw - tmpfs tmpfs rw";
     for (mounts, transient) in [
         (vec![ROOT, TRANSIENT], true),
         (vec![ROOT, BIND, TRANSIENT], true),
         (vec!["not a mount", TRANSIENT], true),
+        (vec![overlay_root], true),
+        (vec![tmpfs_root], true),
+        (vec![ROOT, tmpfs_etc], true),
+        (vec![ROOT, tmpfs_file], true),
+        (vec![ROOT, TRANSIENT, overlay_root], true),
         (vec![ROOT], false),
         (vec![], false),
         (vec![ROOT, BIND], false),
         (vec![ROOT, TRANSIENT, BIND], false),
-        (vec![other_root], false),
-        (vec![other_kind], false),
+        (vec![overlay_root, BIND], false),
+        (vec![tmpfs_root, real_etc], false),
+        (vec![ROOT, other_root], false),
+        (vec![ROOT, elsewhere], false),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let sources = fixture(directory.path(), Some(ETC), &mounts);

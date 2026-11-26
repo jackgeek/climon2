@@ -387,7 +387,7 @@ The directory where climon2 keeps its data; `~/.climon2` unless `CLIMON2_HOME` o
 _Avoid_: Data dir, state dir, config dir
 
 **Home owner**:
-The one host, a machine and on Linux a PID namespace, that a climon2 home belongs to, as the home's `owner` record names it; the first command claims a home without one, and every other machine or container is refused.
+The one host that a climon2 home belongs to, as the home's `owner` record names it: its stable machine ID, or on Linux without one its PID namespace. The first command claims a home without one, every other machine or container is refused, and `c2 home release` removes it.
 _Avoid_: Home host, lock, lease
 
 **Installer**:

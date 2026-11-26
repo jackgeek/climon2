@@ -3,10 +3,10 @@
 //! PID namespace that cannot be read is an error.
 //!
 //! Only a stable machine ID is recorded (ADR 0011). A machine without one (as
-//! in many container images), or whose ID is the transient one systemd
-//! generates at each boot on a live or read-only-root system and mounts from
-//! `/run/machine-id` over `/etc/machine-id`, is told apart by its PID
-//! namespace alone.
+//! in many container images), or whose ID does not survive a reboot (the
+//! transient one systemd mounts from `/run/machine-id` over
+//! `/etc/machine-id`, or one on the tmpfs or overlay root of a live system),
+//! is told apart by its PID namespace alone.
 use climon2_core::metadata::{MachineId, SessionOrigin};
 use std::{
     fs, io,
@@ -46,24 +46,29 @@ fn machine_id(path: &Path) -> Option<MachineId> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-/// Whether the last mount at `/etc/machine-id` is systemd's transient one: the
-/// file `/machine-id` of the tmpfs at `/run`. A container's bind mount of its
-/// host's real file has another root or file system, and unreadable mounts
-/// are taken as none.
+/// The mount points that can hold `/etc/machine-id`: the file itself, the
+/// folder it is in, and the root.
+const HOLDERS: [&str; 3] = ["/etc/machine-id", "/etc", "/"];
+/// File systems whose contents do not survive a reboot as they are: systemd's
+/// transient ID on the tmpfs at `/run`, and the tmpfs or overlay root of a
+/// live system, which writes a fresh ID there at every boot.
+const VOLATILE: [&str; 2] = ["tmpfs", "overlay"];
+
+/// Whether `/etc/machine-id` is not stable: the last mount that holds it is a
+/// tmpfs or an overlay. A container's bind mount of its host's real file is a
+/// mount of the host's file system, and unreadable mounts are taken as none.
 fn transient(mountinfo: &Path) -> bool {
     let mounts = fs::read_to_string(mountinfo).unwrap_or_default();
     mounts
         .lines()
         .filter_map(mount)
-        .rfind(|(_, point, _)| *point == "/etc/machine-id")
-        .is_some_and(|(root, _, kind)| root == "/machine-id" && kind == "tmpfs")
+        .rfind(|(point, _)| HOLDERS.contains(point))
+        .is_some_and(|(_, kind)| VOLATILE.contains(&kind))
 }
 
-/// One `mountinfo` line's root, mount point and file system type.
-fn mount(line: &str) -> Option<(&str, &str, &str)> {
+/// One `mountinfo` line's mount point and file system type.
+fn mount(line: &str) -> Option<(&str, &str)> {
     let (fields, tail) = line.split_once(" - ")?;
-    let mut fields = fields.split(' ').skip(3);
-    let root = fields.next()?;
-    let point = fields.next()?;
-    Some((root, point, tail.split(' ').next()?))
+    let point = fields.split(' ').nth(4)?;
+    Some((point, tail.split(' ').next()?))
 }

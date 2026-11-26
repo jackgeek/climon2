@@ -53,8 +53,8 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 includ
 - Procfs inspection errors are not evidence of process death. All participants
   sharing session metadata must share a PID namespace. **Superseded in part by
   [ADR 0011](0011-one-home-one-host.md):** a climon2 home belongs to one host,
-  one machine and one PID namespace, and climon2 refuses a home that another
-  machine or container owns instead of leaving it unsupported.
+  and climon2 refuses a home that another machine or container owns instead of
+  leaving it unsupported.
 - Hanging up closes the PTY master, as closing a terminal window does. Linux
   wakes terminal readers before it signals the session leader, so a leader
   blocked reading the terminal can end with its own status (an interactive

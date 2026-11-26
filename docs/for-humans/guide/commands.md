@@ -1,7 +1,7 @@
 # Commands
 
 Every `c2` command: starting, attaching to, detaching from, ending and listing
-sessions.
+sessions, and showing or releasing the climon2 home's owner.
 
 ```sh
 c2 exec bash --noprofile --norc
@@ -12,6 +12,8 @@ c2 kill 3f2a9c1e
 c2 list
 c2 list --json
 c2 monitor
+c2 home
+c2 home release
 ```
 
 Every command has a one-letter shortcut that works exactly like the full name.
@@ -24,6 +26,7 @@ Every command has a one-letter shortcut that works exactly like the full name.
 | `kill` | `k` |
 | `list` | `l` |
 | `monitor` | `m` |
+| `home` | `h` |
 
 ```sh
 c2 x vim
@@ -219,28 +222,46 @@ Each session is attached and killed through the client of its own climon2
 version, so that version must still be installed. Older sessions that do not
 support an action fail with 125 and are left alone. `list` needs no client.
 
-**One climon2 home, one computer.** A climon2 home belongs to one computer.
-On Linux it also belongs to one PID namespace: one set of process IDs. A
-container usually has its own, unless it is started with `--pid=host`. The
-first `c2` command that uses a home records its owner in the home's `owner`
-file.
+## One climon2 home, one computer
+
+A climon2 home belongs to one computer. The first `c2` command that uses a
+home records its owner in the home's `owner` file: the computer's machine ID
+and, on Linux, its PID namespace (its set of process IDs). On Linux, macOS and
+Windows the machine ID alone decides who the owner is. The PID namespace
+decides only on a Linux computer or container whose `/etc/machine-id` is
+missing, or new at every boot (as on live systems). A container usually has
+its own PID namespace, unless it is started with `--pid=host`. Containers
+like that, without a machine ID of their own, can look like one computer to
+climon2.
 
 Sharing a home with another machine, for example through a network home
-directory, or with a container, is refused. `exec`, `attach`, `list`, `kill`
-and `monitor` then exit with 125 before they do anything else:
+directory, or with a container that has another machine ID, is refused.
+`exec`, `attach`, `list`, `kill` and `monitor` then exit with 125 before they
+do anything else:
 
 ```text
-climon2: error: this climon2 home is in use by another machine or container (machine 8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f, PID namespace 4026531836). To work across machines, use `c2 relay`. To move this home here, run `c2 home release` on the owning host.
+climon2: error: this climon2 home is in use by another machine or container (machine 8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f, PID namespace 4026531836). climon2 does not work across machines yet (`c2 relay` is planned). To move this home here, run `c2 home release`.
 ```
 
-To work with sessions on another machine, use `c2 relay`. Give each machine
-and container a climon2 home of its own, with `CLIMON2_HOME` if their home
-directories are shared. A container that is started again gets a new PID
-namespace, so it is refused by a home its earlier run used.
+climon2 does not work across machines yet; `c2 relay` is planned. Until then,
+give each machine and container a climon2 home of its own, with
+`CLIMON2_HOME` if their home directories are shared.
 
-On Linux, a machine whose `/etc/machine-id` is missing, or new at every boot
-(as on live systems), is told apart by its PID namespace alone. Machines like
-that can look like one computer to climon2.
+`c2 home` shows the home, its owner and whether this computer is the owner. It
+works whoever owns the home, and changes nothing:
+
+```text
+climon2 home: /home/me/.climon2
+owner: machine 8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f, PID namespace 4026531836
+this host: machine 0b7e5a1c2d3f4e5a6b7c8d9e0f1a2b3c, PID namespace 4026531836 (not the owner)
+```
+
+`c2 home release` removes the `owner` file, so the next command claims the
+home for the computer it runs on. Run it to move a home to another computer,
+or on the new computer when the owner is gone. It refuses, with 125, while
+this computer still has sessions running in the home. It also clears an
+`owner` file that cannot be read, which commands refuse until it is released
+or deleted.
 ## On Windows
 
 On Windows, `c2` runs the same commands as on macOS and Linux, with the same
@@ -253,6 +274,8 @@ c2 attach $id
 c2 list
 c2 kill $id
 c2 monitor
+c2 home
+c2 home release
 ```
 
 The terminals and shells climon2 is tested with on Windows are listed in

@@ -199,6 +199,28 @@ fn issue74_monitor_and_m_take_no_arguments_and_mon_is_gone() {
     }
 }
 
+/// #133 / ADR 0011: `home` and its shortcut `h` take nothing, or `release`
+/// alone; anything else is a usage error (2).
+#[test]
+fn issue133_home_takes_nothing_or_release() {
+    for home in ["home", "h"] {
+        let parse = |tail: &[&str]| {
+            CliArgs::parse([&[home][..], tail].concat().into_iter().map(OsString::from))
+        };
+        assert_eq!(parse(&[]).unwrap(), CliArgs::Home);
+        assert_eq!(parse(&["release"]).unwrap(), CliArgs::HomeRelease);
+        for bad in [
+            &["release", "extra"][..],
+            &["Release"],
+            &[""],
+            &["--help"],
+            &["show"],
+        ] {
+            assert_eq!(parse(bad).unwrap_err().exit_code(), 2, "{home} {bad:?}");
+        }
+    }
+}
+
 /// #29: help and version flags parse only when given alone. #287: help has
 /// only its long flag, so `-h` alone is a usage error (2).
 #[test]
@@ -356,12 +378,13 @@ fn issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow()
 }
 
 /// #287: each command and its single-letter shortcut, as the spec lists them.
-const SHORTCUTS: [(&str, &str); 5] = [
+const SHORTCUTS: [(&str, &str); 6] = [
     ("exec", "x"),
     ("attach", "a"),
     ("kill", "k"),
     ("list", "l"),
     ("monitor", "m"),
+    ("home", "h"),
 ];
 
 /// #287: every command's single-letter shortcut is a pure synonym: given any
@@ -369,7 +392,7 @@ const SHORTCUTS: [(&str, &str); 5] = [
 #[test]
 fn shortcuts_parse_exactly_as_their_full_commands() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
-    let tails: [&[&str]; 18] = [
+    let tails: [&[&str]; 20] = [
         &[],
         &["cmd", "--flag", ""],
         &["--", "-cmd"],
@@ -388,6 +411,8 @@ fn shortcuts_parse_exactly_as_their_full_commands() {
         &[""],
         &["--help"],
         &["extra"],
+        &["release"],
+        &["release", "extra"],
     ];
     for (full, shortcut) in SHORTCUTS {
         let mut accepted = 0;

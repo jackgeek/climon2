@@ -39,8 +39,11 @@ pub enum Refusal {
         owner: SessionOrigin,
         error: std::io::Error,
     },
-    /// The owner record cannot be read, or is not a valid record.
-    Unreadable(std::io::Error),
+    /// The owner record at `path` cannot be read, or is not a valid record.
+    Unreadable {
+        path: std::path::PathBuf,
+        error: std::io::Error,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -49,20 +52,21 @@ impl fmt::Display for Refusal {
             Self::Foreign(owner) => write!(
                 out,
                 "this climon2 home is in use by another machine or container ({owner}). \
-                 To work across machines, use `c2 relay`. To move this home here, run \
-                 `c2 home release` on the owning host."
+                 climon2 does not work across machines yet (`c2 relay` is planned). To move \
+                 this home here, run `c2 home release`."
             ),
             Self::Unchecked { owner, error } => write!(
                 out,
                 "this climon2 home belongs to {owner}, and this host's machine and PID \
                  namespace could not be checked: {error}"
             ),
-            Self::Unreadable(error) => {
-                write!(
-                    out,
-                    "this climon2 home's owner record cannot be read: {error}"
-                )
-            }
+            Self::Unreadable { path, error } => write!(
+                out,
+                "this climon2 home's owner record {} cannot be read: {error}. To let the next \
+                 command claim this home afresh, run `c2 home release` or delete {}.",
+                path.display(),
+                path.display()
+            ),
         }
     }
 }

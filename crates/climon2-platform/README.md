@@ -100,8 +100,9 @@ dispatch or shell-specific logic.
   native file per OS (`src/origin/{linux,macos,windows}.rs`), is where this
   process runs (#133): on Linux the PID namespace as the inode of
   `/proc/self/ns/pid` and the machine ID from `/etc/machine-id`, absent when
-  there is none or when it is systemd's transient one (the last mount at
-  `/etc/machine-id` is `/machine-id` of a tmpfs, systemd's `/run/machine-id`);
+  there is none or when it does not survive a reboot: the last mount holding it
+  (at `/etc/machine-id`, `/etc` or `/`) is a tmpfs or an overlay, as for
+  systemd's transient `/run/machine-id` or a live system's root;
   on macOS the hardware UUID from `gethostuuid`, as 32 lowercase hex digits;
   on Windows `MachineGuid`. It is read once per process; a failed read is not
   kept. `origin::{Sources, current_at}` (Linux) read the same from injected
@@ -114,10 +115,16 @@ dispatch or shell-specific logic.
   read its own origin for is `Refusal::Unchecked`; a record that is not a
   plain, valid file is `Refusal::Unreadable` and left alone. Without its own
   origin, or when the record cannot be written, it claims nothing and warns.
-  `owner::check_as` takes the origin, for tests.
+  `owner::check_as` takes the origin, for tests. `owner::read` names the
+  recorded owner without checking or claiming (`c2 home`), and
+  `owner::release` removes whatever record is there, naming it, and a link
+  itself, never its target (`c2 home release`). Two origins are one host when
+  their stable machine IDs match; only without one on either side does the PID
+  namespace decide.
 - `private::open_plain_file` opens a file to read only when it is a plain
   file: never through a symlink (`O_NOFOLLOW`) or reparse point, and not a
-  directory or FIFO.- `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
+  directory or FIFO.
+- `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
 - `process::signal_group(group, Signal)` supports Hangup, Interrupt, Terminate,
@@ -570,8 +577,10 @@ sources.
 `issue133_a_concurrent_first_claim_has_one_owner`,
 `issue133_a_bad_owner_record_is_refused_and_left_alone`,
 `issue133_a_linked_owner_record_is_refused`,
-`issue133_a_home_that_cannot_be_claimed_is_used_unclaimed` and
-`issue133_check_claims_a_home_for_this_host`.
+`issue133_a_home_that_cannot_be_claimed_is_used_unclaimed`,
+`issue133_check_claims_a_home_for_this_host`,
+`issue133_read_names_the_owner_without_claiming` and
+`issue133_release_removes_the_record_so_the_next_check_claims_afresh`.
 
 `tests/hangup.rs`: `issue19_closing_real_controlling_pty_delivers_hangup`, in
 its own test binary because a child another test forks would inherit the PTY

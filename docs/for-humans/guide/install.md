@@ -70,7 +70,7 @@ To install by hand on Linux, use the `linux-x86_64-gnu` archive and
 system at the install path that can swap two folders with `renameat2`.
 A climon2 home belongs to one computer, and on Linux to one PID namespace.
 climon2 refuses a home that another machine or container uses; see
-[one climon2 home, one computer](commands.md#listing).
+[one climon2 home, one computer](commands.md#one-climon2-home-one-computer).
 
 ## Windows
 

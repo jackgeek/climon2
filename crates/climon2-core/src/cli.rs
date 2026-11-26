@@ -20,6 +20,10 @@ pub enum CliArgs {
     Attach(Selector),
     Kill(Selector),
     Monitor,
+    /// `home`: the climon2 home, its owner and whether this host owns it.
+    Home,
+    /// `home release`: remove the home's owner record (ADR 0011).
+    HomeRelease,
     Help,
     Version,
 }
@@ -33,7 +37,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m";
+pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release]";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -86,7 +90,7 @@ impl Subcommand {
 }
 
 /// Every command, in usage order. `r` is reserved for `relay`.
-const SUBCOMMANDS: [Subcommand; 5] = [
+const SUBCOMMANDS: [Subcommand; 6] = [
     Subcommand {
         name: "exec",
         shortcut: "x",
@@ -111,6 +115,11 @@ const SUBCOMMANDS: [Subcommand; 5] = [
         name: "monitor",
         shortcut: "m",
         parse: parse_monitor,
+    },
+    Subcommand {
+        name: "home",
+        shortcut: "h",
+        parse: parse_home,
     },
 ];
 
@@ -168,6 +177,15 @@ fn parse_monitor(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
         .is_empty()
         .then_some(CliArgs::Monitor)
         .ok_or(UsageError)
+}
+
+/// `home` takes nothing, or `release` alone.
+fn parse_home(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
+    match arguments.as_slice() {
+        [] => Ok(CliArgs::Home),
+        [action] if action == "release" => Ok(CliArgs::HomeRelease),
+        _ => Err(UsageError),
+    }
 }
 
 /// `attach` and `kill` take exactly one selector.

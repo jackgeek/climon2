@@ -5,7 +5,7 @@ use climon2_core::{
     metadata::SessionOrigin,
     owner::{OWNER_FILE, Refusal},
 };
-use climon2_platform::owner::{check, check_as};
+use climon2_platform::owner::{Released, check, check_as, read, release};
 use std::{fs, io, path::Path, sync::Barrier};
 
 fn origin(machine: Option<&str>, pid_namespace: Option<u64>) -> SessionOrigin {
@@ -66,17 +66,21 @@ fn issue133_the_first_check_claims_the_home_and_its_host_passes() {
     );
 }
 
-/// Another machine, or another PID namespace of this one, is refused with the
-/// owner it found, and the record stays as it was.
+/// Another machine ID is refused whatever its PID namespace, and so is
+/// another PID namespace where a side has no stable machine ID, with the owner
+/// found; the record stays as it was. The owner's machine in a new PID
+/// namespace (WSL2 or a container restarted) is still the owner.
 #[test]
 fn issue133_another_machine_or_pid_namespace_is_refused() {
     let home = tempfile::tempdir().unwrap();
     check_as(home.path(), Ok(here())).unwrap();
+    check_as(home.path(), Ok(origin(Some("aaaa"), Some(2)))).unwrap();
+    check_as(home.path(), Ok(origin(Some("aaaa"), None))).unwrap();
     for other in [
         origin(Some("bbbb"), Some(1)),
-        origin(Some("aaaa"), Some(2)),
+        origin(Some("bbbb"), Some(2)),
         origin(None, Some(2)),
-        origin(Some("aaaa"), None),
+        origin(None, None),
     ] {
         let Err(Refusal::Foreign(owner)) = check_as(home.path(), Ok(other.clone())) else {
             panic!("{other:?} passed");
@@ -118,7 +122,8 @@ fn issue133_a_concurrent_first_claim_has_one_owner() {
                 let (home, start) = (home.path(), &start);
                 scope.spawn(move || {
                     start.wait();
-                    check_as(home, Ok(origin(Some("aaaa"), Some(namespace))))
+                    let machine = format!("machine-{namespace}");
+                    check_as(home, Ok(origin(Some(&machine), Some(namespace))))
                 })
             })
             .collect();
@@ -154,7 +159,7 @@ fn issue133_a_bad_owner_record_is_refused_and_left_alone() {
     ] {
         let home = tempfile::tempdir().unwrap();
         fs::write(home.path().join(OWNER_FILE), contents).unwrap();
-        let Err(Refusal::Unreadable(error)) = check_as(home.path(), Ok(here())) else {
+        let Err(Refusal::Unreadable { error, .. }) = check_as(home.path(), Ok(here())) else {
             panic!("{contents:?} passed");
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{contents:?}");
@@ -164,7 +169,7 @@ fn issue133_a_bad_owner_record_is_refused_and_left_alone() {
     fs::create_dir(home.path().join(OWNER_FILE)).unwrap();
     assert!(matches!(
         check_as(home.path(), Ok(here())),
-        Err(Refusal::Unreadable(_))
+        Err(Refusal::Unreadable { .. })
     ));
     assert!(home.path().join(OWNER_FILE).is_dir());
 }
@@ -184,7 +189,7 @@ fn issue133_a_linked_owner_record_is_refused() {
     std::os::windows::fs::symlink_file(&target, &link).unwrap();
     assert!(matches!(
         check_as(home.path(), Ok(here())),
-        Err(Refusal::Unreadable(_))
+        Err(Refusal::Unreadable { .. })
     ));
     assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
 }
@@ -208,4 +213,60 @@ fn issue133_check_claims_a_home_for_this_host() {
     let owner: SessionOrigin = serde_json::from_str(&record(home.path())).unwrap();
     assert_eq!(owner, climon2_platform::origin::current().unwrap());
     check(home.path()).unwrap();
+}
+
+/// `read` names the recorded owner without claiming anything: none for a new
+/// home, and an error for a bad record.
+#[test]
+fn issue133_read_names_the_owner_without_claiming() {
+    let home = tempfile::tempdir().unwrap();
+    assert!(read(home.path()).unwrap().is_none());
+    assert!(names(home.path()).is_empty());
+    check_as(home.path(), Ok(here())).unwrap();
+    assert_eq!(read(home.path()).unwrap(), Some(here()));
+    fs::write(home.path().join(OWNER_FILE), "{}").unwrap();
+    let error = read(home.path()).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+/// `release` removes whatever record the home has, naming whose it was, so the
+/// next check claims the home afresh: on any host, and for a bad record or a
+/// link, which is removed itself and never followed.
+#[test]
+fn issue133_release_removes_the_record_so_the_next_check_claims_afresh() {
+    let home = tempfile::tempdir().unwrap();
+    assert!(matches!(release(home.path()).unwrap(), Released::Nothing));
+    check_as(home.path(), Ok(origin(Some("bbbb"), Some(7)))).unwrap();
+    let Released::Owner(owner) = release(home.path()).unwrap() else {
+        panic!("the owner was not named");
+    };
+    assert_eq!(owner, origin(Some("bbbb"), Some(7)));
+    assert!(names(home.path()).is_empty());
+    check_as(home.path(), Ok(here())).unwrap();
+    assert_eq!(read(home.path()).unwrap(), Some(here()));
+
+    fs::write(home.path().join(OWNER_FILE), "not json").unwrap();
+    let Released::Unreadable(error) = release(home.path()).unwrap() else {
+        panic!("a bad record was not reported");
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(names(home.path()).is_empty());
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let target = elsewhere.path().join("owner");
+    fs::write(&target, r#"{"machine_id":"aaaa","pid_namespace":1}"#).unwrap();
+    let link = home.path().join(OWNER_FILE);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&target, &link).unwrap();
+    assert!(matches!(
+        release(home.path()).unwrap(),
+        Released::Unreadable(_)
+    ));
+    assert!(names(home.path()).is_empty());
+    assert!(target.exists());
+
+    fs::create_dir(home.path().join(OWNER_FILE)).unwrap();
+    assert!(release(home.path()).is_err());
 }
