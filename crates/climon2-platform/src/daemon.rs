@@ -152,14 +152,40 @@ mod unix {
         })
     }
 
-    /// Runs in the forked child: a new session, and the readiness pipe survives exec.
+    /// Runs in the forked child: a new session, and of every descriptor past
+    /// stdio only the readiness pipe survives exec (#158). Spawn's own error
+    /// pipe is already close-on-exec, so it still reports a failed exec.
     fn detach_on_exec(command: &mut Command, descriptor: i32) {
         unsafe {
             command.pre_exec(move || {
                 crate::syscall::checked(libc::setsid())?;
+                close_all_on_exec();
                 close_on_exec(descriptor, false)
             });
         }
+    }
+
+    /// Marks every descriptor past stdio close-on-exec. A descriptor that
+    /// another thread made just as this process forked may not be marked yet:
+    /// macOS has no atomic close-on-exec pipe, and such a descriptor would
+    /// otherwise live as long as the daemon (#158).
+    ///
+    /// Linux std already makes its descriptors close-on-exec atomically, so a
+    /// kernel or sandbox without close_range starts the daemon as before.
+    #[cfg(target_os = "linux")]
+    fn close_all_on_exec() {
+        let flags = libc::CLOSE_RANGE_CLOEXEC as libc::c_int;
+        unsafe { libc::close_range(3, libc::c_uint::MAX, flags) };
+    }
+
+    /// macOS has no close_range, so each descriptor the process could hold is
+    /// marked: getdtablesize is the soft limit, capped by the kernel's
+    /// per-process maximum. One that is not open is skipped.
+    #[cfg(target_os = "macos")]
+    fn close_all_on_exec() {
+        (3..unsafe { libc::getdtablesize() }).for_each(|fd| {
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        });
     }
 
     /// Both ends close on exec.
@@ -244,24 +270,59 @@ mod unix {
         }
     }
 
+    /// The wait rounds the time left up, so the deadline's last fraction of a
+    /// millisecond is waited, not spun. The last look is one that does not wait: a
+    /// reply already waiting is read even once the deadline has passed, as when
+    /// spawn itself returned late (#158).
     fn readable(reader: &File, deadline: Instant) -> io::Result<()> {
         let mut watches = [Watch::new(reader.as_fd(), Interest::Read)];
-        while !poll_once(&mut watches, remaining(deadline)?)? {}
-        Ok(())
-    }
-
-    /// The wait rounds this up, so the deadline's last fraction of a
-    /// millisecond is waited, not spun.
-    fn remaining(deadline: Instant) -> io::Result<Duration> {
-        deadline
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "daemon readiness timed out"))
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if poll_once(&mut watches, remaining)? {
+                return Ok(());
+            }
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "daemon readiness timed out",
+                ));
+            }
+        }
     }
 
     fn poll_once(watches: &mut [Watch<'_>; 1], timeout: Duration) -> io::Result<bool> {
         match waiting::wait(watches, timeout) {
             Ok(_) => Ok(watches[0].ready()),
             Err(error) => crate::syscall::retry_if_interrupted(error).map(|()| false),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::io::Write;
+
+        /// #158: a reply already in the pipe when the deadline has passed is read, not
+        /// timed out: a daemon that answered is not killed for its spawn's slowness.
+        #[test]
+        fn a_reply_waiting_past_the_deadline_is_read() {
+            let (mut reader, mut writer) = pipe().unwrap();
+            writer.write_all(b"R").unwrap();
+            let passed = Instant::now() - Duration::from_secs(1);
+            assert_eq!(
+                read_readiness(&mut reader, passed).unwrap(),
+                Readiness::Ready
+            );
+        }
+
+        /// With nothing to read, a passed deadline is a timeout at once.
+        #[test]
+        fn no_reply_past_the_deadline_times_out_at_once() {
+            let (mut reader, _writer) = pipe().unwrap();
+            let started = Instant::now();
+            let error = read_readiness(&mut reader, started - Duration::from_secs(1)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(started.elapsed() < Duration::from_secs(1));
         }
     }
 }

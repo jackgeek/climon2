@@ -29,7 +29,7 @@
 mod support;
 
 use climon2_core::metadata::SessionMetadata;
-use climon2_test_term::{Terminal, controlled_pwsh, rerun_outside};
+use climon2_test_term::{Terminal, controlled_pwsh, end_process, rerun_outside};
 use portable_pty::CommandBuilder;
 use std::{
     env,
@@ -43,7 +43,7 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
-use support::{Home, Package, TIMEOUT, terminate, wait};
+use support::{Home, Package, TIMEOUT, wait};
 use windows_sys::Win32::{
     Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
     Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT,
@@ -249,7 +249,7 @@ fn a_command_ended_by_terminate_process_reports_1_and_leaves_no_descendant() {
     }
     let (package, home) = (Package::new(), Home::new());
     let (mut terminal, leader, child) = exec_owned(&package, &home);
-    terminate(owned_pid(&home, "command.pid"));
+    end_process(owned_pid(&home, "command.pid"));
     assert_eq!(
         terminal.wait_exit(TIMEOUT).unwrap(),
         1,
@@ -278,7 +278,7 @@ fn a_client_ended_by_terminate_process_leaves_the_session_to_the_leave_policy() 
         .try_into()
         .unwrap_or_else(|pids| panic!("not one client: {pids:?}"));
     let killed = Instant::now();
-    terminate(client);
+    end_process(client);
     // The CLI and the launcher pass the client's status on unchanged.
     assert_eq!(
         terminal.wait_exit(TIMEOUT).unwrap(),
@@ -310,7 +310,7 @@ fn a_killed_daemon_is_reported_with_its_logs_its_command_dies_and_list_reclaims_
     let (package, home) = (Package::new(), Home::new());
     let (mut terminal, leader, child) = exec_owned(&package, &home);
     let [session]: [SessionMetadata; 1] = home.sessions().try_into().unwrap();
-    terminate(session.daemon_pid);
+    end_process(session.daemon_pid);
     assert_eq!(
         terminal.wait_exit(TIMEOUT).unwrap(),
         125,

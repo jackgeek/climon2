@@ -562,8 +562,12 @@ fn suite_environment(command: &mut Command) -> &mut Command {
 /// to every worker. Workers build without debug info: each has its own target folder,
 /// which with debug info nears 8.4 GB on Windows, and the gate's workers together filled
 /// the owner's VM's disk.
+/// Workers keep no failed tests' evidence (#158): a mutant that fails a
+/// test is the gate working, and its evidence would bury a real failure's.
 fn worker_limits(command: &mut Command, jobs: Option<OsString>) -> &mut Command {
-    command.env("CARGO_PROFILE_DEV_DEBUG", "0");
+    command
+        .env("CARGO_PROFILE_DEV_DEBUG", "0")
+        .env_remove("CLIMON2_TEST_EVIDENCE");
     if let Some(jobs) = jobs {
         command
             .env("CARGO_BUILD_JOBS", &jobs)
@@ -2344,12 +2348,20 @@ No selected line holds a mutation site; nothing to mutate.
                 .collect::<Vec<_>>()
         };
         let set = |name: &str, value: &str| (OsString::from(name), Some(OsString::from(value)));
-        assert_eq!(limits(None), [set("CARGO_PROFILE_DEV_DEBUG", "0")]);
+        let unset = |name: &str| (OsString::from(name), None);
+        assert_eq!(
+            limits(None),
+            [
+                set("CARGO_PROFILE_DEV_DEBUG", "0"),
+                unset("CLIMON2_TEST_EVIDENCE"),
+            ]
+        );
         assert_eq!(
             limits(Some("2")),
             [
                 set("CARGO_BUILD_JOBS", "2"),
                 set("CARGO_PROFILE_DEV_DEBUG", "0"),
+                unset("CLIMON2_TEST_EVIDENCE"),
                 set("RUST_TEST_THREADS", "2"),
             ]
         );

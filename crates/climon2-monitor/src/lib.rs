@@ -448,8 +448,11 @@ impl Monitor {
     /// due (at most `ui.fps` a second, #119): one not due is skipped, and a
     /// later step's paints the scene as it is then. Frames an action needs
     /// at once (a revealed canvas that the rest of a read may type into, a
-    /// resize) are painted when they happen. Every frame counts toward the
-    /// cadence, so output alone never paints faster than it.
+    /// resize) are painted when they happen: their state (readiness,
+    /// routing, Viewing and Acknowledge) is in force at once, though on a
+    /// backed-up host their draw waits until the host has room (owner
+    /// decision on #420, option A). Every frame counts toward the cadence,
+    /// so output alone never paints faster than it.
     fn frame(&mut self, read: bool) -> io::Result<()> {
         if read || self.frames.due(Instant::now()) {
             return self.show();
@@ -460,7 +463,11 @@ impl Monitor {
     /// Paints the current scene when it differs from what the screen shows.
     /// Each terminal first learns whether this frame shows its applied
     /// restoration, so its control and input readiness describe the frame
-    /// being painted.
+    /// being painted. While the host has yet to take what it was handed,
+    /// the frame is drawn only once it has: one drawn meanwhile would only
+    /// be replaced, and a host that takes little at a time, as a macOS
+    /// terminal does, would wait for a whole frame to be drawn for each
+    /// write (#419).
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
         self.frames.painted(now);
@@ -497,7 +504,7 @@ impl Monitor {
             now,
             session,
         };
-        self.screen.show(&scene, titling)?;
+        draw(&mut self.screen, &self.output, &scene, titling)?;
         self.attend();
         Ok(())
     }
@@ -505,25 +512,42 @@ impl Monitor {
     /// Writes what the host takes now, never waiting for it (#285). Each
     /// time it has taken everything it was handed, a toast whose full title
     /// that showed begins its hold, and the newest frame is handed on, so
-    /// frames drawn meanwhile never queue.
+    /// frames never queue.
     fn pump(&mut self, host: &mut Host) -> io::Result<()> {
         host.write(&mut self.output)?;
-        while self.output.idle() && self.hand_on() {
+        while self.hand_on()? {
             host.write(&mut self.output)?;
         }
         Ok(())
     }
 
-    /// The host has written everything it was handed: hands it the newest
-    /// frame and any bell, and says whether it handed anything.
-    fn hand_on(&mut self) -> bool {
+    /// Once the host has written everything it was handed: hands it the
+    /// newest frame, drawn now if one waited for the host, and any bell, and
+    /// says whether it handed anything.
+    fn hand_on(&mut self) -> io::Result<bool> {
+        if !self.output.idle() {
+            return Ok(false);
+        }
+        // The waiting frame is drawn before any bell is queued, which would
+        // leave the host with something to take again, and before the toast
+        // is taken, so a failed draw loses neither.
+        self.redraw()?;
         if let Some(toast) = self.screen.written() {
             self.title(toast);
         }
         if let Some(bytes) = self.screen.commit() {
             self.output.queue(&bytes);
         }
-        !self.output.idle()
+        Ok(!self.output.idle())
+    }
+
+    /// The frame that waited for the host to take what it was handed,
+    /// drawn now that it has (#419).
+    fn redraw(&mut self) -> io::Result<()> {
+        if self.screen.undrawn() {
+            return self.show();
+        }
+        Ok(())
     }
 
     /// While a menu is open, every pending attention episode that was
@@ -1244,7 +1268,9 @@ impl Monitor {
     /// closes the last modal, the uncovered session is painted at once, so
     /// the rest of the same read meets the screen now in force and a key
     /// typed straight after Escape reaches the session (owner decision on
-    /// #109). Nothing is kept beyond the read.
+    /// #109). That frame's state is in force at once; on a backed-up host
+    /// its draw waits until the host has room (owner decision on #420,
+    /// option A). Nothing is kept beyond the read.
     fn modal(&mut self, input: &Routed) -> io::Result<()> {
         let covered = self.covered();
         self.modal_input(input);
@@ -1506,6 +1532,22 @@ fn placeholder(kind: Kind, control: Control) -> bool {
     kind == Kind::Connected && control == Control::NotControlling
 }
 
+/// Draws `scene` for the host, unless the host has yet to take `output`:
+/// then the frame waits until it has, since one drawn meanwhile would only
+/// be replaced (#419).
+fn draw(
+    screen: &mut Screen,
+    output: &Output,
+    scene: &Scene<'_>,
+    titling: Option<Instant>,
+) -> io::Result<()> {
+    if output.idle() {
+        return screen.show(scene, titling);
+    }
+    screen.defer();
+    Ok(())
+}
+
 /// What shutdown knows when the supervisor itself never finished: nothing
 /// is confirmed of the sessions it last waited for.
 fn unfinished(waiting: Vec<SessionId>) -> shutdown::Report {
@@ -1619,8 +1661,83 @@ mod tests {
         Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, View, also, cache,
         control, inspected, placeholder, retained, revealed, selected, terminal, without_view,
     };
+    use crate::attention::NO_ATTENTION;
     use climon2_core::SessionId;
     use std::time::Instant;
+
+    /// A monitor on an empty home in `directory`, as `c2 monitor` starts it
+    /// at 60x12, without a host.
+    fn started(directory: &std::path::Path) -> super::Monitor {
+        let layout = climon2_core::layout::HomeLayout::at(directory).unwrap();
+        let log = climon2_platform::logging::LogFile::monitor(directory).unwrap();
+        let dispatch = log.dispatch(Some("info")).unwrap();
+        let startup = super::Startup {
+            log,
+            version: "0.1.0".parse().unwrap(),
+            preference: crate::preference::Preference::read(&layout),
+            home: layout,
+            executable: climon2_core::layout::ExecutableHome::new(directory).unwrap(),
+            config: climon2_core::config::MonitorConfig::parse(b"{}").unwrap(),
+        };
+        let size = climon2_core::protocol::TerminalSize { cols: 60, rows: 12 };
+        super::Monitor::start(size, startup, &dispatch, "info".to_owned()).unwrap()
+    }
+
+    /// A started monitor whose supervisor and discovery stop when it is
+    /// dropped, a failed assertion included.
+    struct Stopping(super::Monitor);
+
+    impl Drop for Stopping {
+        /// Stops the supervisor and discovery, and waits for both, at most
+        /// 10 s.
+        fn drop(&mut self) {
+            let monitor = &mut self.0;
+            monitor.supervisor.shut_down();
+            monitor.discovery.stop();
+            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            let mut report = None;
+            while !(report.is_some() && monitor.discovery.join()) && Instant::now() < deadline {
+                report = report.or_else(|| monitor.supervisor.report());
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if !std::thread::panicking() {
+                assert!(report.is_some(), "the supervisor never stopped");
+            }
+        }
+    }
+
+    /// #419 (Monitor supplement): while the host has yet to take what it
+    /// was handed, a due frame is not drawn; once the host has taken it,
+    /// handing on draws the scene as it is then and hands that frame to the
+    /// host.
+    #[test]
+    fn a_frame_due_while_the_host_is_backed_up_is_drawn_once_it_has_room() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut stopping = Stopping(started(&std::fs::canonicalize(directory.path()).unwrap()));
+        let monitor = &mut stopping.0;
+        // The host takes the first attention report, and the key
+        // introduction closes.
+        monitor.output = super::Output::default();
+        monitor.introduction.close();
+        monitor.show().unwrap();
+        assert!(monitor.hand_on().unwrap(), "the first frame");
+        let first = String::from_utf8_lossy(monitor.output.pending()).into_owned();
+        assert!(!first.contains(NO_ATTENTION), "{first}");
+        // The host has not taken the first frame when prefix+j finds no
+        // session needing attention.
+        monitor.notice.show(Instant::now());
+        monitor.show().unwrap();
+        assert!(monitor.screen.undrawn());
+        assert_eq!(monitor.screen.commit(), None);
+        assert!(!monitor.hand_on().unwrap());
+        assert_eq!(monitor.output.pending(), first.as_bytes());
+        // The host takes everything.
+        monitor.output = super::Output::default();
+        assert!(monitor.hand_on().unwrap());
+        assert!(!monitor.screen.undrawn());
+        let newest = String::from_utf8_lossy(monitor.output.pending()).into_owned();
+        assert!(newest.contains(NO_ATTENTION), "{newest}");
+    }
 
     /// EXT-03 (pure supplement, #118): a shutdown's failure is said after
     /// any earlier failure, such as a render failure, in one diagnostic.
