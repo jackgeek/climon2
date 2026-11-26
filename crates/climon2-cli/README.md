@@ -139,18 +139,22 @@ checks stdin and stdout TTYs, all before any session side effect. It resolves
 canonical companions
 from its own canonical version-layout path and generates one v4 GUID. Core
 projects the exact OS-string command environment (a depth overflow is 125
-here, recorded in the general log, which the error names). Then, for a nested start without `--nested` (#139), a headless exec
+here, recorded in the general log, which the error names). It then resolves
+the runtime directory and the working directory (126), so a start bound to
+fail is never offered. Then, for a nested start without `--nested` (#139), a headless exec
 prints core's nesting warning to stderr. An ordinary exec instead opens
 `climon2-platform`'s `terminal::Prompt` on stdin and stdout, both terminals:
 raw, earlier input discarded, the warning and core's `PROMPT` written to
 stdout, so a redirected stderr cannot hide them. It reads one key at a time,
 leaving input after the answer to the client, until Enter, which starts the
 session, or Ctrl+C, which exits 130, as Ctrl+C in a client does; a lost
-terminal exits 129, and a hang-up, interrupt, quit or termination signal
+terminal exits 129, as does a hang-up while opening the terminal or showing
+the prompt (`terminal::ask`), and a hang-up, interrupt, quit or termination signal
 (Ctrl+Break or a close on Windows) restores the terminal and exits 128 +
 signal (`0xC000013A` for Ctrl+Break). None creates a session log, socket or
 daemon. Only then
-does exec create the socket and switch to the linked session log. Core
+does exec switch to the linked session log and start the daemon, which
+creates the socket. Core
 provides the depth/ordinal rules; `TERM=xterm-256color` and
 `COLORTERM=truecolor` are always set. The command's inherited `CLIMON2_HOME`
 and `CLIMON2_LOG` are not rewritten. The initial size is the stdin terminal's,
@@ -246,7 +250,8 @@ client start.
   `a_nested_headless_start_warns_without_waiting_unless_deliberate`,
   `the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected`,
   `a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal`,
-  `after_enter_sigterm_and_sighup_end_exec_while_the_session_starts`
+  `after_enter_sigterm_and_sighup_end_exec_while_the_session_starts`,
+  `a_nested_start_from_a_deleted_working_directory_fails_before_the_prompt`
   (#139)
 - `actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_identity`
 - `startup_failure_codes_and_signal_exit_are_preserved`

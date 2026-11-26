@@ -1527,3 +1527,20 @@ fn after_enter_sigterm_and_sighup_end_exec_while_the_session_starts() {
         layout.clean();
     }
 }
+
+/// #139: a nested start bound to fail is not offered: from a deleted working
+/// directory, exec exits 126 before it warns or asks.
+#[test]
+fn a_nested_start_from_a_deleted_working_directory_fails_before_the_prompt() {
+    let layout = Layout::new();
+    let mut terminal = nested_shell(
+        &layout,
+        r#"mkdir gone && cd gone && rmdir ../gone && exec "$0" exec "$1" hold"#,
+        &[],
+    );
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 126);
+    let received = String::from_utf8_lossy(&terminal.received()).into_owned();
+    assert!(!received.contains("nested for the"), "{received}");
+    assert!(!received.contains(PROMPT), "{received}");
+    layout.clean();
+}

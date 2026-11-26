@@ -527,3 +527,26 @@ fn prompt(report: &Path) -> i32 {
     thread::sleep(TIMEOUT);
     0
 }
+
+/// #139: a hang-up opening the prompt's console (a broken pipe or an
+/// invalid handle) answers the prompt as a console gone, as a lost console
+/// does while it waits; any other failure is returned.
+#[test]
+fn a_hang_up_opening_a_prompt_answers_gone() {
+    use climon2_core::session::Answer;
+    // ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE and ERROR_ACCESS_DENIED.
+    for code in [109, 6] {
+        let failed = || Err(io::Error::from_raw_os_error(code));
+        assert_eq!(
+            terminal::ask(failed(), failed(), "text").unwrap(),
+            Answer::Gone
+        );
+    }
+    let denied = terminal::ask(
+        Err(io::Error::from_raw_os_error(5)),
+        Err(io::Error::from_raw_os_error(5)),
+        "text",
+    )
+    .unwrap_err();
+    assert_eq!(denied.raw_os_error(), Some(5));
+}

@@ -228,7 +228,7 @@ Terminal settings (termios) are restored exactly.
 | 2 | Usage error |
 | 125 | climon2 failed |
 | 126, 127 | `exec` could not start the command |
-| 128 + signal | The client was ended by a signal |
+| 128 + signal | A signal ended the client, or `exec` while it waited at a nested session's prompt (`0xC000013A` on Windows after Ctrl+Break there) |
 | 129 | The client's terminal went away, or `exec`'s while it waited to start a nested session |
 | 130 | Ctrl+C (SIGINT, signal 2) ended the client, or cancelled a nested session before it started |
 

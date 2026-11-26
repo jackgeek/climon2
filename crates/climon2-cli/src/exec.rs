@@ -35,13 +35,18 @@ pub fn run(
 ) -> Result<u32, Error> {
     let (config, layout) = prepare(home, lifetime)?;
     let session = NewSession::create().map_err(|error| error.logged(general.path()))?;
+    // The working and runtime directories are checked before the prompt, so
+    // no one is asked to start a session that is bound to fail.
+    let startup = Startup::new(home, &layout, &session.id, lifetime, &config)?;
     if let Some(status) = confirm(session.environment.notice(lifetime, nested))? {
         return Ok(status);
     }
     let log = session_log(home, &session.id, general)?;
     let dispatch = log.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
-        launch(home, lifetime, command, &layout, session, filter, config)
+        startup
+            .ready(command, session.environment, filter)
+            .and_then(|daemon| startup.finish(daemon, filter, config.client))
             .map_err(|error| error.logged(log.path().parent().expect("session log directory")))
     })
 }
@@ -89,11 +94,11 @@ fn confirm(notice: Notice<'_>) -> io::Result<Option<u32>> {
 
 /// The terminal is raw, and earlier input discarded, before the prompt
 /// shows, so only a key typed once it shows answers it, and Ctrl+C is a key,
-/// never a signal.
+/// never a signal. A hang-up anywhere, opening the terminal included, is a
+/// terminal gone.
 fn ask(warning: &str) -> io::Result<Option<u32>> {
-    let mut prompt = terminal::Prompt::new(terminal::input()?, terminal::output()?)?;
-    prompt.show(&format!("{warning}\r\n{PROMPT}\r\n"))?;
-    Ok(prompt.answer()?.status())
+    let text = format!("{warning}\r\n{PROMPT}\r\n");
+    Ok(terminal::ask(terminal::input(), terminal::output(), &text)?.status())
 }
 
 fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
@@ -140,20 +145,6 @@ struct Startup<'a> {
     socket: PathBuf,
     size: TerminalSize,
     cwd: PathBuf,
-}
-
-fn launch(
-    home: &Path,
-    lifetime: Lifetime,
-    command: CommandArgs,
-    layout: &ExecutableLayout,
-    session: NewSession,
-    filter: Option<&str>,
-    config: ExecConfig,
-) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, &session.id, lifetime, &config)?;
-    let daemon = startup.ready(command, session.environment, filter)?;
-    startup.finish(daemon, filter, config.client)
 }
 
 impl Startup<'_> {

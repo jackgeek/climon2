@@ -346,3 +346,38 @@ fn issue20_tty_requires_both_stdin_and_stdout_but_not_stderr() {
         wait_fixture(command.spawn().unwrap());
     }
 }
+
+/// #139: a hang-up opening the prompt's terminal, or showing its text on a
+/// terminal already lost, answers the prompt as a terminal gone, as a lost
+/// terminal does while it waits; any other failure is returned.
+#[test]
+fn a_hang_up_anywhere_in_a_prompt_answers_gone() {
+    use climon2_core::session::Answer;
+    use std::io;
+    let _lock = RAW_TEST.lock().unwrap();
+    let eio = || Err(io::Error::from_raw_os_error(libc::EIO));
+    let (_master, slave) = pty();
+    assert_eq!(
+        terminal::ask(eio(), slave.try_clone(), "text").unwrap(),
+        Answer::Gone
+    );
+    assert_eq!(
+        terminal::ask(slave.try_clone(), eio(), "text").unwrap(),
+        Answer::Gone
+    );
+    let ebadf = terminal::ask(
+        Err(io::Error::from_raw_os_error(libc::EBADF)),
+        slave.try_clone(),
+        "text",
+    )
+    .unwrap_err();
+    assert_eq!(ebadf.raw_os_error(), Some(libc::EBADF));
+    let (master, slave) = pty();
+    drop(master);
+    with_handlers(&[libc::SIG_DFL; 4], || {
+        assert_eq!(
+            terminal::ask(slave.try_clone(), slave.try_clone(), "text").unwrap(),
+            Answer::Gone
+        );
+    });
+}

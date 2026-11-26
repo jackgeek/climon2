@@ -3,6 +3,33 @@
 //! is the console, with its own raw mode, threads and control events (#321).
 pub use native::*;
 
+use climon2_core::session::Answer;
+use std::{fs::File, io};
+
+/// Opens a nested-start prompt (#139) on `input` and `output`, shows `text`
+/// and answers it. A hang-up anywhere, in opening either terminal, going raw,
+/// showing the text or reading, answers [`Answer::Gone`], as a lost terminal
+/// does; any other failure is returned.
+pub fn ask(input: io::Result<File>, output: io::Result<File>, text: &str) -> io::Result<Answer> {
+    open_and_ask(input, output, text).or_else(|error| {
+        if hung_up(&error) {
+            Ok(Answer::Gone)
+        } else {
+            Err(error)
+        }
+    })
+}
+
+fn open_and_ask(
+    input: io::Result<File>,
+    output: io::Result<File>,
+    text: &str,
+) -> io::Result<Answer> {
+    let mut prompt = Prompt::new(input?, output?)?;
+    prompt.show(text)?;
+    prompt.answer()
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use unix as native;
 
@@ -359,9 +386,11 @@ mod unix {
     }
 
     impl Prompt {
+        /// The handlers go in before raw mode, so a signal in between still
+        /// finds one; a failure undoes raw mode, then the dispositions.
         pub fn new(input: File, output: File) -> io::Result<Self> {
-            let raw = RawModeGuard::new(&input)?;
             let signals = PromptSignals::install()?;
+            let raw = RawModeGuard::new(&input)?;
             crate::syscall::checked(unsafe { libc::tcflush(input.as_raw_fd(), libc::TCIFLUSH) })?;
             Ok(Self {
                 raw,

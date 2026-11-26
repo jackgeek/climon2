@@ -545,9 +545,10 @@ pub fn output() -> io::Result<File> {
     Ok(File::from(stdout.as_handle().try_clone_to_owned()?))
 }
 
-/// A console read failing because the console is gone: its pipe broken or
+/// A console operation failing because the console is gone, a hang-up:
+/// its pipe broken or
 /// its handle no longer valid.
-fn console_gone(error: &io::Error) -> bool {
+pub fn hung_up(error: &io::Error) -> bool {
     [ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE]
         .iter()
         .any(|code| error.raw_os_error() == i32::try_from(*code).ok())
@@ -559,32 +560,36 @@ const CONTROL_C_EXIT: u32 = 0xC000_013A;
 
 /// The console while `exec` waits for an answer to its nested-start prompt
 /// (#139): raw, with input typed before it discarded, read one record at a
-/// time so that nothing after the answer is taken. Ctrl+Break and a close
-/// end the wait instead of the process, so dropping the prompt always
-/// restores the console.
+/// time so that no record after the answer is taken. A record is read whole:
+/// keys decoded from it beyond the answer, a held key's repeats or a
+/// surrogate half, are discarded with the prompt. Ctrl+Break and a close end
+/// the wait instead of the process, so dropping the prompt always restores
+/// the console.
 pub struct Prompt {
     /// Until the prompt restores the console.
     raw: Option<RawModeGuard>,
+    /// Until the prompt removes its handler routine, after `raw`.
+    handler: Option<ConsoleHandler>,
     input: File,
     output: File,
-    signals: Signals,
     keys: Keys,
     /// Bytes decoded from a record and not yet given out.
     typed: std::collections::VecDeque<u8>,
 }
 
 impl Prompt {
-    /// The handler routine goes in last, so a failure leaves none behind.
+    /// The handler routine goes in before raw mode, so an event in between
+    /// still finds it; a failure undoes raw mode, then the handler.
     pub fn new(input: File, output: File) -> io::Result<Self> {
+        let handler = ConsoleHandler::add()?;
         let guard = RawModeGuard::new(&input)?;
         // SAFETY: the console's input handle, which this prompt owns.
         check(unsafe { FlushConsoleInputBuffer(raw(input.as_handle())) })?;
-        let signals = Signals::client()?;
         Ok(Self {
             raw: Some(guard),
+            handler: Some(handler),
             input,
             output,
-            signals,
             keys: Keys::default(),
             typed: std::collections::VecDeque::new(),
         })
@@ -608,11 +613,8 @@ impl Prompt {
     /// handler routine, as Unix restores the terminal before the signals'
     /// dispositions; once only.
     fn restore(&mut self) {
-        if let Some(guard) = self.raw.take() {
-            drop(guard);
-            // SAFETY: removes the routine `Signals::client` added.
-            unsafe { SetConsoleCtrlHandler(Some(console_event), 0) };
-        }
+        drop(self.raw.take());
+        drop(self.handler.take());
     }
 
     /// The next byte typed, a console that is gone, or the status a console
@@ -628,22 +630,40 @@ impl Prompt {
             }
             match wait_records(self.input.as_handle(), 1) {
                 Ok(records) => self.typed.extend(self.keys.feed(&records)),
-                Err(error) if console_gone(&error) => return Ok(Input::Gone),
+                Err(error) if hung_up(&error) => return Ok(Input::Gone),
                 Err(error) => return Err(error),
             }
         }
     }
 
     fn ended(&self) -> Option<u32> {
-        if self.signals.take_break() {
+        if Signals.take_break() {
             return Some(CONTROL_C_EXIT);
         }
-        self.signals.termination_signal().map(|signal| 128 + signal)
+        Signals.termination_signal().map(|signal| 128 + signal)
     }
 }
 
-/// The prompt's handler routine goes with it, so a later Ctrl+C or close
-/// acts as it did before.
+/// The client's handler routine, added for a prompt and removed when this
+/// drops, so a later Ctrl+C or close acts as it did before.
+struct ConsoleHandler;
+
+impl ConsoleHandler {
+    fn add() -> io::Result<Self> {
+        Signals::client()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for ConsoleHandler {
+    fn drop(&mut self) {
+        // SAFETY: removes the routine `Signals::client` added.
+        unsafe { SetConsoleCtrlHandler(Some(console_event), 0) };
+    }
+}
+
+/// Raw mode goes before the handler routine, as on Unix the terminal is
+/// restored before the signals' dispositions.
 impl Drop for Prompt {
     fn drop(&mut self) {
         self.restore();
@@ -737,15 +757,15 @@ mod tests {
     /// #139: only a broken pipe or an invalid handle means the prompt's
     /// console is gone; any other failure is the prompt's to report.
     #[test]
-    fn only_a_broken_pipe_or_invalid_handle_is_a_console_gone() {
+    fn only_a_broken_pipe_or_invalid_handle_is_a_hang_up() {
         for code in [ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE] {
-            assert!(console_gone(&io::Error::from_raw_os_error(code as i32)));
+            assert!(hung_up(&io::Error::from_raw_os_error(code as i32)));
         }
         // ERROR_ACCESS_DENIED and ERROR_NOT_ENOUGH_MEMORY.
         for code in [5, 8] {
-            assert!(!console_gone(&io::Error::from_raw_os_error(code)));
+            assert!(!hung_up(&io::Error::from_raw_os_error(code)));
         }
-        assert!(!console_gone(&io::Error::other("no OS error")));
+        assert!(!hung_up(&io::Error::other("no OS error")));
     }
 
     #[test]

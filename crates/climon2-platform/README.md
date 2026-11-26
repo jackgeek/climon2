@@ -173,8 +173,14 @@ dispatch or shell-specific logic.
   exactly the dispositions it replaced, default actions included, so they
   end the process again while the session starts. Dropping it restores the
   terminal first, then the dispositions; on Windows, the console's modes
-  first, then it removes its console handler routine, which `new` adds last
-  so that a failure leaves none behind. `answer(self)` reads the answer
+  first, then it removes its console handler routine. `new` installs the
+  dispositions or handler before going raw, so a signal in between still
+  finds them, and a failure undoes raw mode, then them. On Windows a record
+  is read whole: keys decoded from it beyond the answer (a held key's
+  repeats, a surrogate half) are discarded. `terminal::ask(input, output,
+  text)` opens a prompt, shows `text` and answers it, mapping a hang-up
+  anywhere (`terminal::hung_up`: EIO; a broken pipe or invalid handle on
+  Windows) to `Answer::Gone`, as `read_input` does. `answer(self)` reads the answer
   through core's `Answer::read`, restores both, and only then checks for a
   recorded signal or console event, which wins over the answer
   (`Answer::or_ended`), so one arriving with or after Enter still ends exec.
@@ -597,8 +603,10 @@ refusal proves nothing called them.
 `a_prompt_flushes_type_ahead_reads_bytes_singly_and_ends_on_signals`,
 `a_prompt_reads_a_lost_terminal_as_gone`,
 `a_prompt_keeps_ignored_signals_and_puts_back_each_disposition`,
-`a_prompt_answers_with_a_recorded_signal_over_enter` (#139). `tests/terminal_windows.rs`
-adds `a_prompt_discards_type_ahead_takes_keys_singly_and_ends_restored_on_ctrl_break`
+`a_prompt_answers_with_a_recorded_signal_over_enter`,
+`a_hang_up_anywhere_in_a_prompt_answers_gone` (#139). `tests/terminal_windows.rs`
+adds `a_prompt_discards_type_ahead_takes_keys_singly_and_ends_restored_on_ctrl_break`,
+`a_hang_up_opening_a_prompt_answers_gone`
 (#139).
 
 `tests/waiting.rs` (#310): `issue310_one_wait_reports_each_ready_handle_until_the_timeout`,
