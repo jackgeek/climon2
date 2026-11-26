@@ -448,8 +448,11 @@ impl Monitor {
     /// due (at most `ui.fps` a second, #119): one not due is skipped, and a
     /// later step's paints the scene as it is then. Frames an action needs
     /// at once (a revealed canvas that the rest of a read may type into, a
-    /// resize) are painted when they happen. Every frame counts toward the
-    /// cadence, so output alone never paints faster than it.
+    /// resize) are painted when they happen: their state (readiness,
+    /// routing, Viewing and Acknowledge) is in force at once, though on a
+    /// backed-up host their draw waits until the host has room (owner
+    /// decision on #420, option A). Every frame counts toward the cadence,
+    /// so output alone never paints faster than it.
     fn frame(&mut self, read: bool) -> io::Result<()> {
         if read || self.frames.due(Instant::now()) {
             return self.show();
@@ -526,10 +529,10 @@ impl Monitor {
             return Ok(false);
         }
         // The waiting frame is drawn before any bell is queued, which would
-        // leave the host with something to take again.
-        let written = self.screen.written();
+        // leave the host with something to take again, and before the toast
+        // is taken, so a failed draw loses neither.
         self.redraw()?;
-        if let Some(toast) = written {
+        if let Some(toast) = self.screen.written() {
             self.title(toast);
         }
         if let Some(bytes) = self.screen.commit() {
@@ -1265,7 +1268,9 @@ impl Monitor {
     /// closes the last modal, the uncovered session is painted at once, so
     /// the rest of the same read meets the screen now in force and a key
     /// typed straight after Escape reaches the session (owner decision on
-    /// #109). Nothing is kept beyond the read.
+    /// #109). That frame's state is in force at once; on a backed-up host
+    /// its draw waits until the host has room (owner decision on #420,
+    /// option A). Nothing is kept beyond the read.
     fn modal(&mut self, input: &Routed) -> io::Result<()> {
         let covered = self.covered();
         self.modal_input(input);
@@ -1678,17 +1683,27 @@ mod tests {
         super::Monitor::start(size, startup, &dispatch, "info".to_owned()).unwrap()
     }
 
-    /// Stops `monitor`'s supervisor and discovery, and waits for both.
-    fn stopped(mut monitor: super::Monitor) {
-        monitor.supervisor.shut_down();
-        monitor.discovery.stop();
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
-        let mut report = None;
-        while !(report.is_some() && monitor.discovery.join()) && Instant::now() < deadline {
-            report = report.or_else(|| monitor.supervisor.report());
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    /// A started monitor whose supervisor and discovery stop when it is
+    /// dropped, a failed assertion included.
+    struct Stopping(super::Monitor);
+
+    impl Drop for Stopping {
+        /// Stops the supervisor and discovery, and waits for both, at most
+        /// 10 s.
+        fn drop(&mut self) {
+            let monitor = &mut self.0;
+            monitor.supervisor.shut_down();
+            monitor.discovery.stop();
+            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            let mut report = None;
+            while !(report.is_some() && monitor.discovery.join()) && Instant::now() < deadline {
+                report = report.or_else(|| monitor.supervisor.report());
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if !std::thread::panicking() {
+                assert!(report.is_some(), "the supervisor never stopped");
+            }
         }
-        assert!(report.is_some(), "the supervisor never stopped");
     }
 
     /// #419 (Monitor supplement): while the host has yet to take what it
@@ -1698,7 +1713,8 @@ mod tests {
     #[test]
     fn a_frame_due_while_the_host_is_backed_up_is_drawn_once_it_has_room() {
         let directory = tempfile::tempdir().unwrap();
-        let mut monitor = started(&std::fs::canonicalize(directory.path()).unwrap());
+        let mut stopping = Stopping(started(&std::fs::canonicalize(directory.path()).unwrap()));
+        let monitor = &mut stopping.0;
         // The host takes the first attention report, and the key
         // introduction closes.
         monitor.output = super::Output::default();
@@ -1721,7 +1737,6 @@ mod tests {
         assert!(!monitor.screen.undrawn());
         let newest = String::from_utf8_lossy(monitor.output.pending()).into_owned();
         assert!(newest.contains(NO_ATTENTION), "{newest}");
-        stopped(monitor);
     }
 
     /// EXT-03 (pure supplement, #118): a shutdown's failure is said after
