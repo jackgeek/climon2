@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 /// Daemon wire revision 1, the only protocol after hello, through this harness.
@@ -74,29 +74,43 @@ impl Session {
         Self::configured(mode, |_, _| {})
     }
 
+    /// A session that must start: a failed readiness wait keeps its evidence
+    /// (#158) before anything else can end the test.
     fn configured(mode: &str, configure: impl FnOnce(&mut Command, &Path)) -> Self {
-        let (session, readiness) = Self::attempt(mode, configure, false, false);
+        let (session, readiness, wait) = Self::launch(mode, configure, false, false);
         if !matches!(readiness, Ok(daemon::Readiness::Ready)) {
-            eprintln!(
-                "daemon log: {:?}",
-                fs::read_to_string(
-                    session
-                        .directory
-                        .path()
-                        .join(format!("logs/{ID}/daemon.log"))
-                )
-            );
+            let home = session.directory.path();
+            let log = home.join(format!("logs/{ID}/daemon.log"));
+            eprintln!("daemon log: {:?}", fs::read_to_string(&log));
+            let report = wait.describe(&readiness);
+            eprintln!("{report}");
+            keep_evidence(&report, &log);
+            assert_startup_command_gone(home);
         }
         assert_eq!(readiness.unwrap(), daemon::Readiness::Ready);
         session
     }
 
+    /// A session that may fail to start, as some tests expect.
     fn attempt(
         mode: &str,
         configure: impl FnOnce(&mut Command, &Path),
         bad_cwd: bool,
         missing: bool,
     ) -> (Self, io::Result<daemon::Readiness>) {
+        let (session, readiness, _) = Self::launch(mode, configure, bad_cwd, missing);
+        if !matches!(readiness, Ok(daemon::Readiness::Ready)) {
+            assert_startup_command_gone(session.directory.path());
+        }
+        (session, readiness)
+    }
+
+    fn launch(
+        mode: &str,
+        configure: impl FnOnce(&mut Command, &Path),
+        bad_cwd: bool,
+        missing: bool,
+    ) -> (Self, io::Result<daemon::Readiness>, ReadinessWait) {
         let (prepared, command) = Prepared::new(mode, configure, bad_cwd);
         let Prepared {
             directory,
@@ -105,15 +119,20 @@ impl Session {
             metadata,
             startup_socket,
         } = prepared;
+        let spawning = SystemTime::now();
         let pending = daemon::spawn(command, |command, fd| {
             command_tail(command, fd, &home, mode, missing);
         })
         .unwrap();
         let pid = pending.id();
+        let spawned = SystemTime::now();
         let readiness = pending.wait_ready(&[&metadata, &socket]);
-        if !matches!(readiness, Ok(daemon::Readiness::Ready)) {
-            assert_startup_command_gone(&home);
-        }
+        let wait = ReadinessWait {
+            pid,
+            spawning,
+            spawned,
+            answered: SystemTime::now(),
+        };
         let pid = if matches!(readiness, Ok(daemon::Readiness::Ready)) {
             pid
         } else {
@@ -128,6 +147,7 @@ impl Session {
                 pid,
             },
             readiness,
+            wait,
         )
     }
 
@@ -190,6 +210,85 @@ impl Drop for Session {
             exit_by(self.pid, after(FINISH_BOUND));
         }
     }
+}
+
+/// The test's side of one readiness wait (#158): the signal waited for is the
+/// daemon's reply on the readiness pipe, which `wait_ready` reads.
+struct ReadinessWait {
+    pid: u32,
+    /// `daemon::spawn` was called; its readiness deadline starts just after.
+    spawning: SystemTime,
+    /// `daemon::spawn` returned: the daemon had exec'd.
+    spawned: SystemTime,
+    /// `wait_ready` returned.
+    answered: SystemTime,
+}
+
+impl ReadinessWait {
+    fn describe(&self, readiness: &io::Result<daemon::Readiness>) -> String {
+        let since = |time: SystemTime| {
+            time.duration_since(self.spawning)
+                .unwrap_or_default()
+                .as_millis()
+        };
+        format!(
+            "readiness wait for daemon pid {}, on its readiness pipe reply:\n\
+             spawn called   {}\n\
+             spawn returned {} (+{} ms)\n\
+             wait returned  {} (+{} ms): {readiness:?}\n",
+            self.pid,
+            utc(self.spawning),
+            utc(self.spawned),
+            since(self.spawned),
+            utc(self.answered),
+            since(self.answered),
+        )
+    }
+}
+
+/// Keeps a failed readiness wait's evidence where CI uploads it (#158): the
+/// wait's timestamps and the daemon's log, under the test's own name in
+/// `CLIMON2_TEST_EVIDENCE`. Without that variable the panic output is all.
+fn keep_evidence(wait: &str, log: &Path) {
+    let Some(root) = std::env::var_os("CLIMON2_TEST_EVIDENCE") else {
+        return;
+    };
+    let name = thread::current()
+        .name()
+        .unwrap_or("unnamed")
+        .replace("::", "-");
+    let directory = Path::new(&root).join(format!("lifecycle-{name}"));
+    let _ = fs::create_dir_all(&directory);
+    let _ = fs::write(directory.join("readiness-wait.txt"), wait);
+    let _ = fs::copy(log, directory.join("daemon.log"));
+}
+
+/// `time` in UTC as daemon.log writes it, to the microsecond.
+fn utc(time: SystemTime) -> String {
+    let since = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let seconds = since.as_secs();
+    let (days, of_day) = (seconds / 86_400, seconds % 86_400);
+    // Howard Hinnant's civil_from_days, for days since 1970-01-01.
+    let shifted = days + 719_468;
+    let era = shifted / 146_097;
+    let of_era = shifted % 146_097;
+    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * of_year + 2) / 153;
+    let day = of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:06}Z",
+        of_day / 3600,
+        of_day / 60 % 60,
+        of_day % 60,
+        since.subsec_micros()
+    )
 }
 
 /// Generous for every orderly exit, the five-second leave grace included.
@@ -1496,4 +1595,17 @@ fn fixture_child() {
         std::process::exit(17);
     }
     thread::sleep(Duration::from_secs(45));
+}
+
+/// #158: a failed wait's timestamps read as daemon.log's, so the two line up.
+#[test]
+fn readiness_wait_evidence_is_in_daemon_log_time() {
+    // 2026-11-15T12:21:12.197123Z, the daemon start in #158's first evidence.
+    let time = UNIX_EPOCH + Duration::from_micros(1_794_745_272_197_123);
+    assert_eq!(utc(time), "2026-11-15T12:21:12.197123Z");
+    assert_eq!(utc(UNIX_EPOCH), "1970-01-01T00:00:00.000000Z");
+    assert_eq!(
+        utc(UNIX_EPOCH + Duration::from_secs(951_782_400)),
+        "2000-02-29T00:00:00.000000Z"
+    );
 }
