@@ -49,7 +49,7 @@ that session, and the session takes the size of your terminal. A `null`
 take-control key is fine here, because picking a session in the selector takes
 control.
 
-## When another terminal takes over
+## When the monitor does not control a session
 
 Only one client controls a session at a time, and the last one to ask wins.
 If you attach to a session from another terminal while the monitor shows it,
@@ -62,12 +62,24 @@ same [placeholder](commands.md#sessions) that `c2 attach` shows:
                       Press Ctrl+T to take control
 ```
 
-The second line names your `client.take_control_key`. Pressing that key takes
-control back, and the session's screen returns. The monitor never takes
-control back by itself, and nothing else you type reaches the session until
-it does. With a `null` take-control key, or with `monitor.show_key_hints`
-false, only the first line shows. Picking the session again in the selector
-also takes control back.
+The monitor can also show a session it does not control when no other
+terminal took it. If you pick a session in the selector while it is still
+starting, the monitor shows it without taking control. The same happens when
+the monitor reconnects to a session after losing its connection. Once the
+monitor is connected, the status row says `Not controlling`, and the placeholder
+says only that the monitor does not control it:
+
+```text
+                  This session is not controlled here.
+                      Press Ctrl+T to take control
+```
+
+In both cases, the second line names your `client.take_control_key`.
+Pressing that key takes control, and the session's screen shows. The monitor
+never takes control by itself, and nothing else you type reaches the session
+until it does. With a `null` take-control key, or with
+`monitor.show_key_hints` false, only the first line shows. Picking the
+session again in the selector also takes control.
 
 ## The session list
 

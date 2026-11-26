@@ -505,7 +505,9 @@ Windows; the CLI's `tests/monitor_windows.rs` drives the packaged monitor.
   shows it. Otherwise a connected session the monitor neither controls nor
   is acquiring (revoked by another client, failed acquisition, or a row
   selected without a client whose client connected) shows only the placeholder,
-  centred: `This session is being viewed elsewhere.`, and `Press <key> to
+  centred: `This session is being viewed elsewhere.` once another client
+  revoked the monitor's control on this connection, otherwise
+  `This session is not controlled here.` (#400), and `Press <key> to
   take control` while a take-control key is bound and
   `monitor.show_key_hints` is true; never its cached output. A row selected
   without a connected client shows `No terminal content is available.` and its condition
@@ -1071,7 +1073,7 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Body, incomplete discovery pass | `Discovery incomplete: the pass deadline passed`, `Discovery incomplete: cannot list sessions: <error>` | `lib.rs`, `screen.rs` |
 | Body, or the top row's error slot with a row selected: initial collection ended with sessions still starting (#266) | `Discovery incomplete: some sessions are still starting` | `screen.rs` |
 | Host too small | `Terminal too small` | `screen.rs` |
-| Placeholder | `This session is being viewed elsewhere.`, `Press <key> to take control` | `screen.rs` |
+| Placeholder | `This session is being viewed elsewhere.` (taken over) or `This session is not controlled here.` (#400), then `Press <key> to take control` | `screen.rs` |
 | Selected without a connected client | `No terminal content is available.`, then the row status | `screen.rs` |
 | Row and top-row statuses (#107; `Awaiting resources` #120) | `Needs attention`, `Acknowledged`, `Running`, `Idle`, `Succeeded`, `Failed (exit <code>)`, `Failed (signal <number>)`, `Starting`, `Awaiting resources`, `Unavailable`, `Disconnected` | `registry.rs` |
 | Top-row control (#108) | `Acquiring`, `Restoring`, `Controlling`, `Not controlling`, `Ended` | `terminal.rs` |

@@ -4341,8 +4341,11 @@ fn a_stuck_session_cannot_hold_exit_beyond_the_operation_deadline() {
 }
 
 /// The non-controller placeholder (#110), as the client executable words
-/// it, and its takeover hint with the default take-control key.
+/// it, once another client took control; while no other client is known to
+/// have taken it, it says only that the monitor does not control it
+/// (#400); and its takeover hint with the default take-control key.
 const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
+const NOT_CONTROLLED_HERE: &str = "This session is not controlled here.";
 const TAKEOVER_HINT: &str = "Press Ctrl+T to take control";
 const NO_CONTENT: &str = "No terminal content is available.";
 const NOT_CONTROLLING: &str = "Not controlling";
@@ -4540,12 +4543,25 @@ fn detach(mut attach: Terminal) {
 /// The whole host showing `label`'s session revoked: its top row not
 /// controlling, and only the placeholder, never its cached output.
 fn placeholder_screen(label: &str, status: &str) -> String {
+    uncontrolled_screen(label, status, VIEWED_ELSEWHERE)
+}
+
+/// The whole host showing `label`'s session selected without acquiring
+/// it, and taken by no other client: its top row not controlling, and only
+/// the placeholder saying it is not controlled here (#400).
+fn not_controlled_screen(label: &str, status: &str) -> String {
+    uncontrolled_screen(label, status, NOT_CONTROLLED_HERE)
+}
+
+/// The whole host showing `label`'s session not controlled: its top row,
+/// and only the placeholder that `says` with its takeover hint.
+fn uncontrolled_screen(label: &str, status: &str, says: &str) -> String {
     let top = session_top_row(
         usize::from(COLS),
         label,
         &[status, NOT_CONTROLLING, SESSIONS_HINT],
     );
-    centred_below(&top, ROWS, COLS, &[VIEWED_ELSEWHERE, TAKEOVER_HINT])
+    centred_below(&top, ROWS, COLS, &[says, TAKEOVER_HINT])
 }
 
 /// CTL-02 (Monitor), CTL-03 (Monitor), CTL-05 (Monitor: background and
@@ -4944,7 +4960,8 @@ fn read_only_shows(terminal: &Terminal, status: &str, control: &str, lines: &[&s
 /// read-only: no terminal content, its condition, nothing acquired, and
 /// typed keys reach no session, not even the one the monitor controls in
 /// the background. Once the Starting row's client connects, it shows the
-/// non-controller placeholder until the take-control key acquires it.
+/// placeholder saying it is not controlled here, since no other client
+/// took it (#400), until the take-control key acquires it.
 #[test]
 fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires() {
     const HELD: &str = "0d5c0000-0000-4000-8000-0000000000c1";
@@ -5014,7 +5031,7 @@ fn enter_selects_starting_and_unavailable_rows_read_only_until_the_user_acquires
     terminal.send("k\x14").unwrap();
 
     drop(held);
-    shows(&mut terminal, &placeholder_screen("Slow", RUNNING));
+    shows(&mut terminal, &not_controlled_screen("Slow", RUNNING));
     listed_as(
         &package,
         "Slow",
@@ -6305,7 +6322,7 @@ fn a_lost_connection_keeps_its_history_read_only_until_a_passive_reconnect() {
         ("Unavailable", NOT_CONTROLLING),
         "the placeholder after the reconnect",
         |lines| {
-            lines.iter().any(|line| line.trim() == VIEWED_ELSEWHERE)
+            lines.iter().any(|line| line.trim() == NOT_CONTROLLED_HERE)
                 && !lines
                     .iter()
                     .any(|line| line.contains("CACHED") || line.contains(RECONNECTING))
@@ -6739,7 +6756,7 @@ fn a_session_over_its_memory_limit_becomes_unavailable_read_only_and_is_retried(
         ("Unavailable", NOT_CONTROLLING),
         "the placeholder after the passive retry",
         |lines| {
-            lines.iter().any(|line| line.trim() == VIEWED_ELSEWHERE)
+            lines.iter().any(|line| line.trim() == NOT_CONTROLLED_HERE)
                 && !lines.iter().any(|line| line.contains(RECONNECTING))
         },
     );
@@ -9054,7 +9071,7 @@ fn a_resource_blocked_session_awaits_resources_until_capacity_is_freed() {
     );
     shows(
         &mut terminal,
-        &centred_below(&top, ROWS, WIDE, &[VIEWED_ELSEWHERE, TAKEOVER_HINT]),
+        &centred_below(&top, ROWS, WIDE, &[NOT_CONTROLLED_HERE, TAKEOVER_HINT]),
     );
     const ACQUIRE: u8 = 0x33;
     assert!(!requests_by_turn(&ear, gamma).concat().contains(&ACQUIRE));
@@ -9180,7 +9197,7 @@ fn the_operating_system_descriptor_limit_bounds_admission_until_it_rises() {
     );
     shows(
         &mut terminal,
-        &centred_below(&top, ROWS, WIDE, &[VIEWED_ELSEWHERE, TAKEOVER_HINT]),
+        &centred_below(&top, ROWS, WIDE, &[NOT_CONTROLLED_HERE, TAKEOVER_HINT]),
     );
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
@@ -9327,7 +9344,7 @@ fn delete_terminates_or_removes_only_the_confirmed_session() {
     assert!(!sessions.join(format!("{bravo}.pty")).exists());
     assert!(!library_logs(&package, &bravo).is_empty());
     terminal.send(ESCAPE).unwrap();
-    shows(&mut terminal, &placeholder_screen("Alpha", RUNNING));
+    shows(&mut terminal, &not_controlled_screen("Alpha", RUNNING));
 
     kill(Pid::from_raw(daemon_of(&package, &alpha)), Signal::SIGKILL).unwrap();
     whole_frame_shows(&terminal, "Alpha gone", |screen| {
@@ -9625,7 +9642,7 @@ fn a_lost_kill_is_never_sent_again_and_removal_waits_for_the_outcome_and_cleanup
         !screen.contains("Lost") && screen.contains("Unavailable Next")
     });
     terminal.send(ESCAPE).unwrap();
-    shows(&mut terminal, &placeholder_screen("Next", "Unavailable"));
+    shows(&mut terminal, &not_controlled_screen("Next", "Unavailable"));
     let probed = times_heard(&ear, LOST, Heard::Connected);
     until_heard(&ear, LOST, Heard::Connected, probed + 2);
     terminal.send("\x1ds").unwrap();

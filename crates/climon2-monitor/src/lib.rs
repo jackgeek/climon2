@@ -50,7 +50,7 @@ use mouse::{Area, Gestures, Mouse, Wheel};
 use ratatui::layout::Rect;
 use registry::{ClientEvent, Kind, Offer, Recovery, Registry, Report, View};
 use router::{Begin, Key, Pasted, Routed, Router};
-use screen::{Canvas, Scene, Screen, Session};
+use screen::{Canvas, Placeholder, Scene, Screen, Session};
 use selector::Selector;
 use shutdown::Verdict;
 use startup::Startup;
@@ -1471,7 +1471,8 @@ fn selected<'a>(
     let canvas = terminal.and_then(Terminal::view).map_or_else(
         || {
             let retained = retained(shown.kind, shown.finished, terminal);
-            without_view(&shown, &row.status, control, retained)
+            let says = says(terminal);
+            without_view(&shown, &row.status, control, says, retained)
         },
         Canvas::View,
     );
@@ -1506,19 +1507,31 @@ fn control(terminal: Option<&Terminal>) -> Control {
     terminal.map_or(Control::NotControlling, Terminal::control)
 }
 
+/// What the placeholder says of the session `terminal` shows: that it is
+/// viewed elsewhere only once another client took control from this
+/// monitor, otherwise only that this monitor does not control it (#400).
+fn says(terminal: Option<&Terminal>) -> Placeholder {
+    if terminal.is_some_and(Terminal::taken_over) {
+        Placeholder::TakenOver
+    } else {
+        Placeholder::NotControlled
+    }
+}
+
 /// The canvas of a selected row whose terminal has no live or frozen view:
-/// the placeholder while the monitor does not control a connected session,
-/// never its cache; nothing yet while it acquires a connected one; for any
-/// other row its `retained` history read-only, or no terminal content and
-/// its `status`, under its recovery's overlay.
+/// the placeholder `says` while the monitor does not control a connected
+/// session, never its cache; nothing yet while it acquires a connected
+/// one; for any other row its `retained` history read-only, or no terminal
+/// content and its `status`, under its recovery's overlay.
 fn without_view<'a>(
     shown: &Shown<'a>,
     status: &'a str,
     control: Control,
+    says: Placeholder,
     retained: Option<vt::View<'a>>,
 ) -> Canvas<'a> {
     match (shown.kind, retained) {
-        (Kind::Connected, _) if placeholder(shown.kind, control) => Canvas::Placeholder,
+        (Kind::Connected, _) if placeholder(shown.kind, control) => Canvas::Placeholder(says),
         (Kind::Connected, _) => Canvas::Nothing,
         (_, Some(view)) => Canvas::Retained(view, shown.recovery),
         (_, None) => Canvas::NoContent(status, shown.recovery),
@@ -1658,8 +1671,9 @@ fn incomplete(progress: &Progress) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Canvas, Control, Kind, Mouse, Presentation, Recovery, Shown, Terminal, View, also, cache,
-        control, inspected, placeholder, retained, revealed, selected, terminal, without_view,
+        Canvas, Control, Kind, Mouse, Placeholder, Presentation, Recovery, Shown, Terminal, View,
+        also, cache, control, inspected, placeholder, retained, revealed, says, selected, terminal,
+        without_view,
     };
     use crate::attention::NO_ATTENTION;
     use climon2_core::SessionId;
@@ -1794,9 +1808,10 @@ mod tests {
         )
         .unwrap();
         let retrying = Recovery::Retrying("lost".into());
+        const NOT_HERE: Placeholder = Placeholder::NotControlled;
         let shape = |canvas: Canvas<'_>| match canvas {
             Canvas::View(_) => "view".to_owned(),
-            Canvas::Placeholder => "placeholder".to_owned(),
+            Canvas::Placeholder(says) => format!("placeholder, {says:?}"),
             Canvas::Retained(_, recovery) => format!("history, {recovery:?}"),
             Canvas::NoContent(condition, recovery) => {
                 format!("no content, {condition}, {recovery:?}")
@@ -1812,12 +1827,26 @@ mod tests {
                 refused: None,
             };
             let view = cached.then(|| model.view());
-            shape(without_view(&shown, "Status", control, view))
+            shape(without_view(&shown, "Status", control, NOT_HERE, view))
         };
         assert_eq!(
             shown(Kind::Connected, Control::NotControlling, true),
-            "placeholder"
+            "placeholder, NotControlled"
         );
+        let taken = without_view(
+            &Shown {
+                kind: Kind::Connected,
+                finished: false,
+                recovery: None,
+                condition: None,
+                refused: None,
+            },
+            "Status",
+            Control::NotControlling,
+            Placeholder::TakenOver,
+            None,
+        );
+        assert_eq!(shape(taken), "placeholder, TakenOver");
         assert_eq!(shown(Kind::Connected, Control::Acquiring, true), "nothing");
         for kind in [Kind::Unconnected, Kind::Retained] {
             assert_eq!(
@@ -1829,6 +1858,32 @@ mod tests {
                 "no content, Status, Some(Retrying(\"lost\"))"
             );
         }
+    }
+
+    /// #400: the placeholder says a session is viewed elsewhere only once
+    /// another client took control from the monitor; a session it never
+    /// made a terminal for, never controlled, or lost its connection to is
+    /// only not controlled here.
+    #[test]
+    fn only_a_session_taken_over_is_viewed_elsewhere() {
+        let mut parser = climon2_vt::Parser::new();
+        assert_eq!(says(None), Placeholder::NotControlled);
+        let mut terminal = Terminal::new(climon2_vt::Limits {
+            bytes: 64 << 20,
+            history_rows: 200,
+        });
+        assert_eq!(says(Some(&terminal)), Placeholder::NotControlled);
+        let held = terminal::Authority {
+            generation: 1,
+            period: 1,
+            restoration: 1,
+        };
+        let geometry = climon2_vt::Geometry::for_host(10, 3).unwrap();
+        terminal.present(&mut parser, Presentation::Granted(held, geometry));
+        terminal.present(&mut parser, Presentation::Revoked);
+        assert_eq!(says(Some(&terminal)), Placeholder::TakenOver);
+        terminal.present(&mut parser, Presentation::Ended);
+        assert_eq!(says(Some(&terminal)), Placeholder::NotControlled);
     }
 
     /// REC-02 (pure supplement, #116): only a row neither connected nor

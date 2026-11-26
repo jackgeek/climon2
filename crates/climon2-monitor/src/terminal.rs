@@ -255,6 +255,9 @@ pub(crate) struct Terminal {
     /// This connection's client was dropped for a refusal: what it still
     /// delivers before its end is refused too, and drops nothing more.
     dropped: bool,
+    /// Another client took the control this monitor last held on this
+    /// connection: it was revoked, and not granted again since (#400).
+    taken: bool,
 }
 
 impl Terminal {
@@ -275,6 +278,7 @@ impl Terminal {
             cached: false,
             rejection: None,
             dropped: false,
+            taken: false,
         }
     }
 
@@ -321,6 +325,7 @@ impl Terminal {
     }
 
     fn granted(&mut self, authority: Authority, effective: Geometry) {
+        self.taken = false;
         self.held = Some(Held {
             authority,
             effective,
@@ -462,7 +467,8 @@ impl Terminal {
     /// first final result freezes the live model's view, if there is one.
     /// The end of the connection also ends its errors: work refused as it
     /// closed is the loss's symptom, and the row's diagnostic says why
-    /// (#116, #119).
+    /// (#116, #119). Only a revocation says another client took control;
+    /// a new connection knows nothing of who controls the session (#400).
     fn ended(&mut self, presentation: &Presentation) {
         if *presentation == Presentation::Final {
             let live = self.held.is_some_and(|held| held.live);
@@ -470,6 +476,7 @@ impl Terminal {
         } else {
             self.held = None;
             self.acquiring = false;
+            self.taken = *presentation == Presentation::Revoked;
             let open = *presentation != Presentation::Ended;
             self.focusable &= open;
             self.viewable &= open;
@@ -654,6 +661,12 @@ impl Terminal {
             None if self.acquiring => Control::Acquiring,
             None => Control::NotControlling,
         }
+    }
+
+    /// Whether another client took control from this monitor (#400): only
+    /// then does its placeholder say the session is viewed elsewhere.
+    pub(crate) fn taken_over(&self) -> bool {
+        self.taken
     }
 
     pub(crate) fn error(&self) -> Option<&str> {
@@ -926,6 +939,35 @@ mod tests {
             );
             assert_eq!(screen(&terminal).unwrap(), ["live", "", ""]);
         }
+    }
+
+    /// #400: only a revocation says another client took control; a session
+    /// never controlled, one whose connection ended, and one granted again
+    /// was not taken over, and the command's end changes nothing.
+    #[test]
+    fn only_a_revocation_takes_control_over() {
+        let mut parser = Parser::new();
+        let mut terminal = Terminal::new(LIMITS);
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Ended);
+        assert!(!terminal.taken_over());
+        let mut terminal = restored(b"held");
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Revoked);
+        assert!(terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Final);
+        assert!(terminal.taken_over());
+        let mut terminal = restored(b"held");
+        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.acquire();
+        assert!(terminal.taken_over());
+        let again = authority(5, 6);
+        terminal.present(&mut parser, Presentation::Granted(again, geometry(10, 3)));
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Revoked);
+        assert!(terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Ended);
+        assert!(!terminal.taken_over());
     }
 
     /// REC-02 (pure supplement, #116): a terminal keeps its last applied

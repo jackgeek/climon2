@@ -177,7 +177,7 @@ The configurable key a non-controlling client uses to take control of a session.
 _Avoid_: Space-to-control, hotkey
 
 **Placeholder**:
-The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
+The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere once another client took control, otherwise that it is not controlled here.
 _Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
 
 **Selector**:
