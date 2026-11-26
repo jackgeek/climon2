@@ -522,7 +522,6 @@ and on CI it fails without the account.
 `tests/process.rs`: `issue26_identity_uses_start_time_and_refuses_zero_or_pid_reuse`,
 `issue19_waitpid_preserves_exit_and_real_signal_status`,
 `issue19_hangup_escalates_group_after_real_five_seconds`,
-`issue19_closing_real_controlling_pty_delivers_hangup`,
 `issue19_signal_group_signals_the_group_and_tolerates_a_nonexistent_one`,
 `issue19_kill_session_kills_every_job_but_not_new_sessions`,
 `issue19_kill_session_spares_the_calling_process`,
@@ -533,6 +532,11 @@ and on CI it fails without the account.
 `issue312_the_descriptor_limit_is_the_soft_limit`,
 `issue312_only_emfile_and_enfile_are_out_of_descriptors`,
 `issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`.
+
+`tests/hangup.rs`: `issue19_closing_real_controlling_pty_delivers_hangup`, in
+its own test binary because a child another test forks would inherit the PTY
+master it closes and hold the terminal open past the hang-up's 5 s grace
+(#248).
 
 On Linux x86_64,
 `procfs_reaping::process_reaped_between_procfs_open_and_read_is_absent` traces
