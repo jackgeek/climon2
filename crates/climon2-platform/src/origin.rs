@@ -24,7 +24,7 @@ pub fn current(home: &Path) -> io::Result<SessionOrigin> {
             HERE.get_or_init(|| read)
         }
     };
-    Ok(native::origin(here, home))
+    native::origin(here, home)
 }
 
 #[cfg(target_os = "linux")]

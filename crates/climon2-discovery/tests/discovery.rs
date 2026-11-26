@@ -733,8 +733,8 @@ fn linux_daemon_identity_alone_proves_a_session_stale() {
 
 /// #133, DSC-04 Contract case (uncertain disappearance): a daemon's identity is checked only
 /// where it was created. With its socket missing and its daemon's identity gone here, a
-/// session recorded on another machine, or in another PID namespace of this one, is uncertain
-/// and kept even when cleanup is requested. One recorded here whose daemon was lost to a reboot
+/// session recorded on another machine (where this host has a machine ID to tell it by), or in
+/// another PID namespace of this one, is uncertain and kept even when cleanup is requested. One recorded here whose daemon was lost to a reboot
 /// (Linux: another boot ID alone; macOS: another start time) is stale and removed, as is one
 /// from an older writer that recorded no origin, and one from a machine without a machine ID
 /// in this PID namespace (a container run with `--pid=host`).
@@ -743,7 +743,6 @@ fn only_a_daemon_created_here_can_be_proven_gone() {
     use climon2_core::metadata::SessionOrigin;
     let (_directory, home) = home();
     let here = climon2_platform::origin::current(home.root()).unwrap();
-    assert!(here.machine_id.is_some(), "another machine needs one here");
     let mut other_machine = record(&home, 0x71, CREATED);
     other_machine.daemon_origin = Some(SessionOrigin {
         machine_id: Some("another-machine".parse().unwrap()),
@@ -776,30 +775,25 @@ fn only_a_daemon_created_here_can_be_proven_gone() {
     let files = records.map(|metadata| save(&home, metadata));
 
     let pass = discover(&home, REMOVE).unwrap();
-    let [
-        Outcome::Uncertain(found_machine, Uncertainty::CreatedElsewhere),
-        Outcome::Uncertain(found_namespace, Uncertainty::CreatedElsewhere),
-        Outcome::Stale(found_rebooted, Cleanup::Removed),
-        Outcome::Stale(found_unrecorded, Cleanup::Removed),
-        Outcome::Stale(found_container, Cleanup::Removed),
-    ] = pass.sessions.as_slice()
-    else {
-        panic!("{pass:?}");
-    };
+    // Another machine's ID differs from this one's only where this host has
+    // one; in an image without `/etc/machine-id` it is the same place.
+    let elsewhere = here.machine_id.is_some();
+    let kept = [elsewhere, true, false, false, false];
+    let found: Vec<_> = pass
+        .sessions
+        .iter()
+        .map(|outcome| match outcome {
+            Outcome::Uncertain(metadata, Uncertainty::CreatedElsewhere) => (metadata, true),
+            Outcome::Stale(metadata, Cleanup::Removed) => (metadata, false),
+            _ => panic!("{pass:?}"),
+        })
+        .collect();
     assert_eq!(
-        [
-            found_machine,
-            found_namespace,
-            found_rebooted,
-            found_unrecorded,
-            found_container,
-        ],
-        records
+        found,
+        records.into_iter().zip(kept).collect::<Vec<_>>(),
+        "{pass:?}"
     );
-    assert_eq!(
-        files.map(|file| file.exists()),
-        [true, true, false, false, false]
-    );
+    assert_eq!(files.map(|file| file.exists()), kept);
 }
 
 /// DSC-04 Contract case (uncertain disappearance): a path that is not a socket is never

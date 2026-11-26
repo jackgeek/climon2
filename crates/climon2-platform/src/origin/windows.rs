@@ -3,7 +3,9 @@ use std::{io, ptr};
 use windows_sys::{
     Win32::{
         Foundation::ERROR_SUCCESS,
-        System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW},
+        System::Registry::{
+            HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
+        },
     },
     w,
 };
@@ -38,7 +40,8 @@ fn machine_guid() -> io::Result<String> {
             HKEY_LOCAL_MACHINE,
             w!(r"SOFTWARE\Microsoft\Cryptography"),
             w!("MachineGuid"),
-            RRF_RT_REG_SZ,
+            // A 32-bit build reads the 64-bit view, where `MachineGuid` is.
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
             ptr::null_mut(),
             units.as_mut_ptr().cast(),
             &mut bytes,
@@ -54,6 +57,6 @@ fn machine_guid() -> io::Result<String> {
 
 /// The machine ID the system keeps is stable, so the origin is what the system
 /// says, wherever the climon2 home is.
-pub fn origin(here: &Here, _home: &std::path::Path) -> SessionOrigin {
-    here.clone()
+pub fn origin(here: &Here, _home: &std::path::Path) -> io::Result<SessionOrigin> {
+    Ok(here.clone())
 }

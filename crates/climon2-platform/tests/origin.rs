@@ -129,12 +129,14 @@ fn issue133_own_machine_id_is_generated_once_per_host_name() {
     assert_eq!(machine(&third, &home).as_deref(), Some(known));
 }
 
-/// A kept ID that is not 32 lowercase hex digits and a newline, or that is a
-/// symlink, is refused and left as it is; so are host names that are not one
-/// safe file name, and a home where the ID cannot be written. Each leaves the
-/// origin without a machine ID.
+/// With a transient machine ID, a kept ID that is not 32 lowercase hex digits
+/// and a newline, or that is a symlink, is refused and left as it is; so are
+/// host names that are not one safe file name, and a home where the ID cannot
+/// be written. Each makes the origin unknown, an error, never "no machine ID",
+/// which would be the same place as every machine sharing this namespace.
 #[test]
-fn issue133_an_unusable_own_machine_id_leaves_no_machine_id() {
+fn issue133_an_unusable_own_machine_id_makes_the_origin_unknown() {
+    let unknown = |sources: &Sources, home: &Path| current_at(sources, home).is_err();
     let directory = tempfile::tempdir().unwrap();
     let home = directory.path().join("home");
     fs::create_dir_all(home.join("machines")).unwrap();
@@ -151,7 +153,7 @@ fn issue133_an_unusable_own_machine_id_leaves_no_machine_id() {
     ] {
         fs::write(&path, &contents).unwrap();
         let sources = fixture(directory.path(), Some(ETC), &[TRANSIENT], "host");
-        assert_eq!(machine(&sources, &home), None, "{contents:?}");
+        assert!(unknown(&sources, &home), "{contents:?}");
         assert_eq!(fs::read_to_string(&path).unwrap(), contents);
     }
     fs::remove_file(&path).unwrap();
@@ -159,7 +161,7 @@ fn issue133_an_unusable_own_machine_id_leaves_no_machine_id() {
     fs::write(&target, format!("{valid}\n")).unwrap();
     std::os::unix::fs::symlink(&target, &path).unwrap();
     let sources = fixture(directory.path(), Some(ETC), &[TRANSIENT], "host");
-    assert_eq!(machine(&sources, &home), None);
+    assert!(unknown(&sources, &home));
     assert!(fs::symlink_metadata(&path).unwrap().is_symlink());
 
     for hostname in ["", ".", "..", ".hidden", "a/b", "a b", "h\u{e9}"] {
@@ -167,7 +169,7 @@ fn issue133_an_unusable_own_machine_id_leaves_no_machine_id() {
         let _ = fs::remove_dir_all(&fresh);
         fs::create_dir(&fresh).unwrap();
         let sources = fixture(directory.path(), Some(ETC), &[TRANSIENT], hostname);
-        assert_eq!(machine(&sources, &fresh), None, "{hostname:?}");
+        assert!(unknown(&sources, &fresh), "{hostname:?}");
         assert!(!fresh.join("machines").exists(), "{hostname:?}");
     }
 
@@ -175,7 +177,7 @@ fn issue133_an_unusable_own_machine_id_leaves_no_machine_id() {
     fs::create_dir(&blocked).unwrap();
     fs::write(blocked.join("machines"), "").unwrap();
     let sources = fixture(directory.path(), Some(ETC), &[TRANSIENT], "host");
-    assert_eq!(machine(&sources, &blocked), None);
+    assert!(unknown(&sources, &blocked));
     let missing_home = directory.path().join("no-home");
-    assert_eq!(machine(&sources, &missing_home), None);
+    assert!(unknown(&sources, &missing_home));
 }

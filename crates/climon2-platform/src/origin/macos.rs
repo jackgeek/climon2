@@ -32,6 +32,6 @@ pub fn here() -> io::Result<SessionOrigin> {
 
 /// The machine ID the system keeps is stable, so the origin is what the system
 /// says, wherever the climon2 home is.
-pub fn origin(here: &Here, _home: &std::path::Path) -> SessionOrigin {
-    here.clone()
+pub fn origin(here: &Here, _home: &std::path::Path) -> io::Result<SessionOrigin> {
+    Ok(here.clone())
 }

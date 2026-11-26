@@ -61,21 +61,25 @@ pub fn here() -> io::Result<Here> {
     read(&Sources::system())
 }
 
-pub fn origin(here: &Here, home: &Path) -> SessionOrigin {
+/// Where this process runs. With a transient machine ID and no usable ID of
+/// climon2's own, that is unknown, never "no machine ID": a reader without
+/// one is in the same place as every machine that shares its namespace
+/// inode, and could take their live daemons for gone ones (ADR 0005).
+pub fn origin(here: &Here, home: &Path) -> io::Result<SessionOrigin> {
     let machine_id = match &here.machine {
         Machine::Missing => None,
         Machine::Stable(machine) => Some(machine.clone()),
-        Machine::Transient => own_machine_id(&here.hostname, home),
+        Machine::Transient => Some(persisted(&here.hostname, home)?),
     };
-    SessionOrigin {
+    Ok(SessionOrigin {
         machine_id,
         pid_namespace: Some(here.pid_namespace),
-    }
+    })
 }
 
 /// The origin `sources` describe, for the climon2 home at `home`, read now.
 pub fn current_at(sources: &Sources, home: &Path) -> io::Result<SessionOrigin> {
-    Ok(origin(&read(sources)?, home))
+    origin(&read(sources)?, home)
 }
 
 fn read(sources: &Sources) -> io::Result<Here> {
@@ -118,17 +122,7 @@ fn mount(line: &str) -> Option<(&str, &str, &str)> {
     Some((root, point, tail.split(' ').next()?))
 }
 
-/// climon2's own machine ID for this host name, generated once. Without it
-/// the record carries no machine ID, as on a machine without one, and the
-/// reason is logged.
-fn own_machine_id(hostname: &Path, home: &Path) -> Option<MachineId> {
-    persisted(hostname, home)
-        .inspect_err(|error| {
-            tracing::warn!(%error, errno = error.raw_os_error(), "own machine ID unavailable")
-        })
-        .ok()
-}
-
+/// climon2's own machine ID for this host name, generated once.
 fn persisted(hostname: &Path, home: &Path) -> io::Result<MachineId> {
     let name = host_name(&fs::read_to_string(hostname)?)?;
     let machines = home.join("machines");
@@ -187,7 +181,11 @@ fn create(machines: &Path, name: &str, path: &Path) -> io::Result<MachineId> {
         .write_all(format!("{id}\n").as_bytes())
         .and_then(|()| file.sync_all())
         .and_then(|()| fs::hard_link(&temporary, path));
-    fs::remove_file(&temporary)?;
+    // Once linked, the ID is in place; a temporary file left behind only
+    // costs space.
+    let _ = fs::remove_file(&temporary).inspect_err(|error| {
+        tracing::warn!(%error, errno = error.raw_os_error(), "temporary machine ID file kept")
+    });
     // Whichever ID is in place is the one; without one, the failure that kept
     // ours out says why.
     load(path).map_err(|loaded| linked.err().unwrap_or(loaded))

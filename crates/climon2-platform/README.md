@@ -106,8 +106,8 @@ dispatch or shell-specific logic.
   `/etc/machine-id` is `/machine-id` of a tmpfs, systemd's `/run/machine-id`),
   climon2's own ID from `<home>/machines/<hostname>.id` is used instead,
   generated once (owner-only, linked into place whole, no symlink followed);
-  an unusable one leaves no machine ID and warns `own machine ID
-  unavailable`. `origin::{Sources, current_at}` (Linux) read the same from
+  an unusable one makes `current` fail, never "no machine ID", which
+  would match every machine sharing the namespace inode. `origin::{Sources, current_at}` (Linux) read the same from
   injected paths. Stale cleanup checks a daemon's identity only when the
   record's origin is the reader's place (`SessionOrigin::is_same_place`).
   What the system says is read once per process; a failed read is not kept.
@@ -555,7 +555,7 @@ and on CI it fails without the account.
 `macos_origin_is_the_hardware_uuid` (macOS, checked against `ioreg`).
 `tests/origin.rs` (Linux, #133): `issue133_only_systemds_run_machine_id_mount_is_transient`,
 `issue133_own_machine_id_is_generated_once_per_host_name` and
-`issue133_an_unusable_own_machine_id_leaves_no_machine_id`, through injected
+`issue133_an_unusable_own_machine_id_makes_the_origin_unknown`, through injected
 sources and homes.
 
 `tests/hangup.rs`: `issue19_closing_real_controlling_pty_delivers_hangup`, in

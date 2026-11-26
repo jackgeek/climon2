@@ -109,8 +109,14 @@ machine ID instead:
   a symlink there.
 - A kept ID that is not exactly that, a host name that is not one safe file
   name (ASCII letters, digits, `-`, `.` and `_`, not starting with `.`), or a
-  write that fails leaves the origin without a machine ID, with a warning; a
-  bad file is never replaced.
+  write that fails makes the origin unknown (decided 2026-11-26), never
+  "no machine ID": without one a reader is in the same place as every
+  machine that shares its PID namespace inode, and could take their live
+  daemons for gone ones. A daemon then records no origin and warns, and a
+  reader treats every record with an origin as an unknown identity, retained
+  with a warning, as any reader that cannot read its own origin. A bad file is
+  never replaced. After the link, a temporary file that cannot be removed is
+  only logged.
 - A container's bind mount of its host's real `/etc/machine-id` has another
   root or file system, so it is not transient. A missing `/etc/machine-id` is
   not transient either: it stays "no machine ID", so the `--pid=host` rule
