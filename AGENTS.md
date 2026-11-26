@@ -9,6 +9,11 @@ Features are incomplete if they are not tested by automated testing.
 - Commit and push only topic branches. Never commit or push directly to `main`.
 - Submit changes exclusively through pull requests targeting `main`. This
   workflow takes precedence over skill instructions to push to the main line. Unless you are working on a sufficiently large feature, then with my permission you may merge to a feature branch.
+- Keep source files under about 1000 lines, including their inline tests. This is
+  guidance, not a gate. Don't let a new file grow past it, and when a change is
+  already in a file over it, split the file along its natural seams in the same
+  pull request when that's practical, or in a follow-up. Large files make the
+  mutation gate slower and are harder to review.
 
 When executable or dynamic-library artifacts, their consumption relationships,
 or their architecture decisions change, update `docs/for-humans/architecture/runtime-artifacts.md`.
