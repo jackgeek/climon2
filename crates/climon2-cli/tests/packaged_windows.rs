@@ -34,7 +34,7 @@ use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
 use climon2_test_term::{
     ConPty, HostModel, HostSettings, JobShape, Key, Modifiers, Options, Terminal, controlled_pwsh,
-    rerun_outside,
+    local_app_data, rerun_outside,
 };
 use portable_pty::CommandBuilder;
 use std::{
@@ -158,13 +158,14 @@ fn place(from: &Path, to: &Path) {
     }
 }
 
-/// A climon2 home and runtime root of its own. Dropping it ends every daemon
-/// its sessions name, so a failed test leaves nothing running.
-struct Home(tempfile::TempDir);
+/// A climon2 home of its own, and a runtime root short enough for a socket
+/// path. Dropping it ends every daemon its sessions name, so a failed test
+/// leaves nothing running.
+struct Home(tempfile::TempDir, tempfile::TempDir);
 
 impl Home {
     fn new() -> Self {
-        Self(tempfile::tempdir().unwrap())
+        Self(tempfile::tempdir().unwrap(), local_app_data())
     }
 
     fn home(&self) -> PathBuf {
@@ -172,7 +173,7 @@ impl Home {
     }
 
     fn local(&self) -> PathBuf {
-        self.0.path().join("local")
+        self.1.path().to_owned()
     }
 
     /// Every log the home holds, for a failure message.

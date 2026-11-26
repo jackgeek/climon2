@@ -8,7 +8,7 @@
 //! installing with `install.ps1` is the Windows Archive job's (#329).
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Terminal};
+use climon2_test_term::{ConPty, Terminal, local_app_data};
 use portable_pty::CommandBuilder;
 use std::{
     env, fs,
@@ -125,13 +125,14 @@ fn place(from: &Path, to: &Path) {
     }
 }
 
-/// A climon2 home and runtime root of its own. Dropping it ends every daemon
-/// its sessions name, so a failed test leaves nothing running.
-pub struct Home(pub tempfile::TempDir);
+/// A climon2 home of its own, and a runtime root short enough for a socket
+/// path. Dropping it ends every daemon its sessions name, so a failed test
+/// leaves nothing running.
+pub struct Home(pub tempfile::TempDir, tempfile::TempDir);
 
 impl Home {
     pub fn new() -> Self {
-        Self(tempfile::tempdir().unwrap())
+        Self(tempfile::tempdir().unwrap(), local_app_data())
     }
 
     pub fn home(&self) -> PathBuf {
@@ -139,7 +140,7 @@ impl Home {
     }
 
     pub fn local(&self) -> PathBuf {
-        self.0.path().join("local")
+        self.1.path().to_owned()
     }
 
     /// Every log the home holds, for a failure message.

@@ -55,7 +55,7 @@ const ID: &str = "12345678-1234-4234-8234-123456789abc";
 
 #[test]
 fn the_runtime_directory_is_the_home_hash_in_c2_under_local_app_data_and_private() {
-    let root = tempfile::tempdir().unwrap();
+    let root = climon2_test_term::local_app_data();
     with_local_app_data(
         "the_runtime_directory_is_the_home_hash_in_c2_under_local_app_data_and_private",
         root.path().as_os_str(),
@@ -82,7 +82,7 @@ fn the_runtime_directory_is_the_home_hash_in_c2_under_local_app_data_and_private
 /// is refused with the unsafe-runtime-directory error and not repaired.
 #[test]
 fn an_unsafe_runtime_directory_is_refused_and_left_unrepaired() {
-    let root = tempfile::tempdir().unwrap();
+    let root = climon2_test_term::local_app_data();
     with_local_app_data(
         "an_unsafe_runtime_directory_is_refused_and_left_unrepaired",
         root.path().as_os_str(),
@@ -130,13 +130,13 @@ fn a_relative_local_app_data_is_refused() {
 /// 125.
 #[test]
 fn a_socket_path_over_107_bytes_is_refused_and_fails_with_125() {
-    let parent = tempfile::tempdir().unwrap();
+    let parent = climon2_test_term::local_app_data();
     // `<root>\c2\<hash8>\<uuid>.sock` adds 1 + 2 + 1 + 8 + 1 + 41 bytes.
     let fixed = parent.path().as_os_str().len() + 1;
     for length in [107_usize, 108] {
         let padding = (length - 54).checked_sub(fixed).unwrap_or_else(|| {
             panic!(
-                "the temporary folder {} is over 52 bytes, too long for a {length}-byte socket path",
+                "{} is over 52 bytes, too long for a {length}-byte socket path",
                 parent.path().display()
             )
         });
