@@ -33,8 +33,12 @@ const UNSELECTED: &str = "No session selected.";
 /// starting (#266).
 const LATE_INCOMPLETE: &str = "Discovery incomplete: some sessions are still starting";
 const TOO_SMALL: &str = "Terminal too small";
-/// The non-controller placeholder, as the client executable words it.
+/// The non-controller placeholder once another client took control, as
+/// the client executable words it.
 const VIEWED_ELSEWHERE: &str = "This session is being viewed elsewhere.";
+/// The non-controller placeholder while no other client is known to have
+/// taken control: a session selected without acquiring it (#400).
+const NOT_CONTROLLED: &str = "This session is not controlled here.";
 /// A selected session with no terminal content to show (spec #73,
 /// "Placeholders and states").
 const NO_CONTENT: &str = "No terminal content is available.";
@@ -84,9 +88,9 @@ pub(crate) struct Session<'a> {
 pub(crate) enum Canvas<'a> {
     /// Its live or frozen model.
     View(vt::View<'a>),
-    /// Connected and not controlled by this monitor: viewed elsewhere,
+    /// Connected and not controlled by this monitor: the placeholder,
     /// never its cached output.
-    Placeholder,
+    Placeholder(Placeholder),
     /// Not connected, its retained history read-only (#116), under the
     /// overlay its recovery calls for.
     Retained(vt::View<'a>, Option<&'a Recovery>),
@@ -96,6 +100,25 @@ pub(crate) enum Canvas<'a> {
     NoContent(&'a str, Option<&'a Recovery>),
     /// Nothing to show yet: acquiring, before the first restoration.
     Nothing,
+}
+
+/// What the non-controller placeholder says of who controls the session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Placeholder {
+    /// Another client took control from this monitor: viewed elsewhere.
+    TakenOver,
+    /// No other client is known to control it: only that this monitor
+    /// does not (#400).
+    NotControlled,
+}
+
+impl Placeholder {
+    fn says(self) -> &'static str {
+        match self {
+            Self::TakenOver => VIEWED_ELSEWHERE,
+            Self::NotControlled => NOT_CONTROLLED,
+        }
+    }
 }
 
 impl Canvas<'_> {
@@ -456,7 +479,7 @@ impl Screen {
     /// any takeover hint, or no content, the condition and any overlay.
     fn text(&self, canvas: &Canvas<'_>) -> Vec<String> {
         match canvas {
-            Canvas::Placeholder => std::iter::once(VIEWED_ELSEWHERE)
+            Canvas::Placeholder(placeholder) => std::iter::once(placeholder.says())
                 .chain(self.takeover.as_deref())
                 .map(str::to_owned)
                 .collect(),
@@ -1016,31 +1039,34 @@ mod tests {
     }
 
     /// CTL-02 and INP-01 (pure supplement, #110): the non-controller
-    /// placeholder says the session is viewed elsewhere, centred, with the
-    /// take-control key's hint only while one is bound and key hints are
-    /// on; a row selected without a connected client says it has no terminal content and its
-    /// condition; a blank canvas shows nothing.
+    /// placeholder says the session is viewed elsewhere once another client
+    /// took control, and otherwise only that it is not controlled here
+    /// (#400), centred, with the take-control key's hint only while one is
+    /// bound and key hints are on; a row selected without a connected
+    /// client says it has no terminal content and its condition; a blank
+    /// canvas shows nothing.
     #[test]
     fn the_placeholder_and_the_no_content_state_say_why_nothing_is_painted() {
-        assert_eq!(
-            shown(Some(0x14), true, &Canvas::Placeholder),
-            [
-                "",
-                "",
+        let says = [
+            (
+                Placeholder::TakenOver,
                 "      This session is being viewed elsewhere.",
-                "           Press Ctrl+T to take control",
-                "",
-            ]
-        );
-        let alone = [
-            "",
-            "",
-            "      This session is being viewed elsewhere.",
-            "",
-            "",
+            ),
+            (
+                Placeholder::NotControlled,
+                "       This session is not controlled here.",
+            ),
         ];
-        assert_eq!(shown(None, true, &Canvas::Placeholder), alone);
-        assert_eq!(shown(Some(0x14), false, &Canvas::Placeholder), alone);
+        for (placeholder, line) in says {
+            let canvas = Canvas::Placeholder(placeholder);
+            assert_eq!(
+                shown(Some(0x14), true, &canvas),
+                ["", "", line, "           Press Ctrl+T to take control", ""]
+            );
+            let alone = ["", "", line, "", ""];
+            assert_eq!(shown(None, true, &canvas), alone);
+            assert_eq!(shown(Some(0x14), false, &canvas), alone);
+        }
         assert_eq!(
             shown(Some(0x14), true, &Canvas::NoContent("Starting", None)),
             [

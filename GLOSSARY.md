@@ -177,7 +177,7 @@ The configurable key a non-controlling client uses to take control of a session.
 _Avoid_: Space-to-control, hotkey
 
 **Placeholder**:
-The screen a non-controlling client shows instead of session content, saying the session is being viewed elsewhere.
+The screen a non-controlling client shows instead of session content. `c2 attach` always says the session is being viewed elsewhere; the monitor says so only once another client took control from it, and otherwise says the session is not controlled here.
 _Avoid_: Viewer mode, read-only view (what a monitor paints session content from)
 
 **Selector**:
@@ -306,6 +306,10 @@ _Avoid_: Slave, relay monitor, agent, proxy
 **Link invitation**:
 What a relay produces and a hub monitor consumes to establish a monitor link for the first time.
 _Avoid_: Connection string, token, pairing code
+
+**Link hold**:
+A relay's state, entered when its user cuts a monitor link, in which it refuses every remembered hub monitor until its user accepts links again.
+_Avoid_: Pause, block, lockout
 
 **Link revision**:
 A numbered, frozen edition of everything two ends of a monitor link say to each other, from pairing to relayed records.

@@ -32,7 +32,9 @@
 #![cfg(windows)]
 use climon2_core::{metadata::SessionMetadata, session::PROMPT};
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Finished, JobShape, Key, Modifiers, Outside, Terminal};
+use climon2_test_term::{
+    ConPty, Finished, JobShape, Key, Modifiers, Outside, Terminal, end_process, local_app_data,
+};
 use portable_pty::CommandBuilder;
 use std::{
     fs,
@@ -120,14 +122,14 @@ impl Install {
     }
 }
 
-/// A climon2 home, runtime root and working directory outside the crate
-/// folder. Dropping it ends every daemon its sessions name, so a failed test
-/// leaves nothing running.
-struct Home(tempfile::TempDir);
+/// A climon2 home and working directory outside the crate folder, and a
+/// runtime root short enough for a socket path. Dropping it ends every daemon
+/// its sessions name, so a failed test leaves nothing running.
+struct Home(tempfile::TempDir, climon2_test_term::LocalAppData);
 
 impl Home {
     fn new() -> Self {
-        let home = Self(tempfile::tempdir().unwrap());
+        let home = Self(tempfile::tempdir().unwrap(), local_app_data());
         fs::create_dir_all(home.work()).unwrap();
         home
     }
@@ -140,10 +142,14 @@ impl Home {
         self.0.path().join("work")
     }
 
+    fn local(&self) -> &Path {
+        self.1.path()
+    }
+
     fn outside(&self, install: &Install) -> Outside {
         Outside::new(install.cli())
             .env("CLIMON2_HOME", self.home())
-            .env("LOCALAPPDATA", self.0.path().join("local"))
+            .env("LOCALAPPDATA", self.local())
             .cwd(self.work())
     }
 
@@ -167,7 +173,7 @@ impl Home {
         let output = Command::new(install.cli())
             .arg("list")
             .env("CLIMON2_HOME", self.home())
-            .env("LOCALAPPDATA", self.0.path().join("local"))
+            .env("LOCALAPPDATA", self.local())
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
@@ -231,7 +237,7 @@ impl Home {
         Command::new(install.cli())
             .args(["kill", selector])
             .env("CLIMON2_HOME", self.home())
-            .env("LOCALAPPDATA", self.0.path().join("local"))
+            .env("LOCALAPPDATA", self.local())
             .output()
             .unwrap()
     }
@@ -312,7 +318,7 @@ impl Drop for Held {
 impl Drop for Install {
     fn drop(&mut self) {
         for pid in processes_under(self.0.path()) {
-            terminate(pid);
+            end_process(pid);
         }
     }
 }
@@ -321,7 +327,7 @@ impl Drop for Home {
     fn drop(&mut self) {
         for session in self.sessions() {
             if process::is_same_daemon(&session).unwrap_or(false) {
-                terminate(session.daemon_pid);
+                end_process(session.daemon_pid);
             }
         }
     }
@@ -332,13 +338,6 @@ fn open(pid: u32, access: u32) -> Option<OwnedHandle> {
     let raw = unsafe { OpenProcess(access, 0, pid) };
     // A new handle nothing else owns.
     (!raw.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(raw) })
-}
-
-fn terminate(pid: u32) {
-    if let Some(process) = open(pid, PROCESS_TERMINATE) {
-        // The handle is open with PROCESS_TERMINATE.
-        unsafe { TerminateProcess(process.as_raw_handle(), 1) };
-    }
 }
 
 /// The running processes whose executable is in `folder`.
@@ -767,7 +766,7 @@ fn exec_attach_and_the_client_need_a_console() {
         Command::new(program)
             .args(arguments)
             .env("CLIMON2_HOME", home.home())
-            .env("LOCALAPPDATA", home.0.path().join("local"))
+            .env("LOCALAPPDATA", home.local())
             .env_remove("CLIMON2_CLIENT_STARTUP")
             .output()
             .unwrap()
@@ -811,7 +810,7 @@ fn hosted_cli(install: &Install, home: &Home, arguments: &[&str]) -> Terminal {
     let mut command = CommandBuilder::new(install.cli());
     command.args(arguments);
     command.env("CLIMON2_HOME", home.home());
-    command.env("LOCALAPPDATA", home.0.path().join("local"));
+    command.env("LOCALAPPDATA", home.local());
     command.cwd(home.work());
     Terminal::spawn(command, 24, 100).unwrap()
 }
