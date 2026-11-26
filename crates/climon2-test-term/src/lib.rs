@@ -43,6 +43,8 @@ pub use shell::controlled_bash;
 pub use signals::HostSignal;
 #[cfg(unix)]
 pub use terminal::InputTerminal;
+#[cfg(unix)]
+pub use terminal::harness_shell;
 pub use terminal::{Modes, Options, Terminal};
 #[cfg(windows)]
 pub use windows::{
