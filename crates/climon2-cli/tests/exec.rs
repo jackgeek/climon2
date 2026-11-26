@@ -1289,6 +1289,17 @@ fn end_hold(terminal: &mut Terminal) {
 #[test]
 fn a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it() {
     let layout = Layout::new();
+    // Cancelled first: the started session's log outlives it.
+    let mut terminal = nested_exec(&layout, &[]);
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    terminal.send([0x03]).unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 130);
+    assert!(!terminal.screen().contains("FIXTURE_READY"));
+    assert_eq!(session_traces(&layout), Vec::<String>::new());
+    layout.clean();
+
     let mut terminal = nested_exec(&layout, &[]);
     terminal
         .wait_for_text(PROMPT, Duration::from_secs(8))
@@ -1306,16 +1317,6 @@ fn a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it(
         .unwrap();
     only_metadata(&layout);
     end_hold(&mut terminal);
-    layout.clean();
-
-    let mut terminal = nested_exec(&layout, &[]);
-    terminal
-        .wait_for_text(PROMPT, Duration::from_secs(8))
-        .unwrap();
-    terminal.send([0x03]).unwrap();
-    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 130);
-    assert!(!terminal.screen().contains("FIXTURE_READY"));
-    assert_eq!(session_traces(&layout), Vec::<String>::new());
     layout.clean();
 }
 
