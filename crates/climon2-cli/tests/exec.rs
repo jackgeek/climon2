@@ -1374,3 +1374,86 @@ fn a_nested_headless_start_warns_without_waiting_unless_deliberate() {
         layout.clean();
     }
 }
+
+/// `/bin/sh -c <script> <cli> <fixture> [extra]` inside session `outer`, in
+/// a terminal, in the layout's directory.
+fn nested_shell(layout: &Layout, script: &str, extra: &[&OsStr]) -> Terminal {
+    let mut command = CommandBuilder::new("/bin/sh");
+    layout.configure(&mut command);
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.args(["-c", script]);
+    command.arg(layout.cli());
+    command.arg(layout.fixture());
+    command.args(extra);
+    Terminal::spawn(command, 24, 80).unwrap()
+}
+
+/// #139: with stderr redirected, the warning and prompt still show on the
+/// terminal, and none of them reaches the file.
+#[test]
+fn the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected() {
+    let layout = Layout::new();
+    let errors = layout.directory.path().join("errors");
+    let mut terminal = nested_shell(
+        &layout,
+        r#"exec "$0" exec "$1" hold 2>"$2""#,
+        &[errors.as_os_str()],
+    );
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    assert!(terminal.screen().contains(NESTED_WARNING));
+    terminal.send([0x03]).unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 130);
+    assert_eq!(fs::read_to_string(&errors).unwrap(), "");
+    layout.clean();
+}
+
+/// #139: SIGTERM, SIGQUIT or SIGHUP sent while the prompt waits ends exec
+/// with 128 + signal, the terminal's settings restored exactly.
+#[test]
+fn a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal() {
+    let layout = Layout::new();
+    let directory = layout.directory.path();
+    for signal in [libc::SIGTERM, libc::SIGQUIT, libc::SIGHUP] {
+        let mut terminal = nested_shell(
+            &layout,
+            r#"stty -g > before; "$0" exec "$1" hold </dev/tty & echo $! > pid; wait $!; echo "STATUS=$?"; stty -g > after; read line"#,
+            &[],
+        );
+        terminal
+            .wait_for_text(PROMPT, Duration::from_secs(8))
+            .unwrap();
+        let pid: i32 = fs::read_to_string(directory.join("pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+        terminal
+            .wait_for_text(&format!("STATUS={}", 128 + signal), Duration::from_secs(8))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while !directory.join("after").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}",
+                terminal.screen()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            fs::read_to_string(directory.join("after")).unwrap(),
+            fs::read_to_string(directory.join("before")).unwrap(),
+            "signal {signal}"
+        );
+        assert_eq!(session_traces(&layout), Vec::<String>::new());
+        terminal.send("\n").unwrap();
+        assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+        for file in ["before", "after", "pid"] {
+            fs::remove_file(directory.join(file)).unwrap();
+        }
+        layout.clean();
+    }
+}

@@ -17,7 +17,7 @@ mod unix {
     /// byte, as it always has (#328): a program on a Unix terminal reads an
     /// Escape followed by a byte that starts no sequence it knows as two keys.
     pub const LONE_ESCAPE: Option<std::time::Duration> = None;
-    use climon2_core::protocol::TerminalSize;
+    use climon2_core::{protocol::TerminalSize, session::Input};
     use signal_hook::{SigId, consts::signal::*};
     use std::{
         fs::File,
@@ -149,6 +149,16 @@ mod unix {
             let mut signals = Self::empty();
             signals.register_resize()?;
             for signal in [SIGHUP, SIGTERM, SIGINT] {
+                signals.register_termination(signal)?;
+            }
+            Ok(signals)
+        }
+
+        /// A prompt (#139) hears every signal that would end it from the
+        /// terminal or `kill`, so it can restore the terminal first.
+        pub fn prompt() -> io::Result<Self> {
+            let mut signals = Self::empty();
+            for signal in [SIGHUP, SIGINT, SIGQUIT, SIGTERM] {
                 signals.register_termination(signal)?;
             }
             Ok(signals)
@@ -328,6 +338,68 @@ mod unix {
 
         fn flush(&mut self) -> io::Result<()> {
             self.output.flush()
+        }
+    }
+
+    /// An owned duplicate of stdout; closing it never closes the process's
+    /// stdout.
+    pub fn output() -> io::Result<File> {
+        duplicate(1)
+    }
+
+    /// How long a prompt waits for input before it looks at its signals
+    /// again.
+    const PROMPT_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// The terminal while `exec` waits for an answer to its nested-start
+    /// prompt (#139): raw, with input typed before it discarded, read one
+    /// byte at a time so that nothing after the answer is taken. A hang-up,
+    /// interrupt, quit or termination signal ends the wait instead of the
+    /// process, so dropping the prompt always restores the terminal.
+    pub struct Prompt {
+        _raw: RawModeGuard,
+        input: File,
+        output: File,
+        signals: Signals,
+    }
+
+    impl Prompt {
+        pub fn new(input: File, output: File) -> io::Result<Self> {
+            let signals = Signals::prompt()?;
+            let raw = RawModeGuard::new(&input)?;
+            crate::syscall::checked(unsafe { libc::tcflush(input.as_raw_fd(), libc::TCIFLUSH) })?;
+            Ok(Self {
+                _raw: raw,
+                input,
+                output,
+                signals,
+            })
+        }
+
+        /// Writes `text` to the terminal; raw output needs CR LF.
+        pub fn show(&mut self, text: &str) -> io::Result<()> {
+            self.output.write_all(text.as_bytes())
+        }
+
+        /// The next byte typed, a hang-up, or the status `128 + signal`.
+        pub fn read_input(&mut self) -> io::Result<Input> {
+            loop {
+                if let Some(signal) = self.signals.termination_signal() {
+                    return Ok(Input::Ended(128 + signal));
+                }
+                let mut watch = [Watch::new(self.input.as_fd(), Interest::Read)];
+                if crate::waiting::wait(&mut watch, PROMPT_POLL)? > 0 {
+                    return self.read_key();
+                }
+            }
+        }
+
+        fn read_key(&mut self) -> io::Result<Input> {
+            let mut key = [0u8];
+            match read_terminal(&mut self.input, &mut key)? {
+                0 => Ok(Input::Gone),
+                _ => Ok(Input::Key(key[0])),
+            }
         }
     }
 

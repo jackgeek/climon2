@@ -139,11 +139,17 @@ checks stdin and stdout TTYs, all before any session side effect. It resolves
 canonical companions
 from its own canonical version-layout path and generates one v4 GUID. Core
 projects the exact OS-string command environment (a depth overflow is 125
-here). Then, for a nested start without `--nested` (#139), exec prints core's
-nesting warning to stderr; for an ordinary session it also prints core's
-`PROMPT` and reads the stdin terminal in raw mode until Enter, which starts the
-session, or Ctrl+C, which exits 130, as Ctrl+C in a client does; the end of
-input exits 129. Neither creates a session log, socket or daemon. Only then
+here). Then, for a nested start without `--nested` (#139), a headless exec
+prints core's nesting warning to stderr. An ordinary exec instead opens
+`climon2-platform`'s `terminal::Prompt` on stdin and stdout, both terminals:
+raw, earlier input discarded, the warning and core's `PROMPT` written to
+stdout, so a redirected stderr cannot hide them. It reads one key at a time,
+leaving input after the answer to the client, until Enter, which starts the
+session, or Ctrl+C, which exits 130, as Ctrl+C in a client does; a lost
+terminal exits 129, and a hang-up, interrupt, quit or termination signal
+(Ctrl+Break or a close on Windows) restores the terminal and exits 128 +
+signal (`0xC000013A` for Ctrl+Break). None creates a session log, socket or
+daemon. Only then
 does exec create the socket and switch to the linked session log. Core
 provides the depth/ordinal rules; `TERM=xterm-256color` and
 `COLORTERM=truecolor` are always set. The command's inherited `CLIMON2_HOME`
@@ -237,7 +243,10 @@ client start.
 - `nested_warning_uses_exact_ordinal_and_overflow_never_spawns`
 - `a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it`,
   `neither_a_top_level_nor_a_deliberate_nested_start_warns_or_waits`,
-  `a_nested_headless_start_warns_without_waiting_unless_deliberate` (#139)
+  `a_nested_headless_start_warns_without_waiting_unless_deliberate`,
+  `the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected`,
+  `a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal`
+  (#139)
 - `actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_identity`
 - `startup_failure_codes_and_signal_exit_are_preserved`
 - `resizing_outer_terminal_resizes_the_running_command`

@@ -582,44 +582,60 @@ fn only_a_warned_nested_start_warns_and_only_an_ordinary_one_asks() {
     assert_eq!(PROMPT, "Press Enter to start it, or Ctrl+C to cancel.");
 }
 
+/// The input a prompt is given, one item per read, and how many it took
+/// before it answered.
+fn answer(inputs: Vec<std::io::Result<Input>>) -> (std::io::Result<Answer>, usize) {
+    let mut inputs = inputs.into_iter();
+    let mut taken = 0;
+    let answer = Answer::read(|| {
+        taken += 1;
+        inputs.next().expect("read past the end")
+    });
+    (answer, taken)
+}
+
 /// #139: the prompt's answer is the first Enter (CR or LF) or Ctrl+C typed,
-/// whatever comes before it, across reads; the end of input is a terminal
-/// gone. Enter starts the session; Ctrl+C exits 130, as for Ctrl+C in a
-/// client, and a terminal gone 129.
+/// whatever keys come before it, and nothing after it is taken; a terminal
+/// gone and an ending answer it too. An interrupted read is tried again;
+/// any other failure is the prompt's. Enter starts the session; Ctrl+C exits
+/// 130, as for Ctrl+C in a client, a terminal gone 129, and an ending with
+/// its own status.
 #[test]
 fn the_prompt_answers_on_the_first_enter_or_ctrl_c_and_maps_to_exit_statuses() {
-    /// Hands out one chunk per read, as a raw terminal does.
-    struct Chunks(Vec<&'static [u8]>);
-    impl std::io::Read for Chunks {
-        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            if self.0.is_empty() {
-                return Ok(0);
-            }
-            let chunk = self.0.remove(0);
-            buffer[..chunk.len()].copy_from_slice(chunk);
-            Ok(chunk.len())
-        }
-    }
-    for (chunks, expected) in [
-        (vec![&b"\r"[..]], Answer::Start),
-        (vec![b"\n"], Answer::Start),
-        (vec![b"\x03"], Answer::Cancel),
-        (vec![b"a\x1b[A", b"q", b"\x04\r\x03"], Answer::Start),
-        (vec![b"x", b"y\x03\r"], Answer::Cancel),
-        (vec![], Answer::Gone),
-        (vec![b"typed"], Answer::Gone),
+    let keys = |bytes: &[u8]| -> Vec<std::io::Result<Input>> {
+        bytes.iter().map(|byte| Ok(Input::Key(*byte))).collect()
+    };
+    for (bytes, expected, taken) in [
+        (&b"\r"[..], Answer::Start, 1),
+        (b"\n", Answer::Start, 1),
+        (b"\x03", Answer::Cancel, 1),
+        (b"a\x1b[Aq\x04\r\x03after", Answer::Start, 7),
+        (b"xy\x03\rafter", Answer::Cancel, 3),
     ] {
-        let mut input = Chunks(chunks.clone());
-        assert_eq!(Answer::read(&mut input).unwrap(), expected, "{chunks:?}");
+        let (answer, used) = answer(keys(bytes));
+        assert_eq!((answer.unwrap(), used), (expected, taken), "{bytes:?}");
     }
-    struct Broken;
-    impl std::io::Read for Broken {
-        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("broken"))
-        }
+    let interrupted = || Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    for (inputs, expected, taken) in [
+        (vec![Ok(Input::Gone)], Answer::Gone, 1),
+        (vec![Ok(Input::Key(b'x')), Ok(Input::Gone)], Answer::Gone, 2),
+        (vec![Ok(Input::Ended(143))], Answer::Ended(143), 1),
+        (
+            vec![interrupted(), interrupted(), Ok(Input::Key(b'\r'))],
+            Answer::Start,
+            3,
+        ),
+    ] {
+        let (answer, used) = answer(inputs);
+        assert_eq!((answer.unwrap(), used), (expected, taken));
     }
-    assert_eq!(Answer::read(&mut Broken).unwrap_err().to_string(), "broken");
+    let (failed, used) = answer(vec![Err(std::io::Error::other("broken"))]);
+    assert_eq!(
+        (failed.unwrap_err().to_string(), used),
+        ("broken".into(), 1)
+    );
     assert_eq!(Answer::Start.status(), None);
     assert_eq!(Answer::Cancel.status(), Some(130));
     assert_eq!(Answer::Gone.status(), Some(129));
+    assert_eq!(Answer::Ended(131).status(), Some(131));
 }

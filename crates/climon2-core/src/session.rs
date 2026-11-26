@@ -6,8 +6,7 @@ use crate::{
 };
 use std::{
     ffi::{OsStr, OsString},
-    fmt,
-    io::{self, Read},
+    fmt, io,
     num::NonZeroU32,
 };
 
@@ -106,7 +105,19 @@ pub enum Notice<'a> {
 /// The line under the nesting warning while `exec` waits for a key.
 pub const PROMPT: &str = "Press Enter to start it, or Ctrl+C to cancel.";
 
-/// The key that answered [`PROMPT`].
+/// What the terminal gives a waiting [`PROMPT`] next.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Input {
+    /// One byte typed; the bytes after it stay unread.
+    Key(u8),
+    /// The terminal went away.
+    Gone,
+    /// A signal or console event that ends the process arrived: the status
+    /// to exit with.
+    Ended(u32),
+}
+
+/// What answered [`PROMPT`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Answer {
     /// Enter: the session starts.
@@ -115,25 +126,31 @@ pub enum Answer {
     Cancel,
     /// The terminal went away before either.
     Gone,
+    /// The process was told to end, with this status.
+    Ended(u32),
 }
 
 impl Answer {
-    /// Reads keys from a raw terminal until Enter or Ctrl+C, ignoring any
-    /// other; the end of input is [`Answer::Gone`].
-    pub fn read(input: &mut impl Read) -> io::Result<Self> {
-        let mut keys = [0u8; 64];
+    /// Takes input until Enter or Ctrl+C, ignoring any other key, or until
+    /// the terminal goes away or the process is told to end. An interrupted
+    /// read is tried again; input after the answer is never taken.
+    pub fn read(mut next: impl FnMut() -> io::Result<Input>) -> io::Result<Self> {
         loop {
-            let count = input.read(&mut keys)?;
-            if count == 0 {
-                return Ok(Self::Gone);
-            }
-            if let Some(answer) = keys[..count].iter().find_map(Self::of_key) {
+            if let Some(answer) = retried(next())?.and_then(Self::of_input) {
                 return Ok(answer);
             }
         }
     }
 
-    fn of_key(key: &u8) -> Option<Self> {
+    fn of_input(input: Input) -> Option<Self> {
+        match input {
+            Input::Key(key) => Self::of_key(key),
+            Input::Gone => Some(Self::Gone),
+            Input::Ended(status) => Some(Self::Ended(status)),
+        }
+    }
+
+    fn of_key(key: u8) -> Option<Self> {
         match key {
             b'\r' | b'\n' => Some(Self::Start),
             0x03 => Some(Self::Cancel),
@@ -142,13 +159,23 @@ impl Answer {
     }
 
     /// `exec`'s exit status when nothing starts: 130 as for Ctrl+C in a
-    /// client, or 129 as for a client's terminal that went away.
+    /// client, 129 as for a client's terminal that went away, or the status
+    /// the ending gave.
     pub fn status(self) -> Option<u32> {
         match self {
             Self::Start => None,
             Self::Cancel => Some(INTERRUPTED),
             Self::Gone => Some(TERMINAL_GONE),
+            Self::Ended(status) => Some(status),
         }
+    }
+}
+
+/// No input from an interrupted read.
+fn retried(input: io::Result<Input>) -> io::Result<Option<Input>> {
+    match input {
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(None),
+        other => other.map(Some),
     }
 }
 

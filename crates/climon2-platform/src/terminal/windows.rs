@@ -24,7 +24,7 @@ use crate::{
     notifier::Notifier,
     waiting::{self, Watch},
 };
-use climon2_core::{protocol::TerminalSize, utf8};
+use climon2_core::{protocol::TerminalSize, session::Input, utf8};
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -47,10 +47,10 @@ use windows_sys::{
                 DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
                 ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE,
                 ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-                ENABLE_WINDOW_INPUT, GetConsoleCP, GetConsoleMode, GetConsoleOutputCP,
-                GetConsoleScreenBufferInfo, INPUT_RECORD, KEY_EVENT, ReadConsoleInputW,
-                SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
-                WINDOW_BUFFER_SIZE_EVENT,
+                ENABLE_WINDOW_INPUT, FlushConsoleInputBuffer, GetConsoleCP, GetConsoleMode,
+                GetConsoleOutputCP, GetConsoleScreenBufferInfo, INPUT_RECORD, KEY_EVENT,
+                ReadConsoleInputW, SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode,
+                SetConsoleOutputCP, WINDOW_BUFFER_SIZE_EVENT,
             },
             Threading::WaitForSingleObject,
         },
@@ -503,26 +503,115 @@ impl Reader {
         Ok(())
     }
 
-    /// The records waiting, after waiting up to `INPUT_POLL` for any.
     fn records(&self) -> io::Result<Vec<INPUT_RECORD>> {
-        let handle = raw(self.console.as_handle());
-        let milliseconds = u32::try_from(INPUT_POLL.as_millis()).unwrap_or_default();
-        // SAFETY: the console's input handle, which this thread owns.
-        match unsafe { WaitForSingleObject(handle, milliseconds) } {
-            WAIT_OBJECT_0 => read_records(handle),
-            WAIT_TIMEOUT => Ok(Vec::new()),
-            _ => Err(io::Error::last_os_error()),
-        }
+        wait_records(self.console.as_handle(), RECORDS)
     }
 }
 
-fn read_records(handle: HANDLE) -> io::Result<Vec<INPUT_RECORD>> {
-    let mut records = vec![INPUT_RECORD::default(); RECORDS];
+/// Up to `most` of the records waiting, after waiting up to `INPUT_POLL`
+/// for any.
+fn wait_records(console: BorrowedHandle<'_>, most: usize) -> io::Result<Vec<INPUT_RECORD>> {
+    let handle = raw(console);
+    let milliseconds = u32::try_from(INPUT_POLL.as_millis()).unwrap_or_default();
+    // SAFETY: a console input handle the caller owns.
+    match unsafe { WaitForSingleObject(handle, milliseconds) } {
+        WAIT_OBJECT_0 => read_records(handle, most),
+        WAIT_TIMEOUT => Ok(Vec::new()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+fn read_records(handle: HANDLE, most: usize) -> io::Result<Vec<INPUT_RECORD>> {
+    let mut records = vec![INPUT_RECORD::default(); most];
     let mut count = 0u32;
-    // SAFETY: room for `RECORDS` records; the call writes `count` of them.
-    check(unsafe { ReadConsoleInputW(handle, records.as_mut_ptr(), RECORDS as u32, &mut count) })?;
+    let length = u32::try_from(most).unwrap_or(u32::MAX);
+    // SAFETY: room for `most` records; the call writes `count` of them.
+    check(unsafe { ReadConsoleInputW(handle, records.as_mut_ptr(), length, &mut count) })?;
     records.truncate(count as usize);
     Ok(records)
+}
+
+/// An owned duplicate of the console's output; closing it never closes the
+/// process's stdout.
+pub fn output() -> io::Result<File> {
+    let stdout = io::stdout();
+    mode(stdout.as_handle())?;
+    Ok(File::from(stdout.as_handle().try_clone_to_owned()?))
+}
+
+/// What Ctrl+Break, or any program ended by a console event, exits with:
+/// `STATUS_CONTROL_C_EXIT`.
+const CONTROL_C_EXIT: u32 = 0xC000_013A;
+
+/// The console while `exec` waits for an answer to its nested-start prompt
+/// (#139): raw, with input typed before it discarded, read one record at a
+/// time so that nothing after the answer is taken. Ctrl+Break and a close
+/// end the wait instead of the process, so dropping the prompt always
+/// restores the console.
+pub struct Prompt {
+    _raw: RawModeGuard,
+    input: File,
+    output: File,
+    signals: Signals,
+    keys: Keys,
+    /// Bytes decoded from a record and not yet given out.
+    typed: std::collections::VecDeque<u8>,
+}
+
+impl Prompt {
+    pub fn new(input: File, output: File) -> io::Result<Self> {
+        let signals = Signals::client()?;
+        let guard = RawModeGuard::new(&input)?;
+        // SAFETY: the console's input handle, which this prompt owns.
+        check(unsafe { FlushConsoleInputBuffer(raw(input.as_handle())) })?;
+        Ok(Self {
+            _raw: guard,
+            input,
+            output,
+            signals,
+            keys: Keys::default(),
+            typed: std::collections::VecDeque::new(),
+        })
+    }
+
+    /// Writes `text` to the console; raw output needs CR LF.
+    pub fn show(&mut self, text: &str) -> io::Result<()> {
+        self.output.write_all(text.as_bytes())
+    }
+
+    /// The next byte typed, a failed console as a hang-up, or the status a
+    /// console event ends with: 129 for a close, `STATUS_CONTROL_C_EXIT` for
+    /// Ctrl+Break.
+    pub fn read_input(&mut self) -> io::Result<Input> {
+        loop {
+            if let Some(status) = self.ended() {
+                return Ok(Input::Ended(status));
+            }
+            if let Some(key) = self.typed.pop_front() {
+                return Ok(Input::Key(key));
+            }
+            let Ok(records) = wait_records(self.input.as_handle(), 1) else {
+                return Ok(Input::Gone);
+            };
+            self.typed.extend(self.keys.feed(&records));
+        }
+    }
+
+    fn ended(&self) -> Option<u32> {
+        if self.signals.take_break() {
+            return Some(CONTROL_C_EXIT);
+        }
+        self.signals.termination_signal().map(|signal| 128 + signal)
+    }
+}
+
+/// The prompt's handler routine goes with it, so a later Ctrl+C or close
+/// acts as it did before.
+impl Drop for Prompt {
+    fn drop(&mut self) {
+        // SAFETY: removes the routine `Signals::client` added.
+        unsafe { SetConsoleCtrlHandler(Some(console_event), 0) };
+    }
 }
 
 /// Whether any record is a window-size record.

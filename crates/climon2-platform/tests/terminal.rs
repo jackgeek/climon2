@@ -95,6 +95,8 @@ fn issue20_real_pty_size_and_zero_fallback() {
 
 #[test]
 fn issue20_signals_coalesce_resize_and_report_exit_signal() {
+    // A prompt's signals would hear this test's SIGTERM too.
+    let _lock = RAW_TEST.lock().unwrap();
     let signals = terminal::Signals::client().unwrap();
     unsafe {
         libc::raise(libc::SIGWINCH);
@@ -108,6 +110,62 @@ fn issue20_signals_coalesce_resize_and_report_exit_signal() {
     assert_eq!(signals.termination_signal(), Some(15));
     // Unix terminals have no Ctrl+Break (#326): no signal is one.
     assert!(!signals.take_break());
+}
+
+/// Reads `master` until what it has read ends with `text`.
+fn read_until(master: &mut File, text: &[u8]) {
+    use std::io::Read;
+    let mut read = Vec::new();
+    while !read.ends_with(text) {
+        let mut chunk = [0u8; 64];
+        let count = master.read(&mut chunk).unwrap();
+        assert_ne!(count, 0, "{read:?}");
+        read.extend_from_slice(&chunk[..count]);
+    }
+}
+
+/// #139: a nested-start prompt discards input typed before it, shows its
+/// text on its output, gives typed bytes one at a time, so nothing after an
+/// answer is taken, ends its wait on each signal that would end the process,
+/// with 128 + signal, and restores the terminal when dropped.
+#[test]
+fn a_prompt_flushes_type_ahead_reads_bytes_singly_and_ends_on_signals() {
+    use climon2_core::session::Input;
+    use std::io::Write;
+    let _lock = RAW_TEST.lock().unwrap();
+    let (mut master, slave) = pty();
+    let original = flags(&slave);
+    master.write_all(b"early\r").unwrap();
+    read_until(&mut master, b"early\r\n");
+    let mut prompt =
+        terminal::Prompt::new(slave.try_clone().unwrap(), slave.try_clone().unwrap()).unwrap();
+    prompt.show("SHOWN\r\n").unwrap();
+    read_until(&mut master, b"SHOWN\r\n");
+    master.write_all(b"yz").unwrap();
+    assert_eq!(prompt.read_input().unwrap(), Input::Key(b'y'));
+    assert_eq!(prompt.read_input().unwrap(), Input::Key(b'z'));
+    for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM] {
+        unsafe { libc::raise(signal) };
+        assert_eq!(
+            prompt.read_input().unwrap(),
+            Input::Ended(128 + signal as u32)
+        );
+    }
+    drop(prompt);
+    assert_eq!(flags(&slave), original);
+}
+
+/// #139: a prompt whose terminal is lost, its pty master closed, reads it
+/// as gone (EIO on Linux), never as a failure.
+#[test]
+fn a_prompt_reads_a_lost_terminal_as_gone() {
+    use climon2_core::session::Input;
+    let _lock = RAW_TEST.lock().unwrap();
+    let (master, slave) = pty();
+    let mut prompt =
+        terminal::Prompt::new(slave.try_clone().unwrap(), slave.try_clone().unwrap()).unwrap();
+    drop(master);
+    assert_eq!(prompt.read_input().unwrap(), Input::Gone);
 }
 
 fn terminal_fixture(mode: &str) -> Command {

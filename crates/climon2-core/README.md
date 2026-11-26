@@ -273,10 +273,12 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   nested)` is what exec shows before it starts the session (#139): `Quiet` at
   top level or for a `Deliberate` start, else `Warn` for a headless session
   and `Ask` (the warning, then `PROMPT`) for an ordinary one.
-  `Answer::read` reads a raw terminal until Enter (CR or LF, `Start`) or
-  Ctrl+C (`Cancel`), ignoring other keys; end of input is `Gone`.
-  `Answer::status` is exec's exit status when nothing starts: `Cancel` 130
-  (`exit::INTERRUPTED`), `Gone` 129.
+  `Answer::read` takes `Input`s (one key, `Gone`, or `Ended(status)`) from
+  a closure until Enter (CR or LF, `Start`) or Ctrl+C (`Cancel`), ignoring
+  other keys and taking nothing after the answer; `Gone` and `Ended` answer
+  too, and an `Interrupted` error is retried. `Answer::status` is exec's exit
+  status when nothing starts: `Cancel` 130 (`exit::INTERRUPTED`), `Gone` 129,
+  `Ended` its own.
 - `exit::{ExitStatus,LaunchFailure}::code`: neutral platform-exit input,
   preserving raw command u32 codes, checked `128+signal`, and classifications
   for own failure 125, usage 2, launch 127/126 and terminal gone 129.

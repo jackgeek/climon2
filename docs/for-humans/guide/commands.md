@@ -83,7 +83,8 @@ only when its command exits or you run `c2 kill`. `c2 list` shows it as
 **Nested sessions.** A session started from inside another session is a
 [nested session](../../../GLOSSARY.md#sessions). Starting one is usually a
 mistake, so `exec` warns you first and waits for a key. The wait matters
-because the new session clears the screen as it starts:
+because the new session clears the screen as it starts. The warning goes to
+the terminal itself, even if you redirect stderr:
 
 ```text
 Starting climon2 session nested for the 1st time
@@ -92,15 +93,22 @@ Press Enter to start it, or Ctrl+C to cancel.
 
 - Enter starts the session.
 - Ctrl+C cancels it. Nothing starts, and `exec` exits 130.
-- Other keys are ignored.
+- Other keys are ignored, and so is anything typed or pasted before the
+  prompt appeared.
 - If the terminal goes away while `exec` waits, it exits 129.
+- If `exec` is sent a signal that would end it (on Windows, Ctrl+Break or
+  closing the window), it puts your terminal back as it was, then exits:
+  with 128 + the signal's number on macOS and Linux, and with `0xC000013A`
+  after Ctrl+Break on Windows.
+
+**Scripts wait too.** A script that runs `c2 exec` inside a session stops at
+this prompt until someone presses a key. Give it `--nested`.
 
 A headless session needs no terminal and clears no screen, so
-`c2 exec --headless` prints the warning and starts without waiting.
+`c2 exec --headless` prints the warning to stderr and starts without waiting.
 
 If you mean to nest, add `--nested` (or `-n`). Then `exec` neither warns nor
-waits, which suits scripts. `--nested` and `--headless` go before the command,
-in either order:
+waits. `--nested` and `--headless` go before the command, in either order:
 
 ```sh
 c2 exec --nested vim

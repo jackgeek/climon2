@@ -68,8 +68,10 @@ impl NewSession {
     }
 }
 
-/// Shows `notice` on stderr. After the prompt, waits for its answer on the
-/// terminal: the status to exit with unless it was Enter.
+/// Shows `notice`: a headless session's warning on stderr; the warning and
+/// prompt on the terminal itself, stdout, which an ordinary exec has checked
+/// is one, then waits for the answer. The status to exit with unless it was
+/// Enter.
 fn confirm(notice: Notice<'_>) -> io::Result<Option<u32>> {
     match notice {
         Notice::Quiet => Ok(None),
@@ -81,13 +83,13 @@ fn confirm(notice: Notice<'_>) -> io::Result<Option<u32>> {
     }
 }
 
-/// The terminal is raw before the prompt shows, so Ctrl+C typed once it
-/// shows is a key, never a signal; raw output needs CR LF.
+/// The terminal is raw, and earlier input discarded, before the prompt
+/// shows, so only a key typed once it shows answers it, and Ctrl+C is a key,
+/// never a signal.
 fn ask(warning: &str) -> io::Result<Option<u32>> {
-    let mut input = terminal::input()?;
-    let _raw = terminal::RawModeGuard::new(&input)?;
-    eprint!("{warning}\r\n{PROMPT}\r\n");
-    Ok(Answer::read(&mut input)?.status())
+    let mut prompt = terminal::Prompt::new(terminal::input()?, terminal::output()?)?;
+    prompt.show(&format!("{warning}\r\n{PROMPT}\r\n"))?;
+    Ok(Answer::read(|| prompt.read_input())?.status())
 }
 
 fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
