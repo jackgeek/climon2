@@ -91,6 +91,7 @@ fn prepared(
     readiness: &mut ReadinessWriter,
     log: &LogFile,
 ) -> Result<(), startup::Failure> {
+    startup::owned(options)?;
     startup::fault(log)?;
     let resources = startup::Resources::prepare(options)?;
     let exec_listener = pty::ExecListener::bind(options)?;

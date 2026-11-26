@@ -22,6 +22,7 @@ use climon2_core::{
 use climon2_platform::{
     home,
     logging::{self, LogFile},
+    owner,
 };
 use std::{ffi::OsString, io, path::Path, time::SystemTime};
 
@@ -95,6 +96,8 @@ fn logged(
         .dispatch(filter.as_deref())
         .map_err(|error| Error::from(error).logged(general.path()))?;
     tracing::dispatcher::with_default(&dispatch, || {
+        // Before anything else touches the home: it must be this host's (ADR 0011).
+        owner::check(&home).map_err(|refusal| Error::new(125, refusal).logged(general.path()))?;
         logging::prune(&home, SystemTime::now());
         command(&home, &general, filter.as_deref()).map_err(|error| error.logged(general.path()))
     })

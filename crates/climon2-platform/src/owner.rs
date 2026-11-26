@@ -1,0 +1,110 @@
+//! The home owner (ADR 0011, "One home, one host"): one climon2 home belongs
+//! to one host, one machine and one PID namespace, which `<home>/owner`
+//! records. Every command that uses the home checks it first, here.
+//!
+//! - A home without a record is claimed by the first check that can read its
+//!   own origin. The record is written to an owner-only file of its own and
+//!   linked into place, so it appears whole and once: when checks race, the
+//!   one whose record is in place owns the home, and the others are judged
+//!   against it.
+//! - A record is read only when it is a plain file, never through a link, and
+//!   only when it is valid; a bad one is refused and never replaced.
+//! - Without its own origin, a check carries on unclaimed, with a warning,
+//!   while the home has no owner, and refuses once it has one.
+use crate::{origin, private};
+use climon2_core::{
+    metadata::SessionOrigin,
+    owner::{self, OWNER_FILE, OWNER_RECORD_LIMIT, Refusal},
+};
+use std::{
+    fs,
+    io::{self, Read, Write},
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+/// Whether this host may use the climon2 home at `home`, claiming it first
+/// when it has no owner.
+pub fn check(home: &Path) -> Result<(), Refusal> {
+    check_as(home, origin::current())
+}
+
+/// [`check`] for a host whose origin is `here`.
+pub fn check_as(home: &Path, here: io::Result<SessionOrigin>) -> Result<(), Refusal> {
+    match recorded(home)? {
+        Some(owner) => judge(owner, here),
+        None => claim(home, here),
+    }
+}
+
+fn judge(owner: SessionOrigin, here: io::Result<SessionOrigin>) -> Result<(), Refusal> {
+    match here {
+        Ok(here) if here.is_same_place(&owner) => Ok(()),
+        Ok(_) => Err(Refusal::Foreign(owner)),
+        Err(error) => Err(Refusal::Unchecked { owner, error }),
+    }
+}
+
+fn claim(home: &Path, here: io::Result<SessionOrigin>) -> Result<(), Refusal> {
+    let here = match here {
+        Ok(here) => here,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                errno = error.raw_os_error(),
+                "cannot read this host's origin; the climon2 home is not claimed"
+            );
+            return Ok(());
+        }
+    };
+    let written = write(home, &here);
+    match recorded(home)? {
+        Some(owner) => judge(owner, Ok(here)),
+        None => {
+            if let Err(error) = written {
+                tracing::warn!(
+                    %error,
+                    errno = error.raw_os_error(),
+                    "cannot record the climon2 home's owner; the home is not claimed"
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The owner the home records, if it records one.
+fn recorded(home: &Path) -> Result<Option<SessionOrigin>, Refusal> {
+    match load(&home.join(OWNER_FILE)) {
+        Ok(owner) => Ok(Some(owner)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Refusal::Unreadable(error)),
+    }
+}
+
+fn load(path: &Path) -> io::Result<SessionOrigin> {
+    let mut bytes = Vec::new();
+    private::open_plain_file(path)?
+        .take(OWNER_RECORD_LIMIT)
+        .read_to_end(&mut bytes)?;
+    owner::from_json(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// Links a whole record into place unless one is there already. Each attempt
+/// writes a file of its own, named by this process and a counter.
+fn write(home: &Path, here: &SessionOrigin) -> io::Result<()> {
+    static ATTEMPT: AtomicU64 = AtomicU64::new(0);
+    let attempt = ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    let temporary = home.join(format!(".owner.{}.{attempt}.tmp", std::process::id()));
+    let bytes = owner::to_json(here).map_err(io::Error::other)?;
+    let mut file = private::create_private_file(&temporary)?;
+    let linked = file
+        .write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::hard_link(&temporary, home.join(OWNER_FILE)));
+    drop(file);
+    // Linked or not, the temporary name has done its work; one left behind
+    // only costs space.
+    let _ = fs::remove_file(&temporary);
+    linked
+}

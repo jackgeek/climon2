@@ -600,7 +600,7 @@ fn issue133_a_daemon_records_its_origin() {
     let bytes = fs::read(&session.metadata).unwrap();
     let metadata =
         climon2_core::metadata::SessionMetadata::from_json(&session.metadata, &bytes).unwrap();
-    let here = climon2_platform::origin::current(session.directory.path()).unwrap();
+    let here = climon2_platform::origin::current().unwrap();
     assert_eq!(metadata.daemon_origin, Some(here));
     session.finish();
 }
@@ -910,6 +910,29 @@ fn an_existing_session_file_fails_publication_and_is_left_in_place() {
         assert!(!prepared.startup_socket.exists());
         assert_startup_command_gone(&prepared.home);
     }
+}
+
+/// #133 / ADR 0011: a daemon started in a home another machine or container owns refuses
+/// before anything else: it reports the refusal, exits 125, and creates no session files and
+/// starts no command. The record is left as it was.
+#[test]
+fn issue133_a_daemon_refuses_a_home_another_host_owns() {
+    const FOREIGN: &str = r#"{"machine_id":"another-machine","pid_namespace":1}"#;
+    let (prepared, readiness, status) = unsupervised(
+        "exit",
+        |_, home| fs::write(home.join("owner"), FOREIGN).unwrap(),
+        false,
+    );
+    let message = "this climon2 home belongs to another machine or container, or cannot be checked";
+    assert_eq!(readiness, failed_readiness(125, message));
+    assert_eq!(status.code(), Some(125));
+    assert!(!prepared.home.join("sessions").exists());
+    assert_startup_files_removed(&prepared);
+    assert_startup_command_gone(&prepared.home);
+    assert_eq!(
+        fs::read_to_string(prepared.home.join("owner")).unwrap(),
+        FOREIGN
+    );
 }
 
 /// The same daemon command with one option's value replaced (Command args are append-only).

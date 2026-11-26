@@ -1,18 +1,16 @@
 //! The machine, from systemd's `/etc/machine-id`, which survives reboots unlike
 //! the boot ID, and the PID namespace, as the inode of `/proc/self/ns/pid`. A
-//! PID namespace that cannot be read is an error; a machine without an ID (as
-//! in many container images) is told apart by its namespace alone.
+//! PID namespace that cannot be read is an error.
 //!
-//! On a live or read-only-root system systemd generates a transient machine ID
-//! at each boot and mounts it from `/run/machine-id` over `/etc/machine-id`.
-//! There climon2 generates its own machine ID once and keeps it in the climon2
-//! home, keyed by host name, at `machines/<hostname>.id` (ADR 0005).
-use crate::private;
+//! Only a stable machine ID is recorded (ADR 0011). A machine without one (as
+//! in many container images), or whose ID is the transient one systemd
+//! generates at each boot on a live or read-only-root system and mounts from
+//! `/run/machine-id` over `/etc/machine-id`, is told apart by its PID
+//! namespace alone.
 use climon2_core::metadata::{MachineId, SessionOrigin};
 use std::{
-    fs::{self, OpenOptions},
-    io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    fs, io,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -23,76 +21,24 @@ pub struct Sources {
     pub machine_id: PathBuf,
     /// This process's mounts, `/proc/self/mountinfo`.
     pub mountinfo: PathBuf,
-    /// The host name, `/proc/sys/kernel/hostname`.
-    pub hostname: PathBuf,
     /// This process's PID namespace, `/proc/self/ns/pid`.
     pub pid_namespace: PathBuf,
 }
 
-impl Sources {
-    fn system() -> Self {
-        Self {
-            machine_id: "/etc/machine-id".into(),
-            mountinfo: "/proc/self/mountinfo".into(),
-            hostname: "/proc/sys/kernel/hostname".into(),
-            pid_namespace: "/proc/self/ns/pid".into(),
-        }
-    }
-}
-
-/// What the system says about where this process runs.
-pub struct Here {
-    machine: Machine,
-    pid_namespace: u64,
-    hostname: PathBuf,
-}
-
-/// What `/etc/machine-id` says about this machine.
-enum Machine {
-    /// Missing or unreadable: not transient, so the PID namespace alone tells
-    /// this machine apart (ADR 0005).
-    Missing,
-    Stable(MachineId),
-    /// Mounted from systemd's `/run/machine-id`, so it changes at each boot.
-    Transient,
-}
-
-pub fn here() -> io::Result<Here> {
-    read(&Sources::system())
-}
-
-/// Where this process runs. With a transient machine ID and no usable ID of
-/// climon2's own, that is unknown, never "no machine ID": a reader without
-/// one is in the same place as every machine that shares its namespace
-/// inode, and could take their live daemons for gone ones (ADR 0005).
-pub fn origin(here: &Here, home: &Path) -> io::Result<SessionOrigin> {
-    let machine_id = match &here.machine {
-        Machine::Missing => None,
-        Machine::Stable(machine) => Some(machine.clone()),
-        Machine::Transient => Some(persisted(&here.hostname, home)?),
-    };
-    Ok(SessionOrigin {
-        machine_id,
-        pid_namespace: Some(here.pid_namespace),
+pub fn here() -> io::Result<SessionOrigin> {
+    current_at(&Sources {
+        machine_id: "/etc/machine-id".into(),
+        mountinfo: "/proc/self/mountinfo".into(),
+        pid_namespace: "/proc/self/ns/pid".into(),
     })
 }
 
-/// The origin `sources` describe, for the climon2 home at `home`, read now.
-pub fn current_at(sources: &Sources, home: &Path) -> io::Result<SessionOrigin> {
-    origin(&read(sources)?, home)
-}
-
-fn read(sources: &Sources) -> io::Result<Here> {
+/// The origin `sources` describe, read now.
+pub fn current_at(sources: &Sources) -> io::Result<SessionOrigin> {
     let pid_namespace = fs::metadata(&sources.pid_namespace)?.ino();
-    let machine = match machine_id(&sources.machine_id) {
-        None => Machine::Missing,
-        Some(_) if transient(&sources.mountinfo) => Machine::Transient,
-        Some(machine) => Machine::Stable(machine),
-    };
-    Ok(Here {
-        machine,
-        pid_namespace,
-        hostname: sources.hostname.clone(),
+    Ok(SessionOrigin {
+        machine_id: machine_id(&sources.machine_id).filter(|_| !transient(&sources.mountinfo)),
+        pid_namespace: Some(pid_namespace),
     })
 }
 
@@ -120,80 +66,4 @@ fn mount(line: &str) -> Option<(&str, &str, &str)> {
     let root = fields.next()?;
     let point = fields.next()?;
     Some((root, point, tail.split(' ').next()?))
-}
-
-/// climon2's own machine ID for this host name, generated once.
-fn persisted(hostname: &Path, home: &Path) -> io::Result<MachineId> {
-    let name = host_name(&fs::read_to_string(hostname)?)?;
-    let machines = home.join("machines");
-    let path = machines.join(format!("{name}.id"));
-    match load(&path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            private::private_directory(&machines)?;
-            create(&machines, &name, &path)
-        }
-        result => result,
-    }
-}
-
-/// A host name that is one safe file name: ASCII letters, digits, hyphens,
-/// dots and underscores, not starting with a dot.
-fn host_name(text: &str) -> io::Result<String> {
-    let name = text.trim();
-    let allowed = |character: char| character.is_ascii_alphanumeric() || "-._".contains(character);
-    if name.is_empty() || name.starts_with('.') || !name.chars().all(allowed) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "host name is not a file name",
-        ));
-    }
-    Ok(name.to_owned())
-}
-
-/// Reads a kept ID without following a symlink. Anything but 32 lowercase hex
-/// digits and a newline is refused, never replaced.
-fn load(path: &Path) -> io::Result<MachineId> {
-    let mut text = String::new();
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?
-        .read_to_string(&mut text)?;
-    let id = text.strip_suffix('\n').unwrap_or_default();
-    let hex = |character: char| matches!(character, '0'..='9' | 'a'..='f');
-    if id.len() != 32 || !id.chars().all(hex) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid machine ID in {}", path.display()),
-        ));
-    }
-    id.parse().map_err(io::Error::other)
-}
-
-/// Writes a new random ID to an owner-only file of its own, then links it into
-/// place, so the ID appears whole and only once: when another process got
-/// there first, its ID is the one used.
-fn create(machines: &Path, name: &str, path: &Path) -> io::Result<MachineId> {
-    let id = random_id()?;
-    let temporary = machines.join(format!(".{name}.{id}.tmp"));
-    let mut file = private::create_private_file(&temporary)?;
-    let linked = file
-        .write_all(format!("{id}\n").as_bytes())
-        .and_then(|()| file.sync_all())
-        .and_then(|()| fs::hard_link(&temporary, path));
-    // Once linked, the ID is in place; a temporary file left behind only
-    // costs space.
-    let _ = fs::remove_file(&temporary).inspect_err(|error| {
-        tracing::warn!(%error, errno = error.raw_os_error(), "temporary machine ID file kept")
-    });
-    // Whichever ID is in place is the one; without one, the failure that kept
-    // ours out says why.
-    load(path).map_err(|loaded| linked.err().unwrap_or(loaded))
-}
-
-/// 128 random bits as 32 lowercase hex digits, as systemd writes machine IDs.
-fn random_id() -> io::Result<String> {
-    let mut bytes = [0u8; 16];
-    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }

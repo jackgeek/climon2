@@ -50,7 +50,7 @@ matter most:
   directory, sockets, waiting, daemon identity and `list`'s presentation
   ([#316](https://github.com/jackgeek/climon2/issues/316));
   `crates/climon2-platform/src/origin/windows.rs`, which reads the machine's
-  `MachineGuid` for a session's origin
+  `MachineGuid` for the home owner and a session's origin
   ([#133](https://github.com/jackgeek/climon2/issues/133));
   `crates/climon2-platform/src/daemon/windows.rs`, which starts the session
   daemon; `crates/climon2-platform/src/pty/windows.rs`, which hosts the

@@ -231,7 +231,7 @@ fn an_ordinary_session_nobody_attaches_to_within_five_seconds_ends() {
     }
     let [session] = install.sessions().try_into().unwrap();
     // #133: a real daemon records this machine as where it was created.
-    let here = climon2_platform::origin::current(&install.home()).unwrap();
+    let here = climon2_platform::origin::current().unwrap();
     assert_eq!(session.daemon_origin, Some(here));
     let command = Held::written(&install.work().join("pid"));
 

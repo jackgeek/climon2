@@ -156,7 +156,7 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
         daemon_pid: std::process::id(),
         daemon_start_time,
         daemon_linux_identity,
-        daemon_origin: daemon_origin(&options.home),
+        daemon_origin: daemon_origin(),
         command: display.command,
         args: display.args,
         cwd: display.cwd,
@@ -173,10 +173,10 @@ fn daemon_identity() -> io::Result<(u64, Option<climon2_core::metadata::LinuxPro
     Ok((start_time, process::linux_identity(pid)?))
 }
 
-/// Optional (#133): without it, readers judge the record as before, so a
-/// failed read is only a warning.
-fn daemon_origin(home: &std::path::Path) -> Option<climon2_core::metadata::SessionOrigin> {
-    climon2_platform::origin::current(home)
+/// Optional and for diagnostics only (#133, ADR 0011), so a failed read is only
+/// a warning.
+fn daemon_origin() -> Option<climon2_core::metadata::SessionOrigin> {
+    climon2_platform::origin::current()
         .inspect_err(|error| {
             tracing::warn!(
                 %error,
@@ -192,6 +192,18 @@ fn inherited_depth() -> NonZeroU32 {
         .ok()
         .and_then(|depth| depth.parse().ok())
         .unwrap_or(NonZeroU32::MIN)
+}
+
+/// The climon2 home must belong to this host (ADR 0011). The CLI checked it
+/// before starting this daemon; the daemon checks again before anything else,
+/// logging why it refuses.
+pub fn owned(options: &Options) -> Result<(), Failure> {
+    climon2_platform::owner::check(&options.home).map_err(|refusal| {
+        tracing::error!(%refusal, "climon2 home refused");
+        Failure::own(
+            "this climon2 home belongs to another machine or container, or cannot be checked",
+        )
+    })
 }
 
 pub fn fault(_log: &logging::LogFile) -> Result<(), Failure> {

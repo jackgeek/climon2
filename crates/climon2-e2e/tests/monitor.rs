@@ -272,7 +272,8 @@ const PATIENT: [(&str, u32); 5] = [
 
 /// The climon2 home holds the choice `suppressed` exactly as a release saves
 /// it, readable and writable only by its owner, and nothing else a save could
-/// have left there.
+/// have left there: beside it only the logs and the home's owner record (ADR
+/// 0011).
 fn assert_saved(package: &Package, suppressed: bool) {
     let path = preferences_file(package);
     assert_eq!(
@@ -283,7 +284,10 @@ fn assert_saved(package: &Package, suppressed: bool) {
         fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
         0o600
     );
-    assert_eq!(home_entries(package), ["logs", "monitor-preferences.json"]);
+    assert_eq!(
+        home_entries(package),
+        ["logs", "monitor-preferences.json", "owner"]
+    );
 }
 
 /// The names in the test's climon2 home, sorted.
@@ -1485,7 +1489,10 @@ fn a_failing_save_is_reported_in_the_key_introduction_and_saves_nothing() {
         &key_introduction("Ctrl+]", false, Some(not_replaced)),
     );
     shows(&mut replaced, &reported);
-    assert_eq!(home_entries(&package), ["logs", "monitor-preferences.json"]);
+    assert_eq!(
+        home_entries(&package),
+        ["logs", "monitor-preferences.json", "owner"]
+    );
     replaced.send(b"\x1dx").unwrap();
     assert_released(&package, &mut replaced, 0);
     assert!(preferences_file(&package).is_dir());

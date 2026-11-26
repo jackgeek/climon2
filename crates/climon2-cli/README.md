@@ -31,11 +31,15 @@ NUL) is a usage error, 2, and nothing starts. An ordinary `exec` that cannot sta
 the daemon it started (`daemon::stop`), as Unix stops it with signals.
 `src/client.rs` holds what `attach` and `kill` share: selecting one live
 session and the session version's client command.
+Every command that uses a climon2 home checks its owner first, in `logged`,
+before it prunes logs or starts, attaches, lists or kills anything (ADR 0011,
+#133). A home another machine or container owns exits 125 with the refusal;
+`--help` and `--version` never check. `tests/owner.rs` (every OS):
+`issue133_a_home_another_host_owns_is_refused_before_anything_else` and
+`issue133_the_first_command_claims_the_home_for_this_host`.
 `tests/list_windows.rs` proves `list` with no sessions, the reclaim of a
-stale session whose daemon has exited, the sessions it keeps (among them one
-recorded on another machine, #133), and a live session listed to the width of
-a pinned-ConPTY console. In `tests/attach_deadline_windows.rs`, the real
-session's metadata records this machine as its origin.
+stale session whose daemon has exited, the sessions it keeps, and a live
+session listed to the width of a pinned-ConPTY console.
 `tests/exec_windows.rs` runs a version folder of the CLI, daemon and pinned
 ConPTY outside cargo's job (which refuses breakaway): a headless session is
 listed as detached with its daemon in no job and ends with its command,
@@ -168,9 +172,8 @@ calling thread, so the general log records them under the CLI's own target, as
 before the extraction. They are `invalid session metadata` (warn) once per
 invalid entry; then one per probe that proves nothing or fails its cleanup:
 `session probe did not match` (debug, `responded=`), `session connection
-failed` (debug, `errno=`), `refused connection belongs to a live daemon or
-one created elsewhere` (debug, `created_elsewhere=`: true for a session created
-on another machine or in another PID namespace, #133), `daemon identity is uncertain` (warn, `errno=`; Linux also warns when
+failed` (debug, `errno=`), `refused connection belongs to a live daemon`
+(debug), `daemon identity is uncertain` (warn, `errno=`; Linux also warns when
 the daemon's stable identity is unavailable) and `stale session cleanup failed`
 (warn, `errno=`); then `malformed hello extensions` (warn, `session=`) for each
 live session whose capabilities or state are malformed.

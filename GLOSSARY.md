@@ -94,7 +94,7 @@ The per-session record in climon2 home that describes a session and how to reach
 _Avoid_: Session file, PTY file
 
 **Session origin**:
-The machine, and on Linux the PID namespace, where a session daemon was created; only a participant in the same place (the same PID namespace, and the same machine ID where both have one) can prove that daemon gone. Where Linux's machine ID is transient, climon2 uses its own, kept in the climon2 home per host name.
+The machine, and on Linux the PID namespace, where a session daemon was created, recorded in its session metadata for diagnostics.
 _Avoid_: Host, remote session, foreign session
 
 **Discovery pass**:
@@ -385,6 +385,10 @@ _Avoid_: Install directory, exe dir, `CLIMON2_EXE`
 **Climon2 home**:
 The directory where climon2 keeps its data; `~/.climon2` unless `CLIMON2_HOME` overrides it.
 _Avoid_: Data dir, state dir, config dir
+
+**Home owner**:
+The one host, a machine and on Linux a PID namespace, that a climon2 home belongs to, as the home's `owner` record names it; the first command claims a home without one, and every other machine or container is refused.
+_Avoid_: Home host, lock, lease
 
 **Installer**:
 The program shipped in a release archive that places that release's version into a climon2 executable home and makes it the current version.

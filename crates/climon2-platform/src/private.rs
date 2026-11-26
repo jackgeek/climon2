@@ -8,8 +8,10 @@
 //! - [`create_private_file`] does the same, owner-only whatever the umask.
 //! - [`private_directory`] creates a managed folder when missing, then
 //!   requires it to be private.
+//! - [`open_plain_file`] opens a file to read only when it is a plain file,
+//!   never through a link.
 
-pub use native::{create_new_file, create_private_file, private_directory};
+pub use native::{create_new_file, create_private_file, open_plain_file, private_directory};
 
 #[cfg(unix)]
 mod native {
@@ -35,6 +37,20 @@ mod native {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
+    }
+
+    /// An existing file to read, never through a symlink and only when it is a
+    /// regular file: a directory or FIFO at the name is refused unopened or
+    /// unread.
+    pub fn open_plain_file(path: &Path) -> io::Result<File> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(super::not_plain(path));
+        }
+        Ok(file)
     }
 
     /// As [`create_new_file`], made exactly owner-only whatever the umask.
@@ -77,6 +93,14 @@ mod native {
             format!("unsafe runtime directory {}: {problem}", path.display()),
         )
     }
+}
+
+/// The refusal of a name that is not a plain file.
+fn not_plain(path: &std::path::Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("{} is not a plain file", path.display()),
+    )
 }
 
 #[cfg(windows)]

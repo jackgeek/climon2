@@ -96,22 +96,28 @@ dispatch or shell-specific logic.
   `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
   conversion is clock-sensitive and is not stale-cleanup authority.
   Missing stable identity makes Linux cleanup fail safely, retaining metadata.
-- `origin::current(home) -> io::Result<SessionOrigin>`, in its own module
-  with a native file per OS (`src/origin/{linux,macos,windows}.rs`), is where
-  this process runs, which a daemon records as `daemon_origin` (#133, ADR
-  0005): on Linux the machine ID from `/etc/machine-id` (absent when there is
-  none) and the PID namespace as the inode of `/proc/self/ns/pid`; on macOS
-  the hardware UUID from `gethostuuid`, as 32 lowercase hex digits. When
-  Linux's machine ID is systemd's transient one (the last mount at
-  `/etc/machine-id` is `/machine-id` of a tmpfs, systemd's `/run/machine-id`),
-  climon2's own ID from `<home>/machines/<hostname>.id` is used instead,
-  generated once (owner-only, linked into place whole, no symlink followed);
-  an unusable one makes `current` fail, never "no machine ID", which
-  would match every machine sharing the namespace inode. `origin::{Sources, current_at}` (Linux) read the same from
-  injected paths. Stale cleanup checks a daemon's identity only when the
-  record's origin is the reader's place (`SessionOrigin::is_same_place`).
-  What the system says is read once per process; a failed read is not kept.
-- `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
+- `origin::current() -> io::Result<SessionOrigin>`, in its own module with a
+  native file per OS (`src/origin/{linux,macos,windows}.rs`), is where this
+  process runs (#133): on Linux the PID namespace as the inode of
+  `/proc/self/ns/pid` and the machine ID from `/etc/machine-id`, absent when
+  there is none or when it is systemd's transient one (the last mount at
+  `/etc/machine-id` is `/machine-id` of a tmpfs, systemd's `/run/machine-id`);
+  on macOS the hardware UUID from `gethostuuid`, as 32 lowercase hex digits;
+  on Windows `MachineGuid`. It is read once per process; a failed read is not
+  kept. `origin::{Sources, current_at}` (Linux) read the same from injected
+  paths. A daemon records it as `daemon_origin` for diagnostics (ADR 0005).
+- `owner::check(home) -> Result<(), Refusal>` is the home owner check of ADR
+  0011, which every command that uses a home and the daemon make first: a
+  home without an `owner` record is claimed for this host (an owner-only file
+  of its own, hard-linked into place, so racing first claims agree); a home
+  another host owns is `Refusal::Foreign`; a recorded home this host cannot
+  read its own origin for is `Refusal::Unchecked`; a record that is not a
+  plain, valid file is `Refusal::Unreadable` and left alone. Without its own
+  origin, or when the record cannot be written, it claims nothing and warns.
+  `owner::check_as` takes the origin, for tests.
+- `private::open_plain_file` opens a file to read only when it is a plain
+  file: never through a symlink (`O_NOFOLLOW`) or reparse point, and not a
+  directory or FIFO.- `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
 - `process::signal_group(group, Signal)` supports Hangup, Interrupt, Terminate,
@@ -309,8 +315,8 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   the first 64, and any event already signalled, beyond them too, ends it at
   once (#327, the monitor's instances).
 - `src/origin/windows.rs`: `origin::current`, the machine's `MachineGuid`
-  from `HKLM\SOFTWARE\Microsoft\Cryptography` (#133): a climon2 home on a
-  network share is read from other machines.
+  from `HKLM\SOFTWARE\Microsoft\Cryptography` in the 64-bit view (#133),
+  which the home owner record holds.
 - `src/process/windows.rs`: `start_time`, `is_same_process` and
   `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
   time in epoch microseconds. Only "no such process"
@@ -553,10 +559,19 @@ and on CI it fails without the account.
 `issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`,
 `linux_origin_is_the_machine_id_and_the_pid_namespace` (Linux) and
 `macos_origin_is_the_hardware_uuid` (macOS, checked against `ioreg`).
-`tests/origin.rs` (Linux, #133): `issue133_only_systemds_run_machine_id_mount_is_transient`,
-`issue133_own_machine_id_is_generated_once_per_host_name` and
-`issue133_an_unusable_own_machine_id_makes_the_origin_unknown`, through injected
-sources and homes.
+`tests/origin.rs` (Linux, #133):
+`issue133_only_a_stable_machine_id_is_part_of_the_origin`, through injected
+sources.
+
+`tests/owner.rs` (every OS, #133, ADR 0011), with injected origins:
+`issue133_the_first_check_claims_the_home_and_its_host_passes`,
+`issue133_another_machine_or_pid_namespace_is_refused`,
+`issue133_an_unreadable_origin_claims_nothing_and_cannot_pass_an_owner`,
+`issue133_a_concurrent_first_claim_has_one_owner`,
+`issue133_a_bad_owner_record_is_refused_and_left_alone`,
+`issue133_a_linked_owner_record_is_refused`,
+`issue133_a_home_that_cannot_be_claimed_is_used_unclaimed` and
+`issue133_check_claims_a_home_for_this_host`.
 
 `tests/hangup.rs`: `issue19_closing_real_controlling_pty_delivers_hangup`, in
 its own test binary because a child another test forks would inherit the PTY

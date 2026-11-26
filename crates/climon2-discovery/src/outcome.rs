@@ -7,7 +7,7 @@ use climon2_core::{
     metadata::SessionMetadata,
     protocol::HELLO_TIMEOUT,
 };
-use climon2_platform::{connection, origin, process, runtime};
+use climon2_platform::{connection, process, runtime};
 use std::{fs, io, path::Path, time::Instant};
 
 /// A session whose daemon answered the frozen hello with this session's ID.
@@ -49,9 +49,6 @@ pub enum Uncertainty {
     Unreachable(io::Error),
     /// The socket is missing or refuses, but the recorded daemon process still runs.
     DaemonAlive,
-    /// The socket is missing or refuses, but the daemon was created on another machine or
-    /// in another PID namespace, where its PID means something else (#133).
-    CreatedElsewhere,
     /// The socket is missing or refuses, and the daemon's identity cannot be checked.
     IdentityUnknown(io::Error),
 }
@@ -164,44 +161,13 @@ fn connection_failed(metadata: SessionMetadata, error: io::Error, removal: Remov
 /// Only a proven dead daemon identity makes such a session stale, and only a stale session's
 /// files are cleaned up, as the pass's removal says.
 fn prove_stale_and_clean_up(metadata: SessionMetadata, removal: Removal) -> Outcome {
-    match daemon(&metadata, removal.home) {
-        Ok(Daemon::Gone) => {
+    match process::is_same_daemon(&metadata) {
+        Ok(false) => {
             let cleanup = removal.clean_up(&metadata);
             Outcome::Stale(metadata, cleanup)
         }
-        Ok(Daemon::Running) => Outcome::Uncertain(metadata, Uncertainty::DaemonAlive),
-        Ok(Daemon::Elsewhere) => Outcome::Uncertain(metadata, Uncertainty::CreatedElsewhere),
+        Ok(true) => Outcome::Uncertain(metadata, Uncertainty::DaemonAlive),
         Err(error) => Outcome::Uncertain(metadata, Uncertainty::IdentityUnknown(error)),
-    }
-}
-
-/// What this reader can prove about a session's recorded daemon.
-enum Daemon {
-    Gone,
-    Running,
-    /// Created where this reader cannot see its processes.
-    Elsewhere,
-}
-
-/// A daemon's identity is checked only where it was created: a record that names another
-/// machine or PID namespace is never proven gone here. A record without an origin, from an
-/// older writer, is checked here as it always was.
-fn daemon(metadata: &SessionMetadata, home: &HomeLayout) -> io::Result<Daemon> {
-    if created_elsewhere(metadata, home)? {
-        return Ok(Daemon::Elsewhere);
-    }
-    Ok(if process::is_same_daemon(metadata)? {
-        Daemon::Running
-    } else {
-        Daemon::Gone
-    })
-}
-
-/// Compared with this reader's own origin, which `origin::current` reads once per process.
-fn created_elsewhere(metadata: &SessionMetadata, home: &HomeLayout) -> io::Result<bool> {
-    match &metadata.daemon_origin {
-        Some(recorded) => Ok(!origin::current(home.root())?.is_same_place(recorded)),
-        None => Ok(false),
     }
 }
 

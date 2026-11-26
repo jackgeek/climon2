@@ -10,9 +10,6 @@ use windows_sys::{
     w,
 };
 
-/// What the system says about where this process runs.
-pub type Here = SessionOrigin;
-
 /// Room for `MachineGuid`: a 36-character GUID and its terminating NUL.
 const MACHINE_GUID_UNITS: usize = 64;
 /// The same room in bytes, as `RegGetValueW` measures it.
@@ -53,10 +50,4 @@ fn machine_guid() -> io::Result<String> {
     // The value is NUL-terminated and the rest of `units` stays zero.
     let text = String::from_utf16_lossy(&units);
     Ok(text.trim_end_matches('\0').to_owned())
-}
-
-/// The machine ID the system keeps is stable, so the origin is what the system
-/// says, wherever the climon2 home is.
-pub fn origin(here: &Here, _home: &std::path::Path) -> io::Result<SessionOrigin> {
-    Ok(here.clone())
 }

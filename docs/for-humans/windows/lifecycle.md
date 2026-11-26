@@ -325,12 +325,12 @@ is gone; any other error keeps the session. A wait that succeeds at once
 means the process has exited while something still holds a handle to it, as
 a Unix zombie awaits its parent, so that daemon is gone too.
 
-A daemon also records its machine, as the `MachineGuid` value under
-`HKLM\SOFTWARE\Microsoft\Cryptography`, which survives reboots
-([#133](https://github.com/jackgeek/climon2/issues/133)). A climon2 home on a
-network share can be read from another machine, where the PID means nothing,
-so the check above runs only on the machine that recorded it. Anywhere else,
-the session is kept and never cleaned up.
+A climon2 home belongs to one machine, which its `owner` file names by the
+`MachineGuid` value under `HKLM\SOFTWARE\Microsoft\Cryptography`, which
+survives reboots ([#133](https://github.com/jackgeek/climon2/issues/133)).
+A home on a network share used from another machine is refused there before
+any session is checked, because the PID means nothing on that machine. A
+daemon also records the `MachineGuid` in its metadata, for diagnostics.
 
 ## Command resolution and arguments
 

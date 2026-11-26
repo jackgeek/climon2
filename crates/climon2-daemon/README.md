@@ -488,6 +488,11 @@ tests, which speak no post-hello protocol:
   ([#133](https://github.com/jackgeek/climon2/issues/133)). A daemon that
   cannot read its origin warns `session origin unavailable; the metadata
   records none` (`errno=`) and records none.
+- `issue133_a_daemon_refuses_a_home_another_host_owns`: before anything
+  else, a daemon checks the home owner (ADR 0011). In a home another machine
+  or container owns it reports `this climon2 home belongs to another machine
+  or container, or cannot be checked` with 125, logs the full refusal, and
+  creates no session files.
 
 Every other daemon test speaks daemon wire revision 1, in
 `tests/revision1/`. The private-protocol tests, and the

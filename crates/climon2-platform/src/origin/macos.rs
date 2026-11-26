@@ -1,9 +1,6 @@
 use climon2_core::metadata::SessionOrigin;
 use std::io;
 
-/// What the system says about where this process runs.
-pub type Here = SessionOrigin;
-
 /// How long `gethostuuid` may wait for the hardware UUID.
 const HOST_UUID_WAIT: libc::timespec = libc::timespec {
     tv_sec: 5,
@@ -28,10 +25,4 @@ pub fn here() -> io::Result<SessionOrigin> {
         machine_id: Some(hex.parse().map_err(io::Error::other)?),
         pid_namespace: None,
     })
-}
-
-/// The machine ID the system keeps is stable, so the origin is what the system
-/// says, wherever the climon2 home is.
-pub fn origin(here: &Here, _home: &std::path::Path) -> io::Result<SessionOrigin> {
-    Ok(here.clone())
 }

@@ -114,39 +114,6 @@ fn list_reclaims_a_stale_session_whose_daemon_is_gone() {
     assert!(!socket.exists(), "the stale socket is removed");
 }
 
-/// #133: a climon2 home on a network share is read from other machines, where
-/// a daemon's PID means nothing. A session recorded on another machine is
-/// kept although its socket refuses and its PID is gone here; one recorded on
-/// this machine is reclaimed as before.
-#[test]
-fn list_keeps_a_session_created_on_another_machine() {
-    use climon2_core::metadata::SessionOrigin;
-    let (root, local) = (tempfile::tempdir().unwrap(), local_app_data());
-    let home = home(root.path());
-    let here = climon2_platform::origin::current(&home).unwrap();
-    let elsewhere = SessionOrigin {
-        machine_id: Some("6d1f0c2a-5b3e-4f7a-9c8d-1e2f3a4b5c6d".parse().unwrap()),
-        pid_namespace: None,
-    };
-    assert_ne!(here, elsewhere);
-    let recorded = |suffix: u8, origin: SessionOrigin| {
-        let socket = root.path().join(format!("{suffix}.sock"));
-        stale_socket(&socket);
-        let (mut metadata, path) = save(&home, suffix, gone_daemon(), &socket);
-        metadata.daemon_origin = Some(origin);
-        fs::write(&path, metadata.to_json().unwrap()).unwrap();
-        [path, socket]
-    };
-    let files = [recorded(5, elsewhere), recorded(6, here)];
-
-    let output = list(root.path(), local.path(), &[]);
-
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(output.stdout, b"No climon2 sessions running.\n");
-    let exists = files.map(|files| files.map(|file| file.exists()));
-    assert_eq!(exists, [[true, true], [false, false]]);
-}
-
 /// A refusing socket alone proves nothing while the recorded daemon runs.
 #[test]
 fn list_keeps_a_refusing_session_whose_daemon_still_runs() {

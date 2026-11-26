@@ -13,6 +13,7 @@ pub mod logging;
 pub mod native_path;
 pub mod notifier;
 pub mod origin;
+pub mod owner;
 pub mod peer;
 pub mod presentation;
 pub mod private;

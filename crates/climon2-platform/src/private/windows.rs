@@ -65,6 +65,22 @@ pub fn create_new_file(path: &Path) -> io::Result<File> {
 /// Windows has no umask: every new file already has the private descriptor.
 pub use self::create_new_file as create_private_file;
 
+/// An existing file to read, opened as the name itself and only when that is
+/// neither a directory nor a reparse point of any tag, so never through a
+/// link.
+pub fn open_plain_file(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let kind = file.metadata()?.file_attributes()
+        & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT);
+    if kind != 0 {
+        return Err(super::not_plain(path));
+    }
+    Ok(file)
+}
+
 /// Creates the folder with the private descriptor, its ACE inherited by
 /// everything created in it, when missing. Then it must be a directory that
 /// is not a reparse point of any tag, owned by the user's SID and holding
