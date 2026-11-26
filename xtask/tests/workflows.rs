@@ -305,7 +305,7 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
         let lines = job(&quality, name);
         let runs_on = format!("    runs-on: [self-hosted, {os}, X64, climon2-quality]");
         assert!(lines.contains(&runs_on.as_str()), "{name}: {lines:#?}");
-        let switch = format!("    if: contains(vars.CLIMON2_OWN_RUNNERS, '{name}')");
+        let switch = format!("      && contains(vars.CLIMON2_OWN_RUNNERS, '{name}')");
         assert!(lines.contains(&switch.as_str()), "{name}: {lines:#?}");
         assert!(
             lines.iter().any(|line| line.trim_start().starts_with(gate)),
@@ -514,6 +514,87 @@ fn macos_test_jobs_upload_failed_tests_evidence() {
         assert!(
             step.contains(&"path: ${{ runner.temp }}/test-evidence"),
             "{file}: {step:#?}"
+        );
+    }
+}
+
+/// The lines of the job `name`'s folded `if: >-` condition, trimmed and joined.
+fn condition(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .skip_while(|line| !line.starts_with("    if: >-"))
+        .skip(1)
+        .take_while(|line| line.starts_with("      "))
+        .map(|line| line.trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// #442: a push to main looks for a passed run of its tree first, on a
+/// GitHub-hosted runner, so the look-up never queues behind an own-hardware
+/// gate. Only a push to main looks: any other push or a manual dispatch skips
+/// the look-up, which leaves its output empty.
+#[test]
+fn only_a_push_to_main_looks_for_a_passed_run_of_its_tree_on_a_hosted_runner() {
+    let quality = workflow("quality.yml");
+    let prior = job(&quality, "prior");
+    for line in [
+        "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
+        "    runs-on: ubuntu-24.04",
+        "      actions: read",
+        "      run: ${{ steps.find.outputs.run }}",
+        "          GH_TOKEN: ${{ github.token }}",
+        "        run: python3 tools/quality-prior-run.py --repo \"$GITHUB_REPOSITORY\" --tree \"$(git rev-parse \"$GITHUB_SHA^{tree}\")\"",
+    ] {
+        assert!(prior.contains(&line), "{line}: {prior:#?}");
+    }
+    assert!(
+        !prior.iter().any(|line| line.contains("self-hosted")),
+        "{prior:#?}"
+    );
+}
+
+/// #442: each gate waits for the look-up and skips only when it found a run,
+/// which it does only on a push to main. It runs whatever the look-up's own
+/// result, so a failed look-up still runs the gates, as does a branch push,
+/// whose look-up is skipped.
+#[test]
+fn gates_skip_only_when_main_found_a_passed_run_of_its_tree() {
+    let quality = workflow("quality.yml");
+    for name in ["linux", "windows", "macos"] {
+        let lines = job(&quality, name);
+        assert!(
+            lines.contains(&"    needs: [base, prior]"),
+            "{name}: {lines:#?}"
+        );
+        assert_eq!(
+            condition(&lines),
+            format!(
+                "!cancelled() && needs.base.result == 'success' \
+                 && contains(vars.CLIMON2_OWN_RUNNERS, '{name}') \
+                 && needs.prior.outputs.run == ''"
+            ),
+            "{name}"
+        );
+    }
+}
+
+/// #442: the look-up requires every gate job by the name quality.yml gives it.
+#[test]
+fn the_look_up_requires_every_gate_by_its_job_name() {
+    let quality = workflow("quality.yml");
+    let script = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tools/quality-prior-run.py"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    for name in ["linux", "windows", "macos"] {
+        let title = job(&quality, name)[0]
+            .strip_prefix("    name: ")
+            .unwrap_or_else(|| panic!("{name} has no name first"));
+        assert!(
+            script.contains(&format!("    \"{title}\",\n")),
+            "{title} missing from GATES"
         );
     }
 }
