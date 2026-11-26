@@ -165,6 +165,10 @@ jobs:
     timeout-minutes: 120
     env:
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
+      # The gate's tests get 4 threads, as on Linux and Windows. At the
+      # default 16 on this 8-core laptop, which throttles under load, the
+      # 8 MiB flood test's 15 s deadline failed in 4 of 5 gates (#425).
+      RUST_TEST_THREADS: "4"
     steps:
       - uses: actions/checkout@v4
         with:

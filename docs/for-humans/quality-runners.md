@@ -251,3 +251,16 @@ nears 8.4 GB, and 6 of them filled the VM's disk. So every gate builds its
 workers without debug info, which halves that.
 
 Change the values in `quality.yml` to resize either.
+
+## The Mac's test threads
+
+The Mac's gate runs its tests 4 at a time as well
+([#425](https://github.com/jackgeek/climon2/issues/425)). Before that it ran
+16 at a time on the laptop's 8 cores, and the same 8 MiB flood missed its
+15 s deadline in 4 of 5 gates, at 15.3 to 16.4 s. Alone, the flood takes
+about 3 s, or 4 s in the gate's coverage build. It slows as other work takes the CPU, and under load the laptop
+throttles itself to 58% of its speed. With 16 other busy processes running,
+the flood took 11.3 and 11.8 s with 16 test threads, and 8.5 and 8.7 s with
+4, while the whole suite took 13% longer. Which other work slowed the
+failing gates is not known, and no gate has yet shown that the cap is
+enough.
