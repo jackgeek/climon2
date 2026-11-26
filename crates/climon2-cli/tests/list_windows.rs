@@ -123,7 +123,7 @@ fn list_keeps_a_session_created_on_another_machine() {
     use climon2_core::metadata::SessionOrigin;
     let (root, local) = (tempfile::tempdir().unwrap(), local_app_data());
     let home = home(root.path());
-    let here = climon2_platform::origin::current().unwrap();
+    let here = climon2_platform::origin::current(&home).unwrap();
     let elsewhere = SessionOrigin {
         machine_id: Some("6d1f0c2a-5b3e-4f7a-9c8d-1e2f3a4b5c6d".parse().unwrap()),
         pid_namespace: None,

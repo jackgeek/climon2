@@ -600,7 +600,7 @@ fn issue133_a_daemon_records_its_origin() {
     let bytes = fs::read(&session.metadata).unwrap();
     let metadata =
         climon2_core::metadata::SessionMetadata::from_json(&session.metadata, &bytes).unwrap();
-    let here = climon2_platform::origin::current().unwrap();
+    let here = climon2_platform::origin::current(session.directory.path()).unwrap();
     assert_eq!(metadata.daemon_origin, Some(here));
     session.finish();
 }

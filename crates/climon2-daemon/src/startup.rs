@@ -156,7 +156,7 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
         daemon_pid: std::process::id(),
         daemon_start_time,
         daemon_linux_identity,
-        daemon_origin: daemon_origin(),
+        daemon_origin: daemon_origin(&options.home),
         command: display.command,
         args: display.args,
         cwd: display.cwd,
@@ -175,8 +175,8 @@ fn daemon_identity() -> io::Result<(u64, Option<climon2_core::metadata::LinuxPro
 
 /// Optional (#133): without it, readers judge the record as before, so a
 /// failed read is only a warning.
-fn daemon_origin() -> Option<climon2_core::metadata::SessionOrigin> {
-    climon2_platform::origin::current()
+fn daemon_origin(home: &std::path::Path) -> Option<climon2_core::metadata::SessionOrigin> {
+    climon2_platform::origin::current(home)
         .inspect_err(|error| {
             tracing::warn!(
                 %error,

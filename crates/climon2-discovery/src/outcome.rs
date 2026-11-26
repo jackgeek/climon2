@@ -164,7 +164,7 @@ fn connection_failed(metadata: SessionMetadata, error: io::Error, removal: Remov
 /// Only a proven dead daemon identity makes such a session stale, and only a stale session's
 /// files are cleaned up, as the pass's removal says.
 fn prove_stale_and_clean_up(metadata: SessionMetadata, removal: Removal) -> Outcome {
-    match daemon(&metadata) {
+    match daemon(&metadata, removal.home) {
         Ok(Daemon::Gone) => {
             let cleanup = removal.clean_up(&metadata);
             Outcome::Stale(metadata, cleanup)
@@ -186,8 +186,8 @@ enum Daemon {
 /// A daemon's identity is checked only where it was created: a record that names another
 /// machine or PID namespace is never proven gone here. A record without an origin, from an
 /// older writer, is checked here as it always was.
-fn daemon(metadata: &SessionMetadata) -> io::Result<Daemon> {
-    if created_elsewhere(metadata)? {
+fn daemon(metadata: &SessionMetadata, home: &HomeLayout) -> io::Result<Daemon> {
+    if created_elsewhere(metadata, home)? {
         return Ok(Daemon::Elsewhere);
     }
     Ok(if process::is_same_daemon(metadata)? {
@@ -198,9 +198,9 @@ fn daemon(metadata: &SessionMetadata) -> io::Result<Daemon> {
 }
 
 /// Compared with this reader's own origin, which `origin::current` reads once per process.
-fn created_elsewhere(metadata: &SessionMetadata) -> io::Result<bool> {
+fn created_elsewhere(metadata: &SessionMetadata, home: &HomeLayout) -> io::Result<bool> {
     match &metadata.daemon_origin {
-        Some(recorded) => Ok(!origin::current()?.is_same_place(recorded)),
+        Some(recorded) => Ok(!origin::current(home.root())?.is_same_place(recorded)),
         None => Ok(false),
     }
 }

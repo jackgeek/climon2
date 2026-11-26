@@ -259,7 +259,8 @@ fn linux_origin_is_the_machine_id_and_the_pid_namespace() {
         .ok()
         .map(|id| id.trim().to_owned())
         .filter(|id| !id.is_empty());
-    let origin = climon2_platform::origin::current().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let origin = climon2_platform::origin::current(home.path()).unwrap();
     assert_eq!(origin.pid_namespace, Some(inode));
     assert_eq!(origin.machine_id.map(String::from), machine);
 }
@@ -281,7 +282,8 @@ fn macos_origin_is_the_hardware_uuid() {
         .trim_end_matches('"')
         .replace('-', "")
         .to_lowercase();
-    let origin = climon2_platform::origin::current().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let origin = climon2_platform::origin::current(home.path()).unwrap();
     assert_eq!(origin.machine_id.map(String::from), Some(uuid));
     assert_eq!(origin.pid_namespace, None);
 }

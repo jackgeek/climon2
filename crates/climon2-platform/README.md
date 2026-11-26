@@ -96,16 +96,21 @@ dispatch or shell-specific logic.
   `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
   conversion is clock-sensitive and is not stale-cleanup authority.
   Missing stable identity makes Linux cleanup fail safely, retaining metadata.
-- `origin::current() -> io::Result<SessionOrigin>`, in its own module with a
-  native file per OS (`src/origin/{linux,macos,windows}.rs`), is where this
-  process runs,
-  which a daemon records as `daemon_origin` (#133, ADR 0005): on Linux the
-  machine ID from `/etc/machine-id` (absent when there is none) and the PID
-  namespace as the inode of `/proc/self/ns/pid`; on macOS the hardware UUID
-  from `gethostuuid`, as 32 lowercase hex digits. Stale cleanup checks a
-  daemon's identity only when the record's origin is the reader's place
-  (`SessionOrigin::is_same_place`). The first origin read is kept for the life
-  of the process; a failed read is not.
+- `origin::current(home) -> io::Result<SessionOrigin>`, in its own module
+  with a native file per OS (`src/origin/{linux,macos,windows}.rs`), is where
+  this process runs, which a daemon records as `daemon_origin` (#133, ADR
+  0005): on Linux the machine ID from `/etc/machine-id` (absent when there is
+  none) and the PID namespace as the inode of `/proc/self/ns/pid`; on macOS
+  the hardware UUID from `gethostuuid`, as 32 lowercase hex digits. When
+  Linux's machine ID is systemd's transient one (the last mount at
+  `/etc/machine-id` is `/machine-id` of a tmpfs, systemd's `/run/machine-id`),
+  climon2's own ID from `<home>/machines/<hostname>.id` is used instead,
+  generated once (owner-only, linked into place whole, no symlink followed);
+  an unusable one leaves no machine ID and warns `own machine ID
+  unavailable`. `origin::{Sources, current_at}` (Linux) read the same from
+  injected paths. Stale cleanup checks a daemon's identity only when the
+  record's origin is the reader's place (`SessionOrigin::is_same_place`).
+  What the system says is read once per process; a failed read is not kept.
 - `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
@@ -548,6 +553,10 @@ and on CI it fails without the account.
 `issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`,
 `linux_origin_is_the_machine_id_and_the_pid_namespace` (Linux) and
 `macos_origin_is_the_hardware_uuid` (macOS, checked against `ioreg`).
+`tests/origin.rs` (Linux, #133): `issue133_only_systemds_run_machine_id_mount_is_transient`,
+`issue133_own_machine_id_is_generated_once_per_host_name` and
+`issue133_an_unusable_own_machine_id_leaves_no_machine_id`, through injected
+sources and homes.
 
 `tests/hangup.rs`: `issue19_closing_real_controlling_pty_delivers_hangup`, in
 its own test binary because a child another test forks would inherit the PTY

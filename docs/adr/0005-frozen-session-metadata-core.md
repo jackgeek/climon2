@@ -79,8 +79,8 @@ absent:
 ```
 
 - `machine_id` is the machine's stable identity: on Linux the contents of
-  systemd's `/etc/machine-id`, absent on a machine without one (as in many
-  container images); on macOS the hardware UUID (`IOPlatformUUID`, from
+  systemd's `/etc/machine-id` (or climon2's own when that is transient, below),
+  absent on a machine without one (as in many container images); on macOS the hardware UUID (`IOPlatformUUID`, from
   `gethostuuid`) as 32 lowercase hex digits; on Windows the `MachineGuid`
   value under `HKLM\SOFTWARE\Microsoft\Cryptography`. Readers accept any
   non-empty string of ASCII letters, digits and hyphens and only compare it.
@@ -89,8 +89,32 @@ absent:
 - A malformed origin makes the record unreadable, with the same
   warning-and-retention behavior as malformed frozen fields.
 
-A reader that finds a missing or refusing socket compares the record's origin
-with its own, read the same way, before it looks at the daemon's identity:
+**Transient Linux machine IDs** (decided 2026-11-26). On a live or
+read-only-root system systemd generates a new machine ID at each boot and
+mounts it from `/run/machine-id` over `/etc/machine-id`. Such an ID would make
+every record from before a reboot look like another machine's, kept forever,
+and persistent sessions need an origin that survives reboots. So when the last
+mount at `/etc/machine-id` in `/proc/self/mountinfo` has the root
+`/machine-id` on a `tmpfs` (systemd's `/run/machine-id`), climon2 uses its own
+machine ID instead:
+
+- It is kept in the climon2 home beside `config.jsonc`, keyed by host name:
+  `<climon2 home>/machines/<hostname>.id`, 32 lowercase hex digits and a
+  newline. Machines that share a home still differ as long as their host
+  names differ.
+- The first reader generates it from 128 random bits, writes it to an
+  owner-only file of its own and hard-links that into place, so it appears
+  whole and only once; when another process got there first, that one is
+  used. The `machines` folder is a private folder (ADR 0003). Nothing follows
+  a symlink there.
+- A kept ID that is not exactly that, a host name that is not one safe file
+  name (ASCII letters, digits, `-`, `.` and `_`, not starting with `.`), or a
+  write that fails leaves the origin without a machine ID, with a warning; a
+  bad file is never replaced.
+- A container's bind mount of its host's real `/etc/machine-id` has another
+  root or file system, so it is not transient. A missing `/etc/machine-id` is
+  not transient either: it stays "no machine ID", so the `--pid=host` rule
+  below keeps working. Unreadable mounts are taken as none.
 
 Two origins are the **same place** when their `pid_namespace` members are
 equal (both absent on macOS and Windows) and, when both record a
@@ -99,6 +123,9 @@ does not make them different places (decided 2026-11-26): a container run
 with `--pid=host` shares its host's PID namespace and sees the host's
 processes, so it can check the daemons of its host, and its host can check
 its daemons, even when the container image has no `/etc/machine-id`.
+
+A reader that finds a missing or refusing socket compares the record's origin
+with its own, read the same way, before it looks at the daemon's identity:
 
 - **Another place:** the session is uncertain, created elsewhere, and is never
   deleted, whatever its PID and identity look like here.
@@ -118,8 +145,9 @@ another Windows machine, and a Windows reader would otherwise check a PID
 from another machine. The PID namespace inode alone was rejected because every
 host's initial namespace has the same inode, so it cannot tell machines apart.
 
-Known limits: two machines without a machine ID, or two clones with the same
-one, look like the same machine and behave as before. So does a machine
+Known limits: two machines without a machine ID, two clones with the same
+one, or two machines with transient machine IDs and the same host name sharing
+a home, look like the same machine and behave as before. So does a machine
 without a machine ID in its initial PID namespace, next to any other machine's
 initial namespace: every initial namespace has the same inode. A container's PID
 namespace ends with the container, and one created later gets another, so

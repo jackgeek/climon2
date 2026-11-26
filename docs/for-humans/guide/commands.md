@@ -239,6 +239,11 @@ see the host's processes. If the container has no machine ID
 (`/etc/machine-id`), it counts as the host, so either one can delete the
 other's ended sessions.
 
+Some Linux systems, such as live systems, get a new machine ID at every boot.
+There climon2 makes its own machine ID once and keeps it in the climon2 home,
+in the `machines` folder, in a file named after the computer's host name.
+Computers that share a climon2 home need different host names.
+
 A container's PID namespace ends with the container. Data left by a session in
 a container that no longer exists is kept until you delete its file from the
 `sessions` folder in the climon2 home. Sessions started by climon2 versions

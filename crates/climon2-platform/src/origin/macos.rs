@@ -1,6 +1,9 @@
 use climon2_core::metadata::SessionOrigin;
 use std::io;
 
+/// What the system says about where this process runs.
+pub type Here = SessionOrigin;
+
 /// How long `gethostuuid` may wait for the hardware UUID.
 const HOST_UUID_WAIT: libc::timespec = libc::timespec {
     tv_sec: 5,
@@ -14,7 +17,7 @@ unsafe extern "C" {
 
 /// The machine's hardware UUID, the `IOPlatformUUID` that `ioreg` shows, as 32
 /// lowercase hex digits. macOS has no PID namespaces.
-pub fn current() -> io::Result<SessionOrigin> {
+pub fn here() -> io::Result<SessionOrigin> {
     let mut uuid = [0u8; 16];
     // SAFETY: gethostuuid writes exactly 16 bytes and only reads the timeout.
     if unsafe { gethostuuid(uuid.as_mut_ptr(), &HOST_UUID_WAIT) } != 0 {
@@ -25,4 +28,10 @@ pub fn current() -> io::Result<SessionOrigin> {
         machine_id: Some(hex.parse().map_err(io::Error::other)?),
         pid_namespace: None,
     })
+}
+
+/// The machine ID the system keeps is stable, so the origin is what the system
+/// says, wherever the climon2 home is.
+pub fn origin(here: &Here, _home: &std::path::Path) -> SessionOrigin {
+    here.clone()
 }

@@ -8,6 +8,9 @@ use windows_sys::{
     w,
 };
 
+/// What the system says about where this process runs.
+pub type Here = SessionOrigin;
+
 /// Room for `MachineGuid`: a 36-character GUID and its terminating NUL.
 const MACHINE_GUID_UNITS: usize = 64;
 /// The same room in bytes, as `RegGetValueW` measures it.
@@ -17,7 +20,7 @@ const MACHINE_GUID_BYTES: u32 = (MACHINE_GUID_UNITS * size_of::<u16>()) as u32;
 /// `HKLM\SOFTWARE\Microsoft\Cryptography` across reboots. A climon2 home on a
 /// network share can be read from another machine, whose PIDs say nothing
 /// about this one's daemons. Windows has no PID namespaces.
-pub fn current() -> io::Result<SessionOrigin> {
+pub fn here() -> io::Result<SessionOrigin> {
     let machine = machine_guid()?.parse().map_err(io::Error::other)?;
     Ok(SessionOrigin {
         machine_id: Some(machine),
@@ -47,4 +50,10 @@ fn machine_guid() -> io::Result<String> {
     // The value is NUL-terminated and the rest of `units` stays zero.
     let text = String::from_utf16_lossy(&units);
     Ok(text.trim_end_matches('\0').to_owned())
+}
+
+/// The machine ID the system keeps is stable, so the origin is what the system
+/// says, wherever the climon2 home is.
+pub fn origin(here: &Here, _home: &std::path::Path) -> SessionOrigin {
+    here.clone()
 }
