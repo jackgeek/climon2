@@ -1880,7 +1880,10 @@ mod tests {
         };
         let geometry = climon2_vt::Geometry::for_host(10, 3).unwrap();
         terminal.present(&mut parser, Presentation::Granted(held, geometry));
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(
+            &mut parser,
+            Presentation::Revoked(terminal::Revocation::Takeover),
+        );
         assert_eq!(says(Some(&terminal)), Placeholder::TakenOver);
         terminal.present(&mut parser, Presentation::Ended);
         assert_eq!(says(Some(&terminal)), Placeholder::NotControlled);

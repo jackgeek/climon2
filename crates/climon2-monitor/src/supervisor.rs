@@ -1972,7 +1972,7 @@ mod tests {
     use super::{client::OPEN_ID, *};
     use crate::registry::{Final, Outcome, Recovery, Report};
     use crate::shutdown::{Leave, Terminal as Departed};
-    use crate::terminal::{Authority, Request as Asked};
+    use crate::terminal::{Authority, Request as Asked, Revocation};
     use climon2_core::protocol::TerminalSize;
     use climon2_core::{
         native::{
@@ -2609,12 +2609,15 @@ mod tests {
         known.command_result.kind = native::SIGNAL;
         known.command_result.value = 15;
         ended.data.r#final = known;
-        let mut revoked = record(native::REVOKED);
-        revoked.data.revoked = native::Revoked {
-            period: 2,
-            restoration_id: 4,
-            reason: native::SESSION_ENDING,
-            reserved: 0,
+        let revoked = |reason| {
+            let mut revoked = record(native::REVOKED);
+            revoked.data.revoked = native::Revoked {
+                period: 2,
+                restoration_id: 4,
+                reason,
+                reserved: 0,
+            };
+            revoked
         };
         vec![
             metadata,
@@ -2624,7 +2627,8 @@ mod tests {
             complete,
             reshaped(70_000),
             reshaped(0),
-            revoked,
+            revoked(native::TAKEOVER),
+            revoked(native::SESSION_ENDING),
             ended,
             record(native::STATUS),
         ]
@@ -3371,7 +3375,8 @@ mod tests {
             presented(Presentation::Display(DISPLAYED.to_vec())),
             presented(Presentation::Complete),
             presented(Presentation::Geometry(geometry(500, 5))),
-            presented(Presentation::Revoked),
+            presented(Presentation::Revoked(Revocation::Takeover)),
+            presented(Presentation::Revoked(Revocation::Ending)),
             ended(Outcome::Signal(15)),
         ];
         for event in expected {
