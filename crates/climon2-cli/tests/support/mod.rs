@@ -8,16 +8,14 @@
 //! installing with `install.ps1` is the Windows Archive job's (#329).
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Terminal};
+use climon2_test_term::{ConPty, Terminal, end_process, local_app_data};
 use portable_pty::CommandBuilder;
 use std::{
     env, fs,
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 
 /// Every step waits this long at most; a failed hand-off can spend the
 /// five-second start-up and leave budgets.
@@ -125,13 +123,14 @@ fn place(from: &Path, to: &Path) {
     }
 }
 
-/// A climon2 home and runtime root of its own. Dropping it ends every daemon
-/// its sessions name, so a failed test leaves nothing running.
-pub struct Home(pub tempfile::TempDir);
+/// A climon2 home of its own, and a runtime root short enough for a socket
+/// path. Dropping it ends every daemon its sessions name, so a failed test
+/// leaves nothing running.
+pub struct Home(pub tempfile::TempDir, climon2_test_term::LocalAppData);
 
 impl Home {
     pub fn new() -> Self {
-        Self(tempfile::tempdir().unwrap())
+        Self(tempfile::tempdir().unwrap(), local_app_data())
     }
 
     pub fn home(&self) -> PathBuf {
@@ -139,7 +138,7 @@ impl Home {
     }
 
     pub fn local(&self) -> PathBuf {
-        self.0.path().join("local")
+        self.1.path().to_owned()
     }
 
     /// Every log the home holds, for a failure message.
@@ -185,19 +184,9 @@ impl Drop for Home {
     fn drop(&mut self) {
         for session in self.sessions() {
             if process::is_same_daemon(&session).unwrap_or(false) {
-                terminate(session.daemon_pid);
+                end_process(session.daemon_pid);
             }
         }
-    }
-}
-
-pub fn terminate(pid: u32) {
-    // Opening by PID has no preconditions.
-    let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if !process.is_null() {
-        // A new handle, open with PROCESS_TERMINATE, closed here.
-        let process = unsafe { OwnedHandle::from_raw_handle(process) };
-        unsafe { TerminateProcess(process.as_raw_handle(), 1) };
     }
 }
 

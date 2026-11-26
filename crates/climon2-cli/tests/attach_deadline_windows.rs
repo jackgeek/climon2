@@ -13,7 +13,7 @@
 #![cfg(windows)]
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Terminal, rerun_outside};
+use climon2_test_term::{ConPty, Terminal, end_process, local_app_data, rerun_outside};
 use portable_pty::CommandBuilder;
 use std::{
     fs,
@@ -47,13 +47,13 @@ const WRITES_ITS_PID: &[&str] = &[
 
 /// A version folder of this build's CLI (with its test hooks), daemon,
 /// client and library and the pinned ConPTY, a home and a working directory,
-/// all outside the crate folder. Dropping it ends every daemon its sessions
-/// name.
-struct Install(tempfile::TempDir);
+/// all outside the crate folder, and a runtime root short enough for a
+/// socket path. Dropping it ends every daemon its sessions name.
+struct Install(tempfile::TempDir, climon2_test_term::LocalAppData);
 
 impl Install {
     fn new() -> Self {
-        let install = Self(tempfile::tempdir().unwrap());
+        let install = Self(tempfile::tempdir().unwrap(), local_app_data());
         fs::create_dir_all(install.version()).unwrap();
         fs::create_dir_all(install.work()).unwrap();
         let cli = PathBuf::from(env!("CARGO_BIN_EXE_climon2-cli"));
@@ -135,7 +135,7 @@ impl Drop for Install {
     fn drop(&mut self) {
         for session in self.sessions() {
             if process::is_same_daemon(&session).unwrap_or(false) {
-                drop(Held::open(session.daemon_pid));
+                end_process(session.daemon_pid);
             }
         }
     }
@@ -214,7 +214,7 @@ fn an_ordinary_session_nobody_attaches_to_within_five_seconds_ends() {
     command.args(["exec", "--"]);
     command.args(WRITES_ITS_PID);
     command.env("CLIMON2_HOME", install.home());
-    command.env("LOCALAPPDATA", install.0.path().join("local"));
+    command.env("LOCALAPPDATA", install.1.path());
     command.env("CLIMON2_CLI_HOLD", &hold);
     command.cwd(install.work());
     let mut execing = Terminal::spawn(command, 24, 100).unwrap();
