@@ -162,7 +162,11 @@ checks (procfs on Linux, `libproc` on macOS) do not depend on a sample catching
 short-lived parents. Process identity, sampled ancestry (macOS kernel
 process/image ids), session membership and environment markers remain
 additional ownership evidence. Commands that explicitly close inherited
-descriptors keep only that additional evidence.
+descriptors keep only that additional evidence. The daemon is one: it keeps
+only stdio and the pipe on which it tells its starter it is ready. On macOS a
+descriptor gets close-on-exec only after it is made, so without this a
+descriptor that another thread of the starter was making could live as long
+as the daemon ([#158](https://github.com/jackgeek/climon2/issues/158)).
 
 **Current (#121):** `climon2-measure` is test tooling, never a release
 payload. `cargo xtask measure` runs it on an exact candidate archive: it
