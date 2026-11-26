@@ -77,13 +77,25 @@ impl Authority {
     }
 }
 
+/// Why the daemon revoked this monitor's control.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Revocation {
+    /// Another client took control.
+    Takeover,
+    /// The session is ending: its command's final result follows.
+    Ending,
+    /// A reason this monitor does not know: it says nothing of who
+    /// controls the session.
+    Unknown,
+}
+
 /// What the session's client reported about control and display. The
 /// client library checks that every record names the authority the role
 /// holds, so only grants and beginnings carry theirs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Presentation {
     Granted(Authority, Geometry),
-    Revoked,
+    Revoked(Revocation),
     Begin(Authority, Geometry),
     Display(Vec<u8>),
     Complete,
@@ -255,6 +267,9 @@ pub(crate) struct Terminal {
     /// This connection's client was dropped for a refusal: what it still
     /// delivers before its end is refused too, and drops nothing more.
     dropped: bool,
+    /// Another client took the control this monitor last held on this
+    /// connection: it was revoked, and not granted again since (#400).
+    taken: bool,
 }
 
 impl Terminal {
@@ -275,6 +290,7 @@ impl Terminal {
             cached: false,
             rejection: None,
             dropped: false,
+            taken: false,
         }
     }
 
@@ -321,6 +337,7 @@ impl Terminal {
     }
 
     fn granted(&mut self, authority: Authority, effective: Geometry) {
+        self.taken = false;
         self.held = Some(Held {
             authority,
             effective,
@@ -462,7 +479,9 @@ impl Terminal {
     /// first final result freezes the live model's view, if there is one.
     /// The end of the connection also ends its errors: work refused as it
     /// closed is the loss's symptom, and the row's diagnostic says why
-    /// (#116, #119).
+    /// (#116, #119). Only a takeover's revocation says another client took
+    /// control: one for the session's end does not, and a new connection
+    /// knows nothing of who controls the session (#400).
     fn ended(&mut self, presentation: &Presentation) {
         if *presentation == Presentation::Final {
             let live = self.held.is_some_and(|held| held.live);
@@ -470,6 +489,7 @@ impl Terminal {
         } else {
             self.held = None;
             self.acquiring = false;
+            self.taken = *presentation == Presentation::Revoked(Revocation::Takeover);
             let open = *presentation != Presentation::Ended;
             self.focusable &= open;
             self.viewable &= open;
@@ -654,6 +674,12 @@ impl Terminal {
             None if self.acquiring => Control::Acquiring,
             None => Control::NotControlling,
         }
+    }
+
+    /// Whether another client took control from this monitor (#400): only
+    /// then does its placeholder say the session is viewed elsewhere.
+    pub(crate) fn taken_over(&self) -> bool {
+        self.taken
     }
 
     pub(crate) fn error(&self) -> Option<&str> {
@@ -906,7 +932,10 @@ mod tests {
     #[test]
     fn a_cache_from_an_earlier_period_is_never_shown() {
         let mut parser = Parser::new();
-        for end in [Presentation::Revoked, Presentation::Ended] {
+        for end in [
+            Presentation::Revoked(Revocation::Takeover),
+            Presentation::Ended,
+        ] {
             let mut terminal = restored(b"cached");
             assert!(terminal.view().is_some());
             terminal.present(&mut parser, end);
@@ -926,6 +955,49 @@ mod tests {
             );
             assert_eq!(screen(&terminal).unwrap(), ["live", "", ""]);
         }
+    }
+
+    /// #400: only a takeover's revocation says another client took control;
+    /// a session never controlled, one whose connection ended, one revoked
+    /// because it is ending or for an unknown reason, one granted again on
+    /// request, and one handed back when the client that took it left was
+    /// not taken over, and the command's end changes nothing.
+    #[test]
+    fn only_a_takeover_takes_control_over() {
+        let mut parser = Parser::new();
+        let mut terminal = Terminal::new(LIMITS);
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Ended);
+        assert!(!terminal.taken_over());
+        for why in [Revocation::Ending, Revocation::Unknown] {
+            let mut revoked = restored(b"held");
+            revoked.present(&mut parser, Presentation::Revoked(why));
+            assert_eq!(revoked.control(), Control::NotControlling, "{why:?}");
+            assert!(!revoked.taken_over(), "{why:?}");
+        }
+        let mut terminal = restored(b"held");
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
+        assert!(terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Final);
+        assert!(terminal.taken_over());
+        let mut terminal = restored(b"held");
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
+        terminal.acquire();
+        assert!(terminal.taken_over());
+        let again = authority(5, 6);
+        terminal.present(&mut parser, Presentation::Granted(again, geometry(10, 3)));
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
+        assert!(terminal.taken_over());
+        // The daemon hands control back, unasked, once the client that took
+        // it leaves and this monitor controlled most recently.
+        let handed = authority(6, 7);
+        terminal.present(&mut parser, Presentation::Granted(handed, geometry(10, 3)));
+        assert!(!terminal.taken_over());
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
+        terminal.present(&mut parser, Presentation::Ended);
+        assert!(!terminal.taken_over());
     }
 
     /// REC-02 (pure supplement, #116): a terminal keeps its last applied
@@ -973,7 +1045,7 @@ mod tests {
         terminal.present(&mut parser, Presentation::Display(b"next".to_vec()));
         assert_eq!(retained(&terminal).as_deref(), Some("cache more"));
         terminal.present(&mut parser, Presentation::Complete);
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert_eq!(retained(&terminal).as_deref(), Some("next"));
     }
 
@@ -1003,7 +1075,7 @@ mod tests {
             Presentation::Begin(authority(2, 4), geometry(10, 3)),
         );
         assert_eq!(terminal.present(&mut parser, Presentation::Complete), None);
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         terminal.present(&mut parser, Presentation::Final);
         assert_eq!(screen(&terminal).unwrap(), ["done", "", ""]);
         assert_eq!(terminal.control(), Control::Ended);
@@ -1028,7 +1100,7 @@ mod tests {
     fn a_command_final_without_a_live_model_shows_no_view() {
         let mut parser = Parser::new();
         let mut revoked = restored(b"cached");
-        revoked.present(&mut parser, Presentation::Revoked);
+        revoked.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         revoked.present(&mut parser, Presentation::Final);
         assert!(revoked.view().is_none());
         assert_eq!(revoked.control(), Control::Ended);
@@ -1044,14 +1116,14 @@ mod tests {
         assert!(first.view().is_none());
 
         let mut again = restored(b"cached");
-        again.present(&mut parser, Presentation::Revoked);
+        again.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         again.acquire();
         let next = authority(4, 5);
         again.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
         again.present(&mut parser, Presentation::Begin(next, geometry(10, 3)));
         again.present(&mut parser, Presentation::Display(b"partial".to_vec()));
         again.present(&mut parser, Presentation::Final);
-        again.present(&mut parser, Presentation::Revoked);
+        again.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert!(again.view().is_none());
     }
 
@@ -1131,7 +1203,7 @@ mod tests {
         let second = authority(4, 5);
         terminal.present(&mut parser, Presentation::Granted(second, geometry(10, 3)));
         assert_eq!(terminal.resize(wider), Some(Request::Resize(second, wider)));
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert_eq!(terminal.resize(desire), None);
     }
 
@@ -1185,7 +1257,7 @@ mod tests {
             Presentation::Answered(Request::Viewing(authority(2, 3), true), Err(closed.into())),
         );
         assert_eq!(terminal.error(), Some(closed));
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert_eq!(terminal.error(), Some(closed));
         terminal.present(&mut parser, Presentation::Ended);
         assert_eq!(terminal.error(), None);
@@ -1219,7 +1291,7 @@ mod tests {
         );
         assert_eq!(terminal.error(), Some("invalid"));
         assert_eq!(terminal.resize(desire), None);
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         terminal.present(
             &mut parser,
             Presentation::Answered(Request::Resize(new, desire), Err("late".into())),
@@ -1402,7 +1474,7 @@ mod tests {
         assert_eq!(terminal.viewing(false), None);
         let mut ended = restored(b"x");
         ended.present(&mut parser, Presentation::Viewable);
-        ended.present(&mut parser, Presentation::Revoked);
+        ended.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert_eq!(ended.viewing(true), None);
         ended.present(&mut parser, Presentation::Granted(next, geometry(10, 3)));
         assert_eq!(ended.viewing(true), Some(Request::Viewing(next, true)));
@@ -1431,7 +1503,7 @@ mod tests {
         assert!(!terminal.take_unacknowledged());
         terminal.present(&mut parser, answered(authority(1, 9), Err("stale".into())));
         assert!(!terminal.take_unacknowledged());
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         terminal.present(&mut parser, answered(newer, Err("stale".into())));
         assert!(!terminal.take_unacknowledged());
     }
@@ -1464,7 +1536,7 @@ mod tests {
         assert_eq!(terminal.paste_end(), end(newer));
         assert_eq!(terminal.paste_end(), None);
         terminal.cut_paste(newer);
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert_eq!(terminal.paste_end(), None);
         ready_under(&mut terminal, &mut parser, authority(3, 1));
         assert_eq!(terminal.paste_end(), None);
@@ -1555,7 +1627,7 @@ mod tests {
             Presentation::Granted(authority(3, 1), geometry(10, 3)),
         );
         assert!(!terminal.viewing_reported(), "another period's");
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert!(!terminal.viewing_reported(), "no control");
     }
 
@@ -1575,7 +1647,7 @@ mod tests {
         terminal.present(&mut parser, answered(Request::Ready(held), Ok(())));
         assert_eq!(terminal.focus(true), Some(Request::Focus(held, true)));
         assert_eq!(terminal.viewing(true), Some(Request::Viewing(held, true)));
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         let again = authority(3, 1);
         ready_under(&mut terminal, &mut parser, again);
         assert_eq!(terminal.focus(true), None);
@@ -1603,7 +1675,7 @@ mod tests {
         let mut parser = Parser::new();
         let mut terminal = Terminal::new(LIMITS);
         terminal.present(&mut parser, Presentation::Focusable);
-        terminal.present(&mut parser, Presentation::Revoked);
+        terminal.present(&mut parser, Presentation::Revoked(Revocation::Takeover));
         assert_eq!(terminal.focus(true), None);
         let again = authority(3, 1);
         ready_under(&mut terminal, &mut parser, again);
