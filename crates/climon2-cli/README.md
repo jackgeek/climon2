@@ -32,8 +32,10 @@ the daemon it started (`daemon::stop`), as Unix stops it with signals.
 `src/client.rs` holds what `attach` and `kill` share: selecting one live
 session and the session version's client command.
 `tests/list_windows.rs` proves `list` with no sessions, the reclaim of a
-stale session whose daemon has exited, the sessions it keeps, and a live
-session listed to the width of a pinned-ConPTY console.
+stale session whose daemon has exited, the sessions it keeps (among them one
+recorded on another machine, #133), and a live session listed to the width of
+a pinned-ConPTY console. In `tests/attach_deadline_windows.rs`, the real
+session's metadata records this machine as its origin.
 `tests/exec_windows.rs` runs a version folder of the CLI, daemon and pinned
 ConPTY outside cargo's job (which refuses breakaway): a headless session is
 listed as detached with its daemon in no job and ends with its command,

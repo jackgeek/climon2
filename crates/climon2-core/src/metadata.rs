@@ -51,8 +51,7 @@ impl LinuxProcessIdentity {
 
 /// Where a session daemon was created (#133, ADR 0005): its machine and, on
 /// Linux, its PID namespace. Its PID and process identity mean something only
-/// there, so a reader anywhere else can never prove it gone. Two origins are
-/// the same place only when they are equal.
+/// there, so a reader anywhere else can never prove it gone.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionOrigin {
     /// Absent where the machine has no identity to read, as in many container
@@ -62,6 +61,20 @@ pub struct SessionOrigin {
     /// The inode of the daemon's `/proc/self/ns/pid`; Linux only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid_namespace: Option<u64>,
+}
+
+impl SessionOrigin {
+    /// Whether two origins are the same place (ADR 0005): the same PID
+    /// namespace, and the same machine ID when both record one. A machine
+    /// without an ID, such as a container run with `--pid=host`, is told
+    /// apart by its namespace alone.
+    pub fn is_same_place(&self, other: &Self) -> bool {
+        let machines = match (&self.machine_id, &other.machine_id) {
+            (Some(machine), Some(other)) => machine == other,
+            _ => true,
+        };
+        machines && self.pid_namespace == other.pid_namespace
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -103,7 +103,9 @@ dispatch or shell-specific logic.
   machine ID from `/etc/machine-id` (absent when there is none) and the PID
   namespace as the inode of `/proc/self/ns/pid`; on macOS the hardware UUID
   from `gethostuuid`, as 32 lowercase hex digits. Stale cleanup checks a
-  daemon's identity only when the record's origin equals the reader's.
+  daemon's identity only when the record's origin is the reader's place
+  (`SessionOrigin::is_same_place`). The first origin read is kept for the life
+  of the process; a failed read is not.
 - `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.

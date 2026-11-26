@@ -197,10 +197,10 @@ fn daemon(metadata: &SessionMetadata) -> io::Result<Daemon> {
     })
 }
 
-/// Two origins are the same place only when they are equal (ADR 0005).
+/// Compared with this reader's own origin, which `origin::current` reads once per process.
 fn created_elsewhere(metadata: &SessionMetadata) -> io::Result<bool> {
     match &metadata.daemon_origin {
-        Some(recorded) => Ok(origin::current()? != *recorded),
+        Some(recorded) => Ok(!origin::current()?.is_same_place(recorded)),
         None => Ok(false),
     }
 }

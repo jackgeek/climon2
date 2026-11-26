@@ -92,10 +92,17 @@ absent:
 A reader that finds a missing or refusing socket compares the record's origin
 with its own, read the same way, before it looks at the daemon's identity:
 
-- **Another origin** (any difference in either member, including one present
-  on one side only): the session is uncertain, created elsewhere, and is never
+Two origins are the **same place** when their `pid_namespace` members are
+equal (both absent on macOS and Windows) and, when both record a
+`machine_id`, so are their machine IDs. A machine ID present on one side only
+does not make them different places (decided 2026-11-26): a container run
+with `--pid=host` shares its host's PID namespace and sees the host's
+processes, so it can check the daemons of its host, and its host can check
+its daemons, even when the container image has no `/etc/machine-id`.
+
+- **Another place:** the session is uncertain, created elsewhere, and is never
   deleted, whatever its PID and identity look like here.
-- **The same origin:** the identity check above decides, as before. A machine
+- **The same place:** the identity check above decides, as before. A machine
   ID survives reboots, and a host's initial PID namespace keeps its inode
   across them, so a record from this machine before a reboot is still proven
   stale by its boot ID (Linux) or start time (macOS, Windows).
@@ -112,7 +119,9 @@ from another machine. The PID namespace inode alone was rejected because every
 host's initial namespace has the same inode, so it cannot tell machines apart.
 
 Known limits: two machines without a machine ID, or two clones with the same
-one, look like the same machine and behave as before. A container's PID
+one, look like the same machine and behave as before. So does a machine
+without a machine ID in its initial PID namespace, next to any other machine's
+initial namespace: every initial namespace has the same inode. A container's PID
 namespace ends with the container, and one created later gets another, so
 metadata left by a container that has gone is kept until someone deletes it.
 Nothing proves such a namespace gone.

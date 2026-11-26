@@ -736,12 +736,14 @@ fn linux_daemon_identity_alone_proves_a_session_stale() {
 /// session recorded on another machine, or in another PID namespace of this one, is uncertain
 /// and kept even when cleanup is requested. One recorded here whose daemon was lost to a reboot
 /// (Linux: another boot ID alone; macOS: another start time) is stale and removed, as is one
-/// from an older writer that recorded no origin.
+/// from an older writer that recorded no origin, and one from a machine without a machine ID
+/// in this PID namespace (a container run with `--pid=host`).
 #[test]
 fn only_a_daemon_created_here_can_be_proven_gone() {
     use climon2_core::metadata::SessionOrigin;
     let (_directory, home) = home();
     let here = climon2_platform::origin::current().unwrap();
+    assert!(here.machine_id.is_some(), "another machine needs one here");
     let mut other_machine = record(&home, 0x71, CREATED);
     other_machine.daemon_origin = Some(SessionOrigin {
         machine_id: Some("another-machine".parse().unwrap()),
@@ -753,13 +755,24 @@ fn only_a_daemon_created_here_can_be_proven_gone() {
         ..here.clone()
     });
     let mut rebooted = record(&home, 0x73, CREATED);
-    rebooted.daemon_origin = Some(here);
+    rebooted.daemon_origin = Some(here.clone());
     rebooted.daemon_linux_identity = own_identity().map(|identity| LinuxProcessIdentity {
         boot_id: "00000000-0000-4000-8000-000000000000".into(),
         ..identity
     });
     let unrecorded = record(&home, 0x74, CREATED);
-    let records = [&other_machine, &other_namespace, &rebooted, &unrecorded];
+    let mut host_pid_container = record(&home, 0x75, CREATED);
+    host_pid_container.daemon_origin = Some(SessionOrigin {
+        machine_id: None,
+        ..here.clone()
+    });
+    let records = [
+        &other_machine,
+        &other_namespace,
+        &rebooted,
+        &unrecorded,
+        &host_pid_container,
+    ];
     let files = records.map(|metadata| save(&home, metadata));
 
     let pass = discover(&home, REMOVE).unwrap();
@@ -768,6 +781,7 @@ fn only_a_daemon_created_here_can_be_proven_gone() {
         Outcome::Uncertain(found_namespace, Uncertainty::CreatedElsewhere),
         Outcome::Stale(found_rebooted, Cleanup::Removed),
         Outcome::Stale(found_unrecorded, Cleanup::Removed),
+        Outcome::Stale(found_container, Cleanup::Removed),
     ] = pass.sessions.as_slice()
     else {
         panic!("{pass:?}");
@@ -777,11 +791,15 @@ fn only_a_daemon_created_here_can_be_proven_gone() {
             found_machine,
             found_namespace,
             found_rebooted,
-            found_unrecorded
+            found_unrecorded,
+            found_container,
         ],
         records
     );
-    assert_eq!(files.map(|file| file.exists()), [true, true, false, false]);
+    assert_eq!(
+        files.map(|file| file.exists()),
+        [true, true, false, false, false]
+    );
 }
 
 /// DSC-04 Contract case (uncertain disappearance): a path that is not a socket is never

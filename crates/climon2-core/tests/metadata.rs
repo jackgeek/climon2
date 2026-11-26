@@ -178,6 +178,35 @@ fn adr0005_session_origin_rejects_malformed_machine_ids_and_namespaces() {
     assert!(read(&record).is_err());
 }
 
+/// #133 / ADR 0005: two origins are the same place when their PID namespaces
+/// are the same and, where both record a machine ID, so are their machine IDs.
+/// A container run with `--pid=host` that has no machine ID shares its host's
+/// namespace, so it is the host's place, both ways round.
+#[test]
+fn adr0005_same_place_is_the_same_namespace_and_the_same_machine_where_both_have_one() {
+    use climon2_core::metadata::SessionOrigin;
+    let origin = |machine: Option<&str>, pid_namespace: Option<u64>| SessionOrigin {
+        machine_id: machine.map(|machine| machine.parse().unwrap()),
+        pid_namespace,
+    };
+    let host = origin(Some("aaaa"), Some(1));
+    for (other, same) in [
+        (origin(Some("aaaa"), Some(1)), true),
+        (origin(None, Some(1)), true),
+        (origin(Some("bbbb"), Some(1)), false),
+        (origin(Some("aaaa"), Some(2)), false),
+        (origin(None, Some(2)), false),
+        (origin(Some("aaaa"), None), false),
+    ] {
+        assert_eq!(host.is_same_place(&other), same, "{other:?}");
+        assert_eq!(other.is_same_place(&host), same, "{other:?}");
+    }
+    let windows = origin(Some("aaaa"), None);
+    assert!(windows.is_same_place(&origin(Some("aaaa"), None)));
+    assert!(!windows.is_same_place(&origin(Some("bbbb"), None)));
+    assert!(origin(None, None).is_same_place(&origin(None, None)));
+}
+
 #[test]
 fn adr0005_every_checked_in_golden_is_readable_by_the_current_reader() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");

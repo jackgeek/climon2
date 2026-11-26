@@ -52,8 +52,9 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 includ
   field, not Linux's stale-cleanup authority (ADR 0005).
 - Procfs inspection errors are not evidence of process death. A daemon records
   its PID namespace (the inode of `/proc/self/ns/pid`) and machine ID
-  (`/etc/machine-id`) in its metadata, and only a reader with the same ones
-  checks its identity. A reader in another PID namespace or on another machine
+  (`/etc/machine-id`) in its metadata, and only a reader in the same place
+  (the same namespace, and the same machine ID where both have one) checks its
+  identity. A reader in another PID namespace or on another machine
   that shares the climon2 home never deletes the session (ADR 0005, Optional
   session origin; [#133](https://github.com/jackgeek/climon2/issues/133)). It
   cannot attach to or kill such a session unless it can reach the socket.

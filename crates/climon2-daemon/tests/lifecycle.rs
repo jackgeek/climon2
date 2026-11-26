@@ -592,6 +592,19 @@ fn an_unattached_session_ends_after_the_initial_deadline() {
     assert!(started.elapsed() < Duration::from_secs(7));
 }
 
+/// #133 / ADR 0005: a real daemon records where it was created, its machine
+/// and on Linux its PID namespace, as this process reads its own.
+#[test]
+fn issue133_a_daemon_records_its_origin() {
+    let mut session = Session::start("early");
+    let bytes = fs::read(&session.metadata).unwrap();
+    let metadata =
+        climon2_core::metadata::SessionMetadata::from_json(&session.metadata, &bytes).unwrap();
+    let here = climon2_platform::origin::current().unwrap();
+    assert_eq!(metadata.daemon_origin, Some(here));
+    session.finish();
+}
+
 /// A session started like `c2 exec --headless` would start it. Its fixture
 /// ends itself after two minutes, so a test killed before it ends its session
 /// cannot leave that session running forever.

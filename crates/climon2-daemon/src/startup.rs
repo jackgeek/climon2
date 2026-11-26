@@ -156,8 +156,7 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
         daemon_pid: std::process::id(),
         daemon_start_time,
         daemon_linux_identity,
-        // Optional (#133): without it, readers judge the record as before.
-        daemon_origin: climon2_platform::origin::current().ok(),
+        daemon_origin: daemon_origin(),
         command: display.command,
         args: display.args,
         cwd: display.cwd,
@@ -172,6 +171,20 @@ fn daemon_identity() -> io::Result<(u64, Option<climon2_core::metadata::LinuxPro
     let start_time = process::start_time(pid)?
         .ok_or_else(|| super::io_error("daemon process identity unavailable"))?;
     Ok((start_time, process::linux_identity(pid)?))
+}
+
+/// Optional (#133): without it, readers judge the record as before, so a
+/// failed read is only a warning.
+fn daemon_origin() -> Option<climon2_core::metadata::SessionOrigin> {
+    climon2_platform::origin::current()
+        .inspect_err(|error| {
+            tracing::warn!(
+                %error,
+                errno = error.raw_os_error(),
+                "session origin unavailable; the metadata records none"
+            )
+        })
+        .ok()
 }
 
 fn inherited_depth() -> NonZeroU32 {

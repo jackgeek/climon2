@@ -483,6 +483,11 @@ tests, which speak no post-hello protocol:
 - `an_unattached_session_ends_after_the_initial_deadline`: a command that
   ends before anything attaches keeps an ordinary session for the five-second
   initial attach window, then it ends.
+- `issue133_a_daemon_records_its_origin`: a real daemon's metadata records
+  `daemon_origin` as `origin::current()` reads it in the test
+  ([#133](https://github.com/jackgeek/climon2/issues/133)). A daemon that
+  cannot read its origin warns `session origin unavailable; the metadata
+  records none` (`errno=`) and records none.
 
 Every other daemon test speaks daemon wire revision 1, in
 `tests/revision1/`. The private-protocol tests, and the

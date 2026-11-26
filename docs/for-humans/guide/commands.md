@@ -234,6 +234,11 @@ exit 125. Run them where the session was started instead. If they can reach it,
 for example from a container that shares the host's `/tmp`, it is listed and
 works as usual.
 
+A container started with `--pid=host` shares its host's PID namespace and can
+see the host's processes. If the container has no machine ID
+(`/etc/machine-id`), it counts as the host, so either one can delete the
+other's ended sessions.
+
 A container's PID namespace ends with the container. Data left by a session in
 a container that no longer exists is kept until you delete its file from the
 `sessions` folder in the climon2 home. Sessions started by climon2 versions
