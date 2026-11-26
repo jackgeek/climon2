@@ -463,8 +463,7 @@ impl Monitor {
     /// Paints the current scene when it differs from what the screen shows.
     /// Each terminal first learns whether this frame shows its applied
     /// restoration, so its control and input readiness are in force once
-    /// this frame comes due, even when its draw waits (owner decision on
-    /// #420, option A). While the host has yet to take what it was handed,
+    /// this frame comes due, even when its draw waits (#420). While the host has yet to take what it was handed,
     /// the frame is drawn only once it has: one drawn meanwhile would only
     /// be replaced, and a host that takes little at a time, as a macOS
     /// terminal does, would wait for a whole frame to be drawn for each
@@ -1691,7 +1690,7 @@ mod tests {
 
     impl Drop for Stopping {
         /// Stops the supervisor and discovery, waits for both, at most
-        /// 10 s, and removes the runtime directory.
+        /// 10 s, and once both have stopped removes the runtime directory.
         fn drop(&mut self) {
             let monitor = &mut self.0;
             monitor.supervisor.shut_down();
@@ -1702,10 +1701,17 @@ mod tests {
                 report = report.or_else(|| monitor.supervisor.report());
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            let removed = std::fs::remove_dir(&self.1);
+            let stopped = report.is_some() && monitor.discovery.join();
+            let removed = stopped.then(|| std::fs::remove_dir(&self.1));
             if !std::thread::panicking() {
-                assert!(report.is_some(), "the supervisor never stopped");
-                removed.unwrap();
+                let runtime = self.1.display();
+                assert!(
+                    stopped,
+                    "the supervisor or discovery never stopped; {runtime} is left"
+                );
+                if let Some(Err(error)) = removed {
+                    panic!("removing {runtime}: {error}");
+                }
             }
         }
     }
@@ -1718,9 +1724,8 @@ mod tests {
     fn a_frame_due_while_the_host_is_backed_up_is_drawn_once_it_has_room() {
         let directory = tempfile::tempdir().unwrap();
         let home = std::fs::canonicalize(directory.path()).unwrap();
-        let monitor = started(&home);
         let runtime = climon2_platform::runtime::RuntimeDirectory::prepare(&home).unwrap();
-        let mut stopping = Stopping(monitor, runtime.path().to_owned());
+        let mut stopping = Stopping(started(&home), runtime.path().to_owned());
         let monitor = &mut stopping.0;
         // The host takes the first attention report, and the key
         // introduction closes.
