@@ -356,18 +356,40 @@ mod procfs_reaping {
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_identity_handles_arbitrary_name_bytes_and_uses_epoch_microseconds() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let before = boot_clock_since_epoch();
     let (mut child, _master) = fixture("named");
     let identity = process::start_time(child.id());
     child.kill().unwrap();
     child.wait().unwrap();
     let identity = identity.unwrap().unwrap();
-    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let after = boot_clock_since_epoch();
     let started = Duration::from_micros(identity);
     // /proc's boot epoch is rounded to a whole second.
     assert!(started >= before - Duration::from_secs(1));
     assert!(started <= after);
+}
+
+/// #204: now since the Unix epoch, read from the clock the identity is derived from:
+/// /proc/stat's boot epoch plus CLOCK_BOOTTIME. The wall clock can step or slew away from
+/// it, so bounds taken from the wall clock can miss a correct identity.
+#[cfg(target_os = "linux")]
+fn boot_clock_since_epoch() -> Duration {
+    let stat = std::fs::read_to_string("/proc/stat").unwrap();
+    let boot_epoch = stat
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut uptime = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut uptime) },
+        0
+    );
+    Duration::from_secs(boot_epoch) + Duration::new(uptime.tv_sec as u64, uptime.tv_nsec as u32)
 }
 
 #[test]
