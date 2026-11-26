@@ -37,11 +37,12 @@ pub use climon2_core::failure::Failure as Error;
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
+    let (arguments, force) = arguments.unforced();
     if let Some(action) = home_command(&arguments) {
         return unowned(|home, _, _| ownership::run(home, action));
     }
     match work(arguments) {
-        Ok(work) => native::logged_run(work),
+        Ok(work) => native::logged_run(work, force),
         Err(text) => {
             println!("{text}");
             Ok(0)
@@ -99,11 +100,22 @@ fn presentation(arguments: &CliArgs) -> String {
 }
 
 /// Runs `command` inside the invocation's climon2 home, once the home is
-/// known to be this host's (ADR 0011).
+/// known to be this host's (ADR 0011), or, with `force`, also when another host
+/// owns it or its record cannot be read, with a warning.
 fn logged(
+    force: bool,
     command: impl FnOnce(&Path, &LogFile, Option<&str>) -> Result<u32, Error>,
 ) -> Result<u32, Error> {
-    in_home(owner::check, command)
+    in_home(|home| forced(home, force), command)
+}
+
+/// The owner check, forgiving what `--force` skips.
+fn forced(home: &Path, force: bool) -> Result<(), Refusal> {
+    if let Some(refusal) = climon2_core::owner::forgive(owner::check(home), force)? {
+        tracing::warn!(%refusal, "--force uses this climon2 home without claiming it");
+        eprintln!("{}", climon2_core::owner::forced_warning(&refusal));
+    }
+    Ok(())
 }
 
 /// Runs `command` inside the invocation's climon2 home whoever owns it: only

@@ -23,9 +23,10 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// `force` is `exec --force`: the daemon too uses a home it does not own.
 pub fn run(
     home: &Path,
-    lifetime: Lifetime,
+    (lifetime, force): (Lifetime, bool),
     command: CommandArgs,
     general: &LogFile,
     filter: Option<&str>,
@@ -34,8 +35,16 @@ pub fn run(
     let (id, session) = new_session(home, general)?;
     let dispatch = session.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
-        launch(home, lifetime, command, &layout, &id, filter, config)
-            .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
+        launch(
+            home,
+            (lifetime, force),
+            command,
+            &layout,
+            &id,
+            filter,
+            config,
+        )
+        .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
     })
 }
 
@@ -89,6 +98,7 @@ struct Startup<'a> {
     layout: &'a ExecutableLayout,
     id: &'a SessionId,
     lifetime: Lifetime,
+    force: bool,
     max_history_rows: u32,
     assembly: Assembly,
     metadata: PathBuf,
@@ -99,14 +109,14 @@ struct Startup<'a> {
 
 fn launch(
     home: &Path,
-    lifetime: Lifetime,
+    (lifetime, force): (Lifetime, bool),
     command: CommandArgs,
     layout: &ExecutableLayout,
     id: &SessionId,
     filter: Option<&str>,
     config: ExecConfig,
 ) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, id, lifetime, &config)?;
+    let startup = Startup::new(home, layout, id, (lifetime, force), &config)?;
     let inherited = std::env::vars_os().collect::<Vec<_>>();
     let environment =
         SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
@@ -126,7 +136,7 @@ impl Startup<'_> {
         home: &'a Path,
         layout: &'a ExecutableLayout,
         id: &'a SessionId,
-        lifetime: Lifetime,
+        (lifetime, force): (Lifetime, bool),
         config: &ExecConfig,
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
@@ -138,6 +148,7 @@ impl Startup<'_> {
             layout,
             id,
             lifetime,
+            force,
             metadata,
             socket,
             size,
@@ -210,6 +221,9 @@ impl Startup<'_> {
             .arg(&self.cwd);
         if let Some(filter) = filter {
             launch.arg("--log").arg(filter);
+        }
+        if self.force {
+            launch.arg("--home-owner").arg("forced");
         }
         daemon::spawn(launch, |launch, fd| {
             launch

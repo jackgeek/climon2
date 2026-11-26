@@ -23,10 +23,14 @@ pub enum CliArgs {
     /// `home`: the climon2 home, its owner and whether this host owns it.
     Home,
     /// `home release [--force]`: remove the home's owner record (ADR 0011);
-    /// `--force` releases a home another host owns while it holds sessions.
+    /// `--force` releases it while it holds sessions, this host's or another's.
     HomeRelease {
         force: bool,
     },
+    /// A command the home owner check can refuse, given `--force` as its first
+    /// argument: a home another host owns, or whose owner record cannot be read,
+    /// is used anyway, unclaimed (ADR 0011).
+    Forced(Box<CliArgs>),
     Help,
     Version,
 }
@@ -40,7 +44,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]";
+pub const USAGE: &str = "usage: c2 exec|x [--force] [--headless|-h] <command> [args...] | attach|a [--force] <session-id> | kill|k [--force] <session-id> | list|l [--force] [--json] | monitor|m [--force] | home|h [release [--force]]";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -51,6 +55,14 @@ impl fmt::Display for UsageError {
 impl std::error::Error for UsageError {}
 
 impl CliArgs {
+    /// The command itself, and whether `--force` was given before its arguments.
+    pub fn unforced(self) -> (Self, bool) {
+        match self {
+            Self::Forced(command) => (*command, true),
+            command => (command, false),
+        }
+    }
+
     /// Arguments exclude argv[0]. Once the command is read, no trailing argument
     /// is interpreted by climon2; empty and non-Unicode arguments stay intact.
     pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, UsageError> {
@@ -62,7 +74,7 @@ impl CliArgs {
             .iter()
             .find(|command| name.is_some_and(|name| command.is_named(name)))
         {
-            Some(command) => (command.parse)(remaining),
+            Some(command) => command.parse_forcible(remaining),
             None => parse_flag(name, &remaining),
         }
     }
@@ -78,15 +90,28 @@ pub fn commands() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
 
-/// A command: its full name, its single-letter shortcut (a pure synonym) and
-/// its parser.
+/// A command: its full name, its single-letter shortcut (a pure synonym), its
+/// parser, and whether the home owner check can refuse it, so that it takes
+/// `--force`.
 struct Subcommand {
     name: &'static str,
     shortcut: &'static str,
     parse: Parser,
+    forcible: bool,
 }
 
 impl Subcommand {
+    /// `--force` only as the first argument, once: a second is the command's
+    /// own, as `exec`'s options are.
+    fn parse_forcible(&self, arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
+        match arguments.split_first() {
+            Some((first, rest)) if self.forcible && first == "--force" => {
+                (self.parse)(rest.to_vec()).map(|command| CliArgs::Forced(Box::new(command)))
+            }
+            _ => (self.parse)(arguments),
+        }
+    }
+
     fn is_named(&self, name: &str) -> bool {
         name == self.name || name == self.shortcut
     }
@@ -98,31 +123,37 @@ const SUBCOMMANDS: [Subcommand; 6] = [
         name: "exec",
         shortcut: "x",
         parse: parse_exec,
+        forcible: true,
     },
     Subcommand {
         name: "attach",
         shortcut: "a",
         parse: |arguments| parse_selector(arguments, CliArgs::Attach),
+        forcible: true,
     },
     Subcommand {
         name: "kill",
         shortcut: "k",
         parse: |arguments| parse_selector(arguments, CliArgs::Kill),
+        forcible: true,
     },
     Subcommand {
         name: "list",
         shortcut: "l",
         parse: parse_list,
+        forcible: true,
     },
     Subcommand {
         name: "monitor",
         shortcut: "m",
         parse: parse_monitor,
+        forcible: true,
     },
     Subcommand {
         name: "home",
         shortcut: "h",
         parse: parse_home,
+        forcible: false,
     },
 ];
 

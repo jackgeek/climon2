@@ -14,7 +14,8 @@ use std::{io, path::Path};
 #[derive(Clone, Copy)]
 pub enum Action {
     Show,
-    /// `--force` releases a home another host owns while it holds sessions.
+    /// `--force` releases a home while it holds sessions: another host's, or,
+    /// with a warning, this host's own that may still run.
     Release {
         force: bool,
     },
@@ -63,8 +64,8 @@ fn verdict(recorded: &io::Result<Option<SessionOrigin>>, here: &SessionOrigin) -
 
 /// Removes the owner record, whoever it names. The owner keeps it while any of
 /// its sessions may still run; any other host, or one that cannot tell whose
-/// the home is, keeps it while the home holds session records at all, unless
-/// `force` says their host is gone.
+/// the home is, keeps it while the home holds session records at all. `force`
+/// releases it anyway, warning the owner how many of its sessions may run.
 fn released(home: &Path, force: bool) -> Result<u32, Error> {
     let recorded = owner::read(home);
     if matches!(recorded, Ok(None)) {
@@ -74,7 +75,7 @@ fn released(home: &Path, force: bool) -> Result<u32, Error> {
     let layout = HomeLayout::at(home).map_err(io::Error::other)?;
     let pass = climon2_discovery::discover(&layout, PROBE)?;
     if owns(&recorded) {
-        refuse_running(&pass)?;
+        refuse_running(&pass, force)?;
     } else if !force {
         refuse_held(&pass)?;
     }
@@ -92,7 +93,8 @@ fn owns(recorded: &io::Result<Option<SessionOrigin>>) -> bool {
 
 /// The owner refuses while any of its sessions is live or not proven ended,
 /// as one whose daemon still runs is; another host's sessions are not its own.
-fn refuse_running(pass: &Pass) -> Result<(), Error> {
+/// With `force` it only warns.
+fn refuse_running(pass: &Pass, force: bool) -> Result<(), Error> {
     let running = pass
         .sessions
         .iter()
@@ -103,16 +105,20 @@ fn refuse_running(pass: &Pass) -> Result<(), Error> {
             )
         })
         .count();
-    if running > 0 {
-        return Err(Error::new(
+    let message = format!(
+        "this host still has {running} climon2 session(s) in this home that may be running"
+    );
+    match (running, force) {
+        (0, _) => Ok(()),
+        (_, true) => {
+            eprintln!("climon2: warning: {message}; --force releases the home anyway");
+            Ok(())
+        }
+        (_, false) => Err(Error::new(
             125,
-            format!(
-                "this host still has {running} climon2 session(s) in this home that may be \
-                 running; end them before releasing it"
-            ),
-        ));
+            format!("{message}; end them before releasing it"),
+        )),
     }
-    Ok(())
 }
 
 /// Any other host refuses while the home holds session records at all: the

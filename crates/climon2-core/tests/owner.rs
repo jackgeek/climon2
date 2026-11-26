@@ -2,7 +2,7 @@
 //! diagnostic, and the refusals' messages.
 use climon2_core::{
     metadata::SessionOrigin,
-    owner::{Refusal, from_json, to_json},
+    owner::{Refusal, forced_warning, forgive, from_json, to_json},
 };
 use std::io;
 
@@ -69,7 +69,7 @@ fn issue133_refusals_name_the_owner_and_the_way_forward() {
         "this climon2 home is in use by another machine or container (machine aaaa, PID \
          namespace 1). climon2 does not work across machines yet (`c2 relay` is planned). To \
          move this home here, run `c2 home release`, or `c2 home release --force` if the host \
-         that owns it is gone."
+         that owns it is gone. To use it from here anyway, unclaimed, give the command `--force`."
     );
     let error = io::Error::other("no origin");
     assert_eq!(
@@ -83,6 +83,54 @@ fn issue133_refusals_name_the_owner_and_the_way_forward() {
         Refusal::Unreadable { path, error }.to_string(),
         "this climon2 home's owner record /home/me/.climon2/owner cannot be read: bad record. \
          To let the next command claim this home afresh, run `c2 home release` (with `--force` \
-         if the home still holds sessions) or delete /home/me/.climon2/owner."
+         if the home still holds sessions) or delete /home/me/.climon2/owner. To use it anyway, \
+         unclaimed, give the command `--force`."
     );
+}
+
+/// #133 / ADR 0011: `--force` skips a foreign or unreadable record, handing it
+/// back for the warning; without it, and for a host that cannot read its own
+/// origin, the refusal stands.
+#[test]
+fn issue133_force_skips_only_a_foreign_or_unreadable_record() {
+    let owner = || origin(Some("aaaa"), Some(1));
+    let foreign = || Err(Refusal::Foreign(owner()));
+    let unreadable = || {
+        Err(Refusal::Unreadable {
+            path: "/home/me/.climon2/owner".into(),
+            error: io::Error::other("bad"),
+        })
+    };
+    let unchecked = || {
+        Err(Refusal::Unchecked {
+            owner: owner(),
+            error: io::Error::other("no origin"),
+        })
+    };
+    for force in [false, true] {
+        assert!(matches!(forgive(Ok(()), force), Ok(None)));
+        assert!(matches!(
+            forgive(unchecked(), force),
+            Err(Refusal::Unchecked { .. })
+        ));
+    }
+    assert!(matches!(
+        forgive(foreign(), false),
+        Err(Refusal::Foreign(_))
+    ));
+    assert!(matches!(
+        forgive(unreadable(), false),
+        Err(Refusal::Unreadable { .. })
+    ));
+    let Ok(Some(skipped)) = forgive(foreign(), true) else {
+        panic!("--force did not skip a foreign owner");
+    };
+    assert_eq!(
+        forced_warning(&skipped),
+        format!("climon2: warning: --force uses this climon2 home without claiming it: {skipped}")
+    );
+    assert!(matches!(
+        forgive(unreadable(), true),
+        Ok(Some(Refusal::Unreadable { .. }))
+    ));
 }

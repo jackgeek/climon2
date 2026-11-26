@@ -33,7 +33,7 @@ const COLS: u16 = 120;
 const TITLE: &str = "OUTER-TITLE";
 const BEFORE: &[u8] = b"BEFORE-MONITOR\r\n";
 const DONE: &[u8] = b"OUTER-DONE=";
-const USAGE: &str = "climon2: error: usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]\r\n";
+const USAGE: &str = "climon2: error: usage: c2 exec|x [--force] [--headless|-h] <command> [args...] | attach|a [--force] <session-id> | kill|k [--force] <session-id> | list|l [--force] [--json] | monitor|m [--force] | home|h [release [--force]]\r\n";
 const NO_TERMINAL: &str = "climon2: error: c2 monitor needs a terminal\r\n";
 /// Three bracketed pastes with the default prefix: one holding prefix+x, one
 /// after a typed prefix and followed by a typed x, and one holding the prefix
@@ -153,12 +153,18 @@ fn refusal(terminal: &mut Terminal) -> String {
 }
 
 /// Derived scenario: monitor argument refusal (INP-01 refusals, Monitor layer).
-/// Any argument after `monitor` or its shortcut `m` exits 2 with the usage
-/// line before a monitor starts, and so does the removed alias `mon` (#287).
+/// Any argument after `monitor` or its shortcut `m` but a first `--force`
+/// (ADR 0011) exits 2 with the usage line before a monitor starts, and so does
+/// the removed alias `mon` (#287).
 #[test]
 fn installed_monitor_arguments_are_a_usage_error() {
     let package = Package::new();
-    for command in ["c2 monitor extra", "c2 m --help", "c2 mon"] {
+    for command in [
+        "c2 monitor extra",
+        "c2 m --help",
+        "c2 m --force --force",
+        "c2 mon",
+    ] {
         let mut terminal = outer(&package, command);
         assert_eq!(refusal(&mut terminal), USAGE);
         assert_released(&package, &mut terminal, 2);

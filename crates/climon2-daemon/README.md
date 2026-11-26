@@ -492,7 +492,9 @@ tests, which speak no post-hello protocol:
   else, a daemon checks the home owner (ADR 0011). In a home another machine
   or container owns it reports `this climon2 home belongs to another machine
   or container, or cannot be checked` with 125, logs the full refusal, and
-  creates no session files.
+  creates no session files. `issue133_a_forced_daemon_uses_a_home_another_host_owns`:
+  with `--home-owner forced` (from `exec --force`; `forced` is its only value) it
+  starts anyway and leaves the record as it was.
 
 Every other daemon test speaks daemon wire revision 1, in
 `tests/revision1/`. The private-protocol tests, and the

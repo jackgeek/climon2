@@ -17,6 +17,9 @@ pub(crate) struct Options {
     /// session's lifetime.
     pub assembly: Assembly,
     pub lifetime: Lifetime,
+    /// `--home-owner forced`, from `exec --force`: the home is used even when
+    /// another host owns it or its record cannot be read (ADR 0011).
+    pub force: bool,
     pub command: OsString,
     pub arguments: Vec<OsString>,
     pub log: Option<String>,
@@ -36,7 +39,7 @@ impl Options {
         let (id, version, cli_pid) = identity(&mut fields)?;
         let (home, socket, cwd) = locations(&mut fields)?;
         let (readiness_fd, size, (max_history_rows, assembly)) = transport(&mut fields)?;
-        let (lifetime, log) = policy(fields)?;
+        let (lifetime, force, log) = policy(fields)?;
         Ok(Self {
             id,
             version,
@@ -49,6 +52,7 @@ impl Options {
             max_history_rows,
             assembly,
             lifetime,
+            force,
             command,
             arguments,
             log,
@@ -100,13 +104,26 @@ fn insert_unique(
     Ok(())
 }
 
-/// The session's lifetime policy, then the optional log filter.
-fn policy(mut fields: BTreeMap<OsString, OsString>) -> io::Result<(Lifetime, Option<String>)> {
+/// The session's lifetime policy, whether the home owner check is forced,
+/// then the optional log filter.
+fn policy(
+    mut fields: BTreeMap<OsString, OsString>,
+) -> io::Result<(Lifetime, bool, Option<String>)> {
     let lifetime = number(&mut fields, "--lifetime")?;
-    Ok((lifetime, only_log(fields)?))
+    let force = forced(&mut fields)?;
+    Ok((lifetime, force, only_log(fields)?))
 }
 
-/// `--log` is the only optional field; anything else left over is invalid.
+/// `--home-owner` is optional, and `forced` is its only value.
+fn forced(fields: &mut BTreeMap<OsString, OsString>) -> io::Result<bool> {
+    match fields.remove(std::ffi::OsStr::new("--home-owner")) {
+        None => Ok(false),
+        Some(value) if value == "forced" => Ok(true),
+        Some(_) => Err(invalid()),
+    }
+}
+
+/// `--log` is the last optional field; anything else left over is invalid.
 fn only_log(mut fields: BTreeMap<OsString, OsString>) -> io::Result<Option<String>> {
     let log = fields
         .remove(std::ffi::OsStr::new("--log"))

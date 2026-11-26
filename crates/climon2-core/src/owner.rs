@@ -54,7 +54,8 @@ impl fmt::Display for Refusal {
                 "this climon2 home is in use by another machine or container ({owner}). \
                  climon2 does not work across machines yet (`c2 relay` is planned). To move \
                  this home here, run `c2 home release`, or `c2 home release --force` if the \
-                 host that owns it is gone."
+                 host that owns it is gone. To use it from here anyway, unclaimed, give the \
+                 command `--force`."
             ),
             Self::Unchecked { owner, error } => write!(
                 out,
@@ -65,7 +66,8 @@ impl fmt::Display for Refusal {
                 out,
                 "this climon2 home's owner record {} cannot be read: {error}. To let the next \
                  command claim this home afresh, run `c2 home release` (with `--force` if the \
-                 home still holds sessions) or delete {}.",
+                 home still holds sessions) or delete {}. To use it anyway, unclaimed, give the \
+                 command `--force`.",
                 path.display(),
                 path.display()
             ),
@@ -74,3 +76,22 @@ impl fmt::Display for Refusal {
 }
 
 impl std::error::Error for Refusal {}
+
+/// The outcome of the owner check for a command given `--force` or not. With
+/// `force`, a foreign or unreadable record is skipped: the command uses the home
+/// unclaimed, and the refusal comes back for its warning. A host that cannot
+/// read its own origin is still refused.
+pub fn forgive(checked: Result<(), Refusal>, force: bool) -> Result<Option<Refusal>, Refusal> {
+    match checked {
+        Ok(()) => Ok(None),
+        Err(refusal @ (Refusal::Foreign(_) | Refusal::Unreadable { .. })) if force => {
+            Ok(Some(refusal))
+        }
+        Err(refusal) => Err(refusal),
+    }
+}
+
+/// The warning a forced command prints instead of `refusal`.
+pub fn forced_warning(refusal: &Refusal) -> String {
+    format!("climon2: warning: --force uses this climon2 home without claiming it: {refusal}")
+}

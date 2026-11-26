@@ -241,8 +241,14 @@ directory, or with a container that has another machine ID, is refused.
 do anything else:
 
 ```text
-climon2: error: this climon2 home is in use by another machine or container (machine 8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f, PID namespace 4026531836). climon2 does not work across machines yet (`c2 relay` is planned). To move this home here, run `c2 home release`, or `c2 home release --force` if the host that owns it is gone.
+climon2: error: this climon2 home is in use by another machine or container (machine 8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f, PID namespace 4026531836). climon2 does not work across machines yet (`c2 relay` is planned). To move this home here, run `c2 home release`, or `c2 home release --force` if the host that owns it is gone. To use it from here anyway, unclaimed, give the command `--force`.
 ```
+
+To use such a home anyway, give the command `--force` before anything else,
+for example `c2 list --force` or `c2 exec --force --headless make`. `exec`,
+`attach`, `kill`, `list` and `monitor` take it. The command then runs
+without claiming the home and prints a warning naming its owner. Sessions the
+owner runs may then be judged ended here, so use it with care.
 
 climon2 does not work across machines yet; `c2 relay` is planned. Until then,
 give each machine and container a climon2 home of its own, with
@@ -264,7 +270,8 @@ folder named `owner` is removed too; any other folder you must delete
 yourself.
 
 - On the computer that owns the home, it refuses, with 125, while any of that
-  computer's sessions in the home may still be running.
+  computer's sessions in the home may still be running. `c2 home release
+  --force` releases it anyway and warns how many may be running.
 - On any other computer, it refuses, with 125, while the home holds any
   sessions at all, because the owning computer may still be running them. If
   that computer is gone, run `c2 home release --force`.

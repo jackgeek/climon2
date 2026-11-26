@@ -194,16 +194,25 @@ fn inherited_depth() -> NonZeroU32 {
         .unwrap_or(NonZeroU32::MIN)
 }
 
-/// The climon2 home must belong to this host (ADR 0011). The CLI checked it
-/// before starting this daemon; the daemon checks again before anything else,
-/// logging why it refuses.
+/// The climon2 home must belong to this host (ADR 0011), unless `exec --force`
+/// forced it. The CLI checked it before starting this daemon; the daemon checks
+/// again before anything else, logging why it refuses or what it skips.
 pub fn owned(options: &Options) -> Result<(), Failure> {
-    climon2_platform::owner::check(&options.home).map_err(|refusal| {
-        tracing::error!(%refusal, "climon2 home refused");
-        Failure::own(
-            "this climon2 home belongs to another machine or container, or cannot be checked",
-        )
-    })
+    let checked = climon2_platform::owner::check(&options.home);
+    match climon2_core::owner::forgive(checked, options.force) {
+        Ok(skipped) => {
+            if let Some(refusal) = skipped {
+                tracing::warn!(%refusal, "--force uses this climon2 home without claiming it");
+            }
+            Ok(())
+        }
+        Err(refusal) => Err(refused(&refusal)),
+    }
+}
+
+fn refused(refusal: &climon2_core::owner::Refusal) -> Failure {
+    tracing::error!(%refusal, "climon2 home refused");
+    Failure::own("this climon2 home belongs to another machine or container, or cannot be checked")
 }
 
 pub fn fault(_log: &logging::LogFile) -> Result<(), Failure> {

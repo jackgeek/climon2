@@ -232,6 +232,63 @@ fn issue133_home_takes_nothing_or_release() {
     }
 }
 
+/// #133 / ADR 0011: `--force`, as the first argument only, makes exec, attach,
+/// kill, list and monitor use a home another host owns; the rest parses as
+/// without it. A second `--force` is exec's command, as a second option is,
+/// and a usage error elsewhere; `home` takes it only after `release`.
+#[test]
+fn issue133_force_comes_first_on_every_command_the_owner_check_can_refuse() {
+    let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
+    for tail in [
+        &["exec", "make", "test"][..],
+        &["exec", "--headless", "make"],
+        &["x", "-h", "--", "--force"],
+        &["attach", "01234567"],
+        &["a", "ABCDE-F0"],
+        &["kill", "01234567"],
+        &["list"],
+        &["list", "--json"],
+        &["l", "--json"],
+        &["monitor"],
+        &["m"],
+    ] {
+        let forced = [&[tail[0], "--force"][..], &tail[1..]].concat();
+        let (command, force) = parse(&forced).unwrap().unforced();
+        assert_eq!(command, parse(tail).unwrap(), "{forced:?}");
+        assert!(force, "{forced:?}");
+        assert!(!parse(tail).unwrap().unforced().1, "{tail:?}");
+    }
+    let (command, force) = parse(&["exec", "--force", "--force", "cmd"])
+        .unwrap()
+        .unforced();
+    assert!(force);
+    assert_eq!(
+        command,
+        CliArgs::Exec {
+            lifetime: Lifetime::Ordinary,
+            command: CommandArgs {
+                command: "--force".into(),
+                args: vec!["cmd".into()],
+            },
+        }
+    );
+    let exec = parse(&["exec", "-h", "--force", "cmd"]).unwrap().unforced();
+    assert!(!exec.1, "--force after -h is the command");
+    for bad in [
+        &["list", "--force", "--force"][..],
+        &["list", "--json", "--force"],
+        &["monitor", "--force", "extra"],
+        &["attach", "--force"],
+        &["kill", "01234567", "--force"],
+        &["home", "--force"],
+        &["h", "--force", "release"],
+        &["--force", "list"],
+        &["--force"],
+    ] {
+        assert_eq!(parse(bad).unwrap_err().exit_code(), 2, "{bad:?}");
+    }
+}
+
 /// #29: help and version flags parse only when given alone. #287: help has
 /// only its long flag, so `-h` alone is a usage error (2).
 #[test]
@@ -403,7 +460,7 @@ const SHORTCUTS: [(&str, &str); 6] = [
 #[test]
 fn shortcuts_parse_exactly_as_their_full_commands() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
-    let tails: [&[&str]; 21] = [
+    let tails: [&[&str]; 25] = [
         &[],
         &["cmd", "--flag", ""],
         &["--", "-cmd"],
@@ -425,6 +482,10 @@ fn shortcuts_parse_exactly_as_their_full_commands() {
         &["release"],
         &["release", "extra"],
         &["release", "--force"],
+        &["--force"],
+        &["--force", "--json"],
+        &["--force", "01234567"],
+        &["--force", "--headless", "make"],
     ];
     for (full, shortcut) in SHORTCUTS {
         let mut accepted = 0;

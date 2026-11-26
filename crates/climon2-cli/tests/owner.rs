@@ -37,8 +37,8 @@ fn issue133_a_home_another_host_owns_is_refused_before_anything_else() {
     let refusal = "climon2: error: this climon2 home is in use by another machine or container \
                    (machine another-machine, PID namespace 1). climon2 does not work across \
                    machines yet (`c2 relay` is planned). To move this home here, run `c2 home \
-                   release`, or `c2 home release --force` if the host that owns it is gone. \
-                   (logs: ";
+                   release`, or `c2 home release --force` if the host that owns it is gone. To \
+                   use it from here anyway, unclaimed, give the command `--force`. (logs: ";
     for arguments in [
         &["list"][..],
         &["list", "--json"],
@@ -55,6 +55,51 @@ fn issue133_a_home_another_host_owns_is_refused_before_anything_else() {
         assert!(output.stdout.is_empty(), "{arguments:?}");
         assert!(!home.join("sessions").exists(), "{arguments:?}");
     }
+    // With `--force` each of them gets past the owner check, warning instead,
+    // and goes on without claiming the home: `list` succeeds, and the others
+    // fail later for their own reasons here, outside an installed version.
+    let warning = "climon2: warning: --force uses this climon2 home without claiming it: this \
+                   climon2 home is in use by another machine or container (machine \
+                   another-machine, PID namespace 1).";
+    for arguments in [
+        &["list", "--force"][..],
+        &["l", "--force", "--json"],
+        &["exec", "--force", "--", "climon2-no-such-command"],
+        &[
+            "x",
+            "--force",
+            "--headless",
+            "--",
+            "climon2-no-such-command",
+        ],
+        &["attach", "--force", "1"],
+        &["kill", "--force", "1"],
+        &["monitor", "--force"],
+    ] {
+        let output = cli(root.path(), arguments);
+        let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+        assert!(stderr.starts_with(warning), "{arguments:?}: {stderr}");
+        assert!(
+            !stderr.contains("climon2: error: this climon2 home"),
+            "{arguments:?}"
+        );
+        assert_eq!(fs::read_to_string(home.join("owner")).unwrap(), FOREIGN);
+    }
+    let listed = cli(root.path(), &["list", "--force", "--json"]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    assert_eq!(listed.stdout, b"[]\n");
+    fs::write(home.join("owner"), "not json").unwrap();
+    let listed = cli(root.path(), &["list", "--force"]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    let unreadable = "climon2: warning: --force uses this climon2 home without claiming it: \
+                      this climon2 home's owner record ";
+    assert!(
+        String::from_utf8(listed.stderr)
+            .unwrap()
+            .starts_with(unreadable)
+    );
+    assert_eq!(cli(root.path(), &["list"]).status.code(), Some(125));
+    fs::write(home.join("owner"), FOREIGN).unwrap();
     for arguments in [&["--version"][..], &["--help"]] {
         let output = cli(root.path(), arguments);
         assert_eq!(output.status.code(), Some(0), "{arguments:?}");
@@ -287,10 +332,11 @@ fn issue133_a_non_owner_releases_a_home_with_sessions_only_with_force() {
     }
 }
 
-/// On the owner, `c2 home release` refuses with 125, even with `--force`,
-/// while a session of its own may still run: its daemon is alive here. It
-/// releases the home once its sessions are proven ended, or were created on
-/// another host, whose records stay even when the next command claims it.
+/// On the owner, `c2 home release` refuses with 125 while a session of its
+/// own may still run: its daemon is alive here. `--force` releases it anyway,
+/// warning how many may run. It releases the home once its sessions are
+/// proven ended, or were created on another host, whose records stay even
+/// when the next command claims it.
 #[test]
 fn issue133_the_owner_releases_only_once_its_sessions_have_ended() {
     let other = r#"{"machine_id":"another-machine","pid_namespace":1}"#;
@@ -299,19 +345,25 @@ fn issue133_the_owner_releases_only_once_its_sessions_have_ended() {
         let home = home_in(root.path());
         assert_eq!(cli(root.path(), &["list"]).status.code(), Some(0));
         let path = session(root.path(), 1, alive, origin);
-        for force in [&["h", "release"][..], &["h", "release", "--force"]] {
-            let output = cli(root.path(), force);
-            if alive {
-                assert_eq!(output.status.code(), Some(125), "{output:?}");
-                let refusal = "climon2: error: this host still has 1 climon2 session(s) in \
-                               this home that may be running; end them before releasing it \
-                               (logs: ";
-                assert!(stderr(&output).starts_with(refusal), "{output:?}");
-                assert!(home.join("owner").exists());
-            } else {
-                assert_eq!(output.status.code(), Some(0), "{output:?}");
-                assert_eq!(cli(root.path(), &["list"]).status.code(), Some(0));
+        if alive {
+            let output = cli(root.path(), &["h", "release"]);
+            assert_eq!(output.status.code(), Some(125), "{output:?}");
+            let refusal = "climon2: error: this host still has 1 climon2 session(s) in this \
+                           home that may be running; end them before releasing it (logs: ";
+            assert!(stderr(&output).starts_with(refusal), "{output:?}");
+            assert!(home.join("owner").exists());
+        }
+        for arguments in [&["h", "release"][..], &["h", "release", "--force"]] {
+            if alive && arguments.len() == 2 {
+                continue;
             }
+            let output = cli(root.path(), arguments);
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let warning = "climon2: warning: this host still has 1 climon2 session(s) in this \
+                           home that may be running; --force releases the home anyway\n";
+            assert_eq!(stderr(&output) == warning, alive, "{output:?}");
+            assert!(!home.join("owner").exists());
+            assert_eq!(cli(root.path(), &["list"]).status.code(), Some(0));
         }
         // A stale record of this host's own is cleaned up by the next command.
         assert_eq!(
@@ -322,8 +374,9 @@ fn issue133_the_owner_releases_only_once_its_sessions_have_ended() {
     }
 }
 
-/// On the owner, `c2 home release` refuses with 125, even with `--force`,
-/// while a session of its own answers here; nothing is removed.
+/// On the owner, `c2 home release` refuses with 125 while a session of its own
+/// answers here, and nothing is removed; `--force` releases it anyway, with a
+/// warning, and the session's record stays.
 #[cfg(unix)]
 #[test]
 fn issue133_home_release_is_refused_while_sessions_run_here() {
@@ -337,15 +390,20 @@ fn issue133_home_release_is_refused_while_sessions_run_here() {
     fs::remove_file(&socket).unwrap();
     let reply = format!(r#"{{"session_id":"{id}","climon2_version":"0.1.0","protocol":1}}"#);
     let peer = climon2_test_term::hello_peer(&socket, &reply, 2);
-    for arguments in [&["home", "release"][..], &["home", "release", "--force"]] {
-        let output = cli(root.path(), arguments);
-        assert_eq!(output.status.code(), Some(125), "{output:?}");
-        let refusal = "climon2: error: this host still has 1 climon2 session(s) in this home \
-                       that may be running; end them before releasing it (logs: ";
-        assert!(stderr(&output).starts_with(refusal), "{output:?}");
-        assert!(output.stdout.is_empty());
-    }
-    peer.join().unwrap();
+    let output = cli(root.path(), &["home", "release"]);
+    assert_eq!(output.status.code(), Some(125), "{output:?}");
+    let refusal = "climon2: error: this host still has 1 climon2 session(s) in this home that \
+                   may be running; end them before releasing it (logs: ";
+    assert!(stderr(&output).starts_with(refusal), "{output:?}");
+    assert!(output.stdout.is_empty());
     assert_eq!(fs::read_to_string(home.join("owner")).unwrap(), owner);
+
+    let output = cli(root.path(), &["home", "release", "--force"]);
+    peer.join().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let warning = "climon2: warning: this host still has 1 climon2 session(s) in this home \
+                   that may be running; --force releases the home anyway\n";
+    assert_eq!(stderr(&output), warning);
+    assert!(!home.join("owner").exists());
     assert!(path.exists());
 }

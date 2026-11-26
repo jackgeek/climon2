@@ -13,13 +13,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) fn logged_run(work: Work) -> Result<u32, Error> {
-    crate::logged(|home, general, filter| command(work, home, general, filter))
+pub(crate) fn logged_run(work: Work, force: bool) -> Result<u32, Error> {
+    crate::logged(force, |home, general, filter| {
+        command(work, force, home, general, filter)
+    })
 }
 
-fn command(work: Work, home: &Path, general: &LogFile, filter: Option<&str>) -> Result<u32, Error> {
+fn command(
+    work: Work,
+    force: bool,
+    home: &Path,
+    general: &LogFile,
+    filter: Option<&str>,
+) -> Result<u32, Error> {
     match work {
-        Work::Exec(lifetime, command) => exec::run(home, lifetime, command, general, filter),
+        Work::Exec(lifetime, command) => {
+            exec::run(home, (lifetime, force), command, general, filter)
+        }
         Work::List { json } => crate::list(home, json),
         Work::Handoff(handoff) => handoff.run(home),
     }

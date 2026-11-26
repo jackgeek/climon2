@@ -5,7 +5,7 @@ CLI orchestration for `exec [--headless] COMMAND [ARG...]`, `attach SESSION-ID`,
 single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`, `h`; `r` is
 reserved for `relay`), `-h` is the short form of `--headless`, and help has
 only `--help` (#287). The usage string is
-`usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]`.
+`usage: c2 exec|x [--force] [--headless|-h] <command> [args...] | attach|a [--force] <session-id> | kill|k [--force] <session-id> | list|l [--force] [--json] | monitor|m [--force] | home|h [release [--force]]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -33,14 +33,17 @@ the daemon it started (`daemon::stop`), as Unix stops it with signals.
 session and the session version's client command.
 Every command that uses a climon2 home checks its owner first, in `logged`,
 before it prunes logs or starts, attaches, lists or kills anything (ADR 0011,
-#133). A home another machine or container owns exits 125 with the refusal;
+#133). A home another machine or container owns exits 125 with the refusal,
+unless `--force` came first (`CliArgs::Forced`): then a foreign or unreadable
+record only warns, the home is used unclaimed, and `exec` passes
+`--home-owner forced` to its daemon;
 `--help` and `--version` never check. `home` and `home release`, in
 `src/ownership.rs` (#403), use the home without checking it: `home` prints
 the home, its owner and whether this host is the owner, claiming nothing;
 `home release [--force]` removes the owner record whoever it names, a bad or
 linked one (or an empty folder) itself, after a discovery pass that removes no
-metadata: on the owner it refuses with 125, even with `--force`, while any of
-its sessions is live or not proven ended; on any other host, or when the owner
+metadata: on the owner it refuses with 125 while any of
+its sessions is live or not proven ended, and `--force` releases with a warning; on any other host, or when the owner
 is unknown, it refuses with 125 while the home holds any session record, unless
 `--force`. `list` logs a session created on another host (`session created on
 another host is kept`, debug) and keeps it. `tests/owner.rs` (every OS):
