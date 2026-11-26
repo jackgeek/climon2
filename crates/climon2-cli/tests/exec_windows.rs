@@ -879,7 +879,7 @@ fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
     command.arg("--");
     command.args(HELD);
     command.env("CLIMON2_HOME", home.home());
-    command.env("LOCALAPPDATA", home.0.path().join("local"));
+    command.env("LOCALAPPDATA", home.local());
     command.env("CLIMON2_SESSION_ID", "outer");
     command.cwd(home.work());
     Terminal::spawn(command, 24, 100).unwrap()
