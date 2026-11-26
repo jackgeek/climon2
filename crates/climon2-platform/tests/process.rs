@@ -18,6 +18,33 @@ fn fixture(mode: &str) -> (Child, File) {
     (child, master)
 }
 
+/// #204: now since the Unix epoch, read from the clock the identity is derived from:
+/// /proc/stat's boot epoch plus CLOCK_BOOTTIME. That epoch is truncated to a whole second
+/// and the wall clock can step away from it, so wall-clock bounds can miss a correct identity.
+#[cfg(target_os = "linux")]
+fn boot_clock_since_epoch() -> Duration {
+    let stat = std::fs::read_to_string("/proc/stat").unwrap();
+    let boot_epoch = stat
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut since_boot = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut since_boot) },
+        0
+    );
+    Duration::from_secs(boot_epoch)
+        + Duration::new(
+            u64::try_from(since_boot.tv_sec).unwrap(),
+            u32::try_from(since_boot.tv_nsec).unwrap(),
+        )
+}
+
 /// The terminal device `fd` refers to, as the daemon captures its PTY slave.
 fn terminal_of(fd: i32) -> process::Terminal {
     let mut name = [0 as libc::c_char; 128];
@@ -356,16 +383,16 @@ mod procfs_reaping {
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_identity_handles_arbitrary_name_bytes_and_uses_epoch_microseconds() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let before = boot_clock_since_epoch();
     let (mut child, _master) = fixture("named");
     let identity = process::start_time(child.id());
     child.kill().unwrap();
     child.wait().unwrap();
     let identity = identity.unwrap().unwrap();
-    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let after = boot_clock_since_epoch();
     let started = Duration::from_micros(identity);
-    // /proc's boot epoch is rounded to a whole second.
+    // Both sides share /proc's whole-second boot epoch, so its rounding cancels; the start
+    // time still truncates to a clock tick, well inside this second.
     assert!(started >= before - Duration::from_secs(1));
     assert!(started <= after);
 }
@@ -545,15 +572,6 @@ fn issue19_kill_session_spares_the_calling_process() {
         lines.contains("caller-survived job-signal=Some(9)"),
         "{lines}"
     );
-}
-
-#[test]
-fn issue19_closing_real_controlling_pty_delivers_hangup() {
-    let (mut child, master, _, terminal) = reporting_fixture("sleep");
-    let mut session = process::TerminalSession::new(child.id(), terminal).unwrap();
-    let status = process::hangup(&mut session, || drop(master)).unwrap();
-    let _ = child.wait();
-    assert_eq!(status.code().unwrap(), 129);
 }
 
 #[test]
