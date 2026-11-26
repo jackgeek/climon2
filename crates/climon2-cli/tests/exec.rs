@@ -1457,3 +1457,49 @@ fn a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_termin
         layout.clean();
     }
 }
+
+/// #139: once Enter has answered the prompt, SIGTERM and SIGHUP end exec
+/// again, as they did before the prompt, while it is still starting the
+/// session (held before its client by `CLIMON2_CLI_HOLD`).
+#[test]
+fn after_enter_sigterm_and_sighup_end_exec_while_the_session_starts() {
+    let layout = Layout::new();
+    let directory = layout.directory.path();
+    // A background job of a non-interactive shell starts with SIGINT and
+    // SIGQUIT ignored, which the prompt puts back too.
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
+        let mut terminal = nested_shell(
+            &layout,
+            r#"CLIMON2_CLI_HOLD="$PWD/release" "$0" exec "$1" hold </dev/tty & echo $! > pid; wait $!; echo "STATUS=$?"; read line"#,
+            &[],
+        );
+        terminal
+            .wait_for_text(PROMPT, Duration::from_secs(8))
+            .unwrap();
+        terminal.send("\r").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while !directory.join("release.held").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}",
+                terminal.screen()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid: i32 = fs::read_to_string(directory.join("pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+        terminal
+            .wait_for_text(&format!("STATUS={}", 128 + signal), Duration::from_secs(8))
+            .unwrap();
+        terminal.send("\n").unwrap();
+        assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+        for file in ["release.held", "pid"] {
+            fs::remove_file(directory.join(file)).unwrap();
+        }
+        layout.clean();
+    }
+}

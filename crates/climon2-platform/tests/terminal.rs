@@ -155,6 +155,57 @@ fn a_prompt_flushes_type_ahead_reads_bytes_singly_and_ends_on_signals() {
     assert_eq!(flags(&slave), original);
 }
 
+const PROMPT_SIGNALS: [libc::c_int; 4] = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM];
+
+/// Each prompt signal's current disposition.
+fn dispositions() -> Vec<libc::sigaction> {
+    PROMPT_SIGNALS
+        .iter()
+        .map(|signal| {
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { libc::sigaction(*signal, std::ptr::null(), &mut action) },
+                0
+            );
+            action
+        })
+        .collect()
+}
+
+/// Each prompt signal's current handler.
+fn handlers() -> Vec<libc::sighandler_t> {
+    dispositions()
+        .iter()
+        .map(|action| action.sa_sigaction)
+        .collect()
+}
+
+/// #139: a prompt replaces the dispositions of the signals it hears and,
+/// when dropped, puts back exactly what it replaced: the default action, so
+/// that the signals end the process again while the session starts, and
+/// any other handler as it was.
+#[test]
+fn a_dropped_prompt_puts_back_each_signals_disposition() {
+    let _lock = RAW_TEST.lock().unwrap();
+    let defaults = vec![libc::SIG_DFL; PROMPT_SIGNALS.len()];
+    let ignored = vec![libc::SIG_IGN; PROMPT_SIGNALS.len()];
+    for earlier in [&defaults, &ignored] {
+        let saved = dispositions();
+        for signal in PROMPT_SIGNALS {
+            unsafe { libc::signal(signal, earlier[0]) };
+        }
+        let (_master, slave) = pty();
+        let prompt =
+            terminal::Prompt::new(slave.try_clone().unwrap(), slave.try_clone().unwrap()).unwrap();
+        assert!(handlers().iter().all(|handler| !earlier.contains(handler)));
+        drop(prompt);
+        assert_eq!(&handlers(), earlier);
+        for (signal, action) in PROMPT_SIGNALS.iter().zip(&saved) {
+            unsafe { libc::sigaction(*signal, action, std::ptr::null_mut()) };
+        }
+    }
+}
+
 /// #139: a prompt whose terminal is lost, its pty master closed, reads it
 /// as gone (EIO on Linux), never as a failure.
 #[test]

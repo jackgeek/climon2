@@ -164,11 +164,15 @@ dispatch or shell-specific logic.
   discarded (`tcflush(TCIFLUSH)`, `FlushConsoleInputBuffer`), `show` writing
   to `output` (stdout, from `terminal::output()`). `read_input` gives one
   key at a time (one byte; one console record on Windows), a lost terminal
-  (EOF, EIO or a failed console) as `Input::Gone`, and, every 50 ms, a
-  signal that would end the process as `Input::Ended`: 128 + HUP, INT, QUIT
-  or TERM on Unix (`Signals::prompt()`), 129 after a close and `0xC000013A`
-  after Ctrl+Break on Windows. Dropping it restores the terminal; on Windows
-  it also removes its console handler routine.
+  (EOF or EIO; a broken pipe or invalid handle on Windows, any other failure
+  being returned) as `Input::Gone`, and a signal that would end the process
+  as `Input::Ended`: 128 + HUP, INT, QUIT or TERM on Unix, 129 after a close
+  and `0xC000013A` after Ctrl+Break on Windows. On Unix it installs its own
+  `sigaction` handler for those four, without `SA_RESTART`, and dropping it
+  puts back exactly the dispositions it replaced, default actions included,
+  so they end the process again while the session starts. Dropping it
+  restores the terminal first; on Windows it removes its console handler
+  routine, which `new` adds last so that a failure leaves none behind.
   `termination_signal()` and `take_resize()` are polled by the event loop,
   which must reread the size and suppress unchanged resizes.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
@@ -586,7 +590,8 @@ refusal proves nothing called them.
 `issue20_real_pty_size_and_zero_fallback`,
 `issue20_signals_coalesce_resize_and_report_exit_signal`,
 `a_prompt_flushes_type_ahead_reads_bytes_singly_and_ends_on_signals`,
-`a_prompt_reads_a_lost_terminal_as_gone` (#139). `tests/terminal_windows.rs`
+`a_prompt_reads_a_lost_terminal_as_gone`,
+`a_dropped_prompt_puts_back_each_signals_disposition` (#139). `tests/terminal_windows.rs`
 adds `a_prompt_discards_type_ahead_takes_keys_singly_and_ends_restored_on_ctrl_break`
 (#139).
 

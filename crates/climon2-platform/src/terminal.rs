@@ -154,16 +154,6 @@ mod unix {
             Ok(signals)
         }
 
-        /// A prompt (#139) hears every signal that would end it from the
-        /// terminal or `kill`, so it can restore the terminal first.
-        pub fn prompt() -> io::Result<Self> {
-            let mut signals = Self::empty();
-            for signal in [SIGHUP, SIGINT, SIGQUIT, SIGTERM] {
-                signals.register_termination(signal)?;
-            }
-            Ok(signals)
-        }
-
         /// The daemon ignores HUP/INT/PIPE and handles TERM like client loss.
         pub fn daemon() -> io::Result<Self> {
             let mut signals = Self::empty();
@@ -356,23 +346,25 @@ mod unix {
     /// byte at a time so that nothing after the answer is taken. A hang-up,
     /// interrupt, quit or termination signal ends the wait instead of the
     /// process, so dropping the prompt always restores the terminal.
+    /// Fields drop in order: the terminal is restored before the signals'
+    /// earlier dispositions are.
     pub struct Prompt {
         _raw: RawModeGuard,
+        signals: PromptSignals,
         input: File,
         output: File,
-        signals: Signals,
     }
 
     impl Prompt {
         pub fn new(input: File, output: File) -> io::Result<Self> {
-            let signals = Signals::prompt()?;
             let raw = RawModeGuard::new(&input)?;
+            let signals = PromptSignals::install()?;
             crate::syscall::checked(unsafe { libc::tcflush(input.as_raw_fd(), libc::TCIFLUSH) })?;
             Ok(Self {
                 _raw: raw,
+                signals,
                 input,
                 output,
-                signals,
             })
         }
 
@@ -384,7 +376,7 @@ mod unix {
         /// The next byte typed, a hang-up, or the status `128 + signal`.
         pub fn read_input(&mut self) -> io::Result<Input> {
             loop {
-                if let Some(signal) = self.signals.termination_signal() {
+                if let Some(signal) = self.signals.received() {
                     return Ok(Input::Ended(128 + signal));
                 }
                 let mut watch = [Watch::new(self.input.as_fd(), Interest::Read)];
@@ -399,6 +391,66 @@ mod unix {
             match read_terminal(&mut self.input, &mut key)? {
                 0 => Ok(Input::Gone),
                 _ => Ok(Input::Key(key[0])),
+            }
+        }
+    }
+
+    /// The signals that would end a prompt's process from the terminal or
+    /// `kill`.
+    const PROMPT_SIGNALS: [libc::c_int; 4] = [SIGHUP, SIGINT, SIGQUIT, SIGTERM];
+
+    /// The last of [`PROMPT_SIGNALS`] a prompt received; zero before any.
+    /// One prompt at a time: it owns the raw terminal.
+    static PROMPT_SIGNAL: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn record_prompt_signal(signal: libc::c_int) {
+        PROMPT_SIGNAL.store(
+            usize::try_from(signal).unwrap_or_default(),
+            Ordering::SeqCst,
+        );
+    }
+
+    /// A prompt's own handler for each of [`PROMPT_SIGNALS`], and the
+    /// dispositions it replaced, which dropping it puts back exactly, a
+    /// default action included. Without `SA_RESTART`, a signal also cuts
+    /// the prompt's wait short.
+    struct PromptSignals {
+        replaced: Vec<(libc::c_int, libc::sigaction)>,
+    }
+
+    impl PromptSignals {
+        fn install() -> io::Result<Self> {
+            PROMPT_SIGNAL.store(0, Ordering::SeqCst);
+            let mut signals = Self {
+                replaced: Vec::new(),
+            };
+            for signal in PROMPT_SIGNALS {
+                // SAFETY: an all-zero sigaction is a valid, empty one.
+                let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+                action.sa_sigaction = record_prompt_signal as *const () as libc::sighandler_t;
+                let mut replaced: libc::sigaction = unsafe { std::mem::zeroed() };
+                // SAFETY: both point at live sigactions; the handler only
+                // stores an atomic.
+                crate::syscall::checked(unsafe {
+                    libc::sigemptyset(&mut action.sa_mask);
+                    libc::sigaction(signal, &action, &mut replaced)
+                })?;
+                signals.replaced.push((signal, replaced));
+            }
+            Ok(signals)
+        }
+
+        fn received(&self) -> Option<u32> {
+            let signal = PROMPT_SIGNAL.load(Ordering::SeqCst);
+            std::num::NonZeroU32::new(u32::try_from(signal).ok()?).map(std::num::NonZeroU32::get)
+        }
+    }
+
+    impl Drop for PromptSignals {
+        fn drop(&mut self) {
+            for (signal, replaced) in self.replaced.iter().rev() {
+                // SAFETY: a disposition sigaction itself reported.
+                unsafe { libc::sigaction(*signal, replaced, std::ptr::null_mut()) };
             }
         }
     }

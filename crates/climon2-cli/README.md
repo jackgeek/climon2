@@ -245,7 +245,8 @@ client start.
   `neither_a_top_level_nor_a_deliberate_nested_start_warns_or_waits`,
   `a_nested_headless_start_warns_without_waiting_unless_deliberate`,
   `the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected`,
-  `a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal`
+  `a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal`,
+  `after_enter_sigterm_and_sighup_end_exec_while_the_session_starts`
   (#139)
 - `actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_identity`
 - `startup_failure_codes_and_signal_exit_are_preserved`

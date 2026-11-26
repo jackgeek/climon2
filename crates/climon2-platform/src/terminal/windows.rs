@@ -40,7 +40,9 @@ use std::{
 };
 use windows_sys::{
     Win32::{
-        Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{
+            ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
         System::{
             Console::{
                 CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT, CTRL_C_EVENT,
@@ -539,6 +541,14 @@ pub fn output() -> io::Result<File> {
     Ok(File::from(stdout.as_handle().try_clone_to_owned()?))
 }
 
+/// A console read failing because the console is gone: its pipe broken or
+/// its handle no longer valid.
+fn console_gone(error: &io::Error) -> bool {
+    [ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE]
+        .iter()
+        .any(|code| error.raw_os_error() == i32::try_from(*code).ok())
+}
+
 /// What Ctrl+Break, or any program ended by a console event, exits with:
 /// `STATUS_CONTROL_C_EXIT`.
 const CONTROL_C_EXIT: u32 = 0xC000_013A;
@@ -559,11 +569,12 @@ pub struct Prompt {
 }
 
 impl Prompt {
+    /// The handler routine goes in last, so a failure leaves none behind.
     pub fn new(input: File, output: File) -> io::Result<Self> {
-        let signals = Signals::client()?;
         let guard = RawModeGuard::new(&input)?;
         // SAFETY: the console's input handle, which this prompt owns.
         check(unsafe { FlushConsoleInputBuffer(raw(input.as_handle())) })?;
+        let signals = Signals::client()?;
         Ok(Self {
             _raw: guard,
             input,
@@ -579,9 +590,9 @@ impl Prompt {
         self.output.write_all(text.as_bytes())
     }
 
-    /// The next byte typed, a failed console as a hang-up, or the status a
-    /// console event ends with: 129 for a close, `STATUS_CONTROL_C_EXIT` for
-    /// Ctrl+Break.
+    /// The next byte typed, a console that is gone, or the status a console
+    /// event ends with: 129 for a close, `STATUS_CONTROL_C_EXIT` for
+    /// Ctrl+Break. Any other failure is returned.
     pub fn read_input(&mut self) -> io::Result<Input> {
         loop {
             if let Some(status) = self.ended() {
@@ -590,10 +601,11 @@ impl Prompt {
             if let Some(key) = self.typed.pop_front() {
                 return Ok(Input::Key(key));
             }
-            let Ok(records) = wait_records(self.input.as_handle(), 1) else {
-                return Ok(Input::Gone);
-            };
-            self.typed.extend(self.keys.feed(&records));
+            match wait_records(self.input.as_handle(), 1) {
+                Ok(records) => self.typed.extend(self.keys.feed(&records)),
+                Err(error) if console_gone(&error) => return Ok(Input::Gone),
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -696,6 +708,20 @@ mod tests {
             EventType: WINDOW_BUFFER_SIZE_EVENT as u16,
             ..INPUT_RECORD::default()
         }
+    }
+
+    /// #139: only a broken pipe or an invalid handle means the prompt's
+    /// console is gone; any other failure is the prompt's to report.
+    #[test]
+    fn only_a_broken_pipe_or_invalid_handle_is_a_console_gone() {
+        for code in [ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE] {
+            assert!(console_gone(&io::Error::from_raw_os_error(code as i32)));
+        }
+        // ERROR_ACCESS_DENIED and ERROR_NOT_ENOUGH_MEMORY.
+        for code in [5, 8] {
+            assert!(!console_gone(&io::Error::from_raw_os_error(code)));
+        }
+        assert!(!console_gone(&io::Error::other("no OS error")));
     }
 
     #[test]

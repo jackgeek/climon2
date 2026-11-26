@@ -92,13 +92,15 @@ pub enum NestedStart {
     Deliberate,
 }
 
-/// What `exec` shows on stderr before it starts a session.
+/// What `exec` shows before it starts a session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Notice<'a> {
+    /// Nothing.
     Quiet,
-    /// The warning, then the session starts.
+    /// The warning, on stderr, then the session starts.
     Warn(&'a str),
-    /// The warning and [`PROMPT`]; the session starts only on Enter.
+    /// The warning and [`PROMPT`], on the terminal (stdout); the session
+    /// starts only on Enter.
     Ask(&'a str),
 }
 
