@@ -183,9 +183,19 @@ jobs:
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
       - name: Qualify only macOS-exclusive source
+        env:
+          CLIMON2_TEST_EVIDENCE: ${{ runner.temp }}/test-evidence
         run: |
           started=$SECONDS
           status=0
           cargo xtask mutate --native-only || status=$?
           echo "- macOS gate on $(hostname), $(sw_vers -productVersion) $(uname -m): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+      # A daemon test whose readiness wait fails keeps its evidence there (#158).
+      - name: Upload failed tests' evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence-macos-own
+          path: ${{ runner.temp }}/test-evidence
+          if-no-files-found: ignore

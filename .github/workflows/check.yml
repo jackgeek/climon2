@@ -88,9 +88,19 @@ jobs:
       - name: Check native interface specification declarations and examples
         run: python3 docs/for-humans/protocol/monitor-client/check.py
       - name: Run formatting, lint and real-terminal tests
+        env:
+          CLIMON2_TEST_EVIDENCE: ${{ runner.temp }}/test-evidence
         run: |
           cargo xtask fixtures-check
           cargo xtask test
+      # A daemon test whose readiness wait fails keeps its evidence there (#158).
+      - name: Upload failed tests' evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence-${{ matrix.runner }}
+          path: ${{ runner.temp }}/test-evidence
+          if-no-files-found: ignore
   neutral:
     name: Platform-neutral / ${{ matrix.os }}
     strategy:

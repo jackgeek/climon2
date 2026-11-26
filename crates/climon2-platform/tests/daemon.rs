@@ -269,6 +269,59 @@ fn issue19_readiness_uses_real_five_second_absolute_deadline() {
     );
 }
 
+/// #158: the daemon keeps none of its starter's other descriptors open. On macOS a pipe
+/// gets close-on-exec only after it is made, so another thread's fork can catch one
+/// without it, as this fixture's leaked pipe stands for. Held by a daemon, a starter's
+/// spawn waiting for its own child's exec waited the daemon's whole life instead. A
+/// fresh process, so no other test's child holds the leaked pipe too.
+#[test]
+fn issue158_a_daemon_holds_no_leaked_descriptor_of_its_starter() {
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "owned_leak_fixture", "--nocapture"])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "the daemon kept the leaked descriptor open"
+    );
+}
+
+/// Starts a daemon while holding a pipe whose write end lacks close-on-exec, then
+/// closes its own copy: exits 0 only if the pipe then reads end of file.
+#[test]
+#[ignore = "owned subprocess fixture"]
+fn owned_leak_fixture() {
+    use std::os::fd::AsRawFd;
+    let mut descriptors = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+    let mut reader = unsafe { File::from_raw_fd(descriptors[0]) };
+    let leaked = unsafe { File::from_raw_fd(descriptors[1]) };
+    assert_ne!(
+        unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+        -1
+    );
+    let pending = daemon::spawn(Command::new("/bin/sh"), |command, fd| {
+        command
+            .arg("-c")
+            .arg(format!("printf R >&{fd}; exec sleep 20"));
+    })
+    .unwrap();
+    let pid = pending.id();
+    assert_eq!(pending.wait_ready(&[]).unwrap(), Readiness::Ready);
+    drop(leaked);
+    let mut watch = libc::pollfd {
+        fd: reader.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let closed =
+        unsafe { libc::poll(&mut watch, 1, 3_000) } == 1 && reader.read(&mut [0; 1]).unwrap() == 0;
+    unsafe { libc::kill(i32::try_from(pid).unwrap(), libc::SIGKILL) };
+    climon2_platform::process::wait(pid).unwrap();
+    std::process::exit(if closed { 0 } else { 1 });
+}
+
 extern "C" fn ignore_signal(_: libc::c_int) {}
 
 /// #19: a signal interrupting the readiness wait (EINTR) neither ends it early nor
