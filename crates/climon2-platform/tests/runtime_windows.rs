@@ -9,7 +9,7 @@
 use climon2_core::{failure::Failure, layout::home_hash8};
 use climon2_platform::{connection, runtime};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs, io,
     io::{Read, Write},
     os::windows::fs::symlink_file,
@@ -22,15 +22,17 @@ use std::{
 const CHILD: &str = "CLIMON2_TEST_RUNTIME_CHILD";
 
 /// Runs `body` in a child process running only `test`, with `LOCALAPPDATA`
-/// set to `root`.
-fn with_local_app_data(test: &str, root: &OsStr, body: impl FnOnce()) {
+/// set to `root` of a new folder that is short enough for a socket path
+/// whatever `TEMP` is (#422).
+fn with_local_app_data(test: &str, root: impl FnOnce(&Path) -> OsString, body: impl FnOnce()) {
     if std::env::var_os(CHILD).is_some() {
         return body();
     }
+    let folder = climon2_test_term::local_app_data();
     let output = Command::new(std::env::current_exe().unwrap())
         .args([test, "--exact", "--nocapture"])
         .env(CHILD, "1")
-        .env("LOCALAPPDATA", root)
+        .env("LOCALAPPDATA", root(folder.path()))
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -55,10 +57,9 @@ const ID: &str = "12345678-1234-4234-8234-123456789abc";
 
 #[test]
 fn the_runtime_directory_is_the_home_hash_in_c2_under_local_app_data_and_private() {
-    let root = climon2_test_term::local_app_data();
     with_local_app_data(
         "the_runtime_directory_is_the_home_hash_in_c2_under_local_app_data_and_private",
-        root.path().as_os_str(),
+        |folder| folder.into(),
         || {
             let parent = tempfile::tempdir().unwrap();
             let home = canonical_home(parent.path());
@@ -82,10 +83,9 @@ fn the_runtime_directory_is_the_home_hash_in_c2_under_local_app_data_and_private
 /// is refused with the unsafe-runtime-directory error and not repaired.
 #[test]
 fn an_unsafe_runtime_directory_is_refused_and_left_unrepaired() {
-    let root = climon2_test_term::local_app_data();
     with_local_app_data(
         "an_unsafe_runtime_directory_is_refused_and_left_unrepaired",
-        root.path().as_os_str(),
+        |folder| folder.into(),
         || {
             let parent = tempfile::tempdir().unwrap();
             let home = canonical_home(parent.path());
@@ -112,7 +112,7 @@ fn an_unsafe_runtime_directory_is_refused_and_left_unrepaired() {
 fn a_relative_local_app_data_is_refused() {
     with_local_app_data(
         "a_relative_local_app_data_is_refused",
-        OsStr::new("relative"),
+        |_| "relative".into(),
         || {
             let parent = tempfile::tempdir().unwrap();
             let home = canonical_home(parent.path());
@@ -125,25 +125,26 @@ fn a_relative_local_app_data_is_refused() {
     );
 }
 
-/// The path is 77 bytes plus `LOCALAPPDATA`'s profile part; past 107 bytes a
-/// session's socket path is refused, which `exec` reports as its own failure,
-/// 125.
+/// A session's socket path is `LOCALAPPDATA` plus 54 bytes,
+/// `\c2\<hash8>\<uuid>.sock`; past 107 bytes it is refused, which `exec`
+/// reports as its own failure, 125.
 #[test]
 fn a_socket_path_over_107_bytes_is_refused_and_fails_with_125() {
-    let parent = climon2_test_term::local_app_data();
-    // `<root>\c2\<hash8>\<uuid>.sock` adds 1 + 2 + 1 + 8 + 1 + 41 bytes.
-    let fixed = parent.path().as_os_str().len() + 1;
     for length in [107_usize, 108] {
-        let padding = (length - 54).checked_sub(fixed).unwrap_or_else(|| {
-            panic!(
-                "{} is over 52 bytes, too long for a {length}-byte socket path",
-                parent.path().display()
-            )
-        });
-        let root = parent.path().join("r".repeat(padding));
+        let padded = |folder: &Path| {
+            // `<root>\c2\<hash8>\<uuid>.sock` adds 1 + 2 + 1 + 8 + 1 + 41 bytes.
+            let fixed = folder.as_os_str().len() + 1;
+            let padding = (length - 54).checked_sub(fixed).unwrap_or_else(|| {
+                panic!(
+                    "{} is over 52 bytes, too long for a {length}-byte socket path",
+                    folder.display()
+                )
+            });
+            folder.join("r".repeat(padding)).into()
+        };
         with_local_app_data(
             "a_socket_path_over_107_bytes_is_refused_and_fails_with_125",
-            root.as_os_str(),
+            padded,
             socket_path_of_its_length,
         );
     }

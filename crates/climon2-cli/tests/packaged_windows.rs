@@ -34,7 +34,7 @@ use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
 use climon2_test_term::{
     ConPty, HostModel, HostSettings, JobShape, Key, Modifiers, Options, Terminal, controlled_pwsh,
-    local_app_data, rerun_outside,
+    end_process, local_app_data, rerun_outside,
 };
 use portable_pty::CommandBuilder;
 use std::{
@@ -48,9 +48,7 @@ use std::{
 };
 use windows_sys::Win32::System::{
     JobObjects::IsProcessInJob,
-    Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
-    },
+    Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
 };
 
 climon2_test_term::outside_relay!();
@@ -224,19 +222,9 @@ impl Drop for Home {
     fn drop(&mut self) {
         for session in self.sessions() {
             if process::is_same_daemon(&session).unwrap_or(false) {
-                terminate(session.daemon_pid);
+                end_process(session.daemon_pid);
             }
         }
-    }
-}
-
-fn terminate(pid: u32) {
-    // Opening by PID has no preconditions.
-    let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if !process.is_null() {
-        // A new handle, open with PROCESS_TERMINATE, closed here.
-        let process = unsafe { OwnedHandle::from_raw_handle(process) };
-        unsafe { TerminateProcess(process.as_raw_handle(), 1) };
     }
 }
 

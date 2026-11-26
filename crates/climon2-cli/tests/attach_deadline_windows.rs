@@ -13,7 +13,7 @@
 #![cfg(windows)]
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Terminal, local_app_data, rerun_outside};
+use climon2_test_term::{ConPty, Terminal, end_process, local_app_data, rerun_outside};
 use portable_pty::CommandBuilder;
 use std::{
     fs,
@@ -135,7 +135,7 @@ impl Drop for Install {
     fn drop(&mut self) {
         for session in self.sessions() {
             if process::is_same_daemon(&session).unwrap_or(false) {
-                drop(Held::open(session.daemon_pid));
+                end_process(session.daemon_pid);
             }
         }
     }

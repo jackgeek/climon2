@@ -8,7 +8,7 @@
 //! installing with `install.ps1` is the Windows Archive job's (#329).
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
-use climon2_test_term::{ConPty, Terminal, local_app_data};
+use climon2_test_term::{ConPty, Terminal, end_process, local_app_data};
 use portable_pty::CommandBuilder;
 use std::{
     env, fs,
@@ -186,7 +186,7 @@ impl Drop for Home {
     fn drop(&mut self) {
         for session in self.sessions() {
             if process::is_same_daemon(&session).unwrap_or(false) {
-                terminate(session.daemon_pid);
+                end_process(session.daemon_pid);
             }
         }
     }

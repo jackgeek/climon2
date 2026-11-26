@@ -20,6 +20,6 @@ pub use conpty::ConPty;
 pub use host::{HostModel, HostSettings, Terminal};
 pub use job::JobShape;
 pub use keys::{Key, Modifiers};
-pub use local_app_data::local_app_data;
+pub use local_app_data::{end_process, local_app_data};
 pub use outside::{Finished, Outside, relay_outside, rerun_outside};
 pub use pwsh::{PWSH_PROMPT, controlled_pwsh, pwsh};

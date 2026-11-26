@@ -33,7 +33,7 @@
 use climon2_core::metadata::SessionMetadata;
 use climon2_platform::process;
 use climon2_test_term::{
-    ConPty, Finished, JobShape, Key, Modifiers, Outside, Terminal, local_app_data,
+    ConPty, Finished, JobShape, Key, Modifiers, Outside, Terminal, end_process, local_app_data,
 };
 use portable_pty::CommandBuilder;
 use std::{
@@ -327,7 +327,7 @@ impl Drop for Home {
     fn drop(&mut self) {
         for session in self.sessions() {
             if process::is_same_daemon(&session).unwrap_or(false) {
-                terminate(session.daemon_pid);
+                end_process(session.daemon_pid);
             }
         }
     }
