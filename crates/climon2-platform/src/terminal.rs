@@ -20,12 +20,16 @@ pub fn ask(input: io::Result<File>, output: io::Result<File>, text: &str) -> io:
     })
 }
 
+fn open(input: io::Result<File>, output: io::Result<File>) -> io::Result<Prompt> {
+    Prompt::new(input?, output?)
+}
+
 fn open_and_ask(
     input: io::Result<File>,
     output: io::Result<File>,
     text: &str,
 ) -> io::Result<Answer> {
-    let mut prompt = Prompt::new(input?, output?)?;
+    let mut prompt = open(input, output)?;
     prompt.show(text)?;
     prompt.answer()
 }
@@ -421,11 +425,19 @@ mod unix {
                 if let Some(signal) = received() {
                     return Ok(Input::Ended(128 + signal));
                 }
-                let mut watch = [Watch::new(self.input.as_fd(), Interest::Read)];
-                if crate::waiting::wait(&mut watch, PROMPT_POLL)? > 0 {
-                    return self.read_key();
+                if let Some(input) = self.wait_key()? {
+                    return Ok(input);
                 }
             }
+        }
+
+        /// The next key, if one comes within the poll.
+        fn wait_key(&mut self) -> io::Result<Option<Input>> {
+            let mut watch = [Watch::new(self.input.as_fd(), Interest::Read)];
+            if crate::waiting::wait(&mut watch, PROMPT_POLL)? == 0 {
+                return Ok(None);
+            }
+            self.read_key().map(Some)
         }
 
         fn read_key(&mut self) -> io::Result<Input> {
@@ -474,9 +486,7 @@ mod unix {
                 replaced: Vec::new(),
             };
             for signal in PROMPT_SIGNALS {
-                if disposition(signal)?.sa_sigaction != libc::SIG_IGN {
-                    signals.replaced.push((signal, record(signal)?));
-                }
+                signals.replaced.extend(handle(signal)?);
             }
             Ok(signals)
         }
@@ -486,6 +496,14 @@ mod unix {
             drop(self);
             received()
         }
+    }
+
+    /// Records `signal` unless it is ignored: the disposition replaced.
+    fn handle(signal: libc::c_int) -> io::Result<Option<(libc::c_int, libc::sigaction)>> {
+        if disposition(signal)?.sa_sigaction == libc::SIG_IGN {
+            return Ok(None);
+        }
+        Ok(Some((signal, record(signal)?)))
     }
 
     fn disposition(signal: libc::c_int) -> io::Result<libc::sigaction> {

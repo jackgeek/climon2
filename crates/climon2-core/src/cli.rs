@@ -149,13 +149,18 @@ enum ExecOption {
     Nested,
 }
 
+/// Each of exec's options: its long form and its short form.
+const EXEC_OPTIONS: [(&str, &str, ExecOption); 2] = [
+    ("--headless", "-h", ExecOption::Headless),
+    ("--nested", "-n", ExecOption::Nested),
+];
+
 impl ExecOption {
     fn of(arg: &OsString) -> Option<Self> {
-        match arg.to_str()? {
-            "--headless" | "-h" => Some(Self::Headless),
-            "--nested" | "-n" => Some(Self::Nested),
-            _ => None,
-        }
+        EXEC_OPTIONS
+            .iter()
+            .find(|(long, short, _)| arg == long || arg == short)
+            .map(|(_, _, option)| *option)
     }
 }
 

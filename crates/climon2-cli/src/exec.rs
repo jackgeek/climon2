@@ -33,20 +33,51 @@ pub fn run(
     general: &LogFile,
     filter: Option<&str>,
 ) -> Result<u32, Error> {
-    let (config, layout) = prepare(home, lifetime)?;
-    let session = NewSession::create().map_err(|error| error.logged(general.path()))?;
+    let (config, layout, session) = checked(home, lifetime, general)?;
     // The working and runtime directories are checked before the prompt, so
     // no one is asked to start a session that is bound to fail.
     let startup = Startup::new(home, &layout, &session.id, lifetime, &config)?;
     if let Some(status) = confirm(session.environment.notice(lifetime, nested))? {
         return Ok(status);
     }
-    let log = session_log(home, &session.id, general)?;
+    start(
+        &startup,
+        session.environment,
+        command,
+        general,
+        filter,
+        config.client,
+    )
+}
+
+/// Configuration, terminals and the session's environment, all checked
+/// before anything is created.
+fn checked(
+    home: &Path,
+    lifetime: Lifetime,
+    general: &LogFile,
+) -> Result<(ExecConfig, ExecutableLayout, NewSession), Error> {
+    let (config, layout) = prepare(home, lifetime)?;
+    let session = NewSession::create().map_err(|error| error.logged(general.path()))?;
+    Ok((config, layout, session))
+}
+
+/// Switches to the session's own log, then starts its daemon and, for an
+/// ordinary session, its client.
+fn start(
+    startup: &Startup<'_>,
+    environment: SessionEnvironment,
+    command: CommandArgs,
+    general: &LogFile,
+    filter: Option<&str>,
+    settings: climon2_core::keys::ClientSettings,
+) -> Result<u32, Error> {
+    let log = session_log(startup.home, startup.id, general)?;
     let dispatch = log.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
         startup
-            .ready(command, session.environment, filter)
-            .and_then(|daemon| startup.finish(daemon, filter, config.client))
+            .ready(command, environment, filter)
+            .and_then(|daemon| startup.finish(daemon, filter, settings))
             .map_err(|error| error.logged(log.path().parent().expect("session log directory")))
     })
 }

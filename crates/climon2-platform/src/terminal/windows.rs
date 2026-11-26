@@ -554,6 +554,15 @@ pub fn hung_up(error: &io::Error) -> bool {
         .any(|code| error.raw_os_error() == i32::try_from(*code).ok())
 }
 
+/// What a failed console read means to a prompt: a hang-up is the console
+/// gone; any other failure is returned.
+fn failed_read(error: io::Error) -> io::Result<Option<Input>> {
+    if hung_up(&error) {
+        return Ok(Some(Input::Gone));
+    }
+    Err(error)
+}
+
 /// What Ctrl+Break, or any program ended by a console event, exits with:
 /// `STATUS_CONTROL_C_EXIT`.
 const CONTROL_C_EXIT: u32 = 0xC000_013A;
@@ -622,17 +631,31 @@ impl Prompt {
     /// Ctrl+Break. Any other failure is returned.
     pub fn read_input(&mut self) -> io::Result<Input> {
         loop {
-            if let Some(status) = self.ended() {
-                return Ok(Input::Ended(status));
+            if let Some(input) = self.pending() {
+                return Ok(input);
             }
-            if let Some(key) = self.typed.pop_front() {
-                return Ok(Input::Key(key));
+            if let Some(input) = self.take_record()? {
+                return Ok(input);
             }
-            match wait_records(self.input.as_handle(), 1) {
-                Ok(records) => self.typed.extend(self.keys.feed(&records)),
-                Err(error) if hung_up(&error) => return Ok(Input::Gone),
-                Err(error) => return Err(error),
+        }
+    }
+
+    /// An ending recorded, else a key already decoded.
+    fn pending(&mut self) -> Option<Input> {
+        self.ended()
+            .map(Input::Ended)
+            .or_else(|| self.typed.pop_front().map(Input::Key))
+    }
+
+    /// Decodes the next record, if one comes within the poll; a console
+    /// that is gone instead.
+    fn take_record(&mut self) -> io::Result<Option<Input>> {
+        match wait_records(self.input.as_handle(), 1) {
+            Ok(records) => {
+                self.typed.extend(self.keys.feed(&records));
+                Ok(None)
             }
+            Err(error) => failed_read(error),
         }
     }
 
@@ -766,6 +789,17 @@ mod tests {
             assert!(!hung_up(&io::Error::from_raw_os_error(code)));
         }
         assert!(!hung_up(&io::Error::other("no OS error")));
+    }
+
+    /// #139: a prompt reads a failed console read that is a hang-up as the
+    /// console gone, and returns any other.
+    #[test]
+    fn a_prompt_reads_a_hang_up_as_gone_and_returns_other_failures() {
+        let gone = failed_read(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE as i32));
+        assert_eq!(gone.unwrap(), Some(Input::Gone));
+        // ERROR_ACCESS_DENIED.
+        let denied = failed_read(io::Error::from_raw_os_error(5)).unwrap_err();
+        assert_eq!(denied.raw_os_error(), Some(5));
     }
 
     #[test]
