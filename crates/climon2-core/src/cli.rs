@@ -22,8 +22,11 @@ pub enum CliArgs {
     Monitor,
     /// `home`: the climon2 home, its owner and whether this host owns it.
     Home,
-    /// `home release`: remove the home's owner record (ADR 0011).
-    HomeRelease,
+    /// `home release [--force]`: remove the home's owner record (ADR 0011);
+    /// `--force` releases a home another host owns while it holds sessions.
+    HomeRelease {
+        force: bool,
+    },
     Help,
     Version,
 }
@@ -37,7 +40,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release]";
+pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -179,11 +182,14 @@ fn parse_monitor(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
         .ok_or(UsageError)
 }
 
-/// `home` takes nothing, or `release` alone.
+/// `home` takes nothing, or `release` and then optionally `--force`.
 fn parse_home(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     match arguments.as_slice() {
         [] => Ok(CliArgs::Home),
-        [action] if action == "release" => Ok(CliArgs::HomeRelease),
+        [action] if action == "release" => Ok(CliArgs::HomeRelease { force: false }),
+        [action, flag] if action == "release" && flag == "--force" => {
+            Ok(CliArgs::HomeRelease { force: true })
+        }
         _ => Err(UsageError),
     }
 }

@@ -68,8 +68,9 @@ xattr -dr com.apple.quarantine climon2-0.1.0-macos-universal
 To install by hand on Linux, use the `linux-x86_64-gnu` archive and
 `sha256sum`. There is no quarantine step. Linux needs procfs, and a file
 system at the install path that can swap two folders with `renameat2`.
-A climon2 home belongs to one computer, and on Linux to one PID namespace.
-climon2 refuses a home that another machine or container uses; see
+A climon2 home belongs to one computer, told apart by its machine ID, or by its
+PID namespace on a Linux computer or container without one. climon2 refuses a
+home that another machine or container uses; see
 [one climon2 home, one computer](commands.md#one-climon2-home-one-computer).
 
 ## Windows

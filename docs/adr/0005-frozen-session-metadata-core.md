@@ -85,12 +85,14 @@ omitted when absent:
 - A malformed origin makes the record unreadable, with the same
   warning-and-retention behavior as malformed frozen fields.
 
-**Superseded:** readers do not use `daemon_origin` to judge a session. Sharing
-one climon2 home across machines or PID namespaces is refused before any
-discovery runs ([ADR 0011](0011-one-home-one-host.md)), so every record a
-reader sees was written by its own host, and the identity check above decides
-as before. The earlier "created elsewhere" state of discovery, and climon2's
-own machine ID for a transient Linux one, were dropped with that decision.
+**Superseded in part:** sharing one climon2 home across machines or PID
+namespaces is refused before any discovery runs ([ADR 0011](0011-one-home-one-host.md)),
+so a reader sees records written by its own host, or, after `c2 home release
+--force`, by the host it took the home from. A reader uses `daemon_origin`
+only to keep the latter: a session whose origin is another host's is uncertain,
+created elsewhere, and never cleaned up. A record without an origin is judged
+by the identity check above, as before. climon2's own machine ID for a
+transient Linux one was dropped with that decision.
 ## Considered options
 
 - **Readers reject a `format_version` they don't know:** rejected. After an upgrade, `list` would hide live sessions from the other version.

@@ -1,6 +1,6 @@
-//! The home owner (ADR 0011, "One home, one host"): the host, one machine and
-//! one PID namespace, that a climon2 home belongs to, as `<home>/owner`
-//! records it. This is the record's format and the message of a refusal; the
+//! The home owner (ADR 0011, "One home, one host"): the host that a climon2
+//! home belongs to, as `<home>/owner` records it: its stable machine ID, or on
+//! Linux without one, its PID namespace. This is the record's format and the message of a refusal; the
 //! file itself belongs to the platform.
 use crate::{ContractError, metadata::SessionOrigin};
 use std::fmt;
@@ -53,7 +53,8 @@ impl fmt::Display for Refusal {
                 out,
                 "this climon2 home is in use by another machine or container ({owner}). \
                  climon2 does not work across machines yet (`c2 relay` is planned). To move \
-                 this home here, run `c2 home release`."
+                 this home here, run `c2 home release`, or `c2 home release --force` if the \
+                 host that owns it is gone."
             ),
             Self::Unchecked { owner, error } => write!(
                 out,
@@ -63,7 +64,8 @@ impl fmt::Display for Refusal {
             Self::Unreadable { path, error } => write!(
                 out,
                 "this climon2 home's owner record {} cannot be read: {error}. To let the next \
-                 command claim this home afresh, run `c2 home release` or delete {}.",
+                 command claim this home afresh, run `c2 home release` (with `--force` if the \
+                 home still holds sessions) or delete {}.",
                 path.display(),
                 path.display()
             ),

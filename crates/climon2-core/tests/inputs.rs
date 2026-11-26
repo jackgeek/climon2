@@ -200,7 +200,7 @@ fn issue74_monitor_and_m_take_no_arguments_and_mon_is_gone() {
 }
 
 /// #133 / ADR 0011: `home` and its shortcut `h` take nothing, or `release`
-/// alone; anything else is a usage error (2).
+/// and then optionally `--force`; anything else is a usage error (2).
 #[test]
 fn issue133_home_takes_nothing_or_release() {
     for home in ["home", "h"] {
@@ -208,9 +208,20 @@ fn issue133_home_takes_nothing_or_release() {
             CliArgs::parse([&[home][..], tail].concat().into_iter().map(OsString::from))
         };
         assert_eq!(parse(&[]).unwrap(), CliArgs::Home);
-        assert_eq!(parse(&["release"]).unwrap(), CliArgs::HomeRelease);
+        assert_eq!(
+            parse(&["release"]).unwrap(),
+            CliArgs::HomeRelease { force: false }
+        );
+        assert_eq!(
+            parse(&["release", "--force"]).unwrap(),
+            CliArgs::HomeRelease { force: true }
+        );
         for bad in [
             &["release", "extra"][..],
+            &["release", "--force", "extra"],
+            &["--force"],
+            &["--force", "release"],
+            &["release", "-f"],
             &["Release"],
             &[""],
             &["--help"],
@@ -392,7 +403,7 @@ const SHORTCUTS: [(&str, &str); 6] = [
 #[test]
 fn shortcuts_parse_exactly_as_their_full_commands() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
-    let tails: [&[&str]; 20] = [
+    let tails: [&[&str]; 21] = [
         &[],
         &["cmd", "--flag", ""],
         &["--", "-cmd"],
@@ -413,6 +424,7 @@ fn shortcuts_parse_exactly_as_their_full_commands() {
         &["extra"],
         &["release"],
         &["release", "extra"],
+        &["release", "--force"],
     ];
     for (full, shortcut) in SHORTCUTS {
         let mut accepted = 0;

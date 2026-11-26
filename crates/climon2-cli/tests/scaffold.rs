@@ -8,7 +8,7 @@ fn missing_command_is_usage_error() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         output.stderr,
-        b"climon2: error: usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release]\n"
+        b"climon2: error: usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]\n"
     );
 }
 
@@ -23,7 +23,7 @@ fn dash_h_alone_is_a_usage_error_not_help() {
     assert!(output.stdout.is_empty());
     assert_eq!(
         output.stderr,
-        b"climon2: error: usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release]\n"
+        b"climon2: error: usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]\n"
     );
 }
 
@@ -33,7 +33,7 @@ fn help_and_version_print_exact_presentation_without_home() {
     for (flag, expected) in [
         (
             "--help",
-            "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release]\n"
+            "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]\n"
                 .to_owned(),
         ),
         (

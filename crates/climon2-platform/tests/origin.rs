@@ -30,7 +30,8 @@ fn fixture(directory: &Path, machine: Option<&str>, mounts: &[&str]) -> Sources 
     sources
 }
 
-/// The machine ID is not stable, and so absent, when the last mount that
+/// Only 32 hex digits are a machine ID (`uninitialized` is not). The
+/// machine ID is not stable, and so absent, when the last mount that
 /// holds `/etc/machine-id` (the file, `/etc` or the root) is a tmpfs or an
 /// overlay: systemd's transient `/run/machine-id` mount, or the root of a live
 /// system. A bind mount of a real file over a volatile root, or a real `/etc`,
@@ -73,7 +74,16 @@ fn issue133_only_a_stable_machine_id_is_part_of_the_origin() {
         assert_eq!(origin.pid_namespace, Some(inode));
     }
     let directory = tempfile::tempdir().unwrap();
-    for machine in [None, Some(""), Some("not a machine id")] {
+    for machine in [
+        None,
+        Some(""),
+        Some("not a machine id"),
+        Some("uninitialized"),
+        Some("8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0"),
+        Some("8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f0"),
+        Some("8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0g"),
+        Some("8f2c4d1e-9a7b-4c3d-8e6f-5a4b3c2d1e0f"),
+    ] {
         let sources = fixture(directory.path(), machine, &[ROOT]);
         assert_eq!(
             current_at(&sources).unwrap().machine_id,

@@ -42,8 +42,13 @@ pub fn current_at(sources: &Sources) -> io::Result<SessionOrigin> {
     })
 }
 
+/// systemd's machine ID: 32 hex digits. Anything else, such as the
+/// `uninitialized` a first boot writes, is no stable machine ID.
 fn machine_id(path: &Path) -> Option<MachineId> {
-    fs::read_to_string(path).ok()?.trim().parse().ok()
+    let text = fs::read_to_string(path).ok()?;
+    let id = text.trim();
+    let hex = id.len() == 32 && id.chars().all(|digit| digit.is_ascii_hexdigit());
+    hex.then(|| id.parse().ok())?
 }
 
 /// The mount points that can hold `/etc/machine-id`: the file itself, the

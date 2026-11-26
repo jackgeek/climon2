@@ -731,6 +731,39 @@ fn linux_daemon_identity_alone_proves_a_session_stale() {
     assert_eq!(files.map(|file| file.exists()), [true, true, false]);
 }
 
+/// #133 / ADR 0011, DSC-04 Contract case (uncertain disappearance): after a forced release, a
+/// home can hold sessions its earlier owner created. With its socket missing and its PID gone
+/// here, a session whose origin is another host's is uncertain, created elsewhere, and kept
+/// even when cleanup is requested. One whose origin is this host's, and one from an older
+/// writer that recorded no origin, are stale and removed.
+#[test]
+fn a_session_another_host_created_is_never_proven_gone() {
+    use climon2_core::metadata::SessionOrigin;
+    let (_directory, home) = home();
+    let here = climon2_platform::origin::current().unwrap();
+    let mut elsewhere = record(&home, 0x71, CREATED);
+    elsewhere.daemon_origin = Some(SessionOrigin {
+        machine_id: Some("another-machine".parse().unwrap()),
+        pid_namespace: None,
+    });
+    let mut own = record(&home, 0x72, CREATED);
+    own.daemon_origin = Some(here);
+    let unrecorded = record(&home, 0x73, CREATED);
+    let records = [&elsewhere, &own, &unrecorded];
+    let files = records.map(|metadata| save(&home, metadata));
+
+    let pass = discover(&home, REMOVE).unwrap();
+    let [
+        Outcome::Uncertain(found_elsewhere, Uncertainty::CreatedElsewhere),
+        Outcome::Stale(found_own, Cleanup::Removed),
+        Outcome::Stale(found_unrecorded, Cleanup::Removed),
+    ] = pass.sessions.as_slice()
+    else {
+        panic!("{pass:?}");
+    };
+    assert_eq!([found_elsewhere, found_own, found_unrecorded], records);
+    assert_eq!(files.map(|file| file.exists()), [true, false, false]);
+}
 /// DSC-04 Contract case (uncertain disappearance): a path that is not a socket is never
 /// unlinked as one. Linux refuses a connection to a regular file just as it refuses one to a
 /// dead daemon's socket, so with a dead identity the session is stale, but its cleanup fails

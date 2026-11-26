@@ -37,8 +37,8 @@ pub use climon2_core::failure::Failure as Error;
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
-    if let Some(release) = home_command(&arguments) {
-        return unowned(|home, _, _| ownership::run(home, release));
+    if let Some(action) = home_command(&arguments) {
+        return unowned(|home, _, _| ownership::run(home, action));
     }
     match work(arguments) {
         Ok(work) => native::logged_run(work),
@@ -49,12 +49,11 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
     }
 }
 
-/// `home` (`Some(false)`) and `home release` (`Some(true)`), which use the
-/// home without checking its owner.
-fn home_command(arguments: &CliArgs) -> Option<bool> {
+/// `home` and `home release`, which use the home without checking its owner.
+fn home_command(arguments: &CliArgs) -> Option<ownership::Action> {
     match arguments {
-        CliArgs::Home => Some(false),
-        CliArgs::HomeRelease => Some(true),
+        CliArgs::Home => Some(ownership::Action::Show),
+        CliArgs::HomeRelease { force } => Some(ownership::Action::Release { force: *force }),
         _ => None,
     }
 }

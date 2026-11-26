@@ -92,6 +92,9 @@ fn log_uncertainty(uncertainty: &Uncertainty) {
             tracing::debug!(errno = error.raw_os_error(), "session connection failed")
         }
         Uncertainty::DaemonAlive => tracing::debug!("refused connection belongs to a live daemon"),
+        Uncertainty::CreatedElsewhere => {
+            tracing::debug!("session created on another host is kept")
+        }
         Uncertainty::IdentityUnknown(error) => {
             tracing::warn!(errno = error.raw_os_error(), "daemon identity is uncertain")
         }

@@ -5,7 +5,7 @@ use climon2_core::{
     metadata::SessionOrigin,
     owner::{OWNER_FILE, Refusal},
 };
-use climon2_platform::owner::{Released, check, check_as, read, release};
+use climon2_platform::owner::{Link, Released, check, check_as, check_linking, read, release};
 use std::{fs, io, path::Path, sync::Barrier};
 
 fn origin(machine: Option<&str>, pid_namespace: Option<u64>) -> SessionOrigin {
@@ -268,5 +268,57 @@ fn issue133_release_removes_the_record_so_the_next_check_claims_afresh() {
     assert!(target.exists());
 
     fs::create_dir(home.path().join(OWNER_FILE)).unwrap();
-    assert!(release(home.path()).is_err());
+    assert!(matches!(
+        release(home.path()).unwrap(),
+        Released::Unreadable(_)
+    ));
+    assert!(names(home.path()).is_empty());
+
+    let folder = home.path().join(OWNER_FILE);
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("kept"), "").unwrap();
+    let error = release(home.path()).unwrap_err();
+    let text = error.to_string();
+    assert!(text.ends_with("; delete it by hand"), "{text}");
+    assert!(text.starts_with(&folder.display().to_string()), "{text}");
+    assert!(folder.join("kept").exists());
+}
+
+/// Where the file system cannot link, a claim creates the record in place,
+/// exclusively: the home is still claimed, nothing else is left, and a later
+/// claim by another host is judged against it.
+#[test]
+fn issue133_a_claim_without_links_creates_the_record_in_place() {
+    let unsupported: Link = |_, _| Err(io::Error::from(io::ErrorKind::Unsupported));
+    let home = tempfile::tempdir().unwrap();
+    check_linking(home.path(), Ok(here()), unsupported).unwrap();
+    assert_eq!(read(home.path()).unwrap(), Some(here()));
+    assert_eq!(names(home.path()), [OWNER_FILE]);
+    let other = origin(Some("bbbb"), Some(1));
+    let Err(Refusal::Foreign(owner)) = check_linking(home.path(), Ok(other), unsupported) else {
+        panic!("another host claimed a claimed home");
+    };
+    assert_eq!(owner, here());
+}
+
+/// A temporary record a crashed claim left behind, under any name this process
+/// could pick, neither blocks a claim nor is touched by it.
+#[test]
+fn issue133_a_leftover_temporary_record_does_not_block_a_claim() {
+    let home = tempfile::tempdir().unwrap();
+    let leftovers: Vec<_> = [0u64, 1]
+        .map(|n| format!(".owner.{}.{n:016x}.tmp", std::process::id()))
+        .into();
+    for leftover in &leftovers {
+        fs::write(home.path().join(leftover), "left").unwrap();
+    }
+    check_as(home.path(), Ok(here())).unwrap();
+    assert_eq!(read(home.path()).unwrap(), Some(here()));
+    for leftover in &leftovers {
+        assert_eq!(
+            fs::read_to_string(home.path().join(leftover)).unwrap(),
+            "left"
+        );
+    }
+    assert_eq!(names(home.path()).len(), 3);
 }

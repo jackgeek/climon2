@@ -68,7 +68,8 @@ fn issue133_refusals_name_the_owner_and_the_way_forward() {
         Refusal::Foreign(owner.clone()).to_string(),
         "this climon2 home is in use by another machine or container (machine aaaa, PID \
          namespace 1). climon2 does not work across machines yet (`c2 relay` is planned). To \
-         move this home here, run `c2 home release`."
+         move this home here, run `c2 home release`, or `c2 home release --force` if the host \
+         that owns it is gone."
     );
     let error = io::Error::other("no origin");
     assert_eq!(
@@ -81,7 +82,7 @@ fn issue133_refusals_name_the_owner_and_the_way_forward() {
     assert_eq!(
         Refusal::Unreadable { path, error }.to_string(),
         "this climon2 home's owner record /home/me/.climon2/owner cannot be read: bad record. \
-         To let the next command claim this home afresh, run `c2 home release` or delete \
-         /home/me/.climon2/owner."
+         To let the next command claim this home afresh, run `c2 home release` (with `--force` \
+         if the home still holds sessions) or delete /home/me/.climon2/owner."
     );
 }

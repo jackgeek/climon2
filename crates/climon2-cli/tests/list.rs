@@ -1,7 +1,11 @@
 #![cfg(unix)]
 
 use climon2_cli::list::{LiveSession, discover, json, table};
-use climon2_core::{SessionId, hello::HelloExtensions, metadata::SessionMetadata};
+use climon2_core::{
+    SessionId,
+    hello::HelloExtensions,
+    metadata::{SessionMetadata, SessionOrigin},
+};
 use climon2_platform::{logging, process, runtime};
 use std::{fs, io::Write};
 
@@ -701,8 +705,9 @@ fn list_args_that_exactly_fit_are_whole_and_one_cell_less_is_truncated() {
 /// #77, DSC-06 (CLI part): discovery moved into `climon2-discovery`, and `list` still logs
 /// each probe's diagnostic in the general log once per session, at its old level, under the
 /// CLI's own target and with its errno: a hello from another session or a failed exchange,
-/// an unreachable socket, a session whose daemon still runs or whose identity is unknown,
-/// and a failed stale cleanup. Uncertain sessions keep their metadata.
+/// an unreachable socket, a session whose daemon still runs, was created elsewhere (#133) or
+/// has an unknown identity, and a failed stale cleanup. Uncertain sessions keep their
+/// metadata.
 #[test]
 fn every_probe_diagnostic_is_logged_once_with_its_errno() {
     use climon2_test_term::{Isolation, bin_path, exit_within, hello_peer, process_command};
@@ -731,7 +736,16 @@ fn every_probe_diagnostic_is_logged_once_with_its_errno() {
     if let Some(identity) = &mut stale.daemon_linux_identity {
         identity.start_ticks = 0;
     }
-    let files: Vec<_> = [&unreachable, &alive, &unknown, &stale]
+    let mut elsewhere = SessionMetadata {
+        session_id: metadata(&home, 37, created).session_id,
+        socket_path: metadata(&home, 37, created).socket_path,
+        ..stale.clone()
+    };
+    elsewhere.daemon_origin = Some(SessionOrigin {
+        machine_id: Some("another-machine".parse().unwrap()),
+        pid_namespace: None,
+    });
+    let files: Vec<_> = [&unreachable, &alive, &unknown, &stale, &elsewhere]
         .into_iter()
         .map(|metadata| save(&home, metadata))
         .collect();
@@ -776,6 +790,7 @@ fn every_probe_diagnostic_is_logged_once_with_its_errno() {
             libc::EPROTOTYPE
         ),
         "DEBUG climon2_cli::list: refused connection belongs to a live daemon\n".to_owned(),
+        "DEBUG climon2_cli::list: session created on another host is kept\n".to_owned(),
         " WARN climon2_cli::list: daemon identity is uncertain\n".to_owned(),
         format!(
             " WARN climon2_cli::list: stale session cleanup failed errno={}\n",

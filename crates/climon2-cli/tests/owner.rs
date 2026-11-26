@@ -5,7 +5,7 @@
 //! release` removes the record on any host, unless sessions run here.
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
@@ -37,7 +37,8 @@ fn issue133_a_home_another_host_owns_is_refused_before_anything_else() {
     let refusal = "climon2: error: this climon2 home is in use by another machine or container \
                    (machine another-machine, PID namespace 1). climon2 does not work across \
                    machines yet (`c2 relay` is planned). To move this home here, run `c2 home \
-                   release`. (logs: ";
+                   release`, or `c2 home release --force` if the host that owns it is gone. \
+                   (logs: ";
     for arguments in [
         &["list"][..],
         &["list", "--json"],
@@ -200,42 +201,151 @@ fn issue133_home_release_removes_a_bad_or_linked_record_itself() {
     }
 }
 
-/// `c2 home release` refuses, with 125, while this host has a session
-/// running in the home, whoever owns it; nothing is removed.
+/// The home in `root`, created for a test.
+fn home_in(root: &Path) -> PathBuf {
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::canonicalize(home).unwrap()
+}
+
+/// Writes session record `suffix` into the home in `root`, its socket refusing
+/// connections: its daemon is this test process, still running when `alive`
+/// and gone otherwise, and `origin` is where it was created.
+fn session(root: &Path, suffix: u8, alive: bool, origin: Option<&str>) -> PathBuf {
+    use climon2_platform::{process, runtime};
+    let sessions = home_in(root).join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let id = format!("12345678-1234-4234-8234-123456789a{suffix:02x}");
+    let socket = root.join(format!("{suffix}.sock"));
+    drop(runtime::bind(&socket).unwrap());
+    let pid = std::process::id();
+    let start = match alive {
+        true => process::start_time(pid).unwrap().unwrap(),
+        false => 1,
+    };
+    let mut record = serde_json::json!({
+        "format_version": 1, "session_id": id, "socket_path": socket,
+        "daemon_pid": pid, "daemon_start_time": start,
+        "command": "bash", "args": [], "cwd": root, "depth": 1,
+        "created_at": "2026-11-26T12:00:00.000Z", "climon2_version": "0.1.0",
+    });
+    if let Some(identity) = process::linux_identity(pid).unwrap() {
+        let mut identity = serde_json::to_value(identity).unwrap();
+        if !alive {
+            identity["start_ticks"] = serde_json::json!(0);
+        }
+        record["daemon_linux_identity"] = identity;
+    }
+    if let Some(origin) = origin {
+        record["daemon_origin"] = serde_json::from_str(origin).unwrap();
+    }
+    let path = sessions.join(format!("{id}.pty"));
+    fs::write(&path, record.to_string()).unwrap();
+    path
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).unwrap()
+}
+
+/// On a host that is not the owner, `c2 home release` refuses with 125 while
+/// the home holds any session record, valid or not, since the owning host may
+/// still run them; `--force` releases it anyway, and every record stays. A
+/// home whose record cannot be read is treated so too.
+#[test]
+fn issue133_a_non_owner_releases_a_home_with_sessions_only_with_force() {
+    for (record, sessions) in [(FOREIGN, 1), (FOREIGN, 2), ("not json", 1)] {
+        let root = tempfile::tempdir().unwrap();
+        let home = home_in(root.path());
+        fs::write(home.join("owner"), record).unwrap();
+        let mut kept = vec![session(root.path(), 1, false, None)];
+        if sessions == 2 {
+            let invalid = home.join("sessions/12345678-1234-4234-8234-123456789a02.pty");
+            fs::write(&invalid, "not metadata").unwrap();
+            kept.push(invalid);
+        }
+        let output = cli(root.path(), &["home", "release"]);
+        assert_eq!(output.status.code(), Some(125), "{output:?}");
+        let refusal = format!(
+            "climon2: error: this climon2 home holds {sessions} session record(s), which the \
+             host that owns it may still be running; if that host is gone, run `c2 home \
+             release --force` (logs: "
+        );
+        assert!(stderr(&output).starts_with(&refusal), "{output:?}");
+        assert_eq!(fs::read_to_string(home.join("owner")).unwrap(), record);
+
+        let output = cli(root.path(), &["home", "release", "--force"]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(stdout(&output).starts_with("removed "), "{output:?}");
+        assert!(!home.join("owner").exists());
+        assert!(kept.iter().all(|path| path.exists()));
+    }
+}
+
+/// On the owner, `c2 home release` refuses with 125, even with `--force`,
+/// while a session of its own may still run: its daemon is alive here. It
+/// releases the home once its sessions are proven ended, or were created on
+/// another host, whose records stay even when the next command claims it.
+#[test]
+fn issue133_the_owner_releases_only_once_its_sessions_have_ended() {
+    let other = r#"{"machine_id":"another-machine","pid_namespace":1}"#;
+    for (alive, origin) in [(true, None), (false, None), (false, Some(other))] {
+        let root = tempfile::tempdir().unwrap();
+        let home = home_in(root.path());
+        assert_eq!(cli(root.path(), &["list"]).status.code(), Some(0));
+        let path = session(root.path(), 1, alive, origin);
+        for force in [&["h", "release"][..], &["h", "release", "--force"]] {
+            let output = cli(root.path(), force);
+            if alive {
+                assert_eq!(output.status.code(), Some(125), "{output:?}");
+                let refusal = "climon2: error: this host still has 1 climon2 session(s) in \
+                               this home that may be running; end them before releasing it \
+                               (logs: ";
+                assert!(stderr(&output).starts_with(refusal), "{output:?}");
+                assert!(home.join("owner").exists());
+            } else {
+                assert_eq!(output.status.code(), Some(0), "{output:?}");
+                assert_eq!(cli(root.path(), &["list"]).status.code(), Some(0));
+            }
+        }
+        // A stale record of this host's own is cleaned up by the next command.
+        assert_eq!(
+            path.exists(),
+            alive || origin.is_some(),
+            "{alive} {origin:?}"
+        );
+    }
+}
+
+/// On the owner, `c2 home release` refuses with 125, even with `--force`,
+/// while a session of its own answers here; nothing is removed.
 #[cfg(unix)]
 #[test]
 fn issue133_home_release_is_refused_while_sessions_run_here() {
-    use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
-    let home = root.path().join("home");
-    fs::create_dir(&home).unwrap();
-    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(home.join("owner"), FOREIGN).unwrap();
-    let sessions = home.join("sessions");
-    fs::create_dir(&sessions).unwrap();
-    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+    let home = home_in(root.path());
+    assert_eq!(cli(root.path(), &["list"]).status.code(), Some(0));
+    let owner = fs::read_to_string(home.join("owner")).unwrap();
+    let path = session(root.path(), 1, false, None);
     let id = "12345678-1234-4234-8234-123456789a01";
-    let socket = root.path().join("s.sock");
-    let record = serde_json::json!({
-        "format_version": 1, "session_id": id, "socket_path": socket,
-        "daemon_pid": std::process::id(), "daemon_start_time": 0,
-        "command": "bash", "args": [], "cwd": root.path(), "depth": 1,
-        "created_at": "2026-11-26T12:00:00.000Z", "climon2_version": "0.1.0",
-    });
-    let metadata = sessions.join(format!("{id}.pty"));
-    fs::write(&metadata, record.to_string()).unwrap();
+    let socket = root.path().join("1.sock");
+    fs::remove_file(&socket).unwrap();
     let reply = format!(r#"{{"session_id":"{id}","climon2_version":"0.1.0","protocol":1}}"#);
-    let peer = climon2_test_term::hello_peer(&socket, &reply, 1);
-
-    let output = cli(root.path(), &["home", "release"]);
+    let peer = climon2_test_term::hello_peer(&socket, &reply, 2);
+    for arguments in [&["home", "release"][..], &["home", "release", "--force"]] {
+        let output = cli(root.path(), arguments);
+        assert_eq!(output.status.code(), Some(125), "{output:?}");
+        let refusal = "climon2: error: this host still has 1 climon2 session(s) in this home \
+                       that may be running; end them before releasing it (logs: ";
+        assert!(stderr(&output).starts_with(refusal), "{output:?}");
+        assert!(output.stdout.is_empty());
+    }
     peer.join().unwrap();
-
-    assert_eq!(output.status.code(), Some(125), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let refusal = "climon2: error: this host still has 1 climon2 session(s) running in this \
-                   home; end them before releasing it (logs: ";
-    assert!(stderr.starts_with(refusal), "{stderr}");
-    assert!(output.stdout.is_empty());
-    assert_eq!(fs::read_to_string(home.join("owner")).unwrap(), FOREIGN);
-    assert!(metadata.exists());
+    assert_eq!(fs::read_to_string(home.join("owner")).unwrap(), owner);
+    assert!(path.exists());
 }

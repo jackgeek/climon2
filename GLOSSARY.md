@@ -94,7 +94,7 @@ The per-session record in climon2 home that describes a session and how to reach
 _Avoid_: Session file, PTY file
 
 **Session origin**:
-The machine, and on Linux the PID namespace, where a session daemon was created, recorded in its session metadata for diagnostics.
+The machine, and on Linux the PID namespace, where a session daemon was created, recorded in its session metadata; a session whose origin is another host's is never cleaned up.
 _Avoid_: Host, remote session, foreign session
 
 **Discovery pass**:

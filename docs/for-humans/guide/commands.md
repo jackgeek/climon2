@@ -14,6 +14,7 @@ c2 list --json
 c2 monitor
 c2 home
 c2 home release
+c2 home release --force
 ```
 
 Every command has a one-letter shortcut that works exactly like the full name.
@@ -240,7 +241,7 @@ directory, or with a container that has another machine ID, is refused.
 do anything else:
 
 ```text
-climon2: error: this climon2 home is in use by another machine or container (machine 8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f, PID namespace 4026531836). climon2 does not work across machines yet (`c2 relay` is planned). To move this home here, run `c2 home release`.
+climon2: error: this climon2 home is in use by another machine or container (machine 8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f, PID namespace 4026531836). climon2 does not work across machines yet (`c2 relay` is planned). To move this home here, run `c2 home release`, or `c2 home release --force` if the host that owns it is gone.
 ```
 
 climon2 does not work across machines yet; `c2 relay` is planned. Until then,
@@ -257,11 +258,21 @@ this host: machine 0b7e5a1c2d3f4e5a6b7c8d9e0f1a2b3c, PID namespace 4026531836 (n
 ```
 
 `c2 home release` removes the `owner` file, so the next command claims the
-home for the computer it runs on. Run it to move a home to another computer,
-or on the new computer when the owner is gone. It refuses, with 125, while
-this computer still has sessions running in the home. It also clears an
-`owner` file that cannot be read, which commands refuse until it is released
-or deleted.
+home for the computer it runs on. It also clears an `owner` file that cannot
+be read, which commands refuse until it is released or deleted. An empty
+folder named `owner` is removed too; any other folder you must delete
+yourself.
+
+- On the computer that owns the home, it refuses, with 125, while any of that
+  computer's sessions in the home may still be running.
+- On any other computer, it refuses, with 125, while the home holds any
+  sessions at all, because the owning computer may still be running them. If
+  that computer is gone, run `c2 home release --force`.
+
+After a forced release, the new owner never deletes the sessions the old
+owner started: `list` does not show them, and they are kept until you delete
+their files from the `sessions` folder, or the old owner takes the home back
+with `c2 home release --force` and ends them.
 ## On Windows
 
 On Windows, `c2` runs the same commands as on macOS and Linux, with the same
@@ -276,6 +287,7 @@ c2 kill $id
 c2 monitor
 c2 home
 c2 home release
+c2 home release --force
 ```
 
 The terminals and shells climon2 is tested with on Windows are listed in

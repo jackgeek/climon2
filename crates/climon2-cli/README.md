@@ -5,7 +5,7 @@ CLI orchestration for `exec [--headless] COMMAND [ARG...]`, `attach SESSION-ID`,
 single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`, `h`; `r` is
 reserved for `relay`), `-h` is the short form of `--headless`, and help has
 only `--help` (#287). The usage string is
-`usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release]`.
+`usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | home|h [release [--force]]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -37,14 +37,20 @@ before it prunes logs or starts, attaches, lists or kills anything (ADR 0011,
 `--help` and `--version` never check. `home` and `home release`, in
 `src/ownership.rs` (#403), use the home without checking it: `home` prints
 the home, its owner and whether this host is the owner, claiming nothing;
-`home release` removes the owner record whoever it names, a bad or linked one
-itself, and refuses with 125 while this host has a live session in the home
-(probed without removing stale metadata). `tests/owner.rs` (every OS):
+`home release [--force]` removes the owner record whoever it names, a bad or
+linked one (or an empty folder) itself, after a discovery pass that removes no
+metadata: on the owner it refuses with 125, even with `--force`, while any of
+its sessions is live or not proven ended; on any other host, or when the owner
+is unknown, it refuses with 125 while the home holds any session record, unless
+`--force`. `list` logs a session created on another host (`session created on
+another host is kept`, debug) and keeps it. `tests/owner.rs` (every OS):
 `issue133_a_home_another_host_owns_is_refused_before_anything_else`,
 `issue133_the_first_command_claims_the_home_for_this_host`,
 `issue133_home_shows_the_owner_and_whether_this_host_is_it`,
 `issue133_home_release_removes_any_owner_so_the_next_command_claims_the_home`,
-`issue133_home_release_removes_a_bad_or_linked_record_itself` and, on Unix,
+`issue133_home_release_removes_a_bad_or_linked_record_itself`,
+`issue133_a_non_owner_releases_a_home_with_sessions_only_with_force`,
+`issue133_the_owner_releases_only_once_its_sessions_have_ended` and, on Unix,
 `issue133_home_release_is_refused_while_sessions_run_here`.
 `tests/list_windows.rs` proves `list` with no sessions, the reclaim of a
 stale session whose daemon has exited, the sessions it keeps, and a live

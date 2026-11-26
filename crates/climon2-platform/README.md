@@ -100,7 +100,7 @@ dispatch or shell-specific logic.
   native file per OS (`src/origin/{linux,macos,windows}.rs`), is where this
   process runs (#133): on Linux the PID namespace as the inode of
   `/proc/self/ns/pid` and the machine ID from `/etc/machine-id`, absent when
-  there is none or when it does not survive a reboot: the last mount holding it
+  it is not 32 hex digits (`uninitialized`, for one) or when it does not survive a reboot: the last mount holding it
   (at `/etc/machine-id`, `/etc` or `/`) is a tmpfs or an overlay, as for
   systemd's transient `/run/machine-id` or a live system's root;
   on macOS the hardware UUID from `gethostuuid`, as 32 lowercase hex digits;
@@ -115,10 +115,13 @@ dispatch or shell-specific logic.
   read its own origin for is `Refusal::Unchecked`; a record that is not a
   plain, valid file is `Refusal::Unreadable` and left alone. Without its own
   origin, or when the record cannot be written, it claims nothing and warns.
-  `owner::check_as` takes the origin, for tests. `owner::read` names the
-  recorded owner without checking or claiming (`c2 home`), and
-  `owner::release` removes whatever record is there, naming it, and a link
-  itself, never its target (`c2 home release`). Two origins are one host when
+  `owner::check_as` takes the origin, and `owner::check_linking` also the link
+  function, for tests. A claim stages its record under a random name, so a
+  leftover never blocks it, and where linking fails creates the record in place
+  exclusively. `owner::read` names the recorded owner without checking or
+  claiming (`c2 home`), and `owner::release` removes whatever record is there,
+  naming it: a link itself, never its target, and an empty folder; another
+  folder is left with a message to delete it by hand (`c2 home release`). Two origins are one host when
   their stable machine IDs match; only without one on either side does the PID
   namespace decide.
 - `private::open_plain_file` opens a file to read only when it is a plain
@@ -579,8 +582,10 @@ sources.
 `issue133_a_linked_owner_record_is_refused`,
 `issue133_a_home_that_cannot_be_claimed_is_used_unclaimed`,
 `issue133_check_claims_a_home_for_this_host`,
-`issue133_read_names_the_owner_without_claiming` and
-`issue133_release_removes_the_record_so_the_next_check_claims_afresh`.
+`issue133_read_names_the_owner_without_claiming`,
+`issue133_release_removes_the_record_so_the_next_check_claims_afresh`,
+`issue133_a_claim_without_links_creates_the_record_in_place` and
+`issue133_a_leftover_temporary_record_does_not_block_a_claim`.
 
 `tests/hangup.rs`: `issue19_closing_real_controlling_pty_delivers_hangup`, in
 its own test binary because a child another test forks would inherit the PTY
