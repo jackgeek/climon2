@@ -17,7 +17,10 @@ mod unix {
     /// byte, as it always has (#328): a program on a Unix terminal reads an
     /// Escape followed by a byte that starts no sequence it knows as two keys.
     pub const LONE_ESCAPE: Option<std::time::Duration> = None;
-    use climon2_core::{protocol::TerminalSize, session::Input};
+    use climon2_core::{
+        protocol::TerminalSize,
+        session::{Answer, Input},
+    };
     use signal_hook::{SigId, consts::signal::*};
     use std::{
         fs::File,
@@ -349,7 +352,7 @@ mod unix {
     /// Fields drop in order: the terminal is restored before the signals'
     /// earlier dispositions are.
     pub struct Prompt {
-        _raw: RawModeGuard,
+        raw: RawModeGuard,
         signals: PromptSignals,
         input: File,
         output: File,
@@ -361,11 +364,21 @@ mod unix {
             let signals = PromptSignals::install()?;
             crate::syscall::checked(unsafe { libc::tcflush(input.as_raw_fd(), libc::TCIFLUSH) })?;
             Ok(Self {
-                _raw: raw,
+                raw,
                 signals,
                 input,
                 output,
             })
+        }
+
+        /// Reads the answer, then restores the terminal and the signals'
+        /// dispositions. A signal recorded any time before that, even after
+        /// Enter, ends exec as one during the wait does.
+        pub fn answer(mut self) -> io::Result<Answer> {
+            let answer = Answer::read(|| self.read_input())?;
+            let Self { raw, signals, .. } = self;
+            drop(raw);
+            Ok(answer.or_ended(signals.restore().map(|signal| 128 + signal)))
         }
 
         /// Writes `text` to the terminal; raw output needs CR LF.
@@ -376,7 +389,7 @@ mod unix {
         /// The next byte typed, a hang-up, or the status `128 + signal`.
         pub fn read_input(&mut self) -> io::Result<Input> {
             loop {
-                if let Some(signal) = self.signals.received() {
+                if let Some(signal) = received() {
                     return Ok(Input::Ended(128 + signal));
                 }
                 let mut watch = [Watch::new(self.input.as_fd(), Interest::Read)];
@@ -410,10 +423,17 @@ mod unix {
         );
     }
 
-    /// A prompt's own handler for each of [`PROMPT_SIGNALS`], and the
-    /// dispositions it replaced, which dropping it puts back exactly, a
-    /// default action included. Without `SA_RESTART`, a signal also cuts
-    /// the prompt's wait short.
+    /// The signal a prompt last recorded.
+    fn received() -> Option<u32> {
+        let signal = PROMPT_SIGNAL.load(Ordering::SeqCst);
+        std::num::NonZeroU32::new(u32::try_from(signal).ok()?).map(std::num::NonZeroU32::get)
+    }
+
+    /// A prompt's own handler for each of [`PROMPT_SIGNALS`] not ignored on
+    /// entry, which stays ignored, as POSIX shells leave background jobs'
+    /// SIGINT and SIGQUIT; and the dispositions it replaced, which dropping
+    /// it puts back exactly, a default action included. Without
+    /// `SA_RESTART`, a signal also cuts the prompt's wait short.
     struct PromptSignals {
         replaced: Vec<(libc::c_int, libc::sigaction)>,
     }
@@ -425,25 +445,44 @@ mod unix {
                 replaced: Vec::new(),
             };
             for signal in PROMPT_SIGNALS {
-                // SAFETY: an all-zero sigaction is a valid, empty one.
-                let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-                action.sa_sigaction = record_prompt_signal as *const () as libc::sighandler_t;
-                let mut replaced: libc::sigaction = unsafe { std::mem::zeroed() };
-                // SAFETY: both point at live sigactions; the handler only
-                // stores an atomic.
-                crate::syscall::checked(unsafe {
-                    libc::sigemptyset(&mut action.sa_mask);
-                    libc::sigaction(signal, &action, &mut replaced)
-                })?;
-                signals.replaced.push((signal, replaced));
+                if disposition(signal)?.sa_sigaction != libc::SIG_IGN {
+                    signals.replaced.push((signal, record(signal)?));
+                }
             }
             Ok(signals)
         }
 
-        fn received(&self) -> Option<u32> {
-            let signal = PROMPT_SIGNAL.load(Ordering::SeqCst);
-            std::num::NonZeroU32::new(u32::try_from(signal).ok()?).map(std::num::NonZeroU32::get)
+        /// Puts the dispositions back: the signal recorded until then.
+        fn restore(self) -> Option<u32> {
+            drop(self);
+            received()
         }
+    }
+
+    fn disposition(signal: libc::c_int) -> io::Result<libc::sigaction> {
+        // SAFETY: an all-zero sigaction is a valid, empty one, which the
+        // call overwrites.
+        let mut current: libc::sigaction = unsafe { std::mem::zeroed() };
+        crate::syscall::checked(unsafe {
+            libc::sigaction(signal, std::ptr::null(), &mut current)
+        })?;
+        Ok(current)
+    }
+
+    /// Makes the prompt's handler record `signal`: the disposition it
+    /// replaced.
+    fn record(signal: libc::c_int) -> io::Result<libc::sigaction> {
+        // SAFETY: an all-zero sigaction is a valid, empty one.
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = record_prompt_signal as *const () as libc::sighandler_t;
+        let mut replaced: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: both point at live sigactions; the handler only stores an
+        // atomic.
+        crate::syscall::checked(unsafe {
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(signal, &action, &mut replaced)
+        })?;
+        Ok(replaced)
     }
 
     impl Drop for PromptSignals {

@@ -278,7 +278,8 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   other keys and taking nothing after the answer; `Gone` and `Ended` answer
   too, and an `Interrupted` error is retried. `Answer::status` is exec's exit
   status when nothing starts: `Cancel` 130 (`exit::INTERRUPTED`), `Gone` 129,
-  `Ended` its own.
+  `Ended` its own. `Answer::or_ended` makes an ending recorded by the time
+  the prompt is done win over any answer, Enter included.
 - `exit::{ExitStatus,LaunchFailure}::code`: neutral platform-exit input,
   preserving raw command u32 codes, checked `128+signal`, and classifications
   for own failure 125, usage 2, launch 127/126 and terminal gone 129.

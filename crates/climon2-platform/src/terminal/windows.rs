@@ -24,7 +24,11 @@ use crate::{
     notifier::Notifier,
     waiting::{self, Watch},
 };
-use climon2_core::{protocol::TerminalSize, session::Input, utf8};
+use climon2_core::{
+    protocol::TerminalSize,
+    session::{Answer, Input},
+    utf8,
+};
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -559,7 +563,8 @@ const CONTROL_C_EXIT: u32 = 0xC000_013A;
 /// end the wait instead of the process, so dropping the prompt always
 /// restores the console.
 pub struct Prompt {
-    _raw: RawModeGuard,
+    /// Until the prompt restores the console.
+    raw: Option<RawModeGuard>,
     input: File,
     output: File,
     signals: Signals,
@@ -576,7 +581,7 @@ impl Prompt {
         check(unsafe { FlushConsoleInputBuffer(raw(input.as_handle())) })?;
         let signals = Signals::client()?;
         Ok(Self {
-            _raw: guard,
+            raw: Some(guard),
             input,
             output,
             signals,
@@ -588,6 +593,26 @@ impl Prompt {
     /// Writes `text` to the console; raw output needs CR LF.
     pub fn show(&mut self, text: &str) -> io::Result<()> {
         self.output.write_all(text.as_bytes())
+    }
+
+    /// Reads the answer, then restores the console and removes the handler
+    /// routine. A console event recorded any time before that, even after
+    /// Enter, ends exec as one during the wait does.
+    pub fn answer(mut self) -> io::Result<Answer> {
+        let answer = Answer::read(|| self.read_input())?;
+        self.restore();
+        Ok(answer.or_ended(self.ended()))
+    }
+
+    /// Restores the console's modes and code pages, then removes the
+    /// handler routine, as Unix restores the terminal before the signals'
+    /// dispositions; once only.
+    fn restore(&mut self) {
+        if let Some(guard) = self.raw.take() {
+            drop(guard);
+            // SAFETY: removes the routine `Signals::client` added.
+            unsafe { SetConsoleCtrlHandler(Some(console_event), 0) };
+        }
     }
 
     /// The next byte typed, a console that is gone, or the status a console
@@ -621,8 +646,7 @@ impl Prompt {
 /// acts as it did before.
 impl Drop for Prompt {
     fn drop(&mut self) {
-        // SAFETY: removes the routine `Signals::client` added.
-        unsafe { SetConsoleCtrlHandler(Some(console_event), 0) };
+        self.restore();
     }
 }
 

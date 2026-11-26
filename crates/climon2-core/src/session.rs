@@ -144,6 +144,12 @@ impl Answer {
         }
     }
 
+    /// An ending recorded by the time the prompt is done wins over any
+    /// answer, Enter included: the process was told to end.
+    pub fn or_ended(self, ended: Option<u32>) -> Self {
+        ended.map_or(self, Self::Ended)
+    }
+
     fn of_input(input: Input) -> Option<Self> {
         match input {
             Input::Key(key) => Self::of_key(key),

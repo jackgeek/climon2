@@ -598,6 +598,28 @@ fn nested_warning_uses_exact_ordinal_and_overflow_never_spawns() {
         .wait_for_text("session depth exceeds u32", Duration::from_secs(3))
         .unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(3)).unwrap(), 125);
+    // #139: before any session log exists, the general log records the
+    // overflow, and the error names it.
+    let received = String::from_utf8_lossy(&terminal.received()).into_owned();
+    let recorded: Vec<_> = fs::read_dir(layout.home().join("logs/general"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("session depth exceeds u32")
+        })
+        .collect();
+    let [general] = recorded.as_slice() else {
+        panic!("{recorded:?}")
+    };
+    assert!(
+        received.contains(&format!(
+            "(logs: {})",
+            general.canonicalize().unwrap().display()
+        )),
+        "{received}"
+    );
     layout.clean();
 }
 
@@ -1409,13 +1431,15 @@ fn the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected() {
     layout.clean();
 }
 
-/// #139: SIGTERM, SIGQUIT or SIGHUP sent while the prompt waits ends exec
-/// with 128 + signal, the terminal's settings restored exactly.
+/// #139: SIGTERM or SIGHUP sent while the prompt waits ends exec with
+/// 128 + signal, the terminal's settings restored exactly. (A background job
+/// of a non-interactive shell starts with SIGINT and SIGQUIT ignored, and
+/// the prompt keeps them so.)
 #[test]
 fn a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal() {
     let layout = Layout::new();
     let directory = layout.directory.path();
-    for signal in [libc::SIGTERM, libc::SIGQUIT, libc::SIGHUP] {
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
         let mut terminal = nested_shell(
             &layout,
             r#"stty -g > before; "$0" exec "$1" hold </dev/tty & echo $! > pid; wait $!; echo "STATUS=$?"; stty -g > after; read line"#,
@@ -1466,7 +1490,7 @@ fn after_enter_sigterm_and_sighup_end_exec_while_the_session_starts() {
     let layout = Layout::new();
     let directory = layout.directory.path();
     // A background job of a non-interactive shell starts with SIGINT and
-    // SIGQUIT ignored, which the prompt puts back too.
+    // SIGQUIT ignored, which the prompt leaves ignored.
     for signal in [libc::SIGTERM, libc::SIGHUP] {
         let mut terminal = nested_shell(
             &layout,

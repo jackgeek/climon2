@@ -139,7 +139,7 @@ checks stdin and stdout TTYs, all before any session side effect. It resolves
 canonical companions
 from its own canonical version-layout path and generates one v4 GUID. Core
 projects the exact OS-string command environment (a depth overflow is 125
-here). Then, for a nested start without `--nested` (#139), a headless exec
+here, recorded in the general log, which the error names). Then, for a nested start without `--nested` (#139), a headless exec
 prints core's nesting warning to stderr. An ordinary exec instead opens
 `climon2-platform`'s `terminal::Prompt` on stdin and stdout, both terminals:
 raw, earlier input discarded, the warning and core's `PROMPT` written to

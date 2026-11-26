@@ -638,4 +638,14 @@ fn the_prompt_answers_on_the_first_enter_or_ctrl_c_and_maps_to_exit_statuses() {
     assert_eq!(Answer::Cancel.status(), Some(130));
     assert_eq!(Answer::Gone.status(), Some(129));
     assert_eq!(Answer::Ended(131).status(), Some(131));
+    // An ending recorded by the time the prompt is done wins, even over Enter.
+    for answer in [
+        Answer::Start,
+        Answer::Cancel,
+        Answer::Gone,
+        Answer::Ended(1),
+    ] {
+        assert_eq!(answer.or_ended(Some(143)), Answer::Ended(143));
+        assert_eq!(answer.or_ended(None), answer);
+    }
 }

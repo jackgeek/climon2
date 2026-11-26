@@ -7,7 +7,7 @@ use climon2_core::{
     lifetime::Lifetime,
     metadata::SessionMetadata,
     protocol::TerminalSize,
-    session::{Answer, NestedStart, Notice, PROMPT, SessionEnvironment},
+    session::{NestedStart, Notice, PROMPT, SessionEnvironment},
     startup_envelope::{ENVIRONMENT_VARIABLE, StartupEnvelope},
 };
 use climon2_platform::{
@@ -24,7 +24,7 @@ use std::{
 };
 
 /// A nested start the user cancels creates nothing, not even a log, and
-/// exits with the status [`Answer::status`] gives.
+/// exits with the status [`Answer::status`](climon2_core::session::Answer::status) gives.
 pub fn run(
     home: &Path,
     lifetime: Lifetime,
@@ -34,7 +34,7 @@ pub fn run(
     filter: Option<&str>,
 ) -> Result<u32, Error> {
     let (config, layout) = prepare(home, lifetime)?;
-    let session = NewSession::create()?;
+    let session = NewSession::create().map_err(|error| error.logged(general.path()))?;
     if let Some(status) = confirm(session.environment.notice(lifetime, nested))? {
         return Ok(status);
     }
@@ -59,11 +59,15 @@ struct NewSession {
 }
 
 impl NewSession {
+    /// Before any session log exists, so a depth overflow is recorded in
+    /// the general log, which its error names.
     fn create() -> Result<Self, Error> {
         let id = new_session_id()?;
         let inherited = std::env::vars_os().collect::<Vec<_>>();
-        let environment = SessionEnvironment::for_session(&id, &inherited)
-            .map_err(|error| Error::new(125, error))?;
+        let environment = SessionEnvironment::for_session(&id, &inherited).map_err(|error| {
+            tracing::error!(%error, "cannot start the session");
+            Error::new(125, error)
+        })?;
         Ok(Self { id, environment })
     }
 }
@@ -89,7 +93,7 @@ fn confirm(notice: Notice<'_>) -> io::Result<Option<u32>> {
 fn ask(warning: &str) -> io::Result<Option<u32>> {
     let mut prompt = terminal::Prompt::new(terminal::input()?, terminal::output()?)?;
     prompt.show(&format!("{warning}\r\n{PROMPT}\r\n"))?;
-    Ok(Answer::read(|| prompt.read_input())?.status())
+    Ok(prompt.answer()?.status())
 }
 
 fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
