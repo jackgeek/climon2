@@ -14,8 +14,9 @@
 //! through its own handle and only once the folder can be opened to delete it
 //! too, and kept while anything else in it cannot be removed, so that a later
 //! sweep tries again (#434, #454). A `c2t` that is a symbolic link or junction
-//! is refused when checked, before it is made and before each sweep, and one
-//! that cannot be checked is not swept; a test folder that is one is skipped
+//! is refused when checked, before it is made, once it is made and before
+//! each sweep; one that cannot be checked once made is refused too, and is
+//! not swept. A test folder that is one is skipped
 //! when checked, before its lock is opened and before it is emptied.
 
 use std::{
@@ -137,13 +138,27 @@ fn folder_in(parent: &Path) -> LocalAppData {
 
 /// Makes `parent` where it is missing, then sweeps it. A `parent` that is a
 /// reparse point, such as a symbolic link or junction another user made first,
-/// is refused when checked: before it is made and before it is swept.
+/// is refused when checked: before it is made, once it is made and before it
+/// is swept.
 fn ready(parent: &Path, now: SystemTime) {
-    // A check that fails, as where `parent` is missing, leaves making it to
-    // report any real problem.
-    let _ = refuse_reparse_point(parent);
+    // A check that fails as `parent` is missing, or its name is not one,
+    // leaves making it to report any real problem.
+    match refuse_reparse_point(parent) {
+        Err(error)
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
+            ) =>
+        {
+            panic!("cannot check {}: {error}", parent.display())
+        }
+        _ => {}
+    }
     fs::create_dir_all(parent)
         .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
+    // No test folder is made in one that cannot be checked once it is made.
+    refuse_reparse_point(parent)
+        .unwrap_or_else(|error| panic!("cannot check {}: {error}", parent.display()));
     sweep(parent, now);
 }
 
@@ -181,12 +196,12 @@ fn too_long(folder: &Path) -> Option<String> {
 
 /// Creates the lock file at `path` and holds it open with no sharing, so no
 /// one else can open or delete it until it is closed. It is opened only to
-/// delete it through the handle: it is never read or written.
+/// delete it through the handle: it is never read or written. It is always
+/// new, in a folder just made.
 fn hold(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .access_mode(DELETE)
         .share_mode(0)
         .open(path)
@@ -546,7 +561,17 @@ mod tests {
             refusal.starts_with(&format!("cannot create {}: ", c2t.display())),
             "{refusal}"
         );
-        sweep(&c2t, SystemTime::now());
+    }
+
+    /// A missing `c2t` is made.
+    #[test]
+    fn a_missing_c2t_is_made() {
+        let root = tempfile::tempdir().unwrap();
+        let c2t = root.path().join("c2t");
+
+        ready(&c2t, SystemTime::now());
+
+        assert!(c2t.is_dir());
     }
 
     /// A `c2t` that is a junction or symbolic link is refused, whether or not
