@@ -1,0 +1,228 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throw me away. Not monitor code.
+  Question (wayfinder ticket #474): how does the hub monitor's links dialog
+  look and behave?
+  Three structurally different variants, ?variant=A|B|C, each driven through
+  scenarios with ?scenario=. An HTML mock of an 80x24 terminal with the dialog
+  overlaid. Open by double-clicking. Keys: 1-3 variant, Left/Right scenario,
+  Up/Down move the highlighted relay.
+-->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE: hub monitor links dialog</title>
+<style>
+  :root { --bg:#111418; --fg:#d6dae0; --dim:#6b737e; --yel:#e5c15a; --red:#e07a6e; --grn:#7cc48a; --cyn:#6fc3d6; }
+  body { margin:0; background:#0a0c0e; color:var(--fg); font:14px/1.25 ui-monospace,"JetBrains Mono",Menlo,monospace; }
+  header { padding:10px 16px; color:var(--dim); } header b { color:var(--fg); }
+  .wrap { display:flex; gap:20px; padding:0 16px 130px; flex-wrap:wrap; }
+  pre { margin:0; background:var(--bg); padding:8px 10px; border-radius:6px; white-space:pre; }
+  .cap { color:var(--dim); margin:6px 0 4px; }
+  .dim{color:var(--dim)} .yel{color:var(--yel)} .red{color:var(--red)} .grn{color:var(--grn)} .cyn{color:var(--cyn)} .b{font-weight:700}
+  .hl{background:#2f4b7a;color:#fff} .big{color:#fff;font-weight:700} .bg{color:#3a424d}
+  .notes { max-width:480px; color:#aab; font-family:system-ui,sans-serif; font-size:14px; line-height:1.45; }
+  .notes h3 { margin:6px 0; color:#fff; } .notes li { margin:3px 0; }
+  .bar { position:fixed; bottom:12px; left:50%; transform:translateX(-50%); background:#1c2128; border:1px solid #333b45;
+         border-radius:10px; padding:8px 12px; display:flex; gap:14px; align-items:center; font-family:system-ui,sans-serif; font-size:13px; flex-wrap:wrap; max-width:96vw; }
+  .bar button { background:#2a313b; color:#dde; border:1px solid #3a434f; border-radius:6px; padding:4px 9px; cursor:pointer; }
+  .bar button.on { background:#3d6bd6; color:#fff; border-color:#3d6bd6; }
+  .grp { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+</style></head><body>
+<header><b>PROTOTYPE</b>: the hub monitor's links dialog (ticket #474). Throwaway. Keys: 1-3 variant, ←/→ scenario, ↑/↓ highlight.</header>
+<div class="wrap">
+  <div><div class="cap" id="cap"></div><pre id="screen"></pre></div>
+  <div class="notes" id="notes"></div>
+</div>
+<div class="bar">
+  <div class="grp"><span>Variant</span><span id="vbtns"></span></div>
+  <div class="grp"><span>Scenario</span><span id="sbtns"></span></div>
+</div>
+<script>
+const W = 80, H = 24;
+const VARIANTS = { A:'Table with a key bar', B:'List and detail pane', C:'Cards with spelled-out actions' };
+const SCEN = {
+  list:'Relays in mixed states', pin:'Pairing: address and PIN', fail:'Pairing failed', name:'Paired: name it',
+  edit:'Rename / change address', forget:'Forget', empty:'No relays yet', locked:'Another monitor holds the links',
+};
+const q = new URLSearchParams(location.search);
+let variant = q.get('variant') || 'A', scenario = q.get('scenario') || 'list', hi = 0;
+
+const RELAYS = [
+  { n:'buildbox',   k:'up',     st:'Linked',        cls:'grn', ver:'0.9.3', addr:'100.84.2.17:7420', fp:'5b1e 90c4 77aa 02f3', paired:'12 Nov', last:'now, for 2h 14m', why:'',                               next:'' },
+  { n:'mac-mini',   k:'lost',   st:'Link lost',     cls:'red', ver:'0.8.1', addr:'127.0.0.1:17420',  fp:'c0de 88a1 7f20 3b9d', paired:'02 Oct', last:'40s ago',        why:'link lost',                      next:'redialling, next try in 8s' },
+  { n:'nas',        k:'hold',   st:'On hold',       cls:'yel', ver:'0.9.3', addr:'192.168.1.9:7420', fp:'18f2 6d3c a9e0 44b7', paired:'20 Nov', last:'yesterday',      why:"cut by the relay's user",         next:'retrying every 60s' },
+  { n:'studio',     k:'mine',   st:'Disconnected',  cls:'dim', ver:'0.9.3', addr:'10.0.0.31:7420',   fp:'e7a4 0b92 5cd8 136f', paired:'05 Nov', last:'3 days ago',     why:'you disconnected it',            next:'not dialling' },
+  { n:'old-server', k:'repair', st:'Pair again',    cls:'red', ver:'0.7.0', addr:'10.0.0.8:7420',    fp:'77d1 2e6b f0a3 9c58', paired:'14 Sep', last:'30 Oct',         why:'this hub monitor was forgotten by the relay', next:'needs a new PIN' },
+];
+const actionsFor = r => r.k === 'mine' ? ['Reconnect','Rename','Change address','Forget'] : r.k === 'repair' ? ['Pair again','Rename','Change address','Forget'] : ['Disconnect','Rename','Change address','Forget'];
+
+// ---- grid -----------------------------------------------------------------
+let G;
+function blank() {
+  G = Array.from({length:H}, () => Array.from({length:W}, () => ({ch:' ',cls:''})));
+  // a session behind the dialog, dimmed
+  ['$ cargo test --workspace','   Compiling climon2-core v0.9.3','   Compiling climon2-vt v0.9.3','    Finished test profile in 41.2s','     Running unittests src/lib.rs','','running 212 tests','test registry::orders_rows ... ok','test registry::drops_stale ... ok'].forEach((l,i)=>put(0,i,l,'bg'));
+}
+function put(x, y, text, cls='') { for (let i = 0; i < text.length && x+i < W; i++) if (y>=0 && y<H && x+i>=0) G[y][x+i] = {ch:text[i], cls}; }
+function box(x, y, w, h, cls='dim', dbl=true) {
+  const c = dbl ? '╔═╗║╚╝' : '┌─┐│└┘';
+  put(x, y, c[0]+c[1].repeat(w-2)+c[2], cls); put(x, y+h-1, c[4]+c[1].repeat(w-2)+c[5], cls);
+  for (let i = 1; i < h-1; i++) { put(x, y+i, c[3]+' '.repeat(w-2)+c[3], cls); put(x+1, y+i, ' '.repeat(w-2), ''); }
+}
+const pad = (s, n) => s.length > n ? s.slice(0, n-1)+'…' : s.padEnd(n);
+function paint() {
+  const esc = t => t.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  document.getElementById('screen').innerHTML = G.map(row => {
+    let out = '', run = '', cls = row[0].cls;
+    for (const c of row) { if (c.cls !== cls) { out += `<span class="${cls}">${esc(run)}</span>`; run = ''; cls = c.cls; } run += c.ch; }
+    return out + `<span class="${cls}">${esc(run)}</span>`;
+  }).join('\n');
+}
+
+// ---- shared small dialogs (same in every variant unless the variant overrides) ----
+function pairForm(x, y, w, stage) {
+  box(x, y, w, 12, stage==='fail'?'red':'dim');
+  put(x+2, y+1, stage==='name' ? 'Paired' : 'Link a relay', 'b');
+  if (stage === 'name') {
+    put(x+2, y+3, 'Linked to a relay that calls itself ', ''); put(x+38, y+3, 'ci-runner-07', 'cyn');
+    put(x+2, y+4, 'Key  3a9c 15e0 b7d2 60f4', 'dim'); put(x+30, y+4, 'compare with the relay\'s screen', 'dim');
+    put(x+2, y+6, 'Name  '); put(x+8, y+6, 'ci-runner-07', 'hl'); put(x+20, y+6, '█', 'dim');
+    put(x+2, y+7, '      shown in your session list; only you see it', 'dim');
+    put(x+2, y+9, 'Enter keep this name · type to change it', 'dim');
+    return;
+  }
+  put(x+2, y+3, 'Address  '); put(x+11, y+3, '10.0.0.44:7420', 'b');
+  put(x+2, y+4, '         the host:port that reaches the relay from here', 'dim');
+  put(x+2, y+6, 'PIN      '); put(x+11, y+6, stage==='fail' ? '4821-9903' : '4821-99', 'b'); if (stage!=='fail') put(x+18, y+6, '█', 'dim');
+  put(x+2, y+7, '         shown by the relay: c2 relay, then p', 'dim');
+  if (stage === 'fail') { put(x+2, y+9, 'Pairing failed: wrong PIN, or someone interfered.', 'red'); put(x+2, y+10, '3 attempts per invitation. Enter to try again.', 'dim'); }
+  else put(x+2, y+9, 'Tab next field · Enter link · Esc cancel', 'dim');
+}
+function editForm(x, y, w, r) {
+  box(x, y, w, 9); put(x+2, y+1, `Edit ${r.n}`, 'b');
+  put(x+2, y+3, 'Name     '); put(x+11, y+3, r.n, 'hl'); put(x+11+r.n.length, y+3, '█', 'dim');
+  put(x+2, y+4, 'Address  ' + r.addr);
+  put(x+2, y+5, '         changing it never needs a new PIN', 'dim');
+  put(x+2, y+7, 'Tab next field · Enter save · Esc cancel', 'dim');
+}
+function forgetBox(x, y, w, r) {
+  box(x, y, w, 9, 'red'); put(x+2, y+1, `Forget ${r.n}?`, 'b');
+  put(x+2, y+3, r.k==='up' ? 'Its link closes now. Its sessions leave your list.' : 'Its sessions leave your list.');
+  put(x+2, y+4, 'Linking it again needs a new PIN from the relay.', 'dim');
+  put(x+2, y+6, '[ Cancel ]    Forget', '');
+}
+function overlays(r) {
+  const s = scenario;
+  if (s === 'pin') pairForm(9, 6, 62, 'pin');
+  if (s === 'fail') pairForm(9, 6, 62, 'fail');
+  if (s === 'name') pairForm(9, 6, 62, 'name');
+  if (s === 'edit') editForm(14, 7, 52, r);
+  if (s === 'forget') forgetBox(14, 7, 52, r);
+}
+function emptyOrLocked(x, y) {
+  if (scenario === 'empty') { put(x, y, 'No relays yet.', 'b'); put(x, y+2, 'A relay serves another machine\'s sessions to this monitor.'); put(x, y+3, 'On that machine run  c2 relay  and press p to get a PIN,', 'dim'); put(x, y+4, 'then press p here.', 'dim'); return true; }
+  if (scenario === 'locked') { put(x, y, 'Another monitor is holding this home\'s links.', 'yel'); put(x, y+2, 'This monitor shows local sessions only.'); put(x, y+3, 'It takes the links over when the other exits.', 'dim'); return false; }
+  return false;
+}
+
+// ---- A: table ---------------------------------------------------------------
+function A() {
+  box(1, 2, 78, 20); put(3, 3, 'Links', 'b');
+  const r0 = RELAYS[hi];
+  if (!emptyOrLocked(3, 5) ) {
+    const y0 = scenario === 'locked' ? 10 : 5;
+    put(3, y0, pad('Relay',12)+pad('State',14)+pad('Version',9)+pad('Address',19)+'Last linked', 'dim');
+    RELAYS.forEach((r, i) => {
+      const h = i === hi ? ' hl' : '';
+      put(2, y0+1+i, ' '+pad(r.n,12), 'cyn'+h); put(15, y0+1+i, pad(scenario==='locked'?'—':r.st,14), (scenario==='locked'?'dim':r.cls)+h);
+      put(29, y0+1+i, pad(r.ver,9), 'dim'+h); put(38, y0+1+i, pad(r.addr,19), h.trim()); put(57, y0+1+i, pad(r.last,21), 'dim'+h);
+    });
+    if (scenario !== 'locked') {
+      put(3, 12, '─'.repeat(74), 'dim');
+      put(3, 13, r0.n, 'cyn'); put(4+r0.n.length, 13, `key ${r0.fp} · paired ${r0.paired}`, 'dim');
+      put(3, 14, r0.k==='up' ? 'Linked.' : `${r0.why}; ${r0.next}`, r0.k==='up'?'grn':r0.cls);
+    }
+  }
+  const acts = scenario==='empty' ? 'p pair a relay · Esc close' : scenario==='locked' ? 'Esc close' :
+    `p pair · ${r0.k==='mine'?'r reconnect':r0.k==='repair'?'p pair again':'d disconnect'} · e edit · Del forget · Esc close`;
+  put(3, 20, acts, 'dim');
+  overlays(r0);
+}
+
+// ---- B: list + detail -----------------------------------------------------------
+function B() {
+  box(1, 2, 78, 20); put(3, 3, 'Links', 'b');
+  for (let y = 4; y < 20; y++) put(24, y, '│', 'dim');
+  const r = RELAYS[hi];
+  if (scenario === 'empty') { emptyOrLocked(27, 5); put(3, 5, ' + Link a relay…    ', 'hl'); put(3, 20, '↑/↓ move · Enter choose · Esc close', 'dim'); return; }
+  RELAYS.forEach((x, i) => { const h = i===hi ? ' hl' : ''; put(2, 5+i*2, ' ', h.trim()); put(3, 5+i*2, x.k==='up'?'●':'○', (scenario==='locked'?'dim':x.cls)+h); put(4, 5+i*2, ' '+pad(x.n,18), h.trim()); });
+  put(3, 16, ' + Link a relay…', 'dim');
+  if (scenario === 'locked') { emptyOrLocked(27, 5); }
+  else {
+    put(27, 5, r.n, 'cyn b'); put(28+r.n.length, 5, r.st, r.cls);
+    if (r.k !== 'up') put(27, 6, pad(`${r.why}; ${r.next}`, 50), r.cls);
+    const rows = [['Address', r.addr], ['Key', r.fp], ['Version', 'climon2 '+r.ver], ['Paired', r.paired], ['Last linked', r.last]];
+    rows.forEach(([k, v], i) => { put(27, 8+i, pad(k,13), 'dim'); put(40, 8+i, v); });
+    { let x = 27; actionsFor(r).forEach((a, i) => { const t = i===0?`[${a}]`:a; put(x, 15, t, i===0?'b':''); x += t.length + 2; }); }
+    put(27, 17, 'Tab moves into the actions', 'dim');
+  }
+  put(3, 20, '↑/↓ relay · Tab actions · Enter choose · Esc close', 'dim');
+  overlays(r);
+}
+
+// ---- C: cards -----------------------------------------------------------------
+function C() {
+  box(1, 1, 78, 22); put(3, 2, 'Links', 'b'); put(60, 2, 'p link a relay', 'dim');
+  const r0 = RELAYS[hi];
+  if (emptyOrLocked(3, 4)) { put(3, 21, 'p link a relay · Esc close', 'dim'); return; }
+  const y0 = scenario === 'locked' ? 9 : 4, n = scenario === 'locked' ? 4 : 5;
+  RELAYS.slice(0, n).forEach((r, i) => {
+    const y = y0 + i*3, h = i === hi;
+    put(2, y, h ? '▌' : ' ', 'cyn'); put(4, y, pad(r.n, 12), 'cyn b'); put(17, y, pad(scenario==='locked'?'not live here':r.st, 14), scenario==='locked'?'dim':r.cls);
+    put(32, y, pad(`${r.addr} · v${r.ver}`, 44), 'dim');
+    put(4, y+1, pad(r.k==='up' ? `linked ${r.last}` : `${r.why}; ${r.next}`, 72), r.k==='up'?'dim':r.cls);
+    if (h && scenario !== 'locked') put(4, y+2, pad(actionsFor(r).map((a, j) => `${'drcf'[j] === 'r' && j===1 ? 'n' : a[0].toLowerCase()} ${a.toLowerCase()}`).join('   '), 72), 'yel');
+  });
+  put(3, 21, '↑/↓ relay · the highlighted relay lists its keys · Esc close', 'dim');
+  overlays(r0);
+}
+
+const NOTES = {
+  A: `<h3>A: table with a key bar</h3><ul>
+    <li>One <b>row per relay</b>: name, state, version, address, when it last linked. Scans like the session list.</li>
+    <li>A <b>detail strip</b> under the table shows the highlighted relay's key fingerprint, pairing date, and why its link is down and what happens next.</li>
+    <li>Actions are <b>letters on a key bar</b>: pair, disconnect or reconnect, edit (name and address in one form), Del to forget. Each opens a small box.</li>
+    <li>Matches the relay's dashboard and the selector's Delete key.</li></ul>`,
+  B: `<h3>B: list and detail pane</h3><ul>
+    <li><b>Left</b>: relay names with a state mark, and a last entry <b>+ Link a relay…</b>. <b>Right</b>: everything about the highlighted relay, laid out as labelled fields.</li>
+    <li>Actions are <b>buttons</b> in the detail pane, reached with Tab. No letters to learn; more keystrokes per action.</li>
+    <li>Room for long reasons and future fields. Shows one relay's state at a time, so several down links are less obvious.</li></ul>`,
+  C: `<h3>C: cards with spelled-out actions</h3><ul>
+    <li>Each relay is a <b>two-line card</b>: name, state, address and version, then a full sentence saying why it is down and what happens next.</li>
+    <li>The <b>highlighted card grows a third line</b> listing exactly the actions that apply to it, with their keys.</li>
+    <li>Every relay's reason is readable at once. Fits about six relays on a screen before scrolling; the table fits fifteen.</li></ul>`,
+};
+
+function draw() {
+  blank(); ({A, B, C})[variant](); paint();
+  document.getElementById('cap').textContent = `Variant ${variant}: ${VARIANTS[variant]} · ${SCEN[scenario]} · opened with prefix+l`;
+  document.getElementById('notes').innerHTML = NOTES[variant] + `<p><b>Same in all three:</b> pairing asks for address and PIN, then, once paired, shows the relay's own name and key and lets you name it (Enter keeps the default). A failed pairing says which of the three failures it was. Edit changes name and address without a new PIN. Forget asks first. A relay that forgot this hub monitor shows <b>Pair again</b>.</p>`;
+  for (const b of document.querySelectorAll('[data-v]')) b.classList.toggle('on', b.dataset.v === variant);
+  for (const b of document.querySelectorAll('[data-s]')) b.classList.toggle('on', b.dataset.s === scenario);
+  const u = new URL(location); u.searchParams.set('variant', variant); u.searchParams.set('scenario', scenario); history.replaceState(null, '', u);
+  console.log('state', { variant, scenario, highlighted: RELAYS[hi].n });
+}
+document.getElementById('vbtns').innerHTML = Object.keys(VARIANTS).map(k => `<button data-v="${k}" title="${VARIANTS[k]}">${k}</button>`).join('');
+document.getElementById('sbtns').innerHTML = Object.entries(SCEN).map(([k, t]) => `<button data-s="${k}">${t}</button>`).join('');
+document.addEventListener('click', e => { const t = e.target; if (t.dataset.v) variant = t.dataset.v; else if (t.dataset.s) scenario = t.dataset.s; else return; draw(); });
+document.addEventListener('keydown', e => {
+  const ks = Object.keys(SCEN), i = ks.indexOf(scenario);
+  if (e.key === 'ArrowRight') scenario = ks[(i+1) % ks.length];
+  else if (e.key === 'ArrowLeft') scenario = ks[(i+ks.length-1) % ks.length];
+  else if (e.key === 'ArrowDown') hi = Math.min(RELAYS.length-1, hi+1);
+  else if (e.key === 'ArrowUp') hi = Math.max(0, hi-1);
+  else if ('123'.includes(e.key)) variant = 'ABC'[+e.key-1];
+  else return;
+  e.preventDefault(); draw();
+});
+draw();
+</script></body></html>
