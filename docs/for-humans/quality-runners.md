@@ -21,6 +21,76 @@ Every gate mutates only the source a push changes. On `main` that means the
 push itself, and on any other branch it means the branch's difference from
 `main`. A gate with nothing to mutate passes in a minute.
 
+## What a gate mutates
+
+Each gate mutates only the functions a push adds or changes, as the local
+ticket gate does ([The quality gate](development.md#the-quality-gate)). Before
+[#445](https://github.com/jackgeek/climon2/issues/445) it mutated every
+function in every changed file. So three edited functions in a 2,000-line
+file kept the Linux gate busy for one to two hours.
+
+- **Changed functions.** A function counts as changed if it is new, or if its
+  code differs from the base's. Whitespace and comments don't count.
+- **Its dependents.** A changed `struct`, `enum`, `const`, `static` or `type`
+  can change how functions that didn't change behave. So it also selects every
+  function in the same file whose code names it, counting the header of the
+  `impl` the function is in. For example, a new field in `Frame` selects every
+  method in `impl Frame`. The rule goes one step only: a function chosen this
+  way does not choose the functions that call it. Deleting or renaming one
+  selects the functions that used it. A name written inside a format string,
+  such as `"{LIMIT}"`, counts, and so do the names a `use` imports from it, so
+  changing `Mode` selects the functions that use `A` after `use Mode::{A, B}`.
+- **Imports.** Each name a `use` imports is compared on its own. A name that
+  is added, removed or imported from somewhere else selects, in the same way,
+  every function that uses it, by its original name or its `as` name. Adding
+  `Placeholder` to `use screen::{Canvas, Scene}` selects only the functions
+  that name `Placeholder`. If no function names a changed import, before or
+  after the change, it is most likely a trait whose methods are called, and
+  those calls can't be found by name, so the whole file is mutated.
+- **Tests.** A test that is added, removed or changed (`mod tests`, `#[test]`
+  or `#[cfg(test)]`) selects the functions in the same file that the test's
+  code names, methods included, under its old and its new version. A
+  weakened or removed test therefore still has to kill the mutants of the
+  functions it covered. If a changed test names no function of the file, the
+  whole file is mutated. The local ticket gate does not apply this rule.
+- **Whole files.** A new file is mutated whole. So is a file in any of these
+  cases:
+  - its base version is not valid Rust;
+  - it adds, removes or changes a glob import (`use x::*`) or an import as
+    `_`, whose names can't be found;
+  - it has a glob import of a changed or deleted item, such as `use Mode::*`
+    when `Mode` changed;
+  - it changes code that has no dependents rule yet: a `macro_rules!` or
+    other item macro, a trait's method signature or associated type, an
+    impl's associated type, a `union` or an `extern` block;
+  - an impl is added, removed or changed without a changed function or
+    `const` in it to select, such as `impl Error for E {}`,
+    `unsafe impl Send for X {}`, or a deleted override of a trait's default
+    method.
+- **CRAP is not narrowed.** Every function of the source the gate scores is
+  still scored, whether or not it changed. A native gate scores its changed
+  native files even when their changes select no mutant, for example a
+  comment-only edit.
+
+The gate prints its choice before it mutates. It lists each file, its
+selected functions and their lines, and the mutants it will try. A whole file
+stays in the list even if no mutant is found in it. If the mutator's scan
+doesn't report a file under the same path as the gate, the gate fails, so a
+file can't be skipped without anyone seeing it. The count is
+taken before coverage, so mutants on lines no test runs are not tried.
+`cargo xtask check --print-mutation-plan` prints the same choice locally,
+with a [`CLIMON2_MUTATION_BASE`](development.md#the-quality-gate) set.
+
+**One run, so one baseline.** A gate starts the mutator once for every file.
+Each run first passes the whole unchanged workspace once (the baseline), which
+takes minutes, so one run per file would repeat it. But the mutator takes only
+one list of lines for all its files. So the gate gives it every line it
+selected in any file, and a file can also be mutated on a line number that
+was chosen in another file. That only ever tries more mutants, never fewer,
+and the plan shows how many each file gains this way. A new file adds all its
+lines to the list, so it can gain the most. Until the mutator takes a list per
+file, the owner keeps this (2026-11-27).
+
 ## Skipping a squash-merge's gates on main
 
 A pull request's gates run on its branch's push, and they run again on the
