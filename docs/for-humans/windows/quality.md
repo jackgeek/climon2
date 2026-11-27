@@ -176,8 +176,8 @@ cargo xtask setup-quality
 cargo xtask mutate --native-only
 ```
 
-- `CLIMON2_MUTATION_BASE` makes the gate mutate the registered Windows files
-  changed since `main`, as the job does on a pull request.
+- `CLIMON2_MUTATION_BASE` makes the gate mutate the functions changed since
+  `main` in the registered Windows files, as the job does on a pull request.
 - `CLIMON2_NATIVE_MUTATION_WORKERS` caps the workers. Without it the gate uses
   one per CPU, up to 16, and 16 workers' builds do not fit in the VM's 16 GB.
   Use 2 when another build or gate is running, and at most 4 otherwise.

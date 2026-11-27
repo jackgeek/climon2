@@ -3,7 +3,7 @@ use crate::{
     mutation_plan::{ChangedItem, changed_items},
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     env,
     ffi::{OsStr, OsString},
     fs,
@@ -155,9 +155,9 @@ pub(crate) enum Scope {
     Ticket,
     /// `cargo xtask check --full`: changed host source files, after five rounds of mutation load.
     Full,
-    /// `cargo xtask mutate`: host source.
+    /// `cargo xtask mutate`: changed functions of host source.
     Host,
-    /// `cargo xtask mutate --native-only`: only host-exclusive native source.
+    /// `cargo xtask mutate --native-only`: changed functions of only host-exclusive native source.
     Native,
 }
 
@@ -224,10 +224,11 @@ impl Scope {
     fn changed_targets(self, root: &Path) -> io::Result<Vec<Target>> {
         // Upstream --changed reads only git status and cannot limit itself to shipped crates.
         let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
-        let mut targets = if self == Self::Ticket {
-            function_targets(root, &base)?
-        } else {
+        // Only the full gate mutates whole changed files (#445).
+        let mut targets = if self == Self::Full {
             Target::whole(changed_sources(root, &base)?)
+        } else {
+            function_targets(root, &base)?
         };
         targets.retain(|target| self.keeps(&target.path));
         Ok(targets)
@@ -265,55 +266,106 @@ fn line_count(root: &Path, path: &Path) -> io::Result<usize> {
     Ok(fs::read_to_string(root.join(path))?.lines().count())
 }
 
+/// A target of the single run and its mutants, before coverage drops the uncovered ones.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Planned {
+    target: Target,
+    /// Mutants on the target's own selected lines.
+    selected: usize,
+    /// Mutants the run makes in this file: `selected`, and any on a line another file selected.
+    mutants: usize,
+}
+
 /// The single mutator run, so the full-workspace baseline runs once.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct RunPlan {
     /// The targets with a selected mutation site.
-    targets: Vec<Target>,
+    targets: Vec<Planned>,
     /// `--lines`, or `None` when every target is a whole file.
     lines: Option<BTreeSet<usize>>,
 }
 
-/// `--lines` applies to every file in a run, so it is the union of the lines that hold each
-/// target's own selected sites (`sites`), and a target with none is dropped. A file may also
-/// mutate a site at a line number another file selected: a safe superset, never less.
+/// `sites` gives the line of each of a file's mutation sites. `--lines` applies to every file
+/// in a run, so it is the union of the lines that hold each target's own selected sites, every
+/// site of a whole file included, and a target with none is dropped. A file
+/// therefore also mutates any site on a line number another file selected: a safe superset,
+/// never less, that a mutator taking each file's own lines would remove (#445 follow-up). The
+/// owner keeps it so that the full-workspace baseline still runs once (2026-11-27).
 fn run_plan(
     targets: Vec<Target>,
-    mut sites: impl FnMut(&Target) -> io::Result<BTreeSet<usize>>,
+    mut sites: impl FnMut(&Target) -> io::Result<Vec<usize>>,
 ) -> io::Result<RunPlan> {
-    if targets.iter().all(|target| target.items.is_none()) {
-        return Ok(RunPlan {
-            targets,
-            lines: None,
-        });
-    }
-    let mut lines = BTreeSet::new();
+    let mut union = BTreeSet::new();
     let mut kept = Vec::new();
     for target in targets {
         let found = sites(&target)?;
-        if !found.is_empty() {
-            lines.extend(found);
-            kept.push(target);
+        let own: Vec<usize> = match target.lines() {
+            None => found.clone(),
+            Some(lines) => found
+                .iter()
+                .copied()
+                .filter(|line| lines.contains(line))
+                .collect(),
+        };
+        if own.is_empty() {
+            continue;
         }
+        union.extend(&own);
+        kept.push((target, found, own.len()));
     }
-    Ok(RunPlan {
-        targets: kept,
-        lines: Some(lines),
+    let lines = kept
+        .iter()
+        .any(|(target, ..)| target.items.is_some())
+        .then_some(union);
+    let targets = kept
+        .into_iter()
+        .map(|(target, found, selected)| Planned {
+            mutants: found
+                .iter()
+                .filter(|line| lines.as_ref().is_none_or(|lines| lines.contains(*line)))
+                .count(),
+            target,
+            selected,
+        })
+        .collect();
+    Ok(RunPlan { targets, lines })
+}
+
+/// The line of each mutation site in each target's whole file, from one run of the mutator's
+/// own scan, which runs no tests.
+fn scanned_sites(root: &Path, targets: &[Target]) -> io::Result<HashMap<PathBuf, Vec<usize>>> {
+    if targets.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let scanned = output(
+        tool(root, "mutator")
+            .args(["--scan", "--no-coverage"])
+            .args(targets.iter().map(|target| &target.path)),
+    )?;
+    let scan = String::from_utf8_lossy(&scanned.stdout);
+    targets
+        .iter()
+        .map(|target| Ok((target.path.clone(), scan_lines(&scan, &target.path)?)))
+        .collect()
+}
+
+/// A run plan for `targets`, from one scan of their files.
+fn scanned_plan(root: &Path, targets: Vec<Target>) -> io::Result<RunPlan> {
+    let mut sites = scanned_sites(root, &targets)?;
+    run_plan(targets, |target| {
+        Ok(sites.remove(&target.path).unwrap_or_default())
     })
 }
 
-/// The lines of `target`'s selected mutation sites, from the mutator's own scan, which runs no tests.
-fn scanned_sites(root: &Path, target: &Target) -> io::Result<BTreeSet<usize>> {
-    let mut scan = tool(root, "mutator");
-    scan.args(["--scan", "--no-coverage"]);
-    if let Some(lines) = target.lines() {
-        scan.args(["--lines", &joined(&lines)]);
-    }
-    let scanned = output(scan.arg(&target.path))?;
-    let prefix = format!("  {}:", target.path.display());
-    String::from_utf8_lossy(&scanned.stdout)
-        .lines()
-        .filter_map(|line| line.strip_prefix(&prefix))
+/// Each site's line in a mutator scan of `path`. A site line starts with a mark, `*` when its
+/// function changed since the mutator's last snapshot, otherwise a space.
+fn scan_lines(scan: &str, path: &Path) -> io::Result<Vec<usize>> {
+    let prefix = format!(" {}:", path.display());
+    scan.lines()
+        .filter_map(|line| {
+            line.strip_prefix([' ', '*'])
+                .and_then(|line| line.strip_prefix(&prefix))
+        })
         .map(|rest| {
             rest.split(' ')
                 .next()
@@ -814,7 +866,8 @@ fn mutation_targets(root: &Path, all: bool, scope: Scope) -> io::Result<Vec<Targ
     }
 }
 
-/// What the gate would mutate: each target, its line counts, and the single run's lines.
+/// What the gate would mutate: each target, its line counts and mutants, and the single run.
+/// Mutants are counted before coverage, which drops those on lines no test runs.
 fn plan_text(root: &Path, targets: &[Target], run: &RunPlan) -> io::Result<String> {
     if targets.is_empty() {
         return Ok("No changed shipped Rust source to mutate.\n".to_owned());
@@ -823,12 +876,27 @@ fn plan_text(root: &Path, targets: &[Target], run: &RunPlan) -> io::Result<Strin
     for target in targets {
         let total = line_count(root, &target.path)?;
         let path = target.path.display();
+        let planned = run
+            .targets
+            .iter()
+            .find(|planned| planned.target.path == target.path);
+        let mutants = match planned {
+            None => "no mutants".to_owned(),
+            Some(planned) if planned.mutants == planned.selected => {
+                format!("{} mutants", planned.mutants)
+            }
+            Some(planned) => format!(
+                "{} mutants, {} of them on lines another file selected",
+                planned.mutants,
+                planned.mutants - planned.selected
+            ),
+        };
         let (Some(items), Some(lines)) = (&target.items, target.lines()) else {
-            text += &format!("{path}: whole file, {total} lines\n");
+            text += &format!("{path}: whole file, {total} lines, {mutants}\n");
             continue;
         };
         text += &format!(
-            "{path}: {} changed items, {} of {total} lines\n",
+            "{path}: {} changed items, {} of {total} lines, {mutants}\n",
             items.len(),
             lines.len()
         );
@@ -838,13 +906,14 @@ fn plan_text(root: &Path, targets: &[Target], run: &RunPlan) -> io::Result<Strin
         }
     }
     let files = run.targets.len();
+    let mutants: usize = run.targets.iter().map(|planned| planned.mutants).sum();
     text += &match &run.lines {
-        None => format!("One mutator run over {files} files, whole files.\n"),
-        Some(_) if files == 0 => {
+        _ if files == 0 => {
             "No selected line holds a mutation site; nothing to mutate.\n".to_owned()
         }
+        None => format!("One mutator run over {files} files, {mutants} mutants, whole files.\n"),
         Some(lines) => format!(
-            "One mutator run over {files} files, --lines {} \
+            "One mutator run over {files} files, {mutants} mutants, --lines {} \
              (the union of the lines holding each file's selected mutation sites).\n",
             joined(lines)
         ),
@@ -863,10 +932,10 @@ fn span(lines: &RangeInclusive<usize>) -> String {
 /// Prints what the gate would mutate, without running anything else.
 pub fn plan(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     let targets = mutation_targets(root, all, scope)?;
-    if targets.iter().any(|target| target.items.is_some()) {
+    if !targets.is_empty() {
         verify_tools(root)?;
     }
-    let run = run_plan(targets.clone(), |target| scanned_sites(root, target))?;
+    let run = scanned_plan(root, targets.clone())?;
     print!("{}", plan_text(root, &targets, &run)?);
     Ok(())
 }
@@ -935,9 +1004,9 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
         eprintln!("No changed shipped Rust source to mutate.");
         return Ok(());
     }
-    let run = run_plan(targets, |target| scanned_sites(root, target))?;
+    let run = scanned_plan(root, targets.clone())?;
+    eprint!("{}", plan_text(root, &targets, &run)?);
     if run.targets.is_empty() {
-        eprintln!("No selected line holds a mutation site; nothing to mutate.");
         return Ok(());
     }
     verify_worker_baseline(root, &sources)?;
@@ -960,7 +1029,12 @@ fn mutate(root: &Path, workers: &str, run_plan: RunPlan, stage_timeouts: &Path) 
     if let Some(lines) = &run_plan.lines {
         mutation.args(["--lines", &joined(lines)]);
     }
-    run(mutation.args(run_plan.targets.into_iter().map(|target| target.path)))
+    run(mutation.args(
+        run_plan
+            .targets
+            .into_iter()
+            .map(|planned| planned.target.path),
+    ))
 }
 
 /// Removes the mutator's per-file history, so no outcome of an earlier run is carried forward and
@@ -1683,15 +1757,15 @@ case "$*" in
         ;;
     *check-mutation-workspace.py*) echo baseline >> "$events" ;;
     *'-m mutator --scan'*)
-        lines=1,3
-        previous=
-        for last do
-            if [ "$previous" = --lines ]; then lines=$last; fi
-            previous=$last
-        done
-        printf 'scan %s\n' "$last" >> "$events"
-        for site in 1 3; do
-            case ",$lines," in *",$site,"*) printf '  %s:%s + -> -  [defn/f]\n' "$last" "$site" ;; esac
+        for path do
+            case "$path" in
+                *.rs)
+                    printf 'scan %s\n' "$path" >> "$events"
+                    for site in 1 3; do
+                        printf '  %s:%s + -> -  [defn/f]\n' "$path" "$site"
+                    done
+                    ;;
+            esac
         done
         ;;
     *'-m mutator'*)
@@ -1886,31 +1960,59 @@ esac
 
     /// Review 7 and 8: one mutator run (one workspace baseline) takes every target, with the union
     /// of the lines holding each target's selected sites; the quality tools are verified once.
+    /// #445: `cargo xtask mutate` selects as the ticket gate does, mutates a new file whole,
+    /// and prints each file's selection and mutants.
     #[cfg(unix)]
     #[test]
-    fn the_ticket_gate_mutates_every_target_in_one_run_after_one_tool_check() {
-        let run = run_gate(Gate {
-            scope: "ticket",
-            changed: true,
-            added: true,
-            ..Gate::default()
-        });
-        assert!(run.success, "{}", run.output);
-        let checks = run.events.iter().filter(|event| *event == "verify").count();
-        assert_eq!(checks, 1, "{:?}", run.events);
-        let mutations: Vec<_> = run
-            .events
-            .iter()
-            .filter(|event| event.starts_with("mutation "))
-            .collect();
-        assert_eq!(mutations.len(), 1, "{:?}", run.events);
-        assert_eq!(run.option("mutation", "--lines"), "1,3");
-        assert!(
-            mutations[0]
-                .ends_with(" crates/climon2-core/src/added.rs crates/climon2-core/src/lib.rs"),
-            "{}",
-            mutations[0]
-        );
+    fn the_ticket_and_host_gates_mutate_every_target_in_one_run_after_one_tool_check() {
+        for scope in ["ticket", "host"] {
+            let run = run_gate(Gate {
+                scope,
+                changed: true,
+                added: true,
+                ..Gate::default()
+            });
+            assert!(run.success, "{scope}: {}", run.output);
+            let checks = run.events.iter().filter(|event| *event == "verify").count();
+            assert_eq!(checks, 1, "{scope}: {:?}", run.events);
+            let mutations: Vec<_> = run
+                .events
+                .iter()
+                .filter(|event| event.starts_with("mutation "))
+                .collect();
+            assert_eq!(mutations.len(), 1, "{scope}: {:?}", run.events);
+            assert_eq!(run.option("mutation", "--lines"), "1,3", "{scope}");
+            assert!(
+                mutations[0]
+                    .ends_with(" crates/climon2-core/src/added.rs crates/climon2-core/src/lib.rs"),
+                "{scope}: {}",
+                mutations[0]
+            );
+            assert!(
+                run.output.contains(
+                    "crates/climon2-core/src/added.rs: whole file, 3 lines, 2 mutants\n\
+                     crates/climon2-core/src/lib.rs: 1 changed items, 1 of 1 lines, \
+                     2 mutants, 1 of them on lines another file selected\n  changed  lines 1\n"
+                ),
+                "{scope}: {}",
+                run.output
+            );
+        }
+    }
+
+    /// #445 owner decision: the own-hardware gates mutate only the changed functions' lines.
+    #[cfg(unix)]
+    #[test]
+    fn the_host_and_native_gates_mutate_only_changed_function_lines() {
+        for scope in ["host", "native"] {
+            let run = run_gate(Gate {
+                scope,
+                changed: true,
+                ..Gate::default()
+            });
+            assert!(run.success, "{scope}: {}", run.output);
+            assert_eq!(run.option("mutation", "--lines"), "1", "{scope}");
+        }
     }
 
     /// #185 follow-up: gate results depend only on the current run, so every mutation run starts
@@ -2222,57 +2324,109 @@ esac
         );
     }
 
-    /// Review 7: the run's lines are the union of the lines holding each target's own selected
-    /// sites; a target without any is dropped, and whole-file-only runs need no `--lines`.
-    #[test]
-    fn the_single_run_unions_site_lines_and_drops_targets_without_sites() {
-        let scoped = |path: &str| Target {
+    fn scoped(path: &str, lines: RangeInclusive<usize>) -> Target {
+        Target {
             path: path.into(),
             items: Some(vec![ChangedItem {
                 name: "f".to_owned(),
-                lines: vec![1..=9],
+                lines: vec![lines],
             }]),
-        };
+        }
+    }
+
+    /// Review 7, and #445 owner decision (2026-11-27): the run's lines are the union of the
+    /// lines holding each target's own selected sites, every site of a whole file included; a
+    /// target of changed items without any is dropped, and whole-file-only runs need no
+    /// `--lines`. Each file counts its own selected mutants apart from those on a line only
+    /// another file selected, which the union adds.
+    #[test]
+    fn the_single_run_unions_site_lines_and_counts_each_files_own_mutants() {
         let whole = Target {
             path: "new.rs".into(),
             items: None,
         };
-        let sites = |target: &Target| -> io::Result<BTreeSet<usize>> {
+        let sites = |target: &Target| -> io::Result<Vec<usize>> {
             Ok(match target.path.to_str().unwrap() {
-                "a.rs" => BTreeSet::from([2, 7]),
-                "b.rs" => BTreeSet::new(),
-                _ => BTreeSet::from([4]),
+                "a.rs" => vec![2, 7, 7, 12],
+                "b.rs" => vec![2, 11],
+                "c.rs" => vec![20],
+                _ => vec![4],
             })
         };
-        let plan = run_plan(vec![scoped("a.rs"), scoped("b.rs"), whole.clone()], sites).unwrap();
-        assert_eq!(plan.lines, Some(BTreeSet::from([2, 4, 7])));
+        let plan = run_plan(
+            vec![
+                scoped("a.rs", 1..=9),
+                scoped("b.rs", 10..=12),
+                scoped("c.rs", 1..=9),
+                whole.clone(),
+            ],
+            sites,
+        )
+        .unwrap();
+        assert_eq!(plan.lines, Some(BTreeSet::from([2, 4, 7, 11])));
         assert_eq!(
-            plan.targets
-                .iter()
-                .map(|target| target.path.clone())
-                .collect::<Vec<_>>(),
-            vec![PathBuf::from("a.rs"), PathBuf::from("new.rs")]
+            plan.targets,
+            vec![
+                Planned {
+                    target: scoped("a.rs", 1..=9),
+                    selected: 3,
+                    mutants: 3,
+                },
+                // Line 2 is a's, not b's: the union adds it to b's run.
+                Planned {
+                    target: scoped("b.rs", 10..=12),
+                    selected: 1,
+                    mutants: 2,
+                },
+                Planned {
+                    target: whole.clone(),
+                    selected: 1,
+                    mutants: 1,
+                },
+            ]
         );
-        let unscanned =
-            |_: &Target| -> io::Result<BTreeSet<usize>> { panic!("whole files need no scan") };
-        let plan = run_plan(vec![whole.clone()], unscanned).unwrap();
+        let plan = run_plan(vec![whole.clone()], |_| Ok(vec![1, 1, 5])).unwrap();
         assert_eq!(plan.lines, None);
-        assert_eq!(plan.targets, vec![whole]);
+        assert_eq!(
+            plan.targets,
+            vec![Planned {
+                target: whole,
+                selected: 3,
+                mutants: 3,
+            }]
+        );
         assert!(
-            run_plan(vec![scoped("b.rs")], sites)
+            run_plan(vec![scoped("c.rs", 1..=9)], sites)
                 .unwrap()
                 .targets
                 .is_empty()
         );
     }
 
-    /// Review 9: the printed plan names whole-file and item targets, their line counts and the run.
+    /// #445: a scan's site lines are read for its own file whether or not the mutator marks
+    /// the site's function as changed since its last snapshot.
     #[test]
-    fn the_plan_lists_each_target_and_the_single_runs_lines() {
+    fn a_scan_gives_each_site_line_of_its_file() {
+        let scan = "\
+Scan: 3 mutation sites in a.rs
+  a.rs:4 + -> -  [defn/f]
+* a.rs:9 < -> <=  [defn/g]
+  a.rs:9 1 -> 0  [defn/g]
+  ab.rs:5 + -> -  [defn/h]
+* marks a function whose text changed since the last snapshot.
+";
+        assert_eq!(scan_lines(scan, Path::new("a.rs")).unwrap(), vec![4, 9, 9]);
+    }
+
+    /// Review 9 and #445: the printed plan names whole-file and item targets, their line
+    /// counts, each file's mutants, and the run.
+    #[test]
+    fn the_plan_lists_each_target_its_mutants_and_the_single_runs_lines() {
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path();
         fs::write(root.join("new.rs"), "a\nb\nc\n").unwrap();
         fs::write(root.join("old.rs"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n").unwrap();
+        fs::write(root.join("dry.rs"), "1\n2\n").unwrap();
         let targets = vec![
             Target {
                 path: "new.rs".into(),
@@ -2291,40 +2445,54 @@ esac
                     },
                 ]),
             },
+            scoped("dry.rs", 2..=2),
         ];
         let run = RunPlan {
-            targets: targets.clone(),
+            targets: vec![
+                Planned {
+                    target: targets[0].clone(),
+                    selected: 2,
+                    mutants: 2,
+                },
+                Planned {
+                    target: targets[1].clone(),
+                    selected: 2,
+                    mutants: 3,
+                },
+            ],
             lines: Some(BTreeSet::from([1, 3, 9])),
         };
         assert_eq!(
             plan_text(root, &targets, &run).unwrap(),
             "\
-new.rs: whole file, 3 lines
-old.rs: 2 changed items, 4 of 10 lines
+new.rs: whole file, 3 lines, 2 mutants
+old.rs: 2 changed items, 4 of 10 lines, 3 mutants, 1 of them on lines another file selected
   W::f  lines 2-3,5
   LIMIT  lines 9
-One mutator run over 2 files, --lines 1,3,9 \
+dry.rs: 1 changed items, 1 of 2 lines, no mutants
+  f  lines 2
+One mutator run over 2 files, 5 mutants, --lines 1,3,9 \
 (the union of the lines holding each file's selected mutation sites).
 "
         );
         let whole = RunPlan {
-            targets: targets[..1].to_vec(),
+            targets: run.targets[..1].to_vec(),
             lines: None,
         };
         assert_eq!(
             plan_text(root, &targets[..1], &whole).unwrap(),
-            "new.rs: whole file, 3 lines\nOne mutator run over 1 files, whole files.\n"
+            "new.rs: whole file, 3 lines, 2 mutants\n\
+             One mutator run over 1 files, 2 mutants, whole files.\n"
         );
         let nothing = RunPlan {
             targets: Vec::new(),
-            lines: Some(BTreeSet::new()),
+            lines: None,
         };
         assert_eq!(
-            plan_text(root, &targets[1..], &nothing).unwrap(),
+            plan_text(root, &targets[2..], &nothing).unwrap(),
             "\
-old.rs: 2 changed items, 4 of 10 lines
-  W::f  lines 2-3,5
-  LIMIT  lines 9
+dry.rs: 1 changed items, 1 of 2 lines, no mutants
+  f  lines 2
 No selected line holds a mutation site; nothing to mutate.
 "
         );

@@ -21,6 +21,43 @@ Every gate mutates only the source a push changes. On `main` that means the
 push itself, and on any other branch it means the branch's difference from
 `main`. A gate with nothing to mutate passes in a minute.
 
+## What a gate mutates
+
+Each gate mutates only the functions a push adds or changes, as the local
+ticket gate does ([The quality gate](development.md#the-quality-gate)). Before
+[#445](https://github.com/jackgeek/climon2/issues/445) it mutated every
+function in every changed file. So three edited functions in a 2,000-line
+file kept the Linux gate busy for one to two hours.
+
+- **Changed functions.** A function counts as changed if it is new, or if its
+  code differs from the base's. Whitespace and comments don't count.
+- **Its dependents.** A changed `struct`, `enum`, `const`, `static` or `type`
+  can change how functions that didn't change behave. So it also selects every
+  function in the same file whose code names it, counting the header of the
+  `impl` the function is in. For example, a new field in `Frame` selects every
+  method in `impl Frame`. The rule goes one step only: a function chosen this
+  way does not choose the functions that call it.
+- **Whole files.** A new file is mutated whole. So is every function of a
+  file whose base version is not valid Rust.
+- **CRAP is not narrowed.** Every function of the source the gate scores is
+  still scored, whether or not it changed.
+
+The gate prints its choice before it mutates. It lists each file, its
+selected functions and their lines, and the mutants it will try. The count is
+taken before coverage, so mutants on lines no test runs are not tried.
+`cargo xtask check --print-mutation-plan` prints the same choice locally,
+with a [`CLIMON2_MUTATION_BASE`](development.md#the-quality-gate) set.
+
+**One run, so one baseline.** A gate starts the mutator once for every file.
+Each run first passes the whole unchanged workspace once (the baseline), which
+takes minutes, so one run per file would repeat it. But the mutator takes only
+one list of lines for all its files. So the gate gives it every line it
+selected in any file, and a file can also be mutated on a line number that
+was chosen in another file. That only ever tries more mutants, never fewer,
+and the plan shows how many each file gains this way. A new file adds all its
+lines to the list, so it can gain the most. Until the mutator takes a list per
+file, the owner keeps this (2026-11-27).
+
 Release qualification does not use these machines. It still runs on
 GitHub-hosted runners, from `check.yml`, so its evidence records name a
 known image.

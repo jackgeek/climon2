@@ -68,7 +68,7 @@ workers.
 
 The macOS quality job in CI also needs `CLIMON2_MACOS_TESTS` on. It runs
 `cargo xtask mutate --native-only`. CRAP scores only the source files
-registered as macOS-only, and mutation picks the changed files among them.
+registered as macOS-only, and mutation picks the changed functions in them.
 Changes to shared code alone skip this job. Release tags use
 `--native-only --mutate-all` to check every macOS-only file. Coverage still
 runs the whole workspace, so real callers are exercised. Mutation still needs
@@ -94,6 +94,10 @@ It comes in two levels:
     moved, or only had their docs edited, are not mutated.
   - Nested items are compared on their own, including those inside `const` and
     `static` values. An item owns every line its own code is on.
+  - A changed `struct`, `enum`, `const`, `static` or `type` also selects every
+    function in the same file whose code, or whose impl header, names it. The
+    rule goes one step only
+    ([#445](https://github.com/jackgeek/climon2/issues/445)).
   - Editing an impl or trait header (generics, bounds, where clause, self type,
     trait path or attributes), or the attributes of the module around it,
     changes every item inside.
@@ -105,13 +109,16 @@ It comes in two levels:
     found with the mutator's `--scan`, which runs no tests. A file may then
     also mutate a site on a line number chosen for another file. That is safe:
     it only ever mutates more, never less.
-  - `cargo xtask check --print-mutation-plan` prints this choice and exits.
+  - `cargo xtask check --print-mutation-plan` prints this choice and exits:
+    each file, its chosen items, and its mutants, counting those it gains from
+    another file's lines. The gate prints it too, before it mutates.
 - The **full gate**, `cargo xtask check --full`, measures load five times and
   mutates whole changed files. Run it once before a feature branch merges into
   `main`, with `CLIMON2_MUTATION_BASE=origin/main`.
 
 `--mutate-all` mutates every shipped file whole, at either level.
-`cargo xtask mutate` also mutates whole files, and does not measure load.
+`cargo xtask mutate`, which the [quality runners](quality-runners.md) run,
+chooses as the ticket gate does, and does not measure load.
 
 **Build check.** Like `cargo xtask test`, the gate's tests first run the
 monitor's build test alone. This proves the plain monitor binary has no test

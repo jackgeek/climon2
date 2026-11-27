@@ -14,6 +14,12 @@
 //! clause, self type, trait path, attributes; body excluded), so a header edit
 //! changes every item inside. Test-only code (`mod tests`, `#[test]` and
 //! `#[cfg(test)]` items) is skipped, as the mutator skips it.
+//!
+//! A changed `struct`, `enum`, `const`, `static` or `type` alias can change how
+//! unchanged functions behave, so it also selects every function in the same
+//! file that names it: whose own tokens or enclosing headers (an `impl Frame`
+//! header names `Frame`) hold its identifier. This is not transitive: a
+//! function selected this way selects nothing further (owner decision, #445).
 
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 use quote::ToTokens;
@@ -28,14 +34,16 @@ use syn::{
     visit_mut::{self, VisitMut},
 };
 
-/// A function, `const` or `static` the diff adds or changes, with the lines it owns.
+/// A function, `const`, `static` or type the diff adds or changes, or a function that
+/// names a changed `const`, `static` or type, with the lines it owns.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ChangedItem {
     pub name: String,
     pub lines: Vec<RangeInclusive<usize>>,
 }
 
-/// The items of `new` that `old` lacks. Errors when `new` is not Rust.
+/// The items of `new` that `old` lacks, and the functions of `new` that name a changed
+/// `const`, `static` or type, in source order. Errors when `new` is not Rust.
 /// Unparsable base source has no items, so every item of `new` is changed.
 pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Vec<ChangedItem>> {
     let new = records(new)?;
@@ -43,24 +51,66 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Vec<ChangedItem
     for record in records(old).unwrap_or_default() {
         *base.entry((record.name, record.tokens)).or_default() += 1;
     }
-    let mut changed = Vec::new();
-    for record in &new {
-        match base.get_mut(&(record.name.clone(), record.tokens.clone())) {
-            Some(count) if *count > 0 => *count -= 1,
-            _ => changed.push(ChangedItem {
-                name: record.name.clone(),
-                lines: record.lines.clone(),
-            }),
-        }
-    }
-    Ok(changed)
+    let changed: Vec<bool> = new
+        .iter()
+        .map(
+            |record| match base.get_mut(&(record.name.clone(), record.tokens.clone())) {
+                Some(count) if *count > 0 => {
+                    *count -= 1;
+                    false
+                }
+                _ => true,
+            },
+        )
+        .collect();
+    let named: BTreeSet<&str> = new
+        .iter()
+        .zip(&changed)
+        .filter(|(record, changed)| **changed && record.kind != Kind::Function)
+        .map(|(record, _)| record.ident.as_str())
+        .collect();
+    Ok(new
+        .iter()
+        .zip(changed)
+        .filter(|(record, changed)| *changed || record.names_any(&named))
+        .map(|(record, _)| ChangedItem {
+            name: record.name.clone(),
+            lines: record.lines.clone(),
+        })
+        .collect())
 }
 
-/// A function, `const` or `static` in source order, with its own tokens and the lines they are on.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Kind {
+    Function,
+    /// A `const` or `static`.
+    Value,
+    /// A `struct`, `enum` or `type` alias.
+    Type,
+}
+
+/// A function, `const`, `static` or type in source order, with its own tokens and the lines
+/// they are on.
 struct Record {
     name: String,
+    /// The item's own identifier, which a function names to use it.
+    ident: String,
+    kind: Kind,
     tokens: String,
+    /// Every identifier in its tokens and its enclosing headers.
+    idents: BTreeSet<String>,
     lines: Vec<RangeInclusive<usize>>,
+}
+
+impl Record {
+    /// Whether this is a function that names one of `items`.
+    fn names_any(&self, items: &BTreeSet<&str>) -> bool {
+        self.kind == Kind::Function
+            && self
+                .idents
+                .iter()
+                .any(|ident| items.contains(ident.as_str()))
+    }
 }
 
 fn records(source: &str) -> syn::Result<Vec<Record>> {
@@ -83,6 +133,19 @@ fn token_lines(stream: TokenStream, lines: &mut BTreeSet<usize>) {
     }
 }
 
+/// Every identifier in `stream`, at any depth.
+fn token_idents(stream: TokenStream, idents: &mut BTreeSet<String>) {
+    for token in stream {
+        match token {
+            TokenTree::Group(group) => token_idents(group.stream(), idents),
+            TokenTree::Ident(ident) => {
+                idents.insert(ident.to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
 fn ranges(lines: BTreeSet<usize>) -> Vec<RangeInclusive<usize>> {
     let mut ranges: Vec<RangeInclusive<usize>> = Vec::new();
     for line in lines {
@@ -100,6 +163,8 @@ struct Collector {
     /// Tokens of each enclosing module's attributes and impl or trait header, body
     /// excluded, which belong to every item's tokens.
     headers: Vec<String>,
+    /// The identifiers of each entry of `headers`.
+    header_idents: Vec<BTreeSet<String>>,
     records: Vec<Record>,
 }
 
@@ -107,6 +172,7 @@ impl Collector {
     fn record<T: Clone + ToTokens>(
         &mut self,
         name: &syn::Ident,
+        kind: Kind,
         item: &T,
         strip: fn(&mut StripNested, &mut T),
     ) {
@@ -115,8 +181,13 @@ impl Collector {
         let own = strip_docs(own.to_token_stream());
         let mut lines = BTreeSet::new();
         token_lines(own.clone(), &mut lines);
+        let mut idents: BTreeSet<String> = self.header_idents.iter().flatten().cloned().collect();
+        token_idents(own.clone(), &mut idents);
         self.records.push(Record {
             name: self.path(&name.to_string()),
+            ident: name.to_string(),
+            kind,
+            idents,
             tokens: self
                 .headers
                 .iter()
@@ -145,9 +216,14 @@ impl Collector {
 
     /// Visits a module, impl or trait whose `header` belongs to every item inside it.
     fn enclosed(&mut self, name: String, header: TokenStream, visit: impl FnOnce(&mut Self)) {
-        self.headers.push(strip_docs(header).to_string());
+        let header = strip_docs(header);
+        let mut idents = BTreeSet::new();
+        token_idents(header.clone(), &mut idents);
+        self.headers.push(header.to_string());
+        self.header_idents.push(idents);
         self.within(name, visit);
         self.headers.pop();
+        self.header_idents.pop();
     }
 }
 
@@ -189,7 +265,12 @@ impl<'ast> Visit<'ast> for Collector {
 
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
         if !test_only(&item.attrs) {
-            self.record(&item.sig.ident, item, StripNested::visit_item_fn_mut);
+            self.record(
+                &item.sig.ident,
+                Kind::Function,
+                item,
+                StripNested::visit_item_fn_mut,
+            );
             self.within(item.sig.ident.to_string(), |c| {
                 visit::visit_item_fn(c, item)
             });
@@ -198,7 +279,12 @@ impl<'ast> Visit<'ast> for Collector {
 
     fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
         if !test_only(&item.attrs) {
-            self.record(&item.sig.ident, item, StripNested::visit_impl_item_fn_mut);
+            self.record(
+                &item.sig.ident,
+                Kind::Function,
+                item,
+                StripNested::visit_impl_item_fn_mut,
+            );
             self.within(item.sig.ident.to_string(), |c| {
                 visit::visit_impl_item_fn(c, item)
             });
@@ -207,7 +293,12 @@ impl<'ast> Visit<'ast> for Collector {
 
     fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
         if item.default.is_some() && !test_only(&item.attrs) {
-            self.record(&item.sig.ident, item, StripNested::visit_trait_item_fn_mut);
+            self.record(
+                &item.sig.ident,
+                Kind::Function,
+                item,
+                StripNested::visit_trait_item_fn_mut,
+            );
             self.within(item.sig.ident.to_string(), |c| {
                 visit::visit_trait_item_fn(c, item)
             });
@@ -216,23 +307,76 @@ impl<'ast> Visit<'ast> for Collector {
 
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
         if !test_only(&item.attrs) {
-            self.record(&item.ident, item, StripNested::visit_item_const_mut);
+            self.record(
+                &item.ident,
+                Kind::Value,
+                item,
+                StripNested::visit_item_const_mut,
+            );
             self.within(item.ident.to_string(), |c| visit::visit_item_const(c, item));
         }
     }
 
     fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
         if !test_only(&item.attrs) {
-            self.record(&item.ident, item, StripNested::visit_item_static_mut);
+            self.record(
+                &item.ident,
+                Kind::Value,
+                item,
+                StripNested::visit_item_static_mut,
+            );
             self.within(item.ident.to_string(), |c| {
                 visit::visit_item_static(c, item)
             });
         }
     }
 
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if !test_only(&item.attrs) {
+            self.record(
+                &item.ident,
+                Kind::Type,
+                item,
+                StripNested::visit_item_struct_mut,
+            );
+            self.within(item.ident.to_string(), |c| {
+                visit::visit_item_struct(c, item)
+            });
+        }
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        if !test_only(&item.attrs) {
+            self.record(
+                &item.ident,
+                Kind::Type,
+                item,
+                StripNested::visit_item_enum_mut,
+            );
+            self.within(item.ident.to_string(), |c| visit::visit_item_enum(c, item));
+        }
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if !test_only(&item.attrs) {
+            self.record(
+                &item.ident,
+                Kind::Type,
+                item,
+                StripNested::visit_item_type_mut,
+            );
+            self.within(item.ident.to_string(), |c| visit::visit_item_type(c, item));
+        }
+    }
+
     fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
         if !test_only(&item.attrs) {
-            self.record(&item.ident, item, StripNested::visit_impl_item_const_mut);
+            self.record(
+                &item.ident,
+                Kind::Value,
+                item,
+                StripNested::visit_impl_item_const_mut,
+            );
             self.within(item.ident.to_string(), |c| {
                 visit::visit_impl_item_const(c, item)
             });
@@ -241,7 +385,12 @@ impl<'ast> Visit<'ast> for Collector {
 
     fn visit_trait_item_const(&mut self, item: &'ast syn::TraitItemConst) {
         if item.default.is_some() && !test_only(&item.attrs) {
-            self.record(&item.ident, item, StripNested::visit_trait_item_const_mut);
+            self.record(
+                &item.ident,
+                Kind::Value,
+                item,
+                StripNested::visit_trait_item_const_mut,
+            );
             self.within(item.ident.to_string(), |c| {
                 visit::visit_trait_item_const(c, item)
             });
@@ -606,6 +755,57 @@ fn production_only() {}
         assert_eq!(
             changed_items(old, new).unwrap(),
             vec![item("production_only", &[9..=10])]
+        );
+    }
+
+    /// #445 owner decision: a changed type, const or static selects every function in the
+    /// file that names it, enclosing impl headers included; the selection is not transitive.
+    #[test]
+    fn a_changed_type_or_const_selects_the_functions_that_name_it() {
+        let old = "\
+struct Frame { width: u8 }
+const LIMIT: u8 = 1;
+impl Frame {
+    fn wide(&self) -> bool { self.width > 1 }
+}
+fn limited(value: u8) -> bool { value < LIMIT }
+fn caller() -> bool { limited(2) }
+fn unrelated() -> u8 { 3 }
+";
+        let field = old.replace("width: u8", "width: u16");
+        assert_eq!(
+            changed_items(old, &field).unwrap(),
+            vec![item("Frame", &[1..=1]), item("Frame::wide", &[4..=4])]
+        );
+        let constant = old.replace("LIMIT: u8 = 1", "LIMIT: u8 = 2");
+        assert_eq!(
+            changed_items(old, &constant).unwrap(),
+            vec![item("LIMIT", &[2..=2]), item("limited", &[6..=6])]
+        );
+        let old = "\
+enum Mode { A }
+type Size = u8;
+fn mode() -> Mode { Mode::A }
+fn size() -> Size { 1 }
+";
+        let new = old.replace("{ A }", "{ A, B }").replace("= u8", "= u16");
+        assert_eq!(
+            changed_items(old, &new).unwrap(),
+            vec![
+                item("Mode", &[1..=1]),
+                item("Size", &[2..=2]),
+                item("mode", &[3..=3]),
+                item("size", &[4..=4]),
+            ]
+        );
+    }
+
+    /// #445: a base that is not Rust has no items, so every item of the new file is selected.
+    #[test]
+    fn an_unparsable_base_selects_every_item() {
+        assert_eq!(
+            changed_items("fn broken(", BASE).unwrap(),
+            vec![item("kept", &[1..=3]), item("edited", &[5..=7])]
         );
     }
 
