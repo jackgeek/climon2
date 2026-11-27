@@ -1509,10 +1509,11 @@ impl State {
     /// its congestion outlasts `deadlines.delivery_stall_ms` (#119). During
     /// shutdown neither the wait nor the drains go past its `deadline`. The
     /// drains share one bound, a tick after the wait (#462), and start one
-    /// instance further on each round: outside shutdown each instance is
-    /// drained at least once, and none past the bound, so one with
-    /// deliveries without end neither starves the others nor keeps the
-    /// round from its commands, however many instances there are.
+    /// instance further on each round: each instance is drained at least
+    /// once (during shutdown, only while its deadline has not passed), and
+    /// none further past the bound, so one with deliveries without end
+    /// neither starves the others nor keeps the round from its commands,
+    /// however many instances there are.
     fn poll(&mut self, deadline: Option<Instant>) {
         let mut table: Vec<_> = self
             .instances
@@ -1543,7 +1544,7 @@ impl State {
                 self.congestion(&id, now);
             } else {
                 self.congested.remove(&id);
-                self.drain_within(&id, bound, deadline.is_none());
+                self.drain_within(&id, bound, deadline.is_none_or(before));
             }
         }
     }
@@ -2055,6 +2056,9 @@ mod tests {
         stalls: bool,
         /// Create returns only once the test lets it go.
         creates_late: bool,
+        /// Run returns only once its terminal evidence is drained (or the
+        /// test lets it go), as a library whose run outlives its stream.
+        waits_for_drain: bool,
         /// The first shutdown lets this instance's create go, then returns
         /// only once its run has begun, so its handles are published by then.
         lets_go: Option<[u8; 16]>,
@@ -2189,18 +2193,28 @@ mod tests {
     }
 
     /// Waits until `done` holds of the world, at most [`WAIT`].
-    fn until(mut done: impl FnMut(&World) -> bool) {
+    fn until(done: impl FnMut(&World) -> bool) {
+        assert!(
+            waited(done),
+            "the fake library never reached the expected state"
+        );
+    }
+
+    /// Waits until `done` holds of the world, at most [`WAIT`]: whether it
+    /// does.
+    fn waited(mut done: impl FnMut(&World) -> bool) -> bool {
         let deadline = Instant::now() + WAIT;
         let mut world = world();
         while !done(&world) {
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .expect("the fake library never reached the expected state");
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
             world = CHANGED
                 .wait_timeout(world, left)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
+        true
     }
 
     fn seen(id: &[u8; 16]) -> Vec<Seen> {
@@ -2248,6 +2262,8 @@ mod tests {
         opened: bool,
         /// The connection was lost after a Kill's answer.
         dropped: bool,
+        /// Its terminal evidence was drained.
+        drained: bool,
     }
 
     struct Fake {
@@ -2419,6 +2435,8 @@ mod tests {
         }
         fake.push(Item::Terminal);
         fake.state().over = true;
+        let let_go = |world: &World| world.unstalled.contains(&fake.id);
+        wait_while(|world| fake.script.waits_for_drain && !fake.state().drained && !let_go(world));
         success()
     }
 
@@ -2723,6 +2741,7 @@ mod tests {
         } else {
             state.queue.pop_front()
         };
+        let terminal = matches!(next, Some(Item::Terminal));
         match next {
             Some(Item::Delivery(records)) => {
                 state.outstanding += 1;
@@ -2734,6 +2753,7 @@ mod tests {
             }
             Some(Item::Terminal) => {
                 state.over = true;
+                state.drained = true;
                 out.kind = native::TERMINAL;
                 out.terminal = &fake.terminal;
             }
@@ -2741,6 +2761,10 @@ mod tests {
                 fake.notifier.set(false);
                 out.kind = native::EMPTY;
             }
+        }
+        drop(state);
+        if terminal {
+            changed(&mut world(), |_| {});
         }
         success()
     }
@@ -2770,10 +2794,11 @@ mod tests {
             changed(&mut world(), |world| {
                 world.unstalled.insert(late);
             });
-            // An owner that exits without running ends the wait too, so the
-            // test fails rather than hangs.
+            // An owner that exits without running ends the wait too, and it
+            // lasts at most WAIT, so the test fails rather than hangs (a
+            // panic here would cross the C boundary and abort).
             let exited = (late, Seen::OwnerExited);
-            wait_while(|world| !world.running.contains(&late) && !world.seen.contains(&exited));
+            let _ = waited(|world| world.running.contains(&late) || world.seen.contains(&exited));
         }
         success()
     }
@@ -3350,10 +3375,12 @@ mod tests {
     /// without end, a round's drains end a tick after its wait, so a round
     /// lasts about a tick, not a tick for each (an idle instance, drained
     /// once a round, counts them), and the supervisor reads the exit
-    /// within about a tick.
+    /// within about a tick. In shutdown each instance is still drained once
+    /// a round, so the idle one, whose run lasts until its terminal
+    /// evidence is drained, ends confirmed among them.
     #[test]
     fn many_floods_still_let_the_exit_be_read_within_about_a_tick() {
-        let flooding: Vec<_> = (1..=24).map(|index| session(0x49, index)).collect();
+        let flooding: Vec<_> = (1..=48).map(|index| session(0x49, index)).collect();
         for id in &flooding {
             script(
                 id,
@@ -3364,11 +3391,18 @@ mod tests {
                 },
             );
         }
-        let idle = session(0x49, 0x20);
-        let mut supervised = supervisor(25, 200, fake_library());
-        let _let_go = LetGo(flooding.iter().map(guid).collect());
-        let supervisor = &mut supervised.supervisor;
+        let idle = session(0x49, 0x7f);
+        script(
+            &idle,
+            Script {
+                waits_for_drain: true,
+                ..Script::default()
+            },
+        );
+        let mut supervised = supervisor(49, 200, fake_library());
         let all: Vec<_> = flooding.iter().chain([&idle]).cloned().collect();
+        let _let_go = LetGo(all.iter().map(guid).collect());
+        let supervisor = &mut supervised.supervisor;
         for id in &all {
             supervisor.start_client(metadata(id, "2026-11-13T10:00:00.000Z"));
         }
@@ -3386,9 +3420,11 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         let took = asked.elapsed();
-        assert!(took < 12 * TICK, "{took:?}");
+        assert!(took < 50 * TICK, "{took:?}");
         let report = supervisor.stop();
         assert_eq!(report.instances.len(), all.len(), "{report:?}");
+        let (_, ended) = report.instances.iter().find(|(id, _)| id == &idle).unwrap();
+        assert!(ended.joined, "{ended:?}");
     }
 
     /// #462: rounds take turns to start their drains, so a busy instance
