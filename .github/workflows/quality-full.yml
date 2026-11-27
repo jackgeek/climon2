@@ -1,0 +1,77 @@
+name: Full mutation
+
+# The rolling full mutation pass (#452, docs/for-humans/quality-runners.md):
+# each pull request squash-merged to main mutates one slice, a tenth, of the
+# shipped files, whole, on the own-hardware machines of quality.yml. A file's
+# slice comes from a hash of its path, so ten merges in a row mutate every file.
+#
+# It never blocks merges or reddens main. It runs after the merge, on main
+# only, and each slice (quality-slice.yml) waits on hosted runners until the
+# gates are idle before it asks for the machines. A manual run of all slices
+# runs them one after another, each waiting for idle gates first.
+#
+# Every push to main runs the hosted `slice` job, Markdown-only ones included,
+# so no merge's slice is missed.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      slice:
+        description: "The slice to mutate: 0 to 9, or all of them, one after another"
+        required: true
+        default: all
+        type: choice
+        options: ["all", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+permissions:
+  contents: read
+
+# Explicitly bash, so each step runs with pipefail.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  slice:
+    name: Choose the slice to mutate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      slices: ${{ steps.slice.outputs.slices }}
+      gate: ${{ steps.slice.outputs.gate }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: slice
+        env:
+          EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.slice }}
+          BEFORE: ${{ github.event.before }}
+        run: python3 tools/quality-full-run.py slice --event "$EVENT" --requested "$REQUESTED" --before "$BEFORE" --after "$GITHUB_SHA"
+
+  # One call of the slice workflow per slice, one at a time, so each slice of a
+  # manual run of all of them waits for idle gates before it starts.
+  pass:
+    name: Slice
+    needs: slice
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.slice.result == 'success'
+      && needs.slice.outputs.slices != ''
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        slice: ${{ fromJSON(needs.slice.outputs.slices) }}
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: ./.github/workflows/quality-slice.yml
+    with:
+      slice: ${{ matrix.slice }}
+      gate: ${{ needs.slice.outputs.gate }}

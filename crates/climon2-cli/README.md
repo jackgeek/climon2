@@ -183,7 +183,9 @@ creates the socket. Core
 provides the depth/ordinal rules; `TERM=xterm-256color` and
 `COLORTERM=truecolor` are always set. The command's inherited `CLIMON2_HOME`
 and `CLIMON2_LOG` are not rewritten. The initial size is the stdin terminal's,
-or 80x24 when stdin is not a terminal (only possible for headless exec).
+or 80x24 when stdin is not a terminal (only possible for headless exec). It
+is taken as the daemon starts, after any nested prompt, so for a nested
+start it is the size when Enter answers the prompt (#437).
 
 Daemon startup uses the exact private interface documented in
 `../climon2-daemon/README.md`, including `--scrollback-max-rows` and the
@@ -256,7 +258,8 @@ With `test-hooks` only, `CLIMON2_CLI_HOLD=<path>` makes exec, after the daemon
 is ready and immediately before the client starts, create `<path>` with its
 extension replaced by `.held`, then wait, without a bound, until `<path>`
 exists. It lets a test change the configuration between session start and
-client start.
+client start, and see the size the daemon gave the command before any client
+resizes it (#437).
 
 ## Behavioral evidence
 
@@ -278,6 +281,14 @@ client start.
   `after_enter_sigterm_and_sighup_end_exec_while_the_session_starts`,
   `a_nested_start_from_a_deleted_working_directory_fails_before_the_prompt`
   (#139)
+- `a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at`
+  (#437; uses `CLIMON2_CLI_HOLD`). `tests/exec_windows.rs` has a test of the
+  same name, and also
+  `a_nested_session_is_released_only_once_its_client_has_attached` (uses
+  `CLIMON2_CLI_HOLD`) and
+  `the_tests_start_exec_outside_the_session_they_run_in`, which runs again
+  with `CLIMON2_SESSION_ID` and `CLIMON2_SESSION_DEPTH` set and shows the
+  tests' builders clear them.
 - `actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_identity`
 - `startup_failure_codes_and_signal_exit_are_preserved`
 - `resizing_outer_terminal_resizes_the_running_command`

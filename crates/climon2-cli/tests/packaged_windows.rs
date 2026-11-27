@@ -207,6 +207,7 @@ impl Home {
     /// predictions and no saved history, with the package on `PATH`.
     fn pwsh(&self, package: &Package, pwsh: &Path, prompt: &str) -> CommandBuilder {
         let mut command = CommandBuilder::new(pwsh);
+        climon2_test_term::outside_any_session(&mut command);
         command.args(pwsh_arguments(prompt));
         let path = env::var_os("PATH").unwrap_or_default();
         let mut paths = vec![package.folder.clone()];
@@ -638,6 +639,7 @@ impl Home {
     /// `c2 <arguments>` from the package, with this home.
     fn c2(&self, package: &Package, arguments: &[&OsStr]) -> CommandBuilder {
         let mut command = CommandBuilder::new(package.launcher());
+        climon2_test_term::outside_any_session(&mut command);
         command.args(arguments);
         command.env("CLIMON2_HOME", self.home());
         command.env("LOCALAPPDATA", self.local());
@@ -646,7 +648,7 @@ impl Home {
 
     /// `c2 <arguments>` run to its end without a console, with this home.
     fn run(&self, package: &Package, arguments: &[&OsStr]) -> std::process::Output {
-        Command::new(package.launcher())
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
             .args(arguments)
             .env("CLIMON2_HOME", self.home())
             .env("LOCALAPPDATA", self.local())
@@ -852,6 +854,7 @@ fn full_width_statuses_pass_through_the_client_the_cli_and_the_launcher() {
     let (package, home) = (Package::new(), Home::new());
     for status in [0xC000_013A_u32, 259, 0xFFFF_FFFF] {
         let mut command = CommandBuilder::new(package.launcher());
+        climon2_test_term::outside_any_session(&mut command);
         // cmd.exe takes the status as a signed 32-bit number.
         let exit = format!("exit {}", status as i32);
         command.args(["exec", "cmd", "/d", "/c", &exit]);
@@ -881,6 +884,7 @@ fn ctrl_break_reaches_the_program_in_the_session_and_the_shell_survives() {
     }
     let (package, home) = (Package::new(), Home::new());
     let mut command = CommandBuilder::new(package.launcher());
+    climon2_test_term::outside_any_session(&mut command);
     command.args(["exec", "cmd", "/d", "/k", "prompt INNER$G"]);
     command.env("CLIMON2_HOME", home.home());
     command.env("LOCALAPPDATA", home.local());

@@ -211,6 +211,7 @@ fn an_ordinary_session_nobody_attaches_to_within_five_seconds_ends() {
     let install = Install::new();
     let hold = install.work().join("release-client");
     let mut command = CommandBuilder::new(install.version().join("climon2-cli.exe"));
+    climon2_test_term::outside_any_session(&mut command);
     command.args(["exec", "--"]);
     command.args(WRITES_ITS_PID);
     command.env("CLIMON2_HOME", install.home());

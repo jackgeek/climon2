@@ -92,6 +92,7 @@ fn session_shell() -> PathBuf {
 /// `c2 <arguments>` from the package with this home.
 fn c2(package: &Package, home: &Home, arguments: &[&OsStr]) -> CommandBuilder {
     let mut command = CommandBuilder::new(package.launcher());
+    climon2_test_term::outside_any_session(&mut command);
     command.args(arguments);
     command.env("CLIMON2_HOME", home.home());
     command.env("LOCALAPPDATA", home.local());
@@ -224,12 +225,13 @@ fn no_sessions(home: &Home) {
 
 /// Runs `c2 list` with this home and fails unless it lists no session.
 fn lists_none(package: &Package, home: &Home) {
-    let listed = Command::new(package.launcher())
-        .arg("list")
-        .env("CLIMON2_HOME", home.home())
-        .env("LOCALAPPDATA", home.local())
-        .output()
-        .unwrap();
+    let listed =
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+            .arg("list")
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.local())
+            .output()
+            .unwrap();
     assert_eq!(listed.status.code(), Some(0), "{listed:?}");
     assert_eq!(
         listed.stdout, b"No climon2 sessions running.\n",

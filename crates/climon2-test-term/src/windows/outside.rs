@@ -130,6 +130,18 @@ impl Outside {
         self
     }
 
+    /// Removes the inherited [`SESSION_VARIABLES`](super::SESSION_VARIABLES),
+    /// as [`outside_any_session`](super::outside_any_session) does for a
+    /// command in a terminal.
+    pub fn outside_any_session(mut self) -> Self {
+        self.environment.retain(|(name, _)| {
+            !super::SESSION_VARIABLES
+                .iter()
+                .any(|session| name.eq_ignore_ascii_case(session))
+        });
+        self
+    }
+
     pub fn cwd(mut self, cwd: impl AsRef<Path>) -> Self {
         self.cwd = cwd.as_ref().to_owned();
         self
