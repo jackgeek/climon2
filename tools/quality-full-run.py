@@ -7,10 +7,13 @@ a row mutate every file once. This script holds the workflow's decisions:
 
 - `slice`: which slices a push to main mutates. A squash-merge is a
   first-parent commit of main whose subject ends with the pull request's
-  number, such as "Fix the frame (#432) (#438)". The merge that takes main to
-  n squash-merges mutates slice n mod 10, so the rotation is read from git
-  history alone and needs no stored counter. A push that adds no squash-merge
-  mutates nothing. A manual run mutates the slice it names, or all ten.
+  number, such as "Fix the frame (#432) (#438)". Only the subject counts, so a
+  direct push whose subject ends that way counts too (#457). The merge that
+  takes main to n squash-merges mutates slice n mod 10, so the rotation is read
+  from git history alone and needs no stored counter. A push that adds no
+  squash-merge mutates nothing; after a force push, which may lower the count,
+  only the commits the push brought count as added. A manual run mutates the
+  slice it names, or all ten.
   Writes the slices as a JSON list, such as `slices=["3"]`, or an empty
   `slices=` for none, to `$GITHUB_OUTPUT`, and `gate=` the pushed commit when
   its push runs quality.yml, whose own run each slice then waits for.
@@ -23,10 +26,15 @@ a row mutate every file once. This script holds the workflow's decisions:
 - `start`: from the wait jobs' results, whether the gates went idle (`idle`),
   stayed busy (`busy`), or a wait job failed (`failed`). Writes `state=`.
 - `report`: reads each platform's log and status and puts its CRAP, SURVIVED
-  and UNCOVERED findings, and any failure, timeout or missing log, into each
-  slice's section of one open tracking issue, which it opens or updates. A
-  slice or platform that did not run keeps its earlier result, with a dated
-  note saying why it did not run this time.
+  and UNCOVERED findings, and any failure, timeout or missing log, into its
+  slice's own comment on one open tracking issue. The first report with
+  findings opens the issue, whose body is a fixed header. Each slice's comment
+  is found by its hidden marker and only it is rewritten, so reports of
+  different slices never touch the same text and need no concurrency group; a
+  later report of the same slice replaces it. A slice or platform that did not
+  run keeps its earlier result, with a dated note saying why it did not run
+  this time. Findings add a short comment, so the owner is notified; a clean
+  pass edits its slice's comment quietly.
 
 Each outcome is printed and added to `$GITHUB_STEP_SUMMARY`.
 """
@@ -41,6 +49,8 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
+from quality_paths import gated
+
 SLICES = 10
 LABELS = [str(index) for index in range(SLICES)]
 SQUASH = re.compile(r"\(#\d+\)$")
@@ -53,22 +63,28 @@ FULL_RUNS = "repos/{repo}/actions/workflows/quality-full.yml/runs?per_page=100"
 # The tracking issue: the one open issue the workflow's token opened with this title.
 TITLE = "Full mutation pass findings"
 BOT = "github-actions[bot]"
-ISSUES = "repos/{repo}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100"
+ISSUES = "repos/{repo}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100&page={page}"
+COMMENTS = "repos/{repo}/issues/{number}/comments?per_page=100&page={page}"
+PER_PAGE = 100
+# Enough pages for 10,000 issues or comments; a search stops at the first short page.
+PAGES = 100
 PLATFORMS = (("linux", "Linux"), ("windows", "Windows"), ("macos", "macOS"))
 CRAP_THRESHOLD = 5.0
 MUTANT = re.compile(r"^(SURVIVED|UNCOVERED) +\S+:\d+ ")
-# A section may lack its final newline once the body has been edited in the browser.
+# A slice's comment; it may lack its final newline once it has been edited in the browser.
 SECTION = re.compile(r"<!-- slice (\w+) -->\n(.*?)<!-- end slice \1 -->(?:\n|\Z)", re.S)
 PLATFORM = re.compile(r"<!-- platform (\w+) -->\n(.*?)<!-- end platform \1 -->(?:\n|\Z)", re.S)
 # The dated note of why a slice or platform did not run; the next note replaces it.
 NOTE = re.compile(r"\A> (Skipped|Did not run) on .*\n\n?")
 HEADER = (
     "Each squash-merge to main mutates one slice of the shipped files, so ten in a row "
-    "mutate every file (docs/for-humans/quality-runners.md). Each slice's section below "
-    "holds its latest pass's findings and is replaced by its next pass.\n\n"
+    "mutate every file (docs/for-humans/quality-runners.md).\n\n"
+    "Each slice has one comment below, headed **Slice k of 10**, which holds its latest "
+    "pass's findings and is rewritten by its next pass. Other comments only announce new "
+    "findings. Close this issue once every slice's comment is clean.\n"
 )
-# GitHub refuses an issue body over 65,536 characters; each of the 10 sections gets a share.
-SECTION_LIMIT = 6000
+# GitHub refuses a comment over 65,536 characters; each slice's comment is its own.
+SECTION_LIMIT = 60000
 # What a platform's status file says before its pass records an exit status.
 SETUP_FAILED = "setup-failed"
 STARTED = "started"
@@ -84,15 +100,25 @@ class ApiError(Exception):
 
 
 def git(*args):
-    result = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    # git writes paths as UTF-8 bytes, whatever the runner's locale.
+    result = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     return result.stdout if result.returncode == 0 else None
 
 
-def squash_merges(commit):
-    """Squash-merges on the first-parent history up to `commit`, or None if it is unknown."""
+def squash_merges(commit, since=None):
+    """Squash-merges on the first-parent history up to `commit`, and not in `since`'s
+    history, or None if it is unknown. Only the subject counts: see the module's doc."""
     if not commit or commit == ZERO or git("cat-file", "-e", f"{commit}^{{commit}}") is None:
         return None
-    subjects = git("log", "--first-parent", "--format=%s", commit)
+    excluded = [f"^{since}"] if since else []
+    subjects = git("log", "--first-parent", "--format=%s", commit, *excluded)
     if subjects is None:
         return None
     return sum(1 for subject in subjects.splitlines() if SQUASH.search(subject.strip()))
@@ -114,6 +140,9 @@ def choose(event, requested, before, after):
         # A first push, or a force push whose old head is gone: count this push's own commit.
         parent = squash_merges(f"{after}^")
         then = parent if parent is not None else 0
+    elif git("merge-base", "--is-ancestor", before, after) is None:
+        # A force push that replaced the old head: count only the commits it brought.
+        then = now - (squash_merges(after, since=before) or 0)
     if now <= then:
         return [], f"the push adds no squash-merge; main still has {now}"
     chosen = str(now % SLICES)
@@ -169,20 +198,12 @@ def fixture_api(file, record):
         if method != "GET":
             with open(record, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps({"method": method, "path": path, "body": body}) + "\n")
-            return {"html_url": f"https://github.com/{path}"}
+            return {"html_url": f"https://github.com/{path}", "number": 1, "id": 1}
         if path not in responses:
             raise ApiError(f"no response for {path}")
         return responses[path]
 
     return api
-
-
-def gated(path):
-    """Whether a push changing `path` runs quality.yml, by its `paths` filter: everything
-    but Markdown and LICENSE, and the protocol's Markdown again."""
-    if path.startswith("docs/for-humans/protocol/") and path.endswith(".md"):
-        return True
-    return not (path.endswith(".md") or path == "LICENSE")
 
 
 def gate_commit(event, before, after):
@@ -191,10 +212,14 @@ def gate_commit(event, before, after):
     if event == "workflow_dispatch":
         return ""
     base = before if squash_merges(before) is not None else f"{after}^"
-    changed = git("diff", "--name-only", base, after)
+    # Without renames, a file moved to an ignored path still shows its gated old name. Names
+    # are NUL-separated and unquoted, so one with a space or non-ASCII letters stays whole.
+    changed = git(
+        "-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", "-z", base, after
+    )
     if changed is None:
         return after
-    return after if any(gated(path) for path in changed.split()) else ""
+    return after if any(gated(path) for path in changed.split("\0") if path) else ""
 
 
 def busy(repo, api, run_id, gate):
@@ -317,12 +342,17 @@ def platform_block(key, text):
     return f"<!-- platform {key} -->\n{text}<!-- end platform {key} -->\n"
 
 
+def enabled(key, run):
+    """Whether CLIMON2_OWN_RUNNERS lists platform `key`, as the workflow's contains() does."""
+    return key in run.own.lower()
+
+
 def platform_text(key, name, label, run):
     """(a platform's new content or None to keep its old one with a note, the note,
     whether it needs the owner's attention)."""
     folder = run.logs / f"full-run-{key}-{label}"
     if not folder.is_dir():
-        if key not in run.own.lower():
+        if not enabled(key, run):
             return None, f"> Did not run on {run.date}: it is not in CLIMON2_OWN_RUNNERS.", False
         return None, f"> Did not run on {run.date}: its job left no log ({run.url}).", True
     status, findings = platform_result(folder)
@@ -360,22 +390,18 @@ def section(old, label, gates, run):
     return "\n".join(parts), attention
 
 
-def merged(body, new):
-    """The issue body with each slice's content in `new` replacing its section, slices in
-    order. A body edited in the browser comes back with CRLF line ends, which would hide
-    its sections from the pattern and drop them."""
-    sections = blocks(SECTION, (body or "").replace("\r\n", "\n"))
-    sections.update(new)
-    return HEADER + "\n".join(
-        f"<!-- slice {key} -->\n{sections[key]}<!-- end slice {key} -->\n"
-        for key in LABELS
-        if key in sections
-    )
+def paged(api, template, **fields):
+    """Every item of a listing GitHub pages, page by page until a short page."""
+    for page in range(1, PAGES + 1):
+        items = api("GET", template.format(page=page, **fields))
+        yield from items
+        if len(items) < PER_PAGE:
+            return
 
 
 def tracking_issue(repo, api):
-    issues = api("GET", ISSUES.format(repo=repo))
-    for issue in issues:
+    """The open tracking issue, from every page of the bot's open issues, or None."""
+    for issue in paged(api, ISSUES, repo=repo):
         if (
             issue.get("title") == TITLE
             and (issue.get("user") or {}).get("login") == BOT
@@ -385,19 +411,37 @@ def tracking_issue(repo, api):
     return None
 
 
+def slice_comments(repo, api, number):
+    """Each slice's comment on issue `number`, by its label, with its section content. A
+    comment edited in the browser comes back with CRLF line ends, which would hide its
+    section from the pattern."""
+    found = {}
+    for comment in paged(api, COMMENTS, repo=repo, number=number):
+        if (comment.get("user") or {}).get("login") != BOT:
+            continue
+        body = (comment.get("body") or "").replace("\r\n", "\n")
+        for label, content in blocks(SECTION, body).items():
+            found.setdefault(label, (comment, content))
+    return found
+
+
+def comment_body(label, content):
+    return f"<!-- slice {label} -->\n{content}<!-- end slice {label} -->\n"
+
+
 def report(repo, api, slices, gates, run):
     """What the report did with the tracking issue."""
     try:
         issue = tracking_issue(repo, api)
+        comments = slice_comments(repo, api, issue["number"]) if issue else {}
         failure = None
     except (ApiError, KeyError, TypeError, AttributeError) as error:
-        issue = None
-        failure = error
-    earlier = blocks(SECTION, ((issue or {}).get("body") or "").replace("\r\n", "\n"))
+        issue, comments, failure = None, {}, error
     new = {}
     noted = []
     for label in slices:
-        new[label], attention = section(earlier.get(label), label, gates, run)
+        old = comments[label][1] if label in comments else None
+        new[label], attention = section(old, label, gates, run)
         if attention:
             noted.append(label)
     name = named(slices)
@@ -405,6 +449,8 @@ def report(repo, api, slices, gates, run):
         lead = f"{name} skipped: gates were busy"
     elif gates == "failed":
         lead = f"{name} skipped: a job that waits for the gates failed"
+    elif not any(enabled(key, run) for key, _ in PLATFORMS):
+        lead = f"no pass of {name} ran: CLIMON2_OWN_RUNNERS lists no machine"
     elif noted:
         lead = f"findings in {named(noted)}"
     else:
@@ -412,22 +458,26 @@ def report(repo, api, slices, gates, run):
     try:
         if failure:
             raise ApiError(failure)
-        if issue:
-            # A clean pass clears the slice's old findings, so the issue keeps only open ones.
-            body = merged(issue.get("body"), new)
-            api("PATCH", f"repos/{repo}/issues/{issue['number']}", {"body": body})
-            if noted:
-                api(
-                    "POST",
-                    f"repos/{repo}/issues/{issue['number']}/comments",
-                    {"body": f"{lead[0].upper()}{lead[1:]}: {run.url}"},
-                )
-            return f"{lead}; {issue['html_url']} is updated"
-        if noted:
-            body = merged("", new)
-            created = api("POST", f"repos/{repo}/issues", {"title": TITLE, "body": body})
-            return f"{lead}; {created['html_url']} is opened"
-        return lead
+        if not issue and not noted:
+            return lead
+        opened = not issue
+        if opened:
+            issue = api("POST", f"repos/{repo}/issues", {"title": TITLE, "body": HEADER})
+        for label in slices:
+            # A clean pass clears the slice's old findings, so its comment keeps only open ones.
+            body = {"body": comment_body(label, new[label])}
+            if label in comments:
+                api("PATCH", f"repos/{repo}/issues/comments/{comments[label][0]['id']}", body)
+            else:
+                api("POST", f"repos/{repo}/issues/{issue['number']}/comments", body)
+        if noted and not opened:
+            # Editing a comment notifies no one, so findings say so in a new one.
+            api(
+                "POST",
+                f"repos/{repo}/issues/{issue['number']}/comments",
+                {"body": f"{lead[0].upper()}{lead[1:]}: {run.url}"},
+            )
+        return f"{lead}; {issue['html_url']} is {'opened' if opened else 'updated'}"
     except (ApiError, KeyError, TypeError, AttributeError) as error:
         return f"{lead}, but could not update the tracking issue: {error}"
 

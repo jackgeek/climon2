@@ -227,8 +227,9 @@ fn each_chosen_slice_is_its_own_call_one_at_a_time() {
     }
 }
 
-/// quality-full-run.py knows which pushes run quality.yml by that workflow's
-/// `paths` filter; if the filter changes, the script must change with it.
+/// tools/quality_paths.py, which quality-full-run.py and quality-prior-run.py
+/// share, knows which pushes run quality.yml by that workflow's `paths` filter;
+/// if the filter changes, the module must change with it.
 #[test]
 fn the_gate_paths_the_script_knows_are_quality_ymls() {
     let quality = workflow("quality.yml");
@@ -393,17 +394,18 @@ fn a_failed_set_up_is_reported_not_red() {
 }
 
 /// A slice runs on its machine's own runner with quality.yml's worker limits
-/// and a time limit of a few hours. Neither workflow has a concurrency group, so
-/// a later merge never cancels or replaces a slice. The job's limit leaves over
-/// 45 minutes beyond the pass's for checkout, set-up and the log's upload.
+/// and a time limit of a few hours. No workflow or job, the report included, has
+/// a concurrency group, so a later merge never cancels or replaces a slice or its
+/// report (#457). The job's limit leaves over 45 minutes beyond the pass's for
+/// checkout, set-up and the log's upload.
 #[test]
 fn a_slice_never_reddens_main_or_gets_cancelled() {
     let slice = slice();
     let quality = workflow("quality.yml");
     for text in [full(), slice.clone()] {
         assert!(
-            !text.contains("concurrency"),
-            "a slice must never be dropped"
+            !text.contains("concurrency:"),
+            "a slice or its report must never be dropped"
         );
     }
     for (name, os, job_minutes, step_minutes) in [
@@ -454,6 +456,8 @@ fn a_piped_pass_keeps_its_exit_status() {
 /// The report job puts the slice's findings into one tracking issue with the
 /// workflow's own token, the only write either workflow has; neither uses a
 /// secret. It knows which machines should have run, and the date for its notes.
+/// #457: each slice's findings go in its own comment (quality_full_report.rs),
+/// so reports need no concurrency group.
 #[test]
 fn each_slice_reports_its_findings_in_one_issue() {
     let full = full();

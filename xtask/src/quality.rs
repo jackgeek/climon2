@@ -968,9 +968,14 @@ fn mutation_targets(root: &Path, selection: Selection, scope: Scope) -> io::Resu
 
 /// What the gate would mutate: each target, its line counts and mutants, and the single run.
 /// Mutants are counted before coverage, which drops those on lines no test runs.
-fn plan_text(root: &Path, targets: &[Target], run: &RunPlan) -> io::Result<String> {
+fn plan_text(
+    root: &Path,
+    selection: Selection,
+    targets: &[Target],
+    run: &RunPlan,
+) -> io::Result<String> {
     if targets.is_empty() {
-        return Ok("No changed shipped Rust source to mutate.\n".to_owned());
+        return Ok(format!("{}\n", selection.nothing_to_mutate()));
     }
     let mut text = String::new();
     for target in targets {
@@ -1036,7 +1041,7 @@ pub fn plan(root: &Path, selection: Selection, scope: Scope) -> io::Result<()> {
         verify_tools(root)?;
     }
     let run = scanned_plan(root, targets.clone())?;
-    print!("{}", plan_text(root, &targets, &run)?);
+    print!("{}", plan_text(root, selection, &targets, &run)?);
     Ok(())
 }
 
@@ -1105,11 +1110,11 @@ pub fn check(root: &Path, selection: Selection, scope: Scope) -> io::Result<()> 
             .arg(&stage_timeouts))?;
     }
     if targets.is_empty() {
-        eprintln!("No changed shipped Rust source to mutate.");
+        eprintln!("{}", selection.nothing_to_mutate());
         return Ok(());
     }
     let run = scanned_plan(root, targets.clone())?;
-    eprint!("{}", plan_text(root, &targets, &run)?);
+    eprint!("{}", plan_text(root, selection, &targets, &run)?);
     if run.targets.is_empty() {
         return Ok(());
     }
@@ -2761,7 +2766,7 @@ Scan: 1 mutation sites in ab.rs
             lines: Some(BTreeSet::from([1, 3, 9])),
         };
         assert_eq!(
-            plan_text(root, &targets, &run).unwrap(),
+            plan_text(root, Selection::Changed, &targets, &run).unwrap(),
             "\
 new.rs: whole file, 3 lines, 2 mutants
 old.rs: 2 changed items, 4 of 10 lines, 3 mutants, 1 of them on lines another file selected
@@ -2778,7 +2783,7 @@ One mutator run over 2 files, 5 mutants, --lines 1,3,9 \
             lines: None,
         };
         assert_eq!(
-            plan_text(root, &targets[..1], &whole).unwrap(),
+            plan_text(root, Selection::All, &targets[..1], &whole).unwrap(),
             "new.rs: whole file, 3 lines, 2 mutants\n\
              One mutator run over 1 files, 2 mutants, whole files.\n"
         );
@@ -2787,7 +2792,7 @@ One mutator run over 2 files, 5 mutants, --lines 1,3,9 \
             lines: None,
         };
         assert_eq!(
-            plan_text(root, &targets[2..], &nothing).unwrap(),
+            plan_text(root, Selection::Changed, &targets[2..], &nothing).unwrap(),
             "\
 dry.rs: 1 changed items, 1 of 2 lines, no mutants
   f  lines 2
@@ -2795,7 +2800,7 @@ No selected line holds a mutation site; nothing to mutate.
 "
         );
         assert_eq!(
-            plan_text(root, &[], &nothing).unwrap(),
+            plan_text(root, Selection::Changed, &[], &nothing).unwrap(),
             "No changed shipped Rust source to mutate.\n"
         );
     }

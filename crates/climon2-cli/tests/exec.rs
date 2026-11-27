@@ -1494,13 +1494,61 @@ fn line(text: &str) -> Option<String> {
     text.ends_with('\n').then(|| text.to_owned())
 }
 
+/// Darwin's `PENDIN` (`<sys/termios.h>`), which its kernel sets when input
+/// is pending as the terminal returns to canonical mode, and clears at the
+/// next read: kernel state, not configuration (see the client's README).
+const DARWIN_PENDIN: u64 = 0x2000_0000;
+
+#[cfg(target_os = "macos")]
+const _: () = assert!(libc::PENDIN == DARWIN_PENDIN);
+
+/// `stty -g` settings without Darwin's transient `PENDIN`. Only macOS's
+/// `gfmt1:...:lflag=<hex>:...` format names `lflag`; Linux's positional
+/// format passes through unchanged (#465).
+fn settings(stty: &str) -> String {
+    stty.split(':')
+        .map(|field| match field.strip_prefix("lflag=") {
+            Some(flags) => {
+                let flags = u64::from_str_radix(flags, 16).unwrap() & !DARWIN_PENDIN;
+                format!("lflag={flags:x}")
+            }
+            None => field.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// #465: the settings from macOS job 140557380514 match once `PENDIN` is
+/// masked, and any other difference still shows.
+#[test]
+fn settings_ignore_only_darwins_pendin() {
+    let format = |lflag: &str| {
+        format!(
+            "gfmt1:cflag=4b00:iflag=2b02:lflag={lflag}:oflag=3:discard=f:dsusp=19:eof=4:\
+             eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:\
+             start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600\n"
+        )
+    };
+    assert_eq!(settings(&format("200005cb")), settings(&format("5cb")));
+    assert_ne!(settings(&format("5c3")), settings(&format("5cb")));
+    assert_ne!(settings(&format("600005cb")), settings(&format("5cb")));
+    assert_ne!(
+        settings(&format("5cb").replace("iflag=2b02", "iflag=2b03")),
+        settings(&format("5cb"))
+    );
+    let linux =
+        "500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0\n";
+    assert_eq!(settings(linux), linux);
+}
+
 /// The process ID on a whole line.
 fn pid(text: &str) -> Option<i32> {
     text.strip_suffix('\n')?.parse().ok()
 }
 
 /// #139: SIGTERM or SIGHUP sent while the prompt waits ends exec with
-/// 128 + signal, the terminal's settings restored exactly. (A background job
+/// 128 + signal, the terminal's settings restored exactly, apart from
+/// Darwin's transient `PENDIN` (#465). (A background job
 /// of a non-interactive shell starts with SIGINT and SIGQUIT ignored, and
 /// the prompt keeps them so.)
 #[test]
@@ -1522,8 +1570,8 @@ fn a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_termin
             .wait_for_text(&format!("STATUS={}", 128 + signal), Duration::from_secs(8))
             .unwrap();
         assert_eq!(
-            written(&directory.join("after"), &terminal, line),
-            written(&directory.join("before"), &terminal, line),
+            settings(&written(&directory.join("after"), &terminal, line)),
+            settings(&written(&directory.join("before"), &terminal, line)),
             "signal {signal}"
         );
         assert_eq!(session_traces(&layout), Vec::<String>::new());

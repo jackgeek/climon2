@@ -18,9 +18,10 @@ name: Quality
 # on GitHub-hosted runners (check.yml, called by release.yml).
 #
 # A push to main whose tree a branch's head already had, as a squash-merge of an
-# up-to-date pull request gives, skips the gates when that head's run passed all
-# three (#442). The prior job finds that run on a hosted runner; any doubt runs
-# the gates.
+# up-to-date pull request gives, skips the gates when that head's run passed every
+# gate CLIMON2_OWN_RUNNERS lists (#442), as does one whose merged branch's latest
+# passed run differs from it only in paths this workflow ignores (#447). The prior
+# job finds that run on a hosted runner; any doubt runs the gates.
 on:
   push:
     branches: ["**"]
@@ -70,13 +71,15 @@ jobs:
           echo "sha=$(git rev-parse "$base")" >> "$GITHUB_OUTPUT"
 
   # Only a push to main looks, and only a run on another branch whose head had
-  # this tree and passed every gate counts. Anything else, this job failing
-  # included, leaves its output empty, so the gates run.
+  # this tree, or differs from it only in ignored paths, and passed every listed
+  # gate counts. Anything else, this job failing included, leaves its output
+  # empty, so the gates run. A failed look-up never turns main's run red (#447).
   prior:
     name: Find a passed run of this tree
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    continue-on-error: true
     permissions:
       actions: read
       contents: read
@@ -87,7 +90,8 @@ jobs:
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 tools/quality-prior-run.py --repo "$GITHUB_REPOSITORY" --tree "$(git rev-parse "$GITHUB_SHA^{tree}")"
+          OWN_RUNNERS: ${{ vars.CLIMON2_OWN_RUNNERS }}
+        run: python3 tools/quality-prior-run.py --repo "$GITHUB_REPOSITORY" --tree "$(git rev-parse "$GITHUB_SHA^{tree}")" --commit "$GITHUB_SHA" --own-runners "$OWN_RUNNERS"
 
   linux:
     name: Linux CRAP and mutation / own hardware

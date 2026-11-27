@@ -379,6 +379,10 @@ jobs:
       && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # No concurrency group, so no report is ever cancelled or replaced (#457).
+    # Each slice owns one comment on the tracking issue, so reports of different
+    # slices never rewrite the same text, and a later report of a slice simply
+    # rewrites its comment.
     permissions:
       contents: read
       issues: write

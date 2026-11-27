@@ -39,6 +39,17 @@ impl Selection {
     pub(crate) fn scores(self, path: &Path) -> bool {
         !matches!(self, Self::Slice(_)) || self.keeps(path)
     }
+
+    /// What the gate says when this selection holds no file to mutate (#457).
+    pub(crate) fn nothing_to_mutate(self) -> String {
+        match self {
+            Self::Changed => "No changed shipped Rust source to mutate.".to_owned(),
+            Self::All => "No shipped Rust source to mutate.".to_owned(),
+            Self::Slice(Slice(index)) => {
+                format!("No shipped Rust source in slice {index} to mutate.")
+            }
+        }
+    }
 }
 
 /// One of the `SLICES` slices.
@@ -128,6 +139,22 @@ mod tests {
         assert!(Selection::All.scores(path));
         assert!(Selection::Slice(Slice(SLICE_OF_A_RS)).scores(path));
         assert!(!Selection::Slice(Slice(SLICE_OF_B_RS)).scores(path));
+    }
+
+    #[test]
+    fn an_empty_selection_is_named_by_what_it_selects() {
+        assert_eq!(
+            Selection::Changed.nothing_to_mutate(),
+            "No changed shipped Rust source to mutate."
+        );
+        assert_eq!(
+            Selection::All.nothing_to_mutate(),
+            "No shipped Rust source to mutate."
+        );
+        assert_eq!(
+            Selection::Slice(Slice(7)).nothing_to_mutate(),
+            "No shipped Rust source in slice 7 to mutate."
+        );
     }
 
     #[test]
