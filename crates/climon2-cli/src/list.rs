@@ -84,13 +84,6 @@ fn log_probe(outcome: &Outcome) {
 
 fn log_uncertainty(uncertainty: &Uncertainty) {
     match uncertainty {
-        Uncertainty::Mismatched | Uncertainty::Unanswered(_) => tracing::debug!(
-            responded = matches!(uncertainty, Uncertainty::Mismatched),
-            "session probe did not match"
-        ),
-        Uncertainty::Unreachable(error) => {
-            tracing::debug!(errno = error.raw_os_error(), "session connection failed")
-        }
         Uncertainty::DaemonAlive => tracing::debug!("refused connection belongs to a live daemon"),
         Uncertainty::CreatedElsewhere => {
             tracing::debug!("session created on another host is kept")
@@ -98,6 +91,21 @@ fn log_uncertainty(uncertainty: &Uncertainty) {
         Uncertainty::IdentityUnknown(error) => {
             tracing::warn!(errno = error.raw_os_error(), "daemon identity is uncertain")
         }
+        unproven => log_unproven(unproven),
+    }
+}
+
+/// A probe that proved nothing about the daemon: something else answered, the
+/// exchange failed, or the connection did.
+fn log_unproven(uncertainty: &Uncertainty) {
+    match uncertainty {
+        Uncertainty::Unreachable(error) => {
+            tracing::debug!(errno = error.raw_os_error(), "session connection failed")
+        }
+        _ => tracing::debug!(
+            responded = matches!(uncertainty, Uncertainty::Mismatched),
+            "session probe did not match"
+        ),
     }
 }
 

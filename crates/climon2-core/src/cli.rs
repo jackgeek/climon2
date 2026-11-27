@@ -215,12 +215,17 @@ fn parse_monitor(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
 
 /// `home` takes nothing, or `release` and then optionally `--force`.
 fn parse_home(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
-    match arguments.as_slice() {
-        [] => Ok(CliArgs::Home),
-        [action] if action == "release" => Ok(CliArgs::HomeRelease { force: false }),
-        [action, flag] if action == "release" && flag == "--force" => {
-            Ok(CliArgs::HomeRelease { force: true })
-        }
+    match arguments.split_first() {
+        None => Ok(CliArgs::Home),
+        Some((action, flags)) if action == "release" => parse_release(flags),
+        Some(_) => Err(UsageError),
+    }
+}
+
+fn parse_release(flags: &[OsString]) -> Result<CliArgs, UsageError> {
+    match flags {
+        [] => Ok(CliArgs::HomeRelease { force: false }),
+        [flag] if flag == "--force" => Ok(CliArgs::HomeRelease { force: true }),
         _ => Err(UsageError),
     }
 }

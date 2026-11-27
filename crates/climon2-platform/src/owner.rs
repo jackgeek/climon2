@@ -60,33 +60,37 @@ fn judge(owner: SessionOrigin, here: io::Result<SessionOrigin>) -> Result<(), Re
 }
 
 fn claim(home: &Path, here: io::Result<SessionOrigin>, link: Link) -> Result<(), Refusal> {
-    let here = match here {
-        Ok(here) => here,
+    match here {
+        Ok(here) => claim_as(home, here, link),
         Err(error) => {
             tracing::warn!(
                 %error,
                 errno = error.raw_os_error(),
                 "cannot read this host's origin; the climon2 home is not claimed"
             );
-            return Ok(());
-        }
-    };
-    let written = write(home, &here, link);
-    match recorded(home)? {
-        Some(owner) => judge(owner, Ok(here)),
-        None => {
-            if let Err(error) = written {
-                tracing::warn!(
-                    %error,
-                    errno = error.raw_os_error(),
-                    "cannot record the climon2 home's owner; the home is not claimed"
-                );
-            }
             Ok(())
         }
     }
 }
 
+/// Whoever's record is in place after this host's attempt owns the home; with
+/// none in place, the home goes on unclaimed.
+fn claim_as(home: &Path, here: SessionOrigin, link: Link) -> Result<(), Refusal> {
+    let written = write(home, &here, link);
+    match recorded(home)? {
+        Some(owner) => judge(owner, Ok(here)),
+        None => {
+            written.unwrap_or_else(|error| {
+                tracing::warn!(
+                    %error,
+                    errno = error.raw_os_error(),
+                    "cannot record the climon2 home's owner; the home is not claimed"
+                )
+            });
+            Ok(())
+        }
+    }
+}
 /// The owner the home records, if it records one.
 fn recorded(home: &Path) -> Result<Option<SessionOrigin>, Refusal> {
     read(home).map_err(|error| Refusal::Unreadable {

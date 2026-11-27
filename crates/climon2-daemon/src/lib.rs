@@ -93,6 +93,15 @@ fn prepared(
 ) -> Result<(), startup::Failure> {
     startup::owned(options)?;
     startup::fault(log)?;
+    resourced(options, readiness, log)
+}
+
+/// Startup's resources, then the session.
+fn resourced(
+    options: &args::Options,
+    readiness: &mut ReadinessWriter,
+    log: &LogFile,
+) -> Result<(), startup::Failure> {
     let resources = startup::Resources::prepare(options)?;
     let exec_listener = pty::ExecListener::bind(options)?;
     let _stderr = startup::capture_diagnostics(log)?;

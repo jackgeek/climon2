@@ -38,19 +38,28 @@ pub fn run(home: &Path, action: Action) -> Result<u32, Error> {
 /// Nothing is claimed.
 fn show(home: &Path) -> Result<u32, Error> {
     let recorded = owner::read(home);
-    let owner = match &recorded {
+    println!("climon2 home: {}", home.display());
+    println!("owner: {}", owner_line(&recorded));
+    println!("this host: {}", host_line(&recorded, origin::current()));
+    Ok(0)
+}
+
+fn owner_line(recorded: &io::Result<Option<SessionOrigin>>) -> String {
+    match recorded {
         Ok(Some(owner)) => owner.to_string(),
         Ok(None) => "none (the next command claims this home)".to_owned(),
         Err(error) => format!("unreadable ({error})"),
-    };
-    let host = match origin::current() {
-        Ok(here) => format!("{here} ({})", verdict(&recorded, &here)),
+    }
+}
+
+fn host_line(
+    recorded: &io::Result<Option<SessionOrigin>>,
+    here: io::Result<SessionOrigin>,
+) -> String {
+    match here {
+        Ok(here) => format!("{here} ({})", verdict(recorded, &here)),
         Err(error) => format!("unknown ({error})"),
-    };
-    println!("climon2 home: {}", home.display());
-    println!("owner: {owner}");
-    println!("this host: {host}");
-    Ok(0)
+    }
 }
 
 fn verdict(recorded: &io::Result<Option<SessionOrigin>>, here: &SessionOrigin) -> &'static str {
@@ -72,15 +81,31 @@ fn released(home: &Path, force: bool) -> Result<u32, Error> {
         println!("{}", described(home, Released::Nothing));
         return Ok(0);
     }
-    let layout = HomeLayout::at(home).map_err(io::Error::other)?;
-    let pass = climon2_discovery::discover(&layout, PROBE)?;
-    if owns(&recorded) {
-        refuse_running(&pass, force)?;
-    } else if !force {
-        refuse_held(&pass)?;
-    }
+    guard(home, &recorded, force)?;
     println!("{}", described(home, owner::release(home)?));
     Ok(0)
+}
+
+/// Refuses as `released` says, before anything is removed.
+fn guard(
+    home: &Path,
+    recorded: &io::Result<Option<SessionOrigin>>,
+    force: bool,
+) -> Result<(), Error> {
+    let pass = probe(home)?;
+    if owns(recorded) {
+        refuse_running(&pass, force)
+    } else if force {
+        Ok(())
+    } else {
+        refuse_held(&pass)
+    }
+}
+
+/// A discovery pass that removes nothing.
+fn probe(home: &Path) -> io::Result<Pass> {
+    let layout = HomeLayout::at(home).map_err(io::Error::other)?;
+    climon2_discovery::discover(&layout, PROBE)
 }
 
 /// Whether this host is the one the home records.
@@ -150,5 +175,26 @@ fn described(home: &Path, released: Released) -> String {
              this home",
             path.display()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `c2 home` names this host's origin, or why it cannot be read, and its
+    /// verdict on the recorded owner.
+    #[test]
+    fn the_host_line_names_this_host_or_why_it_is_unknown() {
+        let here = SessionOrigin {
+            machine_id: Some("aaaa".parse().unwrap()),
+            pid_namespace: None,
+        };
+        assert_eq!(
+            host_line(&Ok(None), Ok(here)),
+            "machine aaaa (no owner yet)"
+        );
+        let unknown = host_line(&Ok(None), Err(io::Error::other("no origin")));
+        assert_eq!(unknown, "unknown (no origin)");
     }
 }

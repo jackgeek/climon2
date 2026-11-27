@@ -199,15 +199,13 @@ fn inherited_depth() -> NonZeroU32 {
 /// again before anything else, logging why it refuses or what it skips.
 pub fn owned(options: &Options) -> Result<(), Failure> {
     let checked = climon2_platform::owner::check(&options.home);
-    match climon2_core::owner::forgive(checked, options.force) {
-        Ok(skipped) => {
+    climon2_core::owner::forgive(checked, options.force)
+        .map(|skipped| {
             if let Some(refusal) = skipped {
                 tracing::warn!(%refusal, "--force uses this climon2 home without claiming it");
             }
-            Ok(())
-        }
-        Err(refusal) => Err(refused(&refusal)),
-    }
+        })
+        .map_err(|refusal| refused(&refusal))
 }
 
 fn refused(refusal: &climon2_core::owner::Refusal) -> Failure {
