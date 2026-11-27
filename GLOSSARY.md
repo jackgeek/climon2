@@ -315,6 +315,10 @@ _Avoid_: Pause, block, lockout
 A numbered, frozen edition of everything two ends of a monitor link say to each other, from pairing to relayed records.
 _Avoid_: Link version, protocol version
 
+**Pairing**:
+The remembered trust between one hub monitor and one relay, created by a link invitation and ended when either side forgets the other.
+_Avoid_: Trusted device, known host, bond
+
 **Remote session**:
 A session that a hub monitor reaches through a monitor link.
 _Avoid_: Relayed session, foreign session
