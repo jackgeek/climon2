@@ -35,6 +35,7 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | [daemon-client/](daemon-client/README.md) | The frozen hello and wire revision 1 between a client and a session daemon. |
 | [monitor-client/](monitor-client/README.md) | The native revision-1 calls and records between the monitor and a client library. |
 | [monitor-host/](monitor-host/README.md) | The status reports and bell the monitor writes to its host. |
+| [monitor-link/](monitor-link/README.md) | The agreed, unimplemented link revision 1 between a hub monitor and a relay. |
 
 ## Status and scope
 
@@ -113,11 +114,14 @@ The command remains behind the daemon's [PTY](TERMS.md#pseudo-terminal-pty).
 The daemon remains the authority for terminal state and terminal-query replies.
 
 The [agreed daemon wire](daemon-client/README.md) is portable, independent of
-today's local private sockets. Future monitor-to-monitor forwarding over
-[TCP/IP](TERMS.md#tcpip) presents forwarded sessions as local at the downstream
-monitor; future [WebSocket](TERMS.md#websocket) forwarding feeds xterm.js in a
-browser, not a native library in that browser. Routing, multiplexing, discovery
-and remote security remain unresolved. The
+today's local private sockets, but it never crosses a machine boundary. A
+[hub monitor](../../../GLOSSARY.md#monitor-links) reaches another machine's
+sessions through a [relay](../../../GLOSSARY.md#monitor-links) over
+[TCP/IP](TERMS.md#tcpip), using the agreed and unimplemented
+[monitor link protocol](monitor-link/README.md); the relay is an ordinary
+client of its own machine's daemons. Future [WebSocket](TERMS.md#websocket)
+forwarding feeds xterm.js in a browser, not a native library in that
+browser, and its routing and security remain unresolved. The
 [artifact diagram](../architecture/runtime-artifacts.md) shows these planned consumers.
 There is no initial application checksum; only a future negotiated integrity
 revision could add one if chosen.
