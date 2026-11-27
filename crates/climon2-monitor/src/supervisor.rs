@@ -615,7 +615,7 @@ impl State {
             }
             self.internals();
             self.schedule();
-            self.poll();
+            self.poll(TICK);
         };
         self.begin_shutdown();
         self.settle_input(deadline);
@@ -643,7 +643,7 @@ impl State {
         let deadline = deadline.min(Instant::now() + bound);
         while self.input_pending() && before(deadline) {
             self.internals();
-            self.poll();
+            self.poll(within(deadline));
         }
     }
 
@@ -1497,10 +1497,11 @@ impl State {
         self.advance(id);
     }
 
-    /// Waits one tick on the descriptor of every live instance that is not
-    /// congested, then drains each of those; a congested one is failed once
-    /// its congestion outlasts `deadlines.delivery_stall_ms` (#119).
-    fn poll(&mut self) {
+    /// Waits at most `bound` on the descriptor of every live instance that
+    /// is not congested, then drains each of those; a congested one is
+    /// failed once its congestion outlasts `deadlines.delivery_stall_ms`
+    /// (#119).
+    fn poll(&mut self, bound: Duration) {
         let mut table: Vec<_> = self
             .instances
             .iter()
@@ -1510,7 +1511,7 @@ impl State {
             // descriptor open, and the table ends with this wait.
             .map(|descriptor| unsafe { notifier::watch_raised(descriptor) })
             .collect();
-        wait(&mut table);
+        wait(&mut table, bound);
         let live: Vec<_> = self
             .instances
             .iter()
@@ -1838,7 +1839,7 @@ impl State {
         self.ask_shutdown();
         while !(self.instances.is_empty() && self.loads.is_empty()) && before(deadline) {
             self.internals();
-            self.poll();
+            self.poll(within(deadline));
             self.tell_waiting();
             self.ask_shutdown();
         }
@@ -1950,14 +1951,21 @@ fn stack(bytes: u64) -> usize {
     usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
-/// Waits one tick for any of `table`'s descriptors, or simply one tick. A
-/// failed wait only ends the tick early.
-fn wait(table: &mut [Watch<'_>]) {
+/// One wait of a round before `deadline`: a tick, or what is left of it if
+/// that is less, so the last round ends at the deadline, not a tick past
+/// it, where the UI thread no longer waits for the report (#455).
+fn within(deadline: Instant) -> Duration {
+    TICK.min(deadline.saturating_duration_since(Instant::now()))
+}
+
+/// Waits `bound` for any of `table`'s descriptors, or simply `bound`. A
+/// failed wait only ends it early.
+fn wait(table: &mut [Watch<'_>], bound: Duration) {
     if table.is_empty() {
-        thread::sleep(TICK);
+        thread::sleep(bound);
         return;
     }
-    let _ = waiting::wait(table, TICK);
+    let _ = waiting::wait(table, bound);
 }
 
 #[cfg(test)]
@@ -3105,6 +3113,18 @@ mod tests {
         });
         until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
         assert_eq!(seen(&id), [Seen::Created, Seen::OwnerExited]);
+    }
+
+    /// EXT-02 (Fault, #118; #455): a round's wait ends at the shutdown
+    /// deadline, never a tick past it, so the supervisor's report is ready
+    /// while the UI thread still waits for it: a tick while one is left,
+    /// what is left of it near the deadline, and none once it has passed.
+    #[test]
+    fn a_round_waits_no_further_than_the_shutdown_deadline() {
+        let now = Instant::now();
+        assert_eq!(within(now + Duration::from_secs(60)), TICK);
+        assert!(within(now + Duration::from_millis(5)) <= Duration::from_millis(5));
+        assert_eq!(within(now), Duration::ZERO);
     }
 
     /// EXT-01 (Monitor, Fault; #118): shutdown asks every instance at once,

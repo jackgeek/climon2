@@ -108,7 +108,8 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
 }
 
 /// One wait for host input during shutdown, and how long shutdown waits
-/// past its deadline for the supervisor's last round.
+/// past its deadline for the supervisor's report: its last round ends at
+/// the deadline, so this is left for handing the report over (#455).
 const TICK: Duration = Duration::from_millis(20);
 
 /// Owns the host until an ending, shuts every client down, and releases the
