@@ -22,8 +22,9 @@ own machine is a [local session](../../../../GLOSSARY.md#monitor-links).
 The two ends first trust each other through a
 [link invitation](../../../../GLOSSARY.md#monitor-links): the relay shows a
 short one-time number, the **PIN**, and the hub monitor's user types it in.
-That exchange is **pairing**. Each end then remembers the other's public key,
-so later links need no PIN, until one end **forgets** the other.
+That exchange creates a [pairing](../../../../GLOSSARY.md#monitor-links):
+each end remembers the other's public key, so later links need no PIN, until
+one end **forgets** the other.
 
 ## Contents
 
