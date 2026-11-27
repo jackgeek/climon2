@@ -87,6 +87,34 @@ and the plan shows how many each file gains this way. A new file adds all its
 lines to the list, so it can gain the most. Until the mutator takes a list per
 file, the owner keeps this (2026-11-27).
 
+## Skipping a squash-merge's gates on main
+
+A pull request's gates run on its branch's push, and they run again on the
+push its merge makes to `main`. The Linux gate can take hours on the one Linux
+machine, so that second run delays every other branch
+([#442](https://github.com/jackgeek/climon2/issues/442)).
+
+A squash-merge of a branch that is up to date with `main` gives `main` the same
+**tree**, the snapshot of every file, as the branch's last commit. So on a
+push to `main`, a job on a GitHub-hosted runner runs
+`tools/quality-prior-run.py` before the gates start. The script looks through
+the last 100 successful `quality.yml` runs for a push to another branch whose
+commit has that tree. When it finds one in which the Linux, Windows and macOS
+gates all passed, the three gates on `main` are skipped. The run's summary
+names the tree and the run it relied on.
+
+The gates on `main` still run in every other case:
+
+- a push to any other branch, or a manual run of the workflow;
+- a push to `main` whose tree no passed branch run had, such as a direct push
+  or a merge of a branch that was not up to date;
+- a branch run of that tree in which a gate failed or was skipped;
+- the look-up failing, for example because GitHub's API did not answer.
+
+The branch's gate mutated at least the source that `main`'s push changes: the
+two trees are the same, and the branch's gate compared against an older or
+equal `main`.
+
 Release qualification does not use these machines. It still runs on
 GitHub-hosted runners, from `check.yml`, so its evidence records name a
 known image.
