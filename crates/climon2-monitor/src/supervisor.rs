@@ -591,7 +591,8 @@ impl State {
             reserved,
             congested: BTreeMap::new(),
             stopping: false,
-            turn: 0,
+            // Which instance a first round starts from is not observable.
+            turn: usize::default(),
             internal,
             internals,
             releases: BTreeMap::new(),
