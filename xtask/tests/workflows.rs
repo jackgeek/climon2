@@ -330,6 +330,9 @@ fn own_hardware_gates_run_on_push_never_on_pull_requests() {
         assert!(job(&quality, name).contains(&"      CARGO_BUILD_JOBS: \"4\""));
         assert!(job(&quality, name).contains(&"      RUST_TEST_THREADS: \"4\""));
     }
+    // The Mac's gate runs its tests 4 at a time too: CPU-bound timing tests
+    // missed their deadlines at its default 16 (#425).
+    assert!(job(&quality, "macos").contains(&"      RUST_TEST_THREADS: \"4\""));
     for workflow_name in ["check.yml", "release.yml", "measure.yml"] {
         assert!(
             !workflow(workflow_name).contains("self-hosted"),
