@@ -12,8 +12,10 @@
 //! each new folder first sweeps, from `c2t` only, the test folders older than
 //! any test runs whose lock no one holds. A folder's lock is removed last, and
 //! kept while anything else in it cannot be removed, so that a later sweep
-//! tries again (#434). A `c2t` that is a symbolic link or junction is refused,
-//! never followed.
+//! tries again (#434). A `c2t` that is a symbolic link or junction is refused
+//! when checked, before it is made and before each sweep; a test folder that
+//! is one is skipped when checked, before its lock is opened and before it is
+//! emptied.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -122,29 +124,32 @@ pub fn local_app_data() -> LocalAppData {
 
 /// Makes `parent` where it is missing, then sweeps it. A `parent` that is a
 /// reparse point, such as a symbolic link or junction another user made first,
-/// is refused before either, so neither follows it.
+/// is refused when checked: before it is made and before it is swept.
 fn ready(parent: &Path, now: SystemTime) {
     refuse_reparse_point(parent);
     fs::create_dir_all(parent)
         .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
-    // Again, in case one was made in its place meanwhile; making a folder
-    // where one already is makes nothing.
-    refuse_reparse_point(parent);
     sweep(parent, now);
 }
 
+/// Panics if `folder` is a reparse point; a missing one is no error.
 fn refuse_reparse_point(folder: &Path) {
-    let Ok(metadata) = fs::symlink_metadata(folder) else {
-        return;
-    };
-    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        panic!(
-            "{} is a symbolic link or junction, which test folders are never made in or \
+    match is_reparse_point(folder) {
+        Ok(false) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(true) => panic!(
+            "{} is a symbolic link or junction, which test folders are not made in or \
              swept through; remove it, and if {SHORT_ROOT} is set, name a folder only you \
              can write to",
             folder.display()
-        );
+        ),
+        Err(error) => panic!("cannot check {}: {error}", folder.display()),
     }
+}
+
+/// Whether `path` itself, not what it may point to, is a reparse point.
+fn is_reparse_point(path: &Path) -> io::Result<bool> {
+    Ok(fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
 }
 
 /// Why `folder` cannot be a test's `LOCALAPPDATA`, if it is too long.
@@ -176,6 +181,9 @@ fn hold(path: &Path) -> io::Result<File> {
 /// whose lock no one holds. A test folder is a folder holding a [`LOCK`] file;
 /// anything else, files and other folders, is left alone.
 fn sweep(parent: &Path, now: SystemTime) {
+    // Checked again right before it is read, in case one was made in its
+    // place since; making a folder where one already is makes nothing.
+    refuse_reparse_point(parent);
     let Ok(entries) = fs::read_dir(parent) else {
         return;
     };
@@ -193,6 +201,10 @@ fn sweep(parent: &Path, now: SystemTime) {
             continue;
         }
         let path = entry.path();
+        // Checked again by name right before its lock is opened through it.
+        if is_reparse_point(&path).unwrap_or(true) {
+            continue;
+        }
         // Fails while the lock is held, and where there is none.
         if let Ok(lock) = take(&path.join(LOCK)) {
             remove(&path, lock);
@@ -208,9 +220,13 @@ fn take(path: &Path) -> io::Result<File> {
 
 /// Removes test `folder`, whose `lock` is held here: everything but the lock
 /// first, then, only if all of that went, the lock and the folder. Where a
-/// leftover process still holds a file in it, the lock stays, so a later sweep
-/// tries again.
+/// leftover process still holds a file in it, or writes one after it was
+/// emptied, the lock stays or is made again, so a later sweep tries again.
+/// A `folder` that is a reparse point is left alone.
 fn remove(folder: &Path, lock: File) {
+    if is_reparse_point(folder).unwrap_or(true) {
+        return;
+    }
     let Ok(entries) = fs::read_dir(folder) else {
         return;
     };
@@ -225,6 +241,7 @@ fn remove(folder: &Path, lock: File) {
         }
         let path = entry.path();
         // Neither follows a symbolic link or junction; it removes the link.
+        // Both remove read-only files on Windows.
         left |= fs::remove_dir_all(&path)
             .or_else(|_| fs::remove_file(&path))
             .is_err();
@@ -232,7 +249,9 @@ fn remove(folder: &Path, lock: File) {
     drop(lock);
     if !left {
         let _ = fs::remove_file(folder.join(LOCK));
-        let _ = fs::remove_dir(folder);
+        if fs::remove_dir(folder).is_err() && folder.exists() {
+            let _ = File::create(folder.join(LOCK));
+        }
     }
 }
 
@@ -267,6 +286,9 @@ fn open(pid: u32, access: u32) -> Option<OwnedHandle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
 
     /// Whatever `TEMP` is, the folder is in the parent, leaves a socket path
     /// within budget, and is gone once dropped.
@@ -369,8 +391,51 @@ mod tests {
         assert!(path.join(LOCK).is_file() && path.join("daemon.log").is_file());
 
         drop(log);
-        sweep(&parent(), SystemTime::now() + STALE);
+        remove(&path, take(&path.join(LOCK)).unwrap());
         assert!(!path.exists());
+    }
+
+    /// A read-only file does not stop a sweep.
+    #[test]
+    fn a_sweep_removes_a_read_only_file() {
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("stale");
+        fs::create_dir(&folder).unwrap();
+        File::create(folder.join(LOCK)).unwrap();
+        let file = folder.join("read-only.txt");
+        File::create(&file).unwrap();
+        let mut permissions = fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&file, permissions).unwrap();
+
+        sweep(parent.path(), SystemTime::now() + STALE);
+
+        assert!(!folder.exists());
+    }
+
+    /// Where the folder itself cannot be removed once emptied, as when a
+    /// leftover process writes a file in it meanwhile, its lock is made again
+    /// so a later sweep tries again. A handle on the folder without delete
+    /// sharing stands in for that file.
+    #[test]
+    fn a_folder_that_outlives_its_lock_gets_it_back() {
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("stale");
+        fs::create_dir(&folder).unwrap();
+        File::create(folder.join(LOCK)).unwrap();
+        let open = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&folder)
+            .unwrap();
+
+        sweep(parent.path(), SystemTime::now() + STALE);
+        assert!(folder.join(LOCK).is_file());
+
+        drop(open);
+        sweep(parent.path(), SystemTime::now() + STALE);
+        assert!(!folder.exists());
     }
 
     /// A `c2t` that is a junction or symbolic link is refused, whether or not
