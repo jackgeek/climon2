@@ -644,7 +644,7 @@ impl State {
     fn settle_input(&mut self, deadline: Instant) {
         let bound = Duration::from_millis(self.context.limits.operation_ms.into());
         let deadline = deadline.min(Instant::now() + bound);
-        while self.input_pending() && round(deadline) {
+        while self.input_pending() && before(deadline) {
             self.internals();
             self.poll(Some(deadline));
         }
@@ -1840,7 +1840,7 @@ impl State {
     /// be unreleased.
     fn shut_down(mut self, deadline: Instant) -> shutdown::Report {
         self.ask_shutdown();
-        while !(self.instances.is_empty() && self.loads.is_empty()) && round(deadline) {
+        while !(self.instances.is_empty() && self.loads.is_empty()) && before(deadline) {
             self.internals();
             self.poll(Some(deadline));
             self.tell_waiting();
@@ -1955,18 +1955,15 @@ fn stack(bytes: u64) -> usize {
 }
 
 /// One wait of a round before `deadline`: a tick, or what is left of it if
-/// that is less, in whole milliseconds rounded down (a wait rounds up to
-/// them), so the last round ends at the deadline, not a tick past it
-/// (#455).
+/// that is less, so the last round ends at the deadline, not a tick past it
+/// (#455). It is whole milliseconds rounded up, as a wait is: rounded down,
+/// the last round would end before the deadline and cut a bounded wait,
+/// such as settling input for `deadlines.operation_ms`, short, or spin
+/// through its last millisecond; rounded up, it ends under a millisecond
+/// past the deadline, well inside the UI's handover grace.
 fn within(deadline: Instant) -> Duration {
     let left = TICK.min(deadline.saturating_duration_since(Instant::now()));
-    left - Duration::from_nanos(u64::from(left.subsec_nanos() % 1_000_000))
-}
-
-/// Whether another round starts before `deadline`: under a millisecond
-/// left, a round would only spin, so the deadline counts as reached.
-fn round(deadline: Instant) -> bool {
-    !within(deadline).is_zero()
+    u64::try_from(left.as_nanos().div_ceil(1_000_000)).map_or(TICK, Duration::from_millis)
 }
 
 /// Waits `bound` for any of `table`'s descriptors, or simply `bound`. A
@@ -3138,19 +3135,17 @@ mod tests {
     /// EXT-02 (Fault, #118; #455): a round's wait ends at the shutdown
     /// deadline, never a tick past it, so the supervisor's report is ready
     /// while the UI thread still waits for it: a tick while one is left,
-    /// what is left of it near the deadline, and none once it has passed.
+    /// what is left of it near the deadline, in whole milliseconds, and none
+    /// once it has passed.
     #[test]
     fn a_round_waits_no_further_than_the_shutdown_deadline() {
         let now = Instant::now();
         assert_eq!(within(now + Duration::from_secs(60)), TICK);
         assert!(within(now + Duration::from_millis(5)) <= Duration::from_millis(5));
-        assert!(within(now + Duration::from_micros(1500)) <= Duration::from_millis(1));
+        assert!(within(now + Duration::from_micros(1500)) <= Duration::from_millis(2));
         let near = within(now + Duration::from_micros(12_700));
         assert_eq!(near.subsec_nanos() % 1_000_000, 0, "{near:?}");
         assert_eq!(within(now), Duration::ZERO);
-        assert!(round(now + Duration::from_secs(60)));
-        assert!(!round(now + Duration::from_micros(500)));
-        assert!(!round(now));
     }
 
     /// EXT-02 (Fault, #118; #455): an instance that has deliveries without
