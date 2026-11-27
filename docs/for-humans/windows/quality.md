@@ -273,7 +273,10 @@ so a later run tries again. `c2t` is checked before it is made and before
 each sweep, and a `c2t` that is a symbolic link or junction stops the tests
 with an error naming it. A test folder in it that is one is skipped, checked
 before its lock is opened and before it is emptied
-([#434](https://github.com/jackgeek/climon2/issues/434)).
+([#434](https://github.com/jackgeek/climon2/issues/434)). These checks are made
+by name, so another user who can write in the same folder could swap `c2t` for
+a junction between a check and its use. `CLIMON2_TEST_SHORT_ROOT` must
+therefore name a folder only you can write to.
 
 **Cost.** When no registered Windows file changed, the gate exits before doing
 any mutation work. A release mutates every registered Windows file. That run
