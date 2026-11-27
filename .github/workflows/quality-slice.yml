@@ -379,6 +379,14 @@ jobs:
       && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Report jobs read and rewrite one issue, so they take turns: two at once
+    # could each drop the other's section, or open two issues (#457). The group
+    # holds only reports, never a slice's mutation. GitHub keeps one waiting job
+    # per group, so a third report while one runs and one waits would replace
+    # the waiting one; the waits for idle gates keep reports far apart.
+    concurrency:
+      group: quality-full-report
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: write

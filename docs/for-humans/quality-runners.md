@@ -103,21 +103,42 @@ A squash-merge of a branch that is up to date with `main` gives `main` the same
 push to `main`, a job on a GitHub-hosted runner runs
 `tools/quality-prior-run.py` before the gates start. The script looks through
 the last 100 successful `quality.yml` runs for a push to another branch whose
-commit has that tree. When it finds one in which the Linux, Windows and macOS
-gates all passed, the three gates on `main` are skipped. The run's summary
-names the tree and the run it relied on.
+commit has that tree. When it finds one in which every gate passed, the gates
+on `main` are skipped. The run's summary names the tree and the run it relied
+on.
+
+"Every gate" means every gate whose machine the repository variable
+`CLIMON2_OWN_RUNNERS` lists (see [Turning it on](#turning-it-on)). A machine
+it doesn't list runs no gate on the branch or on `main`, so its skipped gate
+doesn't stop the match
+([#447](https://github.com/jackgeek/climon2/issues/447)).
+
+`quality.yml` ignores pushes that change only Markdown files, other than the
+protocol's, and `LICENSE`. So a branch whose last push changed only those has
+no run of the merged tree. When no run has the tree, the script asks GitHub
+which pull request the push merged, and takes the latest passed run on that
+pull request's branch. If that run's commit differs from the merged one only
+in files `quality.yml` ignores, and its gates passed, the gates on `main` are
+skipped too.
 
 The gates on `main` still run in every other case:
 
 - a push to any other branch, or a manual run of the workflow;
 - a push to `main` whose tree no passed branch run had, such as a direct push
   or a merge of a branch that was not up to date;
-- a branch run of that tree in which a gate failed or was skipped;
-- the look-up failing, for example because GitHub's API did not answer.
+- a branch run of that tree in which a listed gate failed or was skipped;
+- a merge made while the branch's gates were still running, since the look-up
+  finds only finished runs;
+- the look-up failing, for example because GitHub's API did not answer. Its
+  job may fail without turning `main`'s run red.
+
+So wait for the branch's gates to pass before you merge. A merge made earlier
+runs the gates again on `main`, and the Linux gate holds its machine for up to
+hours while every other branch waits.
 
 The branch's gate mutated at least the source that `main`'s push changes: the
-two trees are the same, and the branch's gate compared against an older or
-equal `main`.
+two trees hold the same gated files, and the branch's gate compared against an
+older or equal `main`.
 
 Release qualification does not use these machines. It still runs on
 GitHub-hosted runners, from `check.yml`, so its evidence records name a
@@ -154,9 +175,10 @@ Each machine mutates the files of the slice that it qualifies:
 | Windows VM | `cargo xtask mutate --native-only --mutate-slice <k>` | The slice's registered Windows files |
 | MacBook | `cargo xtask mutate --native-only --mutate-slice <k>` | The slice's macOS-only files |
 
-A native machine whose slice holds none of its files passes at once. The
-CRAP check scores only the slice's files too, so each slice's findings are its
-own.
+A native machine whose slice holds none of its files passes at once. On the
+Omarchy PC such a slice prints "No shipped Rust source in slice k to mutate."
+The CRAP check scores only the slice's files too, so each slice's findings are
+its own.
 
 ### When it runs
 
@@ -167,6 +189,12 @@ subject ends with its pull request's number, such as `... (#432) (#438)`. The
 merge that takes the count to n mutates slice n mod 10: the 110th mutates
 slice 0, the 111th slice 1. The count needs no stored counter, setting or
 secret. A direct push to `main` adds no squash-merge, so it mutates nothing.
+
+The count goes by the subject alone, without asking GitHub whether a pull
+request made the commit. So a direct push whose subject ends with a number in
+that form, such as `Fix the typo (#12)`, counts as a squash-merge and mutates
+the next slice. After a force push to `main`, which may lower the count, only
+the commits the push brought count as added.
 
 Some slices are skipped until their next turn, 10 merges later:
 
@@ -216,7 +244,12 @@ The pass never blocks a merge or turns `main` red:
   at once unless the machine is offline.
 - **A later merge never cancels it.** Neither workflow has a concurrency group,
   because GitHub keeps only one waiting run per group and cancels the others
-  without saying so.
+  without saying so. Only the job that writes the results (see below) has
+  one, so two never write the issue at once and drop each other's section or
+  open two issues. It holds no mutation, and a running job in it is never
+  cancelled. Only a third report arriving while one runs and another waits
+  would replace the waiting one, and the waits for idle gates keep reports
+  far apart.
 - **It's short.** A slice's mutation may run for 3 h 45 min on Linux and
   1 h 45 min on Windows and macOS. Its job ends at 5 h and 2 h 30 min, which
   leaves time for checkout, set-up and the log's upload. No slice has run on
@@ -251,7 +284,9 @@ What didn't run keeps its earlier result. A skipped slice keeps its section,
 with a dated note such as "Skipped on 2026-11-28: gates were busy". A machine
 that didn't run keeps its part with a dated "Did not run on ..." note, saying
 whether it isn't in `CLIMON2_OWN_RUNNERS` or its job left no log. Each new
-note replaces the one before.
+note replaces the one before. When `CLIMON2_OWN_RUNNERS` lists no machine at
+all, the run's summary says that no pass of the slice ran, not that it found
+nothing.
 
 A pass that needs you opens the issue if none is open, or comments on it with
 the run's link: one with findings, a failure or a missing log, or a slice

@@ -227,8 +227,9 @@ fn each_chosen_slice_is_its_own_call_one_at_a_time() {
     }
 }
 
-/// quality-full-run.py knows which pushes run quality.yml by that workflow's
-/// `paths` filter; if the filter changes, the script must change with it.
+/// tools/quality_paths.py, which quality-full-run.py and quality-prior-run.py
+/// share, knows which pushes run quality.yml by that workflow's `paths` filter;
+/// if the filter changes, the module must change with it.
 #[test]
 fn the_gate_paths_the_script_knows_are_quality_ymls() {
     let quality = workflow("quality.yml");
@@ -393,19 +394,31 @@ fn a_failed_set_up_is_reported_not_red() {
 }
 
 /// A slice runs on its machine's own runner with quality.yml's worker limits
-/// and a time limit of a few hours. Neither workflow has a concurrency group, so
-/// a later merge never cancels or replaces a slice. The job's limit leaves over
-/// 45 minutes beyond the pass's for checkout, set-up and the log's upload.
+/// and a time limit of a few hours. No workflow or job but the report has a
+/// concurrency group, so a later merge never cancels or replaces a slice. The
+/// job's limit leaves over 45 minutes beyond the pass's for checkout, set-up and
+/// the log's upload.
 #[test]
 fn a_slice_never_reddens_main_or_gets_cancelled() {
     let slice = slice();
     let quality = workflow("quality.yml");
-    for text in [full(), slice.clone()] {
+    assert!(
+        !full().contains("concurrency"),
+        "a slice must never be dropped"
+    );
+    for name in jobs(&slice).into_iter().filter(|name| *name != "report") {
         assert!(
-            !text.contains("concurrency"),
-            "a slice must never be dropped"
+            !job(&slice, name)
+                .iter()
+                .any(|line| line.contains("concurrency")),
+            "{name}: a slice must never be dropped"
         );
     }
+    assert_eq!(
+        slice.matches("concurrency").count(),
+        1,
+        "only the report job's group"
+    );
     for (name, os, job_minutes, step_minutes) in [
         ("linux", "Linux", 300, 225),
         ("windows", "Windows", 150, 105),
@@ -454,6 +467,8 @@ fn a_piped_pass_keeps_its_exit_status() {
 /// The report job puts the slice's findings into one tracking issue with the
 /// workflow's own token, the only write either workflow has; neither uses a
 /// secret. It knows which machines should have run, and the date for its notes.
+/// #457: report jobs take turns, so two never drop each other's section or
+/// open two issues, and a running report always finishes.
 #[test]
 fn each_slice_reports_its_findings_in_one_issue() {
     let full = full();
@@ -471,6 +486,9 @@ fn each_slice_reports_its_findings_in_one_issue() {
     for line in [
         "    needs: [start, linux, windows, macos]",
         "    runs-on: ubuntu-24.04",
+        "    concurrency:",
+        "      group: quality-full-report",
+        "      cancel-in-progress: false",
         "      issues: write",
         "          pattern: full-run-*-${{ inputs.slice }}",
         "          GH_TOKEN: ${{ github.token }}",

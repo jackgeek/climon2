@@ -7,10 +7,13 @@ a row mutate every file once. This script holds the workflow's decisions:
 
 - `slice`: which slices a push to main mutates. A squash-merge is a
   first-parent commit of main whose subject ends with the pull request's
-  number, such as "Fix the frame (#432) (#438)". The merge that takes main to
-  n squash-merges mutates slice n mod 10, so the rotation is read from git
-  history alone and needs no stored counter. A push that adds no squash-merge
-  mutates nothing. A manual run mutates the slice it names, or all ten.
+  number, such as "Fix the frame (#432) (#438)". Only the subject counts, so a
+  direct push whose subject ends that way counts too (#457). The merge that
+  takes main to n squash-merges mutates slice n mod 10, so the rotation is read
+  from git history alone and needs no stored counter. A push that adds no
+  squash-merge mutates nothing; after a force push, which may lower the count,
+  only the commits the push brought count as added. A manual run mutates the
+  slice it names, or all ten.
   Writes the slices as a JSON list, such as `slices=["3"]`, or an empty
   `slices=` for none, to `$GITHUB_OUTPUT`, and `gate=` the pushed commit when
   its push runs quality.yml, whose own run each slice then waits for.
@@ -26,7 +29,8 @@ a row mutate every file once. This script holds the workflow's decisions:
   and UNCOVERED findings, and any failure, timeout or missing log, into each
   slice's section of one open tracking issue, which it opens or updates. A
   slice or platform that did not run keeps its earlier result, with a dated
-  note saying why it did not run this time.
+  note saying why it did not run this time. Report jobs share one concurrency
+  group in `quality-slice.yml`, so two never write the issue at once.
 
 Each outcome is printed and added to `$GITHUB_STEP_SUMMARY`.
 """
@@ -41,6 +45,8 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
+from quality_paths import gated
+
 SLICES = 10
 LABELS = [str(index) for index in range(SLICES)]
 SQUASH = re.compile(r"\(#\d+\)$")
@@ -53,7 +59,10 @@ FULL_RUNS = "repos/{repo}/actions/workflows/quality-full.yml/runs?per_page=100"
 # The tracking issue: the one open issue the workflow's token opened with this title.
 TITLE = "Full mutation pass findings"
 BOT = "github-actions[bot]"
-ISSUES = "repos/{repo}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100"
+ISSUES = "repos/{repo}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100&page={page}"
+ISSUES_PER_PAGE = 100
+# Enough pages for 10,000 of the bot's open issues; the search stops at the first short page.
+ISSUE_PAGES = 100
 PLATFORMS = (("linux", "Linux"), ("windows", "Windows"), ("macos", "macOS"))
 CRAP_THRESHOLD = 5.0
 MUTANT = re.compile(r"^(SURVIVED|UNCOVERED) +\S+:\d+ ")
@@ -88,11 +97,13 @@ def git(*args):
     return result.stdout if result.returncode == 0 else None
 
 
-def squash_merges(commit):
-    """Squash-merges on the first-parent history up to `commit`, or None if it is unknown."""
+def squash_merges(commit, since=None):
+    """Squash-merges on the first-parent history up to `commit`, and not in `since`'s
+    history, or None if it is unknown. Only the subject counts: see the module's doc."""
     if not commit or commit == ZERO or git("cat-file", "-e", f"{commit}^{{commit}}") is None:
         return None
-    subjects = git("log", "--first-parent", "--format=%s", commit)
+    excluded = [f"^{since}"] if since else []
+    subjects = git("log", "--first-parent", "--format=%s", commit, *excluded)
     if subjects is None:
         return None
     return sum(1 for subject in subjects.splitlines() if SQUASH.search(subject.strip()))
@@ -114,6 +125,9 @@ def choose(event, requested, before, after):
         # A first push, or a force push whose old head is gone: count this push's own commit.
         parent = squash_merges(f"{after}^")
         then = parent if parent is not None else 0
+    elif git("merge-base", "--is-ancestor", before, after) is None:
+        # A force push that replaced the old head: count only the commits it brought.
+        then = now - (squash_merges(after, since=before) or 0)
     if now <= then:
         return [], f"the push adds no squash-merge; main still has {now}"
     chosen = str(now % SLICES)
@@ -175,14 +189,6 @@ def fixture_api(file, record):
         return responses[path]
 
     return api
-
-
-def gated(path):
-    """Whether a push changing `path` runs quality.yml, by its `paths` filter: everything
-    but Markdown and LICENSE, and the protocol's Markdown again."""
-    if path.startswith("docs/for-humans/protocol/") and path.endswith(".md"):
-        return True
-    return not (path.endswith(".md") or path == "LICENSE")
 
 
 def gate_commit(event, before, after):
@@ -317,12 +323,17 @@ def platform_block(key, text):
     return f"<!-- platform {key} -->\n{text}<!-- end platform {key} -->\n"
 
 
+def enabled(key, run):
+    """Whether CLIMON2_OWN_RUNNERS lists platform `key`, as the workflow's contains() does."""
+    return key in run.own.lower()
+
+
 def platform_text(key, name, label, run):
     """(a platform's new content or None to keep its old one with a note, the note,
     whether it needs the owner's attention)."""
     folder = run.logs / f"full-run-{key}-{label}"
     if not folder.is_dir():
-        if key not in run.own.lower():
+        if not enabled(key, run):
             return None, f"> Did not run on {run.date}: it is not in CLIMON2_OWN_RUNNERS.", False
         return None, f"> Did not run on {run.date}: its job left no log ({run.url}).", True
     status, findings = platform_result(folder)
@@ -374,14 +385,18 @@ def merged(body, new):
 
 
 def tracking_issue(repo, api):
-    issues = api("GET", ISSUES.format(repo=repo))
-    for issue in issues:
-        if (
-            issue.get("title") == TITLE
-            and (issue.get("user") or {}).get("login") == BOT
-            and "pull_request" not in issue
-        ):
-            return issue
+    """The open tracking issue, from every page of the bot's open issues, or None."""
+    for page in range(1, ISSUE_PAGES + 1):
+        issues = api("GET", ISSUES.format(repo=repo, page=page))
+        for issue in issues:
+            if (
+                issue.get("title") == TITLE
+                and (issue.get("user") or {}).get("login") == BOT
+                and "pull_request" not in issue
+            ):
+                return issue
+        if len(issues) < ISSUES_PER_PAGE:
+            return None
     return None
 
 
@@ -405,6 +420,8 @@ def report(repo, api, slices, gates, run):
         lead = f"{name} skipped: gates were busy"
     elif gates == "failed":
         lead = f"{name} skipped: a job that waits for the gates failed"
+    elif not any(enabled(key, run) for key, _ in PLATFORMS):
+        lead = f"no pass of {name} ran: CLIMON2_OWN_RUNNERS lists no machine"
     elif noted:
         lead = f"findings in {named(noted)}"
     else:
