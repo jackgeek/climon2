@@ -62,7 +62,11 @@ file kept the Linux gate busy for one to two hours.
     when `Mode` changed;
   - it changes code that has no dependents rule yet: a `macro_rules!` or
     other item macro, a trait's method signature or associated type, an
-    impl's associated type, a `union` or an `extern` block.
+    impl's associated type, a `union` or an `extern` block;
+  - an impl is added, removed or changed without a changed function or
+    `const` in it to select, such as `impl Error for E {}`,
+    `unsafe impl Send for X {}`, or a deleted override of a trait's default
+    method.
 - **CRAP is not narrowed.** Every function of the source the gate scores is
   still scored, whether or not it changed. A native gate scores its changed
   native files even when their changes select no mutant, for example a

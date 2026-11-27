@@ -383,11 +383,15 @@ fn scanned_plan(root: &Path, targets: Vec<Target>) -> io::Result<RunPlan> {
 /// names differently cannot pass as a file without sites.
 fn scan_lines(scan: &str, path: &Path) -> io::Result<Vec<usize>> {
     let path = path.display().to_string();
+    // The pinned mutator writes "Scan: N mutation sites in <path>" for every file it scans,
+    // even for 0 or 1 site (`format_scan` in its `report.py`); the singular is accepted too.
     let headers: Vec<(&str, &str)> = scan
         .lines()
         .filter_map(|line| {
-            line.strip_prefix("Scan: ")?
+            let header = line.strip_prefix("Scan: ")?;
+            header
                 .split_once(" mutation sites in ")
+                .or_else(|| header.split_once(" mutation site in "))
         })
         .filter(|(_, scanned)| same_file(scanned, &path))
         .collect();
@@ -2633,6 +2637,33 @@ esac
         assert_eq!(
             scan_lines("Scan: 0 mutation sites in a.rs\n", Path::new("a.rs")).unwrap(),
             Vec::<usize>::new()
+        );
+    }
+
+    /// #449 review 3: a header for no or one site is read, in the plural the pinned mutator
+    /// writes or in the singular.
+    #[test]
+    fn a_scan_header_for_no_or_one_site_is_read() {
+        for scan in [
+            "Scan: 1 mutation sites in a.rs\n  a.rs:3 + -> -  [defn/f]\n",
+            "Scan: 1 mutation site in a.rs\n  a.rs:3 + -> -  [defn/f]\n",
+        ] {
+            assert_eq!(
+                scan_lines(scan, Path::new("a.rs")).unwrap(),
+                vec![3],
+                "{scan}"
+            );
+        }
+        assert_eq!(
+            scan_lines("Scan: 0 mutation sites in a.rs\n", Path::new("a.rs")).unwrap(),
+            Vec::<usize>::new()
+        );
+        let error = scan_lines("Scan: 0 mutation sites in b.rs\n", Path::new("a.rs"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no \"Scan: N mutation sites in a.rs\" header"),
+            "{error}"
         );
     }
 

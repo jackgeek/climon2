@@ -33,6 +33,9 @@
 //! (`use Mode::{A, B}`) name it, and a glob of one (`use Mode::*`) marks the
 //! whole file; and a changed import that no function names, before or after,
 //! most likely a trait used only through its methods, marks the whole file.
+//! An impl added, removed or changed with no changed member to select (an
+//! empty impl, or a deleted override of a trait default) marks the whole file
+//! too (review 3). `const _` names nothing.
 //!
 //! Any other changed item outside a function, `const` or `static` (an item
 //! macro such as `macro_rules!`, a trait's method signature or associated type
@@ -126,6 +129,7 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
         .iter()
         .filter(|record| record.kind == Kind::Use)
         .collect();
+    let (old_impls, new_impls) = (impls(&old), impls(&new));
 
     let mut base: HashMap<(&str, &str), usize> = HashMap::new();
     for record in old.iter().filter(|record| record.selectable()) {
@@ -146,6 +150,23 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
             },
         )
         .collect();
+    // An impl whose header or members changed with no changed member to select, such as
+    // an empty `impl Error for E {}` or a deleted override of a trait's default, changes
+    // behaviour no record holds.
+    let changed_in = |path: &str| {
+        let inside = format!("{path}::");
+        new.iter()
+            .zip(&changed)
+            .any(|(record, changed)| *changed && record.name.starts_with(&inside))
+    };
+    for path in old_impls.keys().chain(new_impls.keys()) {
+        whole |= match (old_impls.get(path), new_impls.get(path)) {
+            (Some(old), Some(new)) if old == new => false,
+            (Some((_, old)), Some((_, new))) => !old.is_subset(new) || !changed_in(path),
+            (None, Some(_)) => !changed_in(path),
+            _ => true,
+        };
+    }
     let mut named = imports;
     named.extend(
         new.iter()
@@ -176,6 +197,8 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
         }
     }
     named.extend(imported);
+    // `const _: () = ...;` names nothing; `_` would select every `let _`.
+    named.remove("_");
     let item = |record: &Record| ChangedItem {
         name: record.name.clone(),
         lines: record.lines.clone(),
@@ -197,6 +220,19 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
                 .collect()
         }),
     })
+}
+
+/// Each impl's path, with its headers' tokens and its members, from its records.
+type Impls<'a> = HashMap<&'a str, (BTreeSet<&'a str>, BTreeSet<&'a str>)>;
+
+fn impls(records: &[Record]) -> Impls<'_> {
+    let mut impls: Impls = HashMap::new();
+    for record in records.iter().filter(|record| record.kind == Kind::Impl) {
+        let (headers, members) = impls.entry(record.name.as_str()).or_default();
+        headers.insert(record.tokens.as_str());
+        members.extend(record.idents.iter().map(String::as_str));
+    }
+    impls
 }
 
 /// The records of either side that the other lacks, compared by kind, path and tokens.
@@ -232,6 +268,8 @@ enum Kind {
     Other,
     /// Test-only code.
     Test,
+    /// An impl's header, with the enclosing headers; its idents are its members.
+    Impl,
 }
 
 /// A function, `const`, `static` or type in source order, with its own tokens and the lines
@@ -563,6 +601,39 @@ impl<'ast> Visit<'ast> for Collector {
         };
         let mut header = item.clone();
         header.items.clear();
+        let members = item
+            .items
+            .iter()
+            .filter_map(|member| match member {
+                ImplItem::Fn(member) if !test_only(&member.attrs) => {
+                    Some(format!("fn {}", member.sig.ident))
+                }
+                ImplItem::Const(member) if !test_only(&member.attrs) => {
+                    Some(format!("const {}", member.ident))
+                }
+                ImplItem::Type(member) if !test_only(&member.attrs) => {
+                    Some(format!("type {}", member.ident))
+                }
+                ImplItem::Macro(member) if !test_only(&member.attrs) => {
+                    Some(member.to_token_stream().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        self.records.push(Record {
+            name: self.path(&name),
+            ident: String::new(),
+            kind: Kind::Impl,
+            tokens: self
+                .headers
+                .iter()
+                .cloned()
+                .chain([strip_docs(header.to_token_stream()).to_string()])
+                .collect::<Vec<_>>()
+                .join("\n"),
+            idents: members,
+            lines: Vec::new(),
+        });
         self.enclosed(name, header.to_token_stream(), |c| {
             visit::visit_item_impl(c, item)
         });
@@ -1280,6 +1351,51 @@ fn other() {}
             selected(old, &renamed),
             vec![item("Panel", &[2..=2]), item("framed", &[4..=4])]
         );
+    }
+
+    /// #449 review 3: an impl whose header or members change with no changed member to
+    /// select marks the whole file: an empty impl, or a deleted override of a default.
+    #[test]
+    fn an_impl_changed_without_a_changed_member_marks_the_whole_file() {
+        let old = "\
+trait Tr {
+    fn d(&self) -> u8 { 1 }
+}
+struct S;
+struct E;
+impl Tr for S {
+    fn d(&self) -> u8 { 2 }
+    fn e(&self) {}
+}
+fn f() -> u8 { 1 }
+";
+        for (from, to) in [
+            ("fn f()", "impl std::error::Error for E {}\nfn f()"),
+            ("fn f()", "unsafe impl Send for E {}\nfn f()"),
+            ("fn f()", "impl Tr for E {}\nfn f()"),
+            ("    fn d(&self) -> u8 { 2 }\n", ""),
+            ("impl Tr for S {", "impl Tr for E {"),
+        ] {
+            let new = old.replace(from, to);
+            assert_ne!(new, old, "{from}");
+            assert!(changed_items(old, &new).unwrap().whole, "{from} -> {to}");
+        }
+        // An added or edited member is itself selected, so the file is not whole.
+        let added = old.replace(
+            "    fn e(&self) {}\n",
+            "    fn e(&self) {}\n    fn g(&self) {}\n",
+        );
+        assert_eq!(selected(old, &added), vec![item("<S as Tr>::g", &[9..=9])]);
+        let edited = old.replace("{ 2 }", "{ 3 }");
+        assert_eq!(selected(old, &edited), vec![item("<S as Tr>::d", &[7..=7])]);
+    }
+
+    /// #449 review 3: `const _` names nothing, so it selects no function that writes `_`.
+    #[test]
+    fn a_changed_underscore_const_selects_only_itself() {
+        let old = "const _: () = assert!(1 < 2);\nfn f() { let _ = 1; }\n";
+        let new = old.replace("1 < 2", "1 < 3");
+        assert_eq!(selected(old, &new), vec![item("_", &[1..=1])]);
     }
 
     /// #449 review 2: a value named only inside a format string is still named.
