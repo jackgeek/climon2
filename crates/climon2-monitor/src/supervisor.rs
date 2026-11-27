@@ -616,9 +616,9 @@ impl State {
             self.internals();
             self.schedule();
             // A shutdown command sent meanwhile is read once this round's
-            // wait (at most a tick) and drains (at most a tick for each
-            // instance) end: its deadline is fixed, so that only shortens
-            // the shutdown, and the UI's handover grace covers the report.
+            // wait and drains end, at most a tick each: its deadline is
+            // fixed, so that only shortens the shutdown, and the UI's
+            // handover grace covers the report.
             self.poll(None);
         };
         self.begin_shutdown();
@@ -1504,10 +1504,11 @@ impl State {
     /// Waits a tick on the descriptor of every live instance that is not
     /// congested, then drains each of those; a congested one is failed once
     /// its congestion outlasts `deadlines.delivery_stall_ms` (#119). During
-    /// shutdown neither the wait nor the drains go past its `deadline`;
-    /// otherwise each instance is drained for at most a tick, so one with
-    /// deliveries without end still lets the round return to its commands
-    /// (#462).
+    /// shutdown neither the wait nor the drains go past its `deadline`. The
+    /// drains share one bound, a tick after the wait (#462): each instance
+    /// is drained at least once, and none past the bound, so one with
+    /// deliveries without end neither starves the others nor keeps the
+    /// round from its commands, however many instances there are.
     fn poll(&mut self, deadline: Option<Instant>) {
         let mut table: Vec<_> = self
             .instances
@@ -1526,12 +1527,13 @@ impl State {
             .map(|(id, _)| id.clone())
             .collect();
         let now = Instant::now();
+        let round = now + TICK;
+        let bound = deadline.map_or(round, |deadline| deadline.min(round));
         for id in live {
             if self.throttled(&id) {
                 self.congestion(&id, now);
             } else {
                 self.congested.remove(&id);
-                let bound = deadline.unwrap_or_else(|| Instant::now() + TICK);
                 self.drain_within(&id, bound);
             }
         }
@@ -1558,11 +1560,11 @@ impl State {
         }
     }
 
-    /// Drains `id` until it has nothing more, its reports fill its
-    /// allowance ([`State::throttled`]) or `deadline` passes, reporting
-    /// every delivery.
-    fn drain_within(&mut self, id: &SessionId, deadline: Instant) {
-        while !self.throttled(id) && before(deadline) && self.drain_one(id) {}
+    /// Drains `id`, which is not throttled, once, then until it has nothing
+    /// more, its reports fill its allowance ([`State::throttled`]) or
+    /// `bound` passes, reporting every delivery.
+    fn drain_within(&mut self, id: &SessionId, bound: Instant) {
+        while self.drain_one(id) && !self.throttled(id) && before(bound) {}
     }
 
     /// Drains one delivery of `id`'s, if it is live: whether there may be
@@ -1851,12 +1853,13 @@ impl State {
         self.ask_shutdown();
         while !(self.instances.is_empty() && self.loads.is_empty()) && before(deadline) {
             self.internals();
-            // Asked before the poll, never after one that ran to the
-            // deadline (#462): only `internals` makes an instance live, so
-            // this asks every instance that asking after the poll would.
+            // Asked before the poll too (#462), so an instance `internals`
+            // made live is asked before a poll that may run to the
+            // deadline, not only after it.
             self.ask_shutdown();
             self.poll(Some(deadline));
             self.tell_waiting();
+            self.ask_shutdown();
         }
         if !self.instances.is_empty() {
             tracing::error!(
@@ -2040,6 +2043,9 @@ mod tests {
         stalls: bool,
         /// Create returns only once the test lets it go.
         creates_late: bool,
+        /// Shutdown lets this instance's create go, then returns only once
+        /// its run has begun, so its handles are published by then.
+        lets_go: Option<[u8; 16]>,
         /// After Open, one delivery of control and display records.
         presents: bool,
         /// The first this many requests after Open are refused at submit,
@@ -2131,6 +2137,11 @@ mod tests {
         opens: Vec<[u8; 16]>,
         /// How many times each instance was drained.
         drains: BTreeMap<[u8; 16], usize>,
+        /// Instances whose run has begun, after their handles were
+        /// published.
+        running: BTreeSet<[u8; 16]>,
+        /// When each instance was first asked to shut down: `drains` then.
+        first_asks: BTreeMap<[u8; 16], BTreeMap<[u8; 16], usize>>,
     }
 
     impl World {
@@ -2150,6 +2161,8 @@ mod tests {
         looked_up: BTreeSet::new(),
         opens: Vec::new(),
         drains: BTreeMap::new(),
+        running: BTreeSet::new(),
+        first_asks: BTreeMap::new(),
     });
     static CHANGED: Condvar = Condvar::new();
     const WAIT: Duration = Duration::from_secs(20);
@@ -2379,6 +2392,9 @@ mod tests {
 
     extern "C" fn run(instance: *mut Instance, out: *mut RunReport) -> Call {
         let fake = fake(instance);
+        changed(&mut world(), |world| {
+            world.running.insert(fake.id);
+        });
         if fake.script.run_fails {
             fake.state().over = true;
             // SAFETY: the owner passes an output struct.
@@ -2689,6 +2705,8 @@ mod tests {
         let flood = fake.script.floods && state.shutdown
             || fake.script.floods_at_once && state.queue.is_empty();
         let next = if flood {
+            // There is always more, so the descriptor stays raised.
+            fake.notifier.set(true);
             Some(Item::Delivery(Vec::new()))
         } else {
             state.queue.pop_front()
@@ -2727,9 +2745,19 @@ mod tests {
 
     extern "C" fn shutdown(control: *mut Control) -> Call {
         let fake = fake(control);
-        let _world = world();
-        fake.state().shutdown = true;
-        CHANGED.notify_all();
+        changed(&mut world(), |world| {
+            fake.state().shutdown = true;
+            if !world.first_asks.contains_key(&fake.id) {
+                let drains = world.drains.clone();
+                world.first_asks.insert(fake.id, drains);
+            }
+        });
+        if let Some(late) = fake.script.lets_go {
+            changed(&mut world(), |world| {
+                world.unstalled.insert(late);
+            });
+            wait_while(|world| !world.running.contains(&late));
+        }
         success()
     }
 
@@ -3203,6 +3231,11 @@ mod tests {
         assert_eq!(report.instances, [(flooding.clone(), unconfirmed)]);
         let id = guid(&flooding);
         assert!(world().drains[&id] > 1);
+        let rounds = supervisor.waiting.try_iter().count();
+        assert!(
+            rounds < 100,
+            "{rounds} rounds: each should drain for a tick"
+        );
         changed(&mut world(), |world| {
             world.unstalled.insert(id);
         });
@@ -3245,12 +3278,138 @@ mod tests {
         until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
     }
 
-    /// EXT-01 (Fault, #118; #462): an instance whose owner publishes it only
-    /// once shutdown has begun is still asked to shut down, in the round
-    /// that learns of it, so it ends confirmed rather than at the deadline.
+    /// Lets each instance's stalled create or run go when dropped, so a
+    /// failed assertion leaves no owner thread blocked.
+    struct LetGo(Vec<[u8; 16]>);
+
+    impl Drop for LetGo {
+        fn drop(&mut self) {
+            changed(&mut world(), |world| world.unstalled.extend(&self.0));
+        }
+    }
+
+    /// The Opened report of each of `ids`, in any order.
+    fn all_opened(supervisor: &Supervisor, ids: &[SessionId]) {
+        let mut opened: Vec<_> = ids.iter().map(|_| next(supervisor)).collect();
+        opened.sort_by(|one, other| one.0.cmp(&other.0));
+        let expected: Vec<_> = ids
+            .iter()
+            .map(|id| (id.clone(), ClientEvent::Opened { status: false }))
+            .collect();
+        assert_eq!(opened, expected);
+    }
+
+    /// EXT-01 (Fault, #118; #462): in shutdown, an instance with deliveries
+    /// without end shares each round's drain bound with the others, so a
+    /// healthy instance drained after it still ends confirmed.
     #[test]
-    fn an_instance_published_during_shutdown_is_asked_to_shut_down() {
-        let late = session(0x47, 1);
+    fn a_flood_in_shutdown_does_not_starve_another_instance() {
+        let [flooding, healthy] = [1, 2].map(|index| session(0x48, index));
+        script(
+            &flooding,
+            Script {
+                stalls: true,
+                floods: true,
+                ..Script::default()
+            },
+        );
+        let mut supervised = supervisor(2, 1_000, fake_library());
+        let _let_go = LetGo(vec![guid(&flooding)]);
+        let supervisor = &mut supervised.supervisor;
+        for id in [&flooding, &healthy] {
+            supervisor.start_client(metadata(id, "2026-11-13T10:00:00.000Z"));
+        }
+        all_opened(supervisor, &[flooding.clone(), healthy.clone()]);
+        let report = supervisor.stop();
+        let [(first, flooded), (second, ended)] = &report.instances[..] else {
+            panic!("{report:?}");
+        };
+        assert_eq!((first, second), (&flooding, &healthy));
+        assert!(flooded.terminal.is_none(), "{flooded:?}");
+        assert!(ended.joined, "{ended:?}");
+    }
+
+    /// EXT-02 (Fault, #118; #462): however many instances have deliveries
+    /// without end, a round's drains end a tick after its wait, so a round
+    /// lasts about a tick, not a tick for each (an idle instance, drained
+    /// once a round, counts them), and the supervisor reads the exit
+    /// within about a tick.
+    #[test]
+    fn many_floods_still_let_the_exit_be_read_within_about_a_tick() {
+        let flooding: Vec<_> = (1..=12).map(|index| session(0x49, index)).collect();
+        for id in &flooding {
+            script(
+                id,
+                Script {
+                    stalls: true,
+                    floods_at_once: true,
+                    ..Script::default()
+                },
+            );
+        }
+        let idle = session(0x49, 0x20);
+        let mut supervised = supervisor(13, 200, fake_library());
+        let _let_go = LetGo(flooding.iter().map(guid).collect());
+        let supervisor = &mut supervised.supervisor;
+        let all: Vec<_> = flooding.iter().chain([&idle]).cloned().collect();
+        for id in &all {
+            supervisor.start_client(metadata(id, "2026-11-13T10:00:00.000Z"));
+        }
+        all_opened(supervisor, &all);
+        let idle_id = guid(&idle);
+        let earlier = world().drains[&idle_id];
+        thread::sleep(10 * TICK);
+        let rounds = world().drains[&idle_id] - earlier;
+        assert!(rounds >= 4, "{rounds} rounds in 10 ticks");
+        let asked = Instant::now();
+        supervisor.shut_down();
+        while supervisor.waiting().is_none() {
+            assert!(asked.elapsed() < WAIT, "the exit was never read");
+            thread::sleep(Duration::from_millis(1));
+        }
+        let took = asked.elapsed();
+        assert!(took < 6 * TICK, "{took:?}");
+        let report = supervisor.stop();
+        assert_eq!(report.instances.len(), all.len(), "{report:?}");
+    }
+
+    /// #462: an instance with nothing to deliver is drained once a round,
+    /// not again and again until the round's bound.
+    #[test]
+    fn an_idle_instance_is_drained_once_a_round() {
+        let idle = session(0x4a, 1);
+        let mut supervised = supervisor(1, 200, fake_library());
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&idle, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(supervisor),
+            (idle.clone(), ClientEvent::Opened { status: false })
+        );
+        let id = guid(&idle);
+        let earlier = world().drains[&id];
+        thread::sleep(10 * TICK);
+        let drained = world().drains[&id] - earlier;
+        assert!(drained < 50, "{drained} drains in about 10 rounds");
+        supervisor.stop();
+    }
+
+    /// EXT-01 (Fault, #118; #462): an instance whose owner publishes it only
+    /// once shutdown has begun is asked to shut down in the round that
+    /// learns of it, before that round's poll, which may run to the
+    /// deadline: before its stalled sibling is drained again, and it ends
+    /// confirmed.
+    #[test]
+    fn an_instance_published_during_shutdown_is_asked_before_the_poll() {
+        let [sibling, late] = [1, 2].map(|index| session(0x47, index));
+        let (sibling_id, late_id) = (guid(&sibling), guid(&late));
+        script(
+            &sibling,
+            Script {
+                stalls: true,
+                lets_go: Some(late_id),
+                ..Script::default()
+            },
+        );
         script(
             &late,
             Script {
@@ -3258,26 +3417,29 @@ mod tests {
                 ..Script::default()
             },
         );
-        let mut supervised = supervisor(1, 5_000, fake_library());
+        let mut supervised = supervisor(2, 1_000, fake_library());
+        let _let_go = LetGo(vec![sibling_id, late_id]);
         let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&sibling, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(supervisor),
+            (sibling.clone(), ClientEvent::Opened { status: false })
+        );
         supervisor.start_client(metadata(&late, "2026-11-13T10:00:00.000Z"));
-        let id = guid(&late);
-        until(|world| world.seen.contains(&(id, Seen::Created)));
-        let deadline = supervisor.shut_down();
-        while supervisor.waiting().is_none() {
-            assert!(before(deadline), "shutdown never began");
-            thread::sleep(Duration::from_millis(1));
-        }
-        changed(&mut world(), |world| {
-            world.unstalled.insert(id);
-        });
+        until(|world| world.seen.contains(&(late_id, Seen::Created)));
         let report = supervisor.stop();
-        assert!(before(deadline), "the instance was never asked: {report:?}");
-        let [(reported, evidence)] = &report.instances[..] else {
+        let asks = world().first_asks.clone();
+        assert_eq!(
+            asks[&late_id].get(&sibling_id),
+            asks[&sibling_id].get(&sibling_id),
+            "the sibling was drained before the late instance was asked"
+        );
+        let [(_, stalled), (asked, ended)] = &report.instances[..] else {
             panic!("{report:?}");
         };
-        assert_eq!(reported, &late);
-        assert!(evidence.joined, "{evidence:?}");
+        assert!(stalled.terminal.is_none(), "{stalled:?}");
+        assert_eq!(asked, &late);
+        assert!(ended.joined, "{ended:?}");
     }
 
     /// EXT-01 (Monitor, Fault; #118): shutdown asks every instance at once,
