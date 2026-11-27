@@ -122,6 +122,7 @@ impl Shell {
 /// with the package on `PATH`.
 fn outer(package: &Package, home: &Home, shell: Shell) -> Terminal {
     let mut command = CommandBuilder::new(shell.path());
+    climon2_test_term::outside_any_session(&mut command);
     command.args(shell.arguments("OUTER"));
     let path = env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![package.folder.clone()];

@@ -7,7 +7,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, Weak},
     time::Duration,
@@ -1342,6 +1342,44 @@ fn a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it(
     layout.clean();
 }
 
+/// #437: a nested session starts at the terminal's size when Enter answers
+/// the prompt, not at its size when the prompt showed. The CLI is held
+/// before its client (`CLIMON2_CLI_HOLD`), so the command reports the size
+/// the daemon gave it before any client resizes it.
+#[test]
+fn a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at() {
+    let layout = Layout::new();
+    let directory = layout.directory.path();
+    let (report, release) = (directory.join("report"), directory.join("release"));
+    let mut command = layout.command();
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.env("CLIMON2_CLI_HOLD", &release);
+    command.env("FIXTURE_REPORT_PATH", &report);
+    command.env("FIXTURE_REPORT_RELEASE", directory.join("release-report"));
+    command.arg("exec");
+    command.arg(layout.fixture());
+    command.arg("report");
+    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    terminal.resize(44, 132).unwrap();
+    terminal.send("\r").unwrap();
+    let report: serde_json::Value =
+        written(&report, &terminal, |text| serde_json::from_str(text).ok());
+    assert_eq!(
+        (&report["cols"], &report["rows"]),
+        (&132.into(), &44.into())
+    );
+    fs::write(&release, b"").unwrap();
+    terminal
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    fs::write(directory.join("release-report"), b"").unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+    layout.clean();
+}
+
 /// #139: neither a top-level start nor a deliberate nested one (`--nested`,
 /// `-n`) warns or waits.
 #[test]
@@ -1431,6 +1469,36 @@ fn the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected() {
     layout.clean();
 }
 
+/// What the shell in `terminal` writes to `path` while the test runs, once
+/// `complete` makes a value of it: the file can exist, empty or with part of
+/// its text, before the shell has finished writing it (#437).
+fn written<T>(path: &Path, terminal: &Terminal, complete: impl Fn(&str) -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if let Some(value) = complete(&text) {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} holds {text:?}\n{}",
+            path.display(),
+            terminal.screen()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A whole line, as `echo` and `stty -g` write one.
+fn line(text: &str) -> Option<String> {
+    text.ends_with('\n').then(|| text.to_owned())
+}
+
+/// The process ID on a whole line.
+fn pid(text: &str) -> Option<i32> {
+    text.strip_suffix('\n')?.parse().ok()
+}
+
 /// #139: SIGTERM or SIGHUP sent while the prompt waits ends exec with
 /// 128 + signal, the terminal's settings restored exactly. (A background job
 /// of a non-interactive shell starts with SIGINT and SIGQUIT ignored, and
@@ -1448,28 +1516,14 @@ fn a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_termin
         terminal
             .wait_for_text(PROMPT, Duration::from_secs(8))
             .unwrap();
-        let pid: i32 = fs::read_to_string(directory.join("pid"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let pid = written(&directory.join("pid"), &terminal, pid);
         assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
         terminal
             .wait_for_text(&format!("STATUS={}", 128 + signal), Duration::from_secs(8))
             .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(8);
-        while !directory.join("after").exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{}",
-                terminal.screen()
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        std::thread::sleep(Duration::from_millis(100));
         assert_eq!(
-            fs::read_to_string(directory.join("after")).unwrap(),
-            fs::read_to_string(directory.join("before")).unwrap(),
+            written(&directory.join("after"), &terminal, line),
+            written(&directory.join("before"), &terminal, line),
             "signal {signal}"
         );
         assert_eq!(session_traces(&layout), Vec::<String>::new());
@@ -1510,11 +1564,7 @@ fn after_enter_sigterm_and_sighup_end_exec_while_the_session_starts() {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        let pid: i32 = fs::read_to_string(directory.join("pid"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        let pid = written(&directory.join("pid"), &terminal, pid);
         assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
         terminal
             .wait_for_text(&format!("STATUS={}", 128 + signal), Duration::from_secs(8))

@@ -14,6 +14,7 @@ mod keys;
 mod local_app_data;
 mod outside;
 mod pwsh;
+mod session;
 
 pub use apps::App;
 pub use conpty::ConPty;
@@ -23,3 +24,4 @@ pub use keys::{Key, Modifiers};
 pub use local_app_data::{LocalAppData, SHORT_ROOT, end_process, local_app_data};
 pub use outside::{Finished, Outside, relay_outside, rerun_outside};
 pub use pwsh::{PWSH_PROMPT, controlled_pwsh, pwsh};
+pub use session::{SESSION_VARIABLES, outside_any_session};

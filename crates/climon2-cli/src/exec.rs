@@ -174,7 +174,6 @@ struct Startup<'a> {
     assembly: Assembly,
     metadata: PathBuf,
     socket: PathBuf,
-    size: TerminalSize,
     cwd: PathBuf,
 }
 
@@ -188,7 +187,6 @@ impl Startup<'_> {
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
         let metadata = home.join("sessions").join(format!("{id}.pty"));
-        let size = terminal_size();
         let cwd = working_directory().map_err(|error| Error::new(126, error))?;
         Ok(Startup {
             home,
@@ -197,7 +195,6 @@ impl Startup<'_> {
             lifetime,
             metadata,
             socket,
-            size,
             cwd,
             max_history_rows: config.scrollback.max_rows.get(),
             assembly: config.assembly,
@@ -223,12 +220,15 @@ impl Startup<'_> {
         }
     }
 
+    /// The terminal's size is read here, after any nested prompt, so a
+    /// resize while the prompt waited is the size the session starts at.
     fn spawn(
         &self,
         command: CommandArgs,
         environment: SessionEnvironment,
         filter: Option<&str>,
     ) -> io::Result<daemon::PendingDaemon> {
+        let size = terminal_size();
         let daemon = self
             .layout
             .binary(self.layout.version(), VersionBinary::Daemon)
@@ -252,9 +252,9 @@ impl Startup<'_> {
             .arg("--lifetime")
             .arg(self.lifetime.name())
             .arg("--rows")
-            .arg(self.size.rows.to_string())
+            .arg(size.rows.to_string())
             .arg("--cols")
-            .arg(self.size.cols.to_string())
+            .arg(size.cols.to_string())
             .arg("--scrollback-max-rows")
             .arg(self.max_history_rows.to_string())
             .arg("--assembly-records")

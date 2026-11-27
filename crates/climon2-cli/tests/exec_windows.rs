@@ -148,6 +148,7 @@ impl Home {
 
     fn outside(&self, install: &Install) -> Outside {
         Outside::new(install.cli())
+            .outside_any_session()
             .env("CLIMON2_HOME", self.home())
             .env("LOCALAPPDATA", self.local())
             .cwd(self.work())
@@ -808,6 +809,7 @@ fn exec_attach_and_the_client_need_a_console() {
 /// directory.
 fn hosted_cli(install: &Install, home: &Home, arguments: &[&str]) -> Terminal {
     let mut command = CommandBuilder::new(install.cli());
+    climon2_test_term::outside_any_session(&mut command);
     command.args(arguments);
     command.env("CLIMON2_HOME", home.home());
     command.env("LOCALAPPDATA", home.local());
@@ -874,6 +876,7 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
 /// of its own, with this home, in its working directory.
 fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
     let mut command = CommandBuilder::new(install.cli());
+    climon2_test_term::outside_any_session(&mut command);
     command.arg("exec");
     command.args(options);
     command.arg("--");
@@ -966,5 +969,87 @@ fn a_nested_start_waits_on_screen_for_enter_and_ctrl_c_cancels_it() {
     let received = String::from_utf8_lossy(&deliberate.received()).into_owned();
     assert!(!received.contains("nested for the"), "{received}");
     assert!(!received.contains(PROMPT), "{received}");
+    home.wait_until_ended(&install);
+}
+
+/// #437: a test run from inside a climon2 session starts `c2 exec` outside
+/// it, so neither the headless CLI outside the job nor the one in a
+/// terminal of its own warns or waits at the nested prompt. The test runs
+/// again with the session's variables set.
+#[test]
+fn the_tests_start_exec_outside_the_session_they_run_in() {
+    const NAME: &str = "the_tests_start_exec_outside_the_session_they_run_in";
+    if std::env::var_os("CLIMON2_SESSION_ID").is_none() {
+        let finished = Outside::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env("CLIMON2_SESSION_ID", "outer")
+            .env("CLIMON2_SESSION_DEPTH", "1")
+            .run(Duration::from_secs(180))
+            .unwrap();
+        assert!(
+            finished.status == 0 && finished.stdout.contains("1 passed"),
+            "{finished:?}"
+        );
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let finished = home.exec(&install, HELD);
+    assert_eq!(finished.stderr, "", "{finished:?}");
+    session_id(&finished);
+    fs::write(home.work().join("release"), b"").unwrap();
+    home.wait_until_ended(&install);
+    fs::remove_file(home.work().join("release")).unwrap();
+
+    let arguments: Vec<&str> = ["exec", "--"].iter().chain(HELD).copied().collect();
+    let mut execing = hosted_cli(&install, &home, &arguments);
+    release_the_only_session(&mut execing, &home);
+    home.wait_until_ended(&install);
+}
+
+/// #437: a nested session starts at the size its terminal has when Enter
+/// answers the prompt, not the size it had when the prompt showed. The CLI
+/// is held before its client (`CLIMON2_CLI_HOLD`), so the command sees the
+/// size the daemon gave it before any client resizes it.
+#[test]
+fn a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at() {
+    if climon2_test_term::rerun_outside(
+        "a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at",
+        Duration::from_secs(180),
+    ) {
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let (seen, hold) = (home.work().join("seen.txt"), home.work().join("hold"));
+    let mut command = CommandBuilder::new(install.cli());
+    climon2_test_term::outside_any_session(&mut command);
+    command.args(["exec", "--", "cmd", "/d", "/c", "mode con > seen.txt"]);
+    command.env("CLIMON2_HOME", home.home());
+    command.env("LOCALAPPDATA", home.local());
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.env("CLIMON2_CLI_HOLD", &hold);
+    command.cwd(home.work());
+    let mut terminal = Terminal::spawn(command, 24, 100).unwrap();
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    terminal.resize(40, 120).unwrap();
+    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let size = loop {
+        let text = fs::read_to_string(&seen).unwrap_or_default();
+        let size: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("Lines:") || line.contains("Columns:"))
+            .filter_map(|line| line.split_whitespace().last())
+            .collect();
+        if size.len() == 2 {
+            break size.join("x");
+        }
+        assert!(Instant::now() < deadline, "{text:?}\n{}", terminal.screen());
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(size, "40x120");
+    fs::write(&hold, b"").unwrap();
+    terminal.wait_exit(Duration::from_secs(30)).unwrap();
     home.wait_until_ended(&install);
 }
