@@ -1,7 +1,8 @@
 # Behaviour
 
 Agreed specifications of what climon2 does: how a session reports its status,
-and how the monitor presents, manages and limits sessions.
+how the monitor presents, manages and limits sessions, and how monitor links
+are qualified.
 
 **Audience:** Contributors.
 
@@ -19,3 +20,4 @@ present it. Each specification here opens with how much of it is implemented.
 |---|---|
 | [session-status.md](session-status.md) | How a session daemon detects activity and attention, and how clients learn of changes. |
 | [monitor/](monitor/README.md) | The monitor's selector, lifecycle, operational limits and acceptance criteria. |
+| [monitor-link/](monitor-link/README.md) | Monitor links between machines: the acceptance criteria. |
