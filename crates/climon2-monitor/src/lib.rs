@@ -107,7 +107,8 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
     Ok(status)
 }
 
-/// One wait for host input during shutdown.
+/// One wait for host input during shutdown, and how long shutdown waits
+/// past its deadline for the discovery pass to end.
 const TICK: Duration = Duration::from_millis(20);
 
 /// How long shutdown waits past its deadline for the supervisor's report
@@ -344,14 +345,12 @@ impl Monitor {
     /// A host that failed is left alone. Returns whether the host still
     /// worked, and what shutdown proved, discovery's end included.
     fn shut_down(&mut self, host: &mut Host, hosting: bool) -> (io::Result<()>, shutdown::Report) {
-        let deadline = self.supervisor.shut_down() + HANDOVER;
+        let deadline = self.supervisor.shut_down();
         self.discovery.stop();
         let mut hosted = Ok(());
         let mut waiting = Vec::new();
         let mut report = None;
-        while !(report.is_some() && self.discovery.join())
-            && deadline.checked_duration_since(Instant::now()).is_some()
-        {
+        while waits(deadline, report.is_some(), self.discovery.join()) {
             waiting = self.supervisor.waiting().unwrap_or(waiting);
             hosted = hosted.and_then(|()| self.exiting(host, hosting, waiting.len()));
             report = report.or_else(|| self.supervisor.report());
@@ -1570,6 +1569,19 @@ fn draw(
     Ok(())
 }
 
+/// Whether shutdown, past `deadline` or not, still waits: for the
+/// supervisor's report until the handover grace has passed, and for the
+/// discovery pass until a tick has, so a pass that never ends costs no
+/// grace when the report came in time.
+fn waits(deadline: Instant, reported: bool, discovered: bool) -> bool {
+    let until = |grace: Duration| {
+        (deadline + grace)
+            .checked_duration_since(Instant::now())
+            .is_some()
+    };
+    (!reported && until(HANDOVER)) || (!discovered && until(TICK))
+}
+
 /// What shutdown knows when the supervisor itself never finished: nothing
 /// is confirmed of the sessions it last waited for.
 fn unfinished(waiting: Vec<SessionId>) -> shutdown::Report {
@@ -1682,11 +1694,30 @@ mod tests {
     use super::{
         Canvas, Control, Kind, Mouse, Placeholder, Presentation, Recovery, Shown, Terminal, View,
         also, cache, control, inspected, placeholder, retained, revealed, says, selected, terminal,
-        without_view,
+        waits, without_view,
     };
     use crate::attention::NO_ATTENTION;
     use climon2_core::SessionId;
     use std::time::Instant;
+
+    /// EXT-02 (pure supplement, #455): past the shutdown deadline, shutdown
+    /// waits the 200 ms handover grace only while the supervisor's report
+    /// is missing; a discovery pass that never ends is waited for only a
+    /// tick, as before, so with the report in time it costs no grace.
+    #[test]
+    fn only_a_missing_report_is_waited_for_past_a_tick() {
+        let now = Instant::now();
+        let ticked = now - std::time::Duration::from_millis(60);
+        assert!(waits(ticked, false, true));
+        assert!(waits(ticked, false, false));
+        assert!(!waits(ticked, true, false));
+        assert!(!waits(ticked, true, true));
+        let later = now + std::time::Duration::from_secs(60);
+        assert!(waits(later, true, false));
+        assert!(!waits(later, true, true));
+        let graced = now - std::time::Duration::from_secs(1);
+        assert!(!waits(graced, false, false));
+    }
 
     /// A monitor on an empty home in `directory`, as `c2 monitor` starts it
     /// at 60x12, without a host.

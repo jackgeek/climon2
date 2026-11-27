@@ -644,7 +644,7 @@ impl State {
     fn settle_input(&mut self, deadline: Instant) {
         let bound = Duration::from_millis(self.context.limits.operation_ms.into());
         let deadline = deadline.min(Instant::now() + bound);
-        while self.input_pending() && before(deadline) {
+        while self.input_pending() && round(deadline) {
             self.internals();
             self.poll(Some(deadline));
         }
@@ -1840,7 +1840,7 @@ impl State {
     /// be unreleased.
     fn shut_down(mut self, deadline: Instant) -> shutdown::Report {
         self.ask_shutdown();
-        while !(self.instances.is_empty() && self.loads.is_empty()) && before(deadline) {
+        while !(self.instances.is_empty() && self.loads.is_empty()) && round(deadline) {
             self.internals();
             self.poll(Some(deadline));
             self.tell_waiting();
@@ -1961,6 +1961,12 @@ fn stack(bytes: u64) -> usize {
 fn within(deadline: Instant) -> Duration {
     let left = TICK.min(deadline.saturating_duration_since(Instant::now()));
     left - Duration::from_nanos(u64::from(left.subsec_nanos() % 1_000_000))
+}
+
+/// Whether another round starts before `deadline`: under a millisecond
+/// left, a round would only spin, so the deadline counts as reached.
+fn round(deadline: Instant) -> bool {
+    !within(deadline).is_zero()
 }
 
 /// Waits `bound` for any of `table`'s descriptors, or simply `bound`. A
@@ -3142,6 +3148,9 @@ mod tests {
         let near = within(now + Duration::from_micros(12_700));
         assert_eq!(near.subsec_nanos() % 1_000_000, 0, "{near:?}");
         assert_eq!(within(now), Duration::ZERO);
+        assert!(round(now + Duration::from_secs(60)));
+        assert!(!round(now + Duration::from_micros(500)));
+        assert!(!round(now));
     }
 
     /// EXT-02 (Fault, #118; #455): an instance that has deliveries without
