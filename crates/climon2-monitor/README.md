@@ -974,7 +974,10 @@ Prefix+x and the catchable SIGINT, SIGTERM and SIGHUP take one path
 1. Application input, acquisition, discovery and retries stop at once:
    nothing read after prefix+x is routed (keys read before it in the same
    read reach the session first), discovery starts no pass after the
-   current one, and the supervisor schedules no start or retry.
+   current one, and the supervisor schedules no start or retry. The
+   supervisor learns of the exit once its current round ends: the round
+   drains each instance for at most a 20 ms tick, so one whose deliveries
+   never end cannot keep it from reading the exit (#462).
 2. One deadline, `deadlines.shutdown_ms` from the exit request, bounds the
    rest. The supervisor first waits until every input chunk an open client
    accepted is answered, at most `deadlines.operation_ms` and inside the
@@ -985,7 +988,8 @@ Prefix+x and the catchable SIGINT, SIGTERM and SIGHUP take one path
    handles once it is over, lets its owner destroy it and joins that owner,
    and joins every release load thread; the UI thread stops discovery and
    joins its thread once its pass ends. The supervisor's waits and drains
-   stop at the deadline, and the UI thread waits a further 200 ms
+   stop at the deadline, as far as the platform timer allows (Windows wakes
+   a wait at its scheduler tick, about 15.6 ms), and the UI thread waits a further 200 ms
    handover grace for its report, since a loaded host can schedule its
    thread late (owner decision on #455). A supervisor that has not
    reported by then is `client supervisor unfinished`, and nothing is
@@ -1144,8 +1148,8 @@ Monitor-layer tests drive the installed product from `climon2-e2e`'s
 | DSC-01 (Monitor, start order): bounded starts newest created first, ascending ID ties, each after the previous one failed, as the fake daemons heard them | `clients_start_one_at_a_time_newest_first_with_ascending_id_ties` (e2e) |
 | DSC-03 (Monitor, cadence): immediate first pass, each later pass a second after the previous one ended, no overlap, the selector opened during a pass | `discovery_passes_start_a_second_after_the_previous_one_ends_without_overlap` (e2e) |
 | Client supervisor (Fault), LIB-05 (Monitor, Fault): a failed notification lookup, a run failing without terminal evidence, or a failed drain ends that instance cleanly (deliveries and handles released, destroyed) and frees its start slot | `a_failed_notification_lookup_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_run_without_terminal_evidence_ends_its_client_cleanly_and_frees_its_start_slot`, `a_failed_drain_ends_its_client_cleanly_and_frees_its_start_slot` (`src/supervisor.rs`) |
-| Client supervisor (Fault), EXT-02 (Fault, #118): exit lasts until `deadlines.shutdown_ms` and no longer, apart from the 200 ms handover grace while the supervisor's report is late (#455), says whom it waits for, logs any client it could not confirm, and never destroys or claims an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_round_waits_no_further_than_the_shutdown_deadline`, `draining_stops_at_the_shutdown_deadline`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor.rs`) |
-| EXT-01 (Monitor, Fault; #118): one shutdown asks passive, partially started, failing, stalled and unreleasable instances at once; each kind of evidence (Leave, client outcome, closure, worker cleanup, release, destroy, join) proven alone; a lost Leave fails the exit, unconfirmed cleanup fail-stops it, naming exactly what | `shutdown_asks_every_instance_at_once_and_proves_each_kind_of_evidence_alone` (`src/supervisor.rs`) |
+| Client supervisor (Fault), EXT-02 (Fault, #118): exit lasts until `deadlines.shutdown_ms` and no longer, apart from the 200 ms handover grace while the supervisor's report is late (#455), says whom it waits for, logs any client it could not confirm, and never destroys or claims an instance with unreleased handles; a refused release is loaded once and its sessions are Unavailable | `exit_is_bounded_and_never_destroys_an_instance_with_unreleased_handles`, `a_round_waits_no_further_than_the_shutdown_deadline`, `draining_stops_at_the_shutdown_deadline`, `a_flood_does_not_starve_the_shutdown_command`, `a_refused_release_is_loaded_once_and_its_sessions_are_unavailable` (`src/supervisor.rs`), `only_a_missing_report_is_waited_for_past_a_tick` (`src/lib.rs`) |
+| EXT-01 (Monitor, Fault; #118): one shutdown asks passive, partially started, failing, stalled and unreleasable instances at once; each kind of evidence (Leave, client outcome, closure, worker cleanup, release, destroy, join) proven alone; a lost Leave fails the exit, unconfirmed cleanup fail-stops it, naming exactly what; an instance published only once shutdown has begun is asked too (#462) | `shutdown_asks_every_instance_at_once_and_proves_each_kind_of_evidence_alone`, `an_instance_published_during_shutdown_is_asked_to_shut_down` (`src/supervisor.rs`) |
 | EXT-02 and LIB-06 (Fault, #118): a release load still running at the deadline is reported unfinished, never joined | `a_load_unfinished_at_the_deadline_is_reported_and_never_joined` (`src/supervisor.rs`) |
 | EXT-01, EXT-02, EXT-04 and LIB-06 (pure supplements, #118): the verdict over separate evidence (clean, failed, fail-stop) and its diagnostic; Leave codes; terminal evidence and run reports read each kind alone; an earlier failure leads the diagnostic; the exit screen's count | `confirmed_or_unneeded_leaves_with_complete_cleanup_are_clean`, `an_unconfirmed_current_leave_fails_the_exit_naming_it`, `unconfirmed_cleanup_or_unfinished_work_is_a_fail_stop_naming_each_piece`, `leave_codes_read_as_their_leave` (`src/shutdown.rs`), `terminal_evidence_proves_each_kind_of_departure_evidence_alone`, `only_a_successful_run_or_a_complete_report_confirms_worker_cleanup` (`src/supervisor/client.rs`), `a_shutdown_failure_follows_any_earlier_failure` (`src/lib.rs`), `the_exit_screen_counts_the_sessions_it_waits_for` (`src/screen.rs`) |
 | EXT-01, EXT-03 (orderly exit) and EXT-04 (Monitor, #118): prefix+x leaves a passive and a controlling client on one path, each kind of evidence logged alone, the controlling Leave detaching; exit 0 with the host restored and cleared, nothing printed, though the command never exits 0 | `exit_leaves_every_client_and_records_each_kind_of_evidence_alone` (e2e) |
