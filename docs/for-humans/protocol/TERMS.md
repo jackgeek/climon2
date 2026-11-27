@@ -12,6 +12,13 @@ do not add protocol requirements.
 An architecture decision record: a document explaining a design decision and
 the alternatives considered.
 
+## AEAD
+
+Authenticated encryption with associated data: encryption that also proves
+the message, and some unencrypted data sent with it, were not altered.
+ChaCha20-Poly1305 is one such scheme. It adds a 16-byte authentication tag to
+each message.
+
 ## API
 
 An application programming interface: the operations and data contract exposed
@@ -86,6 +93,15 @@ and attention-episode identities.
 ## Discriminator
 
 A field or code identifying which message variant is being sent.
+
+## CPace
+
+A key exchange in which two ends that share only a short password, such as a
+PIN, agree on a strong secret key. The password never crosses the wire, and
+an eavesdropper gets nothing to test guesses against: each guess needs a new
+live attempt. CPace is the balanced password-authenticated key exchange
+selected by the Crypto Forum Research Group. ristretto255 is the
+mathematical group this project runs it in.
 
 ## Display cell
 
@@ -163,6 +179,16 @@ of Ubuntu and most other Linux distributions.
 A globally unique identifier. A climon2 [session ID](../../../GLOSSARY.md#protocol-and-plugin-concepts)
 is a GUID, not a process ID.
 
+## HKDF
+
+A standard way to derive several independent keys from one secret, defined in
+RFC 5869. Each derived key is named by an info string.
+
+## HMAC
+
+A keyed checksum, defined in RFC 2104. Only a holder of the key can produce
+or check it, so a correct HMAC proves the sender knows the key.
+
 ## High-water mark
 
 The greatest locally accepted request ID in one instance's lifetime for the
@@ -226,6 +252,13 @@ grammar and registration policy are still unspecified.
 
 A filesystem path represented without losing platform-native data, including
 non-[UTF-8](#unicode-and-utf-8) bytes on Unix or native code units on Windows.
+
+## Noise
+
+The Noise Protocol Framework: a family of key-exchange handshakes followed by
+an encrypted transport. A pattern name such as `IK` says which long-term keys
+each end knows beforehand and when each key is sent. X25519 is the
+Diffie-Hellman function used here, with 32-byte public keys.
 
 ## NUL
 
@@ -306,6 +339,10 @@ The future plugin system's isolation model is not specified by this reference.
 ## Schema
 
 The permitted structure, fields, types, and values of a message.
+
+## SHA-256 and SHA-512
+
+Standard cryptographic hash functions with 32-byte and 64-byte outputs.
 
 ## Soname
 
