@@ -27,7 +27,10 @@ flowchart TB
             library[["libclimon2_client.dylib / .so<br/>Rust cdylib; C ABI bootstrap"]]
         end
         command(["Session command<br/>external executable"])
-        source_monitor(["Source monitor runtime<br/>future forwarding provider"])
+        subgraph planned["Planned executables of version v"]
+            web["climon2-web<br/>web monitor executable; planned"]
+            relay["climon2-relay<br/>relay executable on another machine; planned"]
+        end
         browser(["Browser with xterm.js<br/>future external consumer"])
 
         launcher -->|"execs current version"| cli
@@ -40,11 +43,19 @@ flowchart TB
         monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
         client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
         library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
-        monitor -.->|"consumes forwarded sessions over TCP/IP; future"| source_monitor
-        browser -.->|"consumes forwarded terminal traffic over WebSocket; future"| monitor
+        monitor -.->|"hub monitor: monitor link over TCP/IP; planned"| relay
+        web -.->|"hub monitor: monitor link over TCP/IP; planned"| relay
+        cli -.->|"web: execs own version; planned"| web
+        cli -.->|"relay / r: execs own version; planned"| relay
+        web -.->|"hello probes for discovery; planned"| daemon
+        web -.->|"loads session-version library, as the monitor does; planned"| library
+        relay -.->|"hello probes for discovery on its own machine; planned"| daemon
+        relay -.->|"loads session-version library on its own machine; planned"| library
+        browser -.->|"web view over WebSocket; planned"| web
     end
 
-    style source_monitor stroke-dasharray: 5 5
+    style web stroke-dasharray: 5 5
+    style relay stroke-dasharray: 5 5
     style browser stroke-dasharray: 5 5
 ```
 
@@ -377,15 +388,29 @@ it, as the diagram shows, and the monitor consumes it through that library
 (#106).
 
 The wire core is independent of the current private Unix socket carrier.
-The main/downstream monitor consumes source-monitor sessions over
-[TCP/IP](../protocol/TERMS.md#tcpip) and presents them as local sessions.
-A browser consumes that monitor's forwarded terminal traffic over
-[WebSocket](../protocol/TERMS.md#websocket) into xterm.js. Dashed arrows above point
-from consumer to provider, not in the direction [bytes](../protocol/TERMS.md#byte) happen to flow.
-No native client library is assumed inside a browser. Routing, multiplexing,
-discovery and remote authentication/security remain deliberately unresolved;
+Three executables are planned, and none is built. A
+[relay](../../../GLOSSARY.md#monitor-links) serves one machine's sessions to a
+[hub monitor](../../../GLOSSARY.md#monitor-links) on another over a
+[monitor link](../../../GLOSSARY.md#monitor-links) carried by
+[TCP/IP](../protocol/TERMS.md#tcpip). The relay is an ordinary client of its
+own machine's session daemons, so daemon wire revision 1 never crosses a
+machine boundary
+([ADR 0009](../../adr/0009-relay-terminates-daemon-wire.md)). The
+[web monitor](../../../GLOSSARY.md#web-monitor) is a monitor without a
+terminal interface that serves a web view to browsers over
+[WebSocket](../protocol/TERMS.md#websocket), where xterm.js shows session
+content. The monitor and the web monitor are built on one monitor library, an
+ordinary Rust crate linked into each, so it adds no dynamic library; the
+relay shares only the code that runs client library instances
+([ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md)). The
+relay's executable and the monitor's are drawn in one version folder for
+brevity, although a relay runs on another machine, from its own install.
+Dashed arrows above point from consumer to provider, not in the direction
+[bytes](../protocol/TERMS.md#byte) happen to flow.
+No native client library is assumed inside a browser. Browser authentication
+and transport security remain unresolved;
 same-[UID](../protocol/TERMS.md#uid)/private-directory local checks do not define
-future transport security. No forwarding implementation is claimed.
+them. No implementation of a relay or a web monitor is claimed.
 
 `c2 exec --headless` returns after daemon-confirmed creation without
 starting an interactive client: the CLI starts the daemon, passing the headless
