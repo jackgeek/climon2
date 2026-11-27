@@ -1407,7 +1407,7 @@ mod tests {
         registry.client(&key(4), ClientEvent::Opened { status: false }, at(2));
         registry.client(&key(4), ClientEvent::Ended, at(3));
         for event in [
-            ClientEvent::Presentation(Presentation::Revoked),
+            ClientEvent::Presentation(Presentation::Revoked(crate::terminal::Revocation::Takeover)),
             ClientEvent::Answer(
                 2,
                 Answer {

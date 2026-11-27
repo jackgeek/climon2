@@ -3,7 +3,7 @@
 use crate::{
     registry::{Answer, ClientEvent, Final, Outcome, Recovery, Report, State, Status, Verdict},
     shutdown::{self, Leave},
-    terminal::{Authority, Paste, Presentation, Request},
+    terminal::{Authority, Paste, Presentation, Request, Revocation},
 };
 use climon2_core::{
     SessionId,
@@ -118,8 +118,9 @@ const READERS: [(u32, Reader); 12] = [
         let authority = authority(record, granted.period, granted.restoration_id);
         presented(geometry(granted.geometry).map(|at| Presentation::Granted(authority, at)))
     }),
-    (native::REVOKED, |_, _| {
-        presented(Some(Presentation::Revoked))
+    (native::REVOKED, |_, record| {
+        let reason = unsafe { record.data.revoked.reason };
+        presented(Some(Presentation::Revoked(revocation(reason))))
     }),
     (native::RESTORATION_BEGIN, |_, record| {
         let begun = unsafe { record.data.restoration };
@@ -330,6 +331,16 @@ fn authority(record: &native::Record, period: u64, restoration: u64) -> Authorit
 fn geometry(geometry: native::Geometry) -> Option<Geometry> {
     let narrow = |value: u32| u16::try_from(value).unwrap_or(u16::MAX);
     Geometry::for_host(narrow(geometry.cols), narrow(geometry.rows))
+}
+
+/// Why control was revoked: a takeover, the session's end, or a reason
+/// this monitor does not know.
+fn revocation(reason: u32) -> Revocation {
+    match reason {
+        native::TAKEOVER => Revocation::Takeover,
+        native::SESSION_ENDING => Revocation::Ending,
+        _ => Revocation::Unknown,
+    }
 }
 
 fn presented(presentation: Option<Presentation>) -> Vec<ClientEvent> {
