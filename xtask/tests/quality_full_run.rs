@@ -289,6 +289,19 @@ fn a_slice_waits_for_mains_own_gate_only_when_the_push_runs_one() {
     );
 }
 
+/// A Markdown file whose name holds a space or non-ASCII letters is read whole, so
+/// it is still ignored, and a gated one beside it still counts.
+#[test]
+fn a_name_with_a_space_or_non_ascii_letters_is_read_whole() {
+    let history = History::new();
+    let before = history.git(&["rev-parse", "HEAD"]);
+    let names = ["docs/my notes.md", "docs/\u{fc}bersicht \u{e9}t\u{e9}.md"];
+    let docs = history.change(&names, "Docs (#1)");
+    assert_eq!(history.choose("push", "", &before, &docs).1, "");
+    let code = history.change(&["docs/my notes.md", "src/a b.rs"], "Code (#2)");
+    assert_eq!(history.choose("push", "", &docs, &code).1, code);
+}
+
 const RUN_ID: u64 = 500;
 const GATE: &str = "c0ffee0000000000000000000000000000000000";
 

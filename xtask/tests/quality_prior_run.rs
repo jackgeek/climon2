@@ -399,19 +399,35 @@ fn a_rename_from_a_gated_path_to_an_ignored_one_runs_the_gates() {
     assert_eq!(outcome.output, "", "{}", outcome.stdout);
 }
 
-/// When the docs-only fallback's look-up fails after a partial match, the partial
-/// match's message is kept, as the more useful one.
+/// A run of the merged tree whose listed gate failed rules out the docs-only
+/// fallback: no other run stands in for it, even one whose commit differs from
+/// the merge only in ignored paths, and the failed run is named.
 #[test]
-fn a_failed_fallback_keeps_the_partial_matchs_message() {
-    let outcome = decide(json!({
-        runs_path(): {"workflow_runs": [run(3, "fix/partial", TREE)]},
-        jobs_path(3): jobs(["success", "failure", "success"]),
-    }));
-    assert_eq!(outcome.output, "");
+fn a_partial_match_skips_the_docs_only_fallback() {
+    let repo = Repo::new();
+    let (gated, gated_tree) = repo.change(&["crates/a/src/lib.rs"], "Code");
+    let (pushed, tree) = repo.change(&["README.md"], "Docs (#9)");
+    let outcome = decide_in(
+        repo.dir.path(),
+        &tree,
+        &pushed,
+        ALL,
+        json!({
+            runs_path(): {"workflow_runs": [
+                // The branch's latest passed run would match by its docs-only difference.
+                run_of(9, "fix/docs", &gated, &gated_tree),
+                run_of(3, "fix/other", &"4".repeat(40), &tree),
+            ]},
+            jobs_path(3): jobs(["success", "failure", "success"]),
+            jobs_path(9): jobs(["success", "success", "success"]),
+            pulls_path(&pushed): merged_from(&pushed, "fix/docs"),
+        }),
+    );
+    assert_eq!(outcome.output, "", "{}", outcome.stdout);
     assert_eq!(
         outcome.stdout,
         format!(
-            "Own-hardware gates run: tree {TREE} did not pass every listed gate in \
+            "Own-hardware gates run: tree {tree} did not pass every listed gate in \
              https://github.com/{REPO}/actions/runs/3.\n"
         )
     );

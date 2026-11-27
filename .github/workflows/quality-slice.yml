@@ -379,15 +379,10 @@ jobs:
       && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Reports of one slice take turns, so two never write its section at once
-    # (#457). The group holds only reports, never a slice's mutation. GitHub
-    # keeps one waiting job per group, so a third report of the slice replaces
-    # the waiting one, which the newest would replace in the issue anyway. One
-    # group per slice keeps a report of another slice from being dropped; the
-    # waits for idle gates keep reports of different slices far apart.
-    concurrency:
-      group: quality-full-report-${{ inputs.slice }}
-      cancel-in-progress: false
+    # No concurrency group, so no report is ever cancelled or replaced (#457).
+    # Each slice owns one comment on the tracking issue, so reports of different
+    # slices never rewrite the same text, and a later report of a slice simply
+    # rewrites its comment.
     permissions:
       contents: read
       issues: write

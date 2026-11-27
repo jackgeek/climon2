@@ -8,7 +8,7 @@ that `CLIMON2_OWN_RUNNERS` lists passed. A platform it does not list runs no
 gate on the branch or on main, so it never stops a match.
 
 A branch whose last push changed only paths `quality.yml` ignores has no run of
-the merged tree. So when no run has the tree, the script asks GitHub which pull
+the merged tree. So when no run has the tree at all, the script asks GitHub which pull
 request the push merged, takes the latest passed run on that pull request's
 branch, and relies on it when its commit differs from the pushed one only in
 paths `quality.yml` ignores. It fetches that commit, alone, to compare them.
@@ -78,7 +78,14 @@ def git(*args):
     """git's output, or None when it fails."""
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=120, check=False
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            # git writes paths as UTF-8 bytes, whatever the runner's locale.
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -148,10 +155,10 @@ def find(tree, commit, repo, api, required):
             if passed(run):
                 return run, f"tree {tree} passed every listed gate in {described(run)}"
             partial.append(run["html_url"])
-    except (ApiError, KeyError, TypeError, AttributeError) as error:
-        return None, f"could not look up passed runs: {error}"
-    # The docs-only fallback fails on its own, so a partial match's message survives it.
-    try:
+        # A run of this very tree failed a listed gate, so no docs-only difference from
+        # another run can stand in for it.
+        if partial:
+            return None, f"tree {tree} did not pass every listed gate in {', '.join(partial)}"
         branch = merged_branch(repo, commit, api)
         latest = next((run for run in runs if run.get("head_branch") == branch), None)
         if latest is not None and (latest.get("head_commit") or {}).get("tree_id") != tree:
@@ -163,10 +170,7 @@ def find(tree, commit, repo, api, required):
                     f" in {described(latest)}"
                 )
     except (ApiError, KeyError, TypeError, AttributeError) as error:
-        if not partial:
-            return None, f"could not look up passed runs: {error}"
-    if partial:
-        return None, f"tree {tree} did not pass every listed gate in {', '.join(partial)}"
+        return None, f"could not look up passed runs: {error}"
     return None, (
         f"no passed run on another branch has tree {tree},"
         " or one that differs from it only in paths quality.yml ignores"

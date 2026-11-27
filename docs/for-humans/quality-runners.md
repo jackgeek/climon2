@@ -232,8 +232,8 @@ The pass never blocks a merge or turns `main` red:
     waiting too adds 5 minutes between checks, so several waiting runs don't
     use up the workflow token's API limit.
   - **Giving up.** If the gates are still busy after 20 hours, or GitHub's API
-    keeps failing, the slice is skipped, and its section in the issue says
-    "Skipped ... gates were busy". If a waiting job itself fails, the section
+    keeps failing, the slice is skipped, and its comment in the issue says
+    "Skipped ... gates were busy". If a waiting job itself fails, the comment
     says so instead.
 
   A gate pushed while a slice runs still waits for it, for up to the slice's
@@ -243,14 +243,10 @@ The pass never blocks a merge or turns `main` red:
   red. A slice asks for a machine only once the gates are idle, so it starts
   at once unless the machine is offline.
 - **A later merge never cancels it.** Neither workflow has a concurrency group,
-  because GitHub keeps only one waiting run per group and cancels the others
-  without saying so. Only the job that writes the results (see below) has
-  one, a group per slice, so two reports of one slice never write its section
-  at once. It holds no mutation, and a running job in it is never cancelled.
-  A third report of a slice, arriving while one runs and another waits,
-  replaces the waiting one, whose section the newest would replace anyway. A
-  report of another slice is never dropped. Reports of different slices may
-  still run at once, but the waits for idle gates keep them far apart.
+  not even on the job that writes the results, because GitHub keeps only one
+  waiting job per group and cancels the others without saying so. The results
+  need none: each slice writes only its own comment (see below), so reports of
+  different slices never rewrite the same text.
 - **It's short.** A slice's mutation may run for 3 h 45 min on Linux and
   1 h 45 min on Windows and macOS. Its job ends at 5 h and 2 h 30 min, which
   leaves time for checkout, set-up and the log's upload. No slice has run on
@@ -275,13 +271,16 @@ After the machines finish, a hosted job reads each one's log. It lists:
   baseline, whose set-up failed, or that timed out;
 - a machine listed in `CLIMON2_OWN_RUNNERS` whose job left no log at all.
 
-It writes that list in the slice's section of one open issue titled **Full
-mutation pass findings**, opened by `github-actions`. The issue has a section
-per slice, and each slice's section a part per machine. Each pass replaces
-only its own slice's section, so the issue always holds each slice's latest
-findings, and a clean pass clears its section.
+It writes that list in the slice's own comment on one open issue titled
+**Full mutation pass findings**, opened by `github-actions`. The issue's
+description is a fixed note on how to read it. Each slice has one comment,
+headed "Slice k of 10", with a part per machine, and a hidden marker by which
+each pass finds its own slice's comment. A pass rewrites only that comment,
+or adds it when the slice has none yet, so the issue always holds each
+slice's latest findings, and a clean pass clears its comment. A later pass of
+the same slice simply rewrites it.
 
-What didn't run keeps its earlier result. A skipped slice keeps its section,
+What didn't run keeps its earlier result. A skipped slice keeps its comment,
 with a dated note such as "Skipped on 2026-11-28: gates were busy". A machine
 that didn't run keeps its part with a dated "Did not run on ..." note, saying
 whether it isn't in `CLIMON2_OWN_RUNNERS` or its job left no log. Each new
@@ -289,11 +288,13 @@ note replaces the one before. When `CLIMON2_OWN_RUNNERS` lists no machine at
 all, the run's summary says that no pass of the slice ran, not that it found
 nothing.
 
-A pass that needs you opens the issue if none is open, or comments on it with
-the run's link: one with findings, a failure or a missing log, or a slice
-skipped because a waiting job failed. A clean pass, or one skipped because the
-gates were busy, never opens or comments on the issue. Close it once every
-section is clean. Each machine's whole log is kept with the run, as artifacts
+A pass that needs you opens the issue if none is open, or adds a short
+comment with the run's link, which notifies you, since an edited comment
+doesn't: one with findings, a failure or a missing log, or a slice skipped
+because a waiting job failed. A clean pass, or one skipped because the gates
+were busy, never opens the issue or adds such a notice; it edits its slice's
+comment quietly. Close the issue once every slice's comment is clean. Each
+machine's whole log is kept with the run, as artifacts
 such as `full-run-linux-3` for slice 3. On the Mac it also holds the evidence
 of any daemon test whose readiness wait failed.
 
