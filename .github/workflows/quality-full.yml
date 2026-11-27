@@ -1,77 +1,74 @@
 name: Full mutation
 
-# The full mutation pass (#452, docs/for-humans/quality-runners.md): every 10th
-# pull request squash-merged to main, the own-hardware gates of quality.yml
-# mutate every shipped file, whole, instead of the source a push changed.
+# The rolling full mutation pass (#452, docs/for-humans/quality-runners.md):
+# each pull request squash-merged to main mutates one slice, a tenth, of the
+# shipped files, whole, on the own-hardware machines of quality.yml. A file's
+# slice comes from a hash of its path, so ten merges in a row mutate every file.
 #
-# It never blocks or reddens main. It runs after the merge, on main only, and
-# starts once no quality.yml run is queued or in progress. Each platform's pass
-# has its own concurrency group, so a merge never cancels one, and a pass that
-# fails still ends its job green: its findings go to one tracking issue.
+# It never blocks or reddens main. It runs after the merge, on main only. Each
+# machine has one runner, which runs one job at a time, so slices and gates
+# queue for it in turn; a later merge never cancels a slice. A pass that fails
+# or times out still ends its job green: its findings go to one tracking issue.
 #
-# Every push to main runs the hosted `due` job, Markdown-only ones included, so
-# the 10th squash-merge is never missed; the other jobs run only when it is due.
+# Every push to main runs the hosted `slice` job, Markdown-only ones included,
+# so no merge's slice is missed.
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      slice:
+        description: "The slice to mutate: 0 to 9, or all of them"
+        required: true
+        default: all
+        type: choice
+        options: ["all", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
 permissions:
   contents: read
+
+# Explicitly bash, so each step runs with pipefail, and a failed pass piped
+# through tee keeps its exit status.
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TARGET_DIR: target/quality-run
 
 jobs:
-  due:
-    name: Decide whether a full pass is due
+  slice:
+    name: Choose the slice to mutate
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      due: ${{ steps.due.outputs.due }}
+      slice: ${{ steps.slice.outputs.slice }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - id: due
+      - id: slice
         env:
           EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.slice }}
           BEFORE: ${{ github.event.before }}
-        run: python3 tools/quality-full-run.py due --event "$EVENT" --before "$BEFORE" --after "$GITHUB_SHA"
-
-  # Gates already queued for the machines go first. A pass that has started holds
-  # its machine until it ends; a gate queued after that waits for it.
-  wait:
-    name: Wait for queued quality gates
-    needs: due
-    if: github.ref == 'refs/heads/main' && needs.due.outputs.due == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 330
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 tools/quality-full-run.py wait --repo "$GITHUB_REPOSITORY"
+        run: python3 tools/quality-full-run.py slice --event "$EVENT" --requested "$REQUESTED" --before "$BEFORE" --after "$GITHUB_SHA"
 
   linux:
     name: Linux full mutation / own hardware
-    needs: [due, wait]
+    needs: slice
     if: >-
-      !cancelled()
-      && github.ref == 'refs/heads/main'
-      && needs.due.outputs.due == 'true'
+      github.ref == 'refs/heads/main'
+      && needs.slice.outputs.slice != ''
       && contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
     runs-on: [self-hosted, Linux, X64, climon2-quality]
-    concurrency:
-      group: quality-full-linux
-      cancel-in-progress: false
-    timeout-minutes: 2940
+    # A slice holds the only Linux runner, so it gets a few hours; all slices
+    # at once, from a manual run, get two days.
+    timeout-minutes: ${{ needs.slice.outputs.slice == 'all' && 2880 || 240 }}
     # As quality.yml's Linux gate, which shares the PC with the Windows gate.
     env:
+      SLICE: ${{ needs.slice.outputs.slice }}
       CLIMON2_MUTATION_WORKERS: "4"
       CLIMON2_MUTATION_WORKER_JOBS: "4"
       CARGO_BUILD_JOBS: "4"
@@ -88,17 +85,19 @@ jobs:
         run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
-      # A failed pass is reported in the tracking issue, not as a failed job.
-      - name: Mutate every shipped file
+      # A failed or timed-out pass is reported in the tracking issue, not as a
+      # failed job. The step ends before the job, so its log is still uploaded.
+      - name: Mutate the slice's shipped files
         continue-on-error: true
-        timeout-minutes: 2880
+        timeout-minutes: ${{ needs.slice.outputs.slice == 'all' && 2850 || 225 }}
         run: |
           mkdir -p "$RUNNER_TEMP/full-run-linux"
+          if [[ "$SLICE" == all ]]; then selection=(--mutate-all); else selection=(--mutate-slice "$SLICE"); fi
           started=$SECONDS
           status=0
-          cargo xtask mutate --mutate-all 2>&1 | tee "$RUNNER_TEMP/full-run-linux/gate.log" || status=$?
+          cargo xtask mutate "${selection[@]}" 2>&1 | tee "$RUNNER_TEMP/full-run-linux/gate.log" || status=$?
           echo "$status" > "$RUNNER_TEMP/full-run-linux/status"
-          echo "- Linux full pass on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Linux slice $SLICE on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
       - name: Upload the pass's log
         if: ${{ !cancelled() }}
@@ -110,22 +109,16 @@ jobs:
 
   windows:
     name: Windows-only full mutation / own hardware
-    needs: [due, wait]
+    needs: slice
     if: >-
-      !cancelled()
-      && github.ref == 'refs/heads/main'
-      && needs.due.outputs.due == 'true'
+      github.ref == 'refs/heads/main'
+      && needs.slice.outputs.slice != ''
       && contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
     runs-on: [self-hosted, Windows, X64, climon2-quality]
-    concurrency:
-      group: quality-full-windows
-      cancel-in-progress: false
-    timeout-minutes: 540
-    defaults:
-      run:
-        shell: bash
+    timeout-minutes: ${{ needs.slice.outputs.slice == 'all' && 540 || 120 }}
     # As quality.yml's Windows gate; the runner's .env supplies the rest.
     env:
+      SLICE: ${{ needs.slice.outputs.slice }}
       CLIMON2_NATIVE_MUTATION_WORKERS: "2"
       CLIMON2_MUTATION_WORKER_JOBS: "4"
       CARGO_BUILD_JOBS: "4"
@@ -141,16 +134,17 @@ jobs:
         run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
-      - name: Mutate every Windows-exclusive file
+      - name: Mutate the slice's Windows-exclusive files
         continue-on-error: true
-        timeout-minutes: 480
+        timeout-minutes: ${{ needs.slice.outputs.slice == 'all' && 510 || 105 }}
         run: |
           mkdir -p "$RUNNER_TEMP/full-run-windows"
+          if [[ "$SLICE" == all ]]; then selection=(--mutate-all); else selection=(--mutate-slice "$SLICE"); fi
           started=$SECONDS
           status=0
-          cargo xtask mutate --native-only --mutate-all 2>&1 | tee "$RUNNER_TEMP/full-run-windows/gate.log" || status=$?
+          cargo xtask mutate --native-only "${selection[@]}" 2>&1 | tee "$RUNNER_TEMP/full-run-windows/gate.log" || status=$?
           echo "$status" > "$RUNNER_TEMP/full-run-windows/status"
-          echo "- Windows full pass on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Windows slice $SLICE on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
       - name: Upload the pass's log
         if: ${{ !cancelled() }}
@@ -162,17 +156,15 @@ jobs:
 
   macos:
     name: macOS-only full mutation / own hardware
-    needs: [due, wait]
+    needs: slice
     if: >-
-      !cancelled()
-      && github.ref == 'refs/heads/main'
-      && needs.due.outputs.due == 'true'
+      github.ref == 'refs/heads/main'
+      && needs.slice.outputs.slice != ''
       && contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
     runs-on: [self-hosted, macOS, X64, climon2-quality]
-    concurrency:
-      group: quality-full-macos
-      cancel-in-progress: false
-    timeout-minutes: 540
+    timeout-minutes: ${{ needs.slice.outputs.slice == 'all' && 540 || 120 }}
+    env:
+      SLICE: ${{ needs.slice.outputs.slice }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -187,16 +179,17 @@ jobs:
         run: rm -rf target/mutation-workers
       - name: Set up pinned quality tools
         run: cargo xtask setup-quality
-      - name: Mutate every macOS-exclusive file
+      - name: Mutate the slice's macOS-exclusive files
         continue-on-error: true
-        timeout-minutes: 480
+        timeout-minutes: ${{ needs.slice.outputs.slice == 'all' && 510 || 105 }}
         run: |
           mkdir -p "$RUNNER_TEMP/full-run-macos"
+          if [[ "$SLICE" == all ]]; then selection=(--mutate-all); else selection=(--mutate-slice "$SLICE"); fi
           started=$SECONDS
           status=0
-          cargo xtask mutate --native-only --mutate-all 2>&1 | tee "$RUNNER_TEMP/full-run-macos/gate.log" || status=$?
+          cargo xtask mutate --native-only "${selection[@]}" 2>&1 | tee "$RUNNER_TEMP/full-run-macos/gate.log" || status=$?
           echo "$status" > "$RUNNER_TEMP/full-run-macos/status"
-          echo "- macOS full pass on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          echo "- macOS slice $SLICE on $(hostname), $(sw_vers -productVersion) $(uname -m): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
       - name: Upload the pass's log
         if: ${{ !cancelled() }}
@@ -207,12 +200,12 @@ jobs:
           if-no-files-found: ignore
 
   report:
-    name: Report the full pass's findings
-    needs: [due, linux, windows, macos]
+    name: Report the slice's findings
+    needs: [slice, linux, windows, macos]
     if: >-
       !cancelled()
       && github.ref == 'refs/heads/main'
-      && needs.due.outputs.due == 'true'
+      && needs.slice.outputs.slice != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -227,5 +220,6 @@ jobs:
           path: ${{ runner.temp }}/full-run
       - env:
           GH_TOKEN: ${{ github.token }}
+          SLICE: ${{ needs.slice.outputs.slice }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python3 tools/quality-full-run.py report --repo "$GITHUB_REPOSITORY" --logs "$RUNNER_TEMP/full-run" --run-url "$RUN_URL" --sha "$GITHUB_SHA"
+        run: python3 tools/quality-full-run.py report --repo "$GITHUB_REPOSITORY" --slice "$SLICE" --logs "$RUNNER_TEMP/full-run" --run-url "$RUN_URL" --sha "$GITHUB_SHA"

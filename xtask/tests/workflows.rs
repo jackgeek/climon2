@@ -599,10 +599,10 @@ fn the_look_up_requires_every_gate_by_its_job_name() {
     }
 }
 
-/// #452: the full mutation pass runs on pushes to main and manual runs only, so a
-/// branch never starts one. Every push to main decides, a Markdown-only one too,
-/// so the 10th squash-merge is never missed, and every job checks the ref again,
-/// since a manual run may name a branch.
+/// #452: the rolling full mutation pass runs on pushes to main and manual runs
+/// only, so a branch never starts one. Every push to main chooses its slice, a
+/// Markdown-only one too, so no merge's slice is missed, and every job checks
+/// the ref again, since a manual run may name a branch.
 #[test]
 fn the_full_pass_never_runs_on_a_branch() {
     let full = workflow("quality-full.yml");
@@ -615,104 +615,104 @@ fn the_full_pass_never_runs_on_a_branch() {
         !full.contains("paths"),
         "no push to main may skip the count"
     );
-    for name in ["due", "wait", "linux", "windows", "macos", "report"] {
+    for name in ["slice", "linux", "windows", "macos", "report"] {
         let lines = job(&full, name);
-        let guarded = lines.iter().any(|line| {
-            *line == "    if: github.ref == 'refs/heads/main'"
-                || line.starts_with("    if: github.ref == 'refs/heads/main' && ")
-        }) || condition(&lines).contains("&& github.ref == 'refs/heads/main' &&");
+        let guarded = lines.contains(&"    if: github.ref == 'refs/heads/main'")
+            || condition(&lines).contains("github.ref == 'refs/heads/main' &&");
         assert!(guarded, "{name}: {lines:#?}");
     }
 }
 
-/// #452: the hosted `due` job counts main's squash-merges with
-/// tools/quality-full-run.py, and every other job runs only when it says a
-/// full pass is due. The gates wait for queued quality.yml runs first, but
-/// run whatever that wait's own result.
+/// #452: the hosted `slice` job chooses the slice from main's squash-merges
+/// with tools/quality-full-run.py, or takes a manual run's choice of one slice
+/// or all, and every other job runs only when it chose one.
 #[test]
-fn the_full_pass_runs_only_when_due() {
+fn the_full_pass_mutates_the_slice_the_merge_count_chooses() {
     let full = workflow("quality-full.yml");
-    let due = job(&full, "due");
+    let inputs = [
+        "        type: choice",
+        "        options: [\"all\", \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\"]",
+    ];
+    for line in inputs {
+        assert!(full.contains(&format!("\n{line}\n")), "{line}");
+    }
+    let slice = job(&full, "slice");
     for line in [
         "    runs-on: ubuntu-24.04",
-        "      due: ${{ steps.due.outputs.due }}",
+        "      slice: ${{ steps.slice.outputs.slice }}",
         "          fetch-depth: 0",
-        "        run: python3 tools/quality-full-run.py due --event \"$EVENT\" --before \"$BEFORE\" --after \"$GITHUB_SHA\"",
+        "          REQUESTED: ${{ inputs.slice }}",
+        "        run: python3 tools/quality-full-run.py slice --event \"$EVENT\" --requested \"$REQUESTED\" --before \"$BEFORE\" --after \"$GITHUB_SHA\"",
     ] {
-        assert!(due.contains(&line), "{line}: {due:#?}");
+        assert!(slice.contains(&line), "{line}: {slice:#?}");
     }
-    let wait = job(&full, "wait");
-    for line in [
-        "    needs: due",
-        "    if: github.ref == 'refs/heads/main' && needs.due.outputs.due == 'true'",
-        "    runs-on: ubuntu-24.04",
-        "      actions: read",
-        "        run: python3 tools/quality-full-run.py wait --repo \"$GITHUB_REPOSITORY\"",
+    for (name, native) in [
+        ("linux", ""),
+        ("windows", "--native-only "),
+        ("macos", "--native-only "),
     ] {
-        assert!(wait.contains(&line), "{line}: {wait:#?}");
-    }
-    for name in ["linux", "windows", "macos"] {
         let lines = job(&full, name);
-        assert!(lines.contains(&"    needs: [due, wait]"), "{name}");
+        assert!(lines.contains(&"    needs: slice"), "{name}");
         assert_eq!(
             condition(&lines),
             format!(
-                "!cancelled() && github.ref == 'refs/heads/main' \
-                 && needs.due.outputs.due == 'true' \
+                "github.ref == 'refs/heads/main' && needs.slice.outputs.slice != '' \
                  && contains(vars.CLIMON2_OWN_RUNNERS, '{name}')"
             ),
             "{name}"
         );
+        assert!(lines.contains(&"      SLICE: ${{ needs.slice.outputs.slice }}"));
+        let choice = "if [[ \"$SLICE\" == all ]]; then selection=(--mutate-all); \
+                      else selection=(--mutate-slice \"$SLICE\"); fi";
+        assert!(lines.iter().any(|line| line.trim() == choice), "{name}");
+        let gate = format!("cargo xtask mutate {native}\"${{selection[@]}}\" 2>&1 | tee ");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.trim_start().starts_with(&gate)),
+            "{name}: {lines:#?}"
+        );
     }
     assert_eq!(
         condition(&job(&full, "report")),
-        "!cancelled() && github.ref == 'refs/heads/main' && needs.due.outputs.due == 'true'"
+        "!cancelled() && github.ref == 'refs/heads/main' && needs.slice.outputs.slice != ''"
     );
 }
 
-/// #452: each platform's own-hardware machine mutates every file its gate
-/// qualifies, whole, with quality.yml's worker limits. A merge never cancels a
-/// pass, and a failed pass leaves its job green: the step continues on error
-/// and its log goes to the report.
+/// #452: a slice runs on its machine's own runner with quality.yml's worker
+/// limits and a time limit of a few hours. It has no concurrency group, so a
+/// later merge never cancels or replaces it: the runner takes the jobs in turn.
+/// A failed or timed-out slice leaves its job green: the step continues on
+/// error, ends before the job's limit, and its log goes to the report.
 #[test]
-fn the_full_pass_mutates_every_file_without_reddening_main() {
+fn a_slice_never_reddens_main_or_gets_cancelled() {
     let full = workflow("quality-full.yml");
     let quality = workflow("quality.yml");
-    for (name, os, gate) in [
-        (
-            "linux",
-            "Linux",
-            "cargo xtask mutate --mutate-all 2>&1 | tee ",
-        ),
-        (
-            "windows",
-            "Windows",
-            "cargo xtask mutate --native-only --mutate-all 2>&1 | tee ",
-        ),
-        (
-            "macos",
-            "macOS",
-            "cargo xtask mutate --native-only --mutate-all 2>&1 | tee ",
-        ),
+    assert!(
+        !full.contains("concurrency"),
+        "a slice must never be dropped"
+    );
+    for (name, os, job_minutes, step_minutes) in [
+        ("linux", "Linux", "2880 || 240", "2850 || 225"),
+        ("windows", "Windows", "540 || 120", "510 || 105"),
+        ("macos", "macOS", "540 || 120", "510 || 105"),
     ] {
         let lines = job(&full, name);
-        let group = format!("      group: quality-full-{name}");
         let artifact = format!("          name: full-run-{name}");
         for line in [
             format!("    runs-on: [self-hosted, {os}, X64, climon2-quality]"),
-            "    concurrency:".to_owned(),
-            group,
-            "      cancel-in-progress: false".to_owned(),
+            format!(
+                "    timeout-minutes: ${{{{ needs.slice.outputs.slice == 'all' && {job_minutes} }}}}"
+            ),
+            format!(
+                "        timeout-minutes: ${{{{ needs.slice.outputs.slice == 'all' && {step_minutes} }}}}"
+            ),
             "        run: rm -rf target/mutation-workers".to_owned(),
             "        continue-on-error: true".to_owned(),
             artifact,
         ] {
             assert!(lines.contains(&line.as_str()), "{name}: {line}: {lines:#?}");
         }
-        assert!(
-            lines.iter().any(|line| line.trim_start().starts_with(gate)),
-            "{name}: {lines:#?}"
-        );
         assert!(
             !lines.iter().any(|line| line.contains("if: failure()")),
             "{name}: a continued step never fails its job"
@@ -726,14 +726,24 @@ fn the_full_pass_mutates_every_file_without_reddening_main() {
             assert!(lines.contains(line), "{name}: {line}");
         }
     }
-    assert!(
-        !full.contains("cancel-in-progress: true") && !full.contains("\nconcurrency:"),
-        "a later push must never cancel a running pass"
-    );
 }
 
-/// #452: the report job puts the findings into one tracking issue with the
-/// workflow's own token, the only write the workflow has; it uses no secret.
+/// #452: every step runs in bash with pipefail, so a failed pass piped through
+/// tee records its own exit status, not tee's. A step without an explicit shell
+/// runs `bash -e` without pipefail, so the workflow names bash for every step
+/// and no job or step picks another shell.
+#[test]
+fn a_piped_pass_keeps_its_exit_status() {
+    let full = workflow("quality-full.yml");
+    assert!(
+        full.contains("\ndefaults:\n  run:\n    shell: bash\n"),
+        "the workflow's steps run in bash with pipefail"
+    );
+    assert_eq!(full.matches("shell:").count(), 1, "nothing overrides it");
+}
+
+/// #452: the report job puts the slice's findings into one tracking issue with
+/// the workflow's own token, the only write the workflow has; it uses no secret.
 #[test]
 fn the_full_pass_reports_its_findings_in_one_issue() {
     let full = workflow("quality-full.yml");
@@ -746,12 +756,12 @@ fn the_full_pass_reports_its_findings_in_one_issue() {
     assert_eq!(writes, ["      issues: write"]);
     let report = job(&full, "report");
     for line in [
-        "    needs: [due, linux, windows, macos]",
+        "    needs: [slice, linux, windows, macos]",
         "    runs-on: ubuntu-24.04",
         "      issues: write",
         "          pattern: full-run-*",
         "          GH_TOKEN: ${{ github.token }}",
-        "        run: python3 tools/quality-full-run.py report --repo \"$GITHUB_REPOSITORY\" --logs \"$RUNNER_TEMP/full-run\" --run-url \"$RUN_URL\" --sha \"$GITHUB_SHA\"",
+        "        run: python3 tools/quality-full-run.py report --repo \"$GITHUB_REPOSITORY\" --slice \"$SLICE\" --logs \"$RUNNER_TEMP/full-run\" --run-url \"$RUN_URL\" --sha \"$GITHUB_SHA\"",
     ] {
         assert!(report.contains(&line), "{line}: {report:#?}");
     }

@@ -1,6 +1,6 @@
-//! #452: `tools/quality-full-run.py` decides when main's full mutation pass is
-//! due, waits for queued gates before it starts, and reports its findings in
-//! one tracking issue.
+//! #452: `tools/quality-full-run.py` chooses the slice of shipped files each
+//! squash-merge to main mutates, and reports each slice's findings in its
+//! section of one tracking issue.
 
 use std::{
     env, fs,
@@ -124,40 +124,56 @@ impl History {
         head
     }
 
-    /// Whether a push from `before` to `after` is due, and what it printed.
-    fn due(&self, event: &str, before: &str, after: &str) -> (bool, String) {
+    /// The slice a push from `before` to `after` mutates ("" for none), and what it printed.
+    fn slice(&self, event: &str, requested: &str, before: &str, after: &str) -> (String, String) {
         let outcome = script(
             self.dir.path(),
             &[
-                "due", "--event", event, "--before", before, "--after", after,
+                "slice",
+                "--event",
+                event,
+                "--requested",
+                requested,
+                "--before",
+                before,
+                "--after",
+                after,
             ],
             None,
         );
         assert_eq!(outcome.summary, format!("- {}", outcome.stdout));
-        let due = match outcome.output.as_str() {
-            "due=true\n" => true,
-            "due=false\n" => false,
-            other => panic!("unexpected output {other:?}"),
-        };
-        (due, outcome.stdout)
+        let slice = outcome
+            .output
+            .strip_prefix("slice=")
+            .and_then(|rest| rest.strip_suffix('\n'))
+            .unwrap_or_else(|| panic!("unexpected output {:?}", outcome.output));
+        (slice.to_owned(), outcome.stdout)
+    }
+
+    fn push(&self, before: &str, after: &str) -> String {
+        self.slice("push", "", before, after).0
     }
 }
 
 #[test]
-fn only_the_tenth_squash_merge_since_the_last_full_pass_starts_one() {
+fn each_squash_merge_mutates_the_next_slice_in_turn() {
     let history = History::new();
     let mut before = history.git(&["rev-parse", "HEAD"]);
     for number in 1..=21 {
         let after = history.squash(number..=number);
-        let (due, message) = history.due("push", &before, &after);
-        assert_eq!(due, number % 10 == 0, "merge {number}: {message}");
+        assert_eq!(history.push(&before, &after), (number % 10).to_string());
         before = after;
     }
-    let (_, message) = history.due("push", &before, &before);
+    let (slice, message) = history.slice("push", "", &before, &before);
+    assert_eq!(slice, "");
     assert_eq!(
         message,
-        "Full mutation pass skipped: main has 21 squash-merges; the last full pass was due \
-         at 20 and the next is at 30.\n"
+        "Full mutation pass skipped: the push adds no squash-merge; main still has 21.\n"
+    );
+    let after = history.squash(22..=22);
+    assert_eq!(
+        history.slice("push", "", &before, &after).1,
+        "Full mutation pass mutates slice 2: main has 22 squash-merges, so slice 2 of 10.\n"
     );
 }
 
@@ -166,37 +182,36 @@ fn only_squash_merges_on_mains_first_parent_history_count() {
     let history = History::new();
     let start = history.squash(1..=8);
     // A direct push, and a merge commit whose branch holds what look like squash-merges.
-    history.commit("Fix a typo directly on main");
+    let direct = history.commit("Fix a typo directly on main");
+    assert_eq!(history.push(&start, &direct), "");
     history.git(&["checkout", "--quiet", "-b", "topic"]);
     history.squash(100..=105);
     history.git(&["checkout", "--quiet", "main"]);
-    let merged = {
-        history.git(&["merge", "--quiet", "--no-ff", "-m", "Merge topic", "topic"]);
-        history.git(&["rev-parse", "HEAD"])
-    };
-    let (due, message) = history.due("push", &start, &merged);
-    assert!(!due, "{message}");
-    assert!(message.contains("main has 8 squash-merges"), "{message}");
+    history.git(&["merge", "--quiet", "--no-ff", "-m", "Merge topic", "topic"]);
+    let merged = history.git(&["rev-parse", "HEAD"]);
+    let (slice, message) = history.slice("push", "", &direct, &merged);
+    assert_eq!(slice, "", "{message}");
+    assert!(message.contains("main still has 8"), "{message}");
     // Nor does a subject that only mentions a number before its end.
     let mention = history.commit("Revert (#3) and explain why");
-    assert!(!history.due("push", &merged, &mention).0);
+    assert_eq!(history.push(&merged, &mention), "");
     let ninth = history.squash(9..=9);
-    assert!(!history.due("push", &mention, &ninth).0);
-    let tenth = history.squash(10..=10);
-    let (due, message) = history.due("push", &ninth, &tenth);
-    assert!(due, "{message}");
-    assert_eq!(
-        message,
-        "Full mutation pass runs: main has 10 squash-merges, and the full pass at 10 is due.\n"
-    );
+    assert_eq!(history.push(&mention, &ninth), "9");
 }
 
 #[test]
-fn a_push_of_several_merges_that_passes_a_tenth_starts_one() {
+fn a_push_of_several_merges_mutates_the_last_ones_slice() {
     let history = History::new();
     let before = history.squash(1..=8);
     let after = history.squash(9..=12);
-    assert!(history.due("push", &before, &after).0);
+    let (slice, message) = history.slice("push", "", &before, &after);
+    assert_eq!(slice, "2");
+    assert!(
+        message.ends_with(
+            "; the push adds 4, and the slices of the others wait for their next turn.\n"
+        ),
+        "{message}"
+    );
 }
 
 #[test]
@@ -210,59 +225,31 @@ fn a_push_without_a_known_old_head_counts_only_its_own_commit() {
         zero.as_str(),
         "1111111111111111111111111111111111111111",
     ] {
-        assert!(history.due("push", before, &tenth).0, "{before:?}");
+        assert_eq!(history.push(before, &tenth), "0", "{before:?}");
     }
-    let eleventh = history.squash(11..=11);
-    assert!(!history.due("push", &zero, &eleventh).0);
+    let direct = history.commit("Fix a typo directly on main");
+    assert_eq!(history.push(&zero, &direct), "");
 }
 
 #[test]
-fn a_manual_run_is_always_a_full_pass() {
+fn a_manual_run_mutates_the_slice_it_names_or_all() {
     let history = History::new();
     let head = history.squash(1..=3);
-    let (due, message) = history.due("workflow_dispatch", "", &head);
-    assert!(due);
+    for requested in ["0", "7", "9", "all"] {
+        assert_eq!(
+            history.slice("workflow_dispatch", requested, "", &head).0,
+            requested
+        );
+    }
+    assert_eq!(
+        history.slice("workflow_dispatch", "all", "", &head).1,
+        "Full mutation pass mutates all slices: a manual run asked for slice all.\n"
+    );
+    let (slice, message) = history.slice("workflow_dispatch", "10", "", &head);
+    assert_eq!(slice, "");
     assert_eq!(
         message,
-        "Full mutation pass runs: a manual run is always a full pass.\n"
-    );
-}
-
-fn runs_path(status: &str) -> String {
-    format!("repos/{REPO}/actions/workflows/quality.yml/runs?status={status}&per_page=1")
-}
-
-/// The run list for each unfinished status, `busy` of them in progress.
-fn runs(busy: u32) -> Value {
-    let mut responses = json!({});
-    for status in ["queued", "in_progress", "pending", "waiting", "requested"] {
-        let count = if status == "in_progress" { busy } else { 0 };
-        responses[runs_path(status)] = json!({"total_count": count, "workflow_runs": []});
-    }
-    responses
-}
-
-fn wait(responses: Value) -> String {
-    let dir = tempfile::tempdir().unwrap();
-    let args = ["wait", "--repo", REPO, "--interval", "60", "--limit", "0"];
-    script(dir.path(), &args, Some(responses)).stdout
-}
-
-#[test]
-fn a_full_pass_starts_once_no_gate_is_queued_or_in_progress() {
-    assert_eq!(
-        wait(runs(0)),
-        "Full mutation pass starts: no quality.yml run was queued or in progress after 0 min.\n"
-    );
-    assert_eq!(
-        wait(runs(2)),
-        "Full mutation pass starts: 2 quality.yml runs still unfinished after 0 min; \
-         it starts anyway.\n"
-    );
-    let failed = wait(json!({}));
-    assert!(
-        failed.starts_with("Full mutation pass starts: could not look up quality.yml runs"),
-        "{failed}"
+        "Full mutation pass skipped: a manual run names slice 0 to 9 or all, not '10'.\n"
     );
 }
 
@@ -299,12 +286,24 @@ fn logs(linux_status: Option<&str>) -> tempfile::TempDir {
     logs
 }
 
-fn report(logs: &Path, responses: Value) -> Outcome {
+/// Logs in which every platform that ran found nothing.
+fn clean_logs() -> tempfile::TempDir {
+    let logs = tempfile::tempdir().unwrap();
+    let linux = logs.path().join("full-run-linux");
+    fs::create_dir(&linux).unwrap();
+    fs::write(linux.join("gate.log"), "KILLED    a.rs:1 + -> -\n").unwrap();
+    fs::write(linux.join("status"), "0").unwrap();
+    logs
+}
+
+fn report(logs: &Path, slice: &str, responses: Value) -> Outcome {
     let logs = logs.to_str().unwrap();
     let args = [
         "report",
         "--repo",
         REPO,
+        "--slice",
+        slice,
         "--logs",
         logs,
         "--run-url",
@@ -315,13 +314,29 @@ fn report(logs: &Path, responses: Value) -> Outcome {
     script(Path::new(logs), &args, Some(responses))
 }
 
-fn issue(number: u32, title: &str, login: &str) -> Value {
+fn issue(number: u32, title: &str, login: &str, body: &str) -> Value {
     json!({
         "number": number,
         "title": title,
         "user": {"login": login},
+        "body": body,
         "html_url": format!("https://github.com/{REPO}/issues/{number}"),
     })
+}
+
+fn tracker(body: &str) -> Value {
+    json!({ ISSUES: [issue(9, "Full mutation pass findings", "github-actions[bot]", body)] })
+}
+
+/// The section a slice's report writes, between its markers.
+fn section<'a>(body: &'a str, slice: &str) -> &'a str {
+    let start = format!("<!-- slice {slice} -->\n");
+    let end = format!("<!-- end slice {slice} -->\n");
+    let from = body
+        .find(&start)
+        .unwrap_or_else(|| panic!("no {slice}: {body}"));
+    let to = body[from..].find(&end).unwrap() + from + end.len();
+    &body[from..to]
 }
 
 #[test]
@@ -329,9 +344,10 @@ fn findings_open_the_tracking_issue_when_none_is_open() {
     let logs = logs(Some("3"));
     let outcome = report(
         logs.path(),
+        "4",
         json!({ ISSUES: [
             // Same title, but a person's issue, and a pull request: neither is the tracker.
-            issue(5, "Full mutation pass findings", "someone"),
+            issue(5, "Full mutation pass findings", "someone", ""),
             {
                 "number": 6, "title": "Full mutation pass findings",
                 "user": {"login": "github-actions[bot]"}, "pull_request": {},
@@ -344,28 +360,33 @@ fn findings_open_the_tracking_issue_when_none_is_open() {
     assert_eq!(write["path"], format!("repos/{REPO}/issues"));
     assert_eq!(write["body"]["title"], "Full mutation pass findings");
     let body = write["body"]["body"].as_str().unwrap();
-    assert!(body.contains(SHA) && body.contains(RUN_URL), "{body}");
-    let linux = "### Linux: 3 findings, exit 3\n\n```text\n\
-                 CRAP parse climon2_core::wire 6 40.0% 14.2\n\
-                 SURVIVED  crates/climon2-core/src/wire.rs:42 == -> !=\n\
-                 UNCOVERED crates/climon2-core/src/wire.rs:57 true -> false\n```\n";
-    assert!(body.contains(linux), "{body}");
-    assert!(body.contains("### Windows: no findings\n"), "{body}");
-    assert!(body.contains("### macOS\n\nDid not run.\n"), "{body}");
-    assert!(!body.contains("KILLED"), "{body}");
+    let expected = format!(
+        "<!-- slice 4 -->\n## Slice 4 of 10, at {SHA}\n\n{RUN_URL}\n\n\
+         ### Linux: 3 findings, exit 3\n\n```text\n\
+         CRAP parse climon2_core::wire 6 40.0% 14.2\n\
+         SURVIVED  crates/climon2-core/src/wire.rs:42 == -> !=\n\
+         UNCOVERED crates/climon2-core/src/wire.rs:57 true -> false\n```\n\n\
+         ### Windows: no findings\n\n\
+         ### macOS\n\nDid not run.\n<!-- end slice 4 -->\n"
+    );
+    assert_eq!(section(body, "4"), expected);
+    assert!(
+        body.starts_with("Each squash-merge to main mutates one slice"),
+        "{body}"
+    );
     assert_eq!(
         outcome.stdout,
-        format!("Full pass findings opened in https://github.com/repos/{REPO}/issues.\n")
+        format!("Findings in slice 4 opened in https://github.com/repos/{REPO}/issues.\n")
     );
 }
 
 #[test]
-fn findings_update_the_open_tracking_issue() {
+fn findings_replace_only_their_slices_section_in_the_open_issue() {
+    let old = "Old header\n\n<!-- slice all -->\nall\n<!-- end slice all -->\n\n\
+               <!-- slice 7 -->\nseven\n<!-- end slice 7 -->\n\n\
+               <!-- slice 2 -->\nstale two\n<!-- end slice 2 -->\n";
     let logs = logs(Some("3"));
-    let outcome = report(
-        logs.path(),
-        json!({ ISSUES: [issue(9, "Full mutation pass findings", "github-actions[bot]")] }),
-    );
+    let outcome = report(logs.path(), "2", tracker(old));
     let paths: Vec<_> = outcome
         .writes
         .iter()
@@ -378,27 +399,33 @@ fn findings_update_the_open_tracking_issue() {
             format!("\"POST\" \"repos/{REPO}/issues/9/comments\""),
         ]
     );
-    assert!(
-        outcome.writes[0]["body"]["body"]
-            .as_str()
-            .unwrap()
-            .contains("SURVIVED  crates/climon2-core/src/wire.rs:42")
+    let body = outcome.writes[0]["body"]["body"].as_str().unwrap();
+    // The other slices' sections stay, in slice order, and the new one replaces slice 2's.
+    assert!(!body.contains("stale two"), "{body}");
+    assert!(section(body, "2").contains("SURVIVED  crates/climon2-core/src/wire.rs:42"));
+    assert_eq!(
+        section(body, "7"),
+        "<!-- slice 7 -->\nseven\n<!-- end slice 7 -->\n"
     );
+    let two = body.find("<!-- slice 2 -->").unwrap();
+    let seven = body.find("<!-- slice 7 -->").unwrap();
+    let all = body.find("<!-- slice all -->").unwrap();
+    assert!(two < seven && seven < all, "{body}");
     assert_eq!(
         outcome.writes[1]["body"]["body"],
-        format!("Updated with the findings of {RUN_URL}.")
+        format!("New findings in slice 2: {RUN_URL}")
     );
     assert_eq!(
         outcome.stdout,
-        format!("Full pass findings updated in https://github.com/{REPO}/issues/9.\n")
+        format!("Findings in slice 2 updated in https://github.com/{REPO}/issues/9.\n")
     );
 }
 
 #[test]
-fn a_failed_or_timed_out_pass_without_findings_is_reported() {
+fn a_failed_or_timed_out_slice_without_findings_is_reported() {
     for (status, outcome) in [
         (Some("2"), "exit 2"),
-        (None, "no exit status: the gate timed out or was cancelled"),
+        (None, "no exit status: the slice timed out or was cancelled"),
     ] {
         let logs = tempfile::tempdir().unwrap();
         let linux = logs.path().join("full-run-linux");
@@ -407,47 +434,74 @@ fn a_failed_or_timed_out_pass_without_findings_is_reported() {
         if let Some(status) = status {
             fs::write(linux.join("status"), status).unwrap();
         }
-        let result = report(logs.path(), json!({ ISSUES: [] }));
+        let result = report(logs.path(), "1", json!({ ISSUES: [] }));
         let body = result.writes[0]["body"]["body"].as_str().unwrap();
         let expected = format!("### Linux: no findings, {outcome}\n\nSee the run's log.\n");
-        assert!(body.contains(&expected), "{body}");
+        assert!(section(body, "1").contains(&expected), "{body}");
     }
 }
 
 #[test]
-fn a_clean_pass_comments_on_an_open_tracking_issue_and_opens_none() {
+fn a_clean_slice_clears_its_section_without_a_comment_and_opens_no_issue() {
+    let clean = report(clean_logs().path(), "3", json!({ ISSUES: [] }));
+    assert!(clean.writes.is_empty(), "{:#?}", clean.writes);
+    assert_eq!(clean.stdout, "No findings in slice 3.\n");
+    let old = "<!-- slice 3 -->\nSURVIVED old\n<!-- end slice 3 -->\n";
+    let open = report(clean_logs().path(), "3", tracker(old));
+    assert_eq!(open.writes.len(), 1, "{:#?}", open.writes);
+    assert_eq!(open.writes[0]["method"], "PATCH");
+    let body = open.writes[0]["body"]["body"].as_str().unwrap();
+    assert!(
+        section(body, "3").contains("### Linux: no findings\n"),
+        "{body}"
+    );
+    assert!(!body.contains("SURVIVED old"), "{body}");
+    assert_eq!(
+        open.stdout,
+        format!(
+            "No findings in slice 3; its section in https://github.com/{REPO}/issues/9 \
+             is cleared.\n"
+        )
+    );
+}
+
+#[test]
+fn a_long_list_is_cut_short_inside_its_section() {
     let logs = tempfile::tempdir().unwrap();
     let linux = logs.path().join("full-run-linux");
     fs::create_dir(&linux).unwrap();
-    fs::write(linux.join("gate.log"), "KILLED    a.rs:1 + -> -\n").unwrap();
-    fs::write(linux.join("status"), "0").unwrap();
-    let clean = report(logs.path(), json!({ ISSUES: [] }));
-    assert!(clean.writes.is_empty(), "{:#?}", clean.writes);
-    assert_eq!(clean.stdout, "Full pass found nothing.\n");
-    let open = report(
-        logs.path(),
-        json!({ ISSUES: [issue(9, "Full mutation pass findings", "github-actions[bot]")] }),
+    let log: String = (0..2000)
+        .map(|line| format!("SURVIVED  crates/climon2-core/src/wire.rs:{line} == -> !=\n"))
+        .collect();
+    fs::write(linux.join("gate.log"), log).unwrap();
+    fs::write(linux.join("status"), "3").unwrap();
+    let outcome = report(logs.path(), "all", json!({ ISSUES: [] }));
+    let body = outcome.writes[0]["body"]["body"].as_str().unwrap();
+    let all = section(body, "all");
+    assert!(
+        all.starts_with("<!-- slice all -->\n## All slices, at "),
+        "{all}"
     );
-    assert_eq!(open.writes.len(), 1);
-    assert_eq!(
-        open.writes[0]["path"],
-        format!("repos/{REPO}/issues/9/comments")
-    );
-    assert_eq!(
-        open.writes[0]["body"]["body"],
-        format!("{RUN_URL} found nothing on any platform that ran.")
+    assert!(all.len() < 5500, "{}", all.len());
+    // The text block is closed before the note of what was left out.
+    let note = all
+        .find("\n```\n\nAnd ")
+        .expect("a closed block, then the note");
+    assert!(
+        all[note..].contains(&format!(" more in {RUN_URL}.\n")),
+        "{all}"
     );
 }
 
 #[test]
 fn an_api_error_is_reported_without_failing_the_job() {
     let logs = logs(Some("3"));
-    let outcome = report(logs.path(), json!({}));
+    let outcome = report(logs.path(), "5", json!({}));
     assert!(outcome.writes.is_empty());
     assert!(
         outcome
             .stdout
-            .starts_with("Full pass could not update its tracking issue: no response for "),
+            .starts_with("Could not update the tracking issue for slice 5: no response for "),
         "{}",
         outcome.stdout
     );
