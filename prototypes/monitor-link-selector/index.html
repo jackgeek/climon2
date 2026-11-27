@@ -1,0 +1,287 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throw me away. Not monitor code.
+  Question (wayfinder ticket #199): how do remote sessions and monitor-link
+  state appear in the hub monitor's selector and status row?
+  Three structurally different variants of the existing selector
+  (docs/for-humans/behaviour/monitor/selector.md), switchable with ?variant=A|B|C,
+  driven through link scenarios with ?scenario=.
+  Assumption: an HTML mock of the terminal grid is enough fidelity to judge
+  layout and wording; the real monitor renders the same cells.
+  Open by double-clicking. Keys: Up/Down move, type to search, Backspace,
+  Enter shows what selecting the row does, Escape clears.
+-->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE: monitor link selector</title>
+<style>
+  :root { --bg:#111418; --fg:#d6dae0; --dim:#6b737e; --hl:#2f4b7a; --yel:#e5c15a; --red:#e07a6e; --grn:#7cc48a; --cyn:#6fc3d6; --mag:#c793e0; }
+  body { margin:0; background:#0a0c0e; color:var(--fg); font:14px/1.25 ui-monospace,"JetBrains Mono",Menlo,monospace; }
+  header { padding:10px 16px; color:var(--dim); }
+  header b { color:var(--fg); }
+  .wrap { display:flex; gap:20px; padding:0 16px 120px; flex-wrap:wrap; }
+  pre { margin:0; background:var(--bg); padding:8px 10px; border-radius:6px; white-space:pre; }
+  .cap { color:var(--dim); margin:6px 0 4px; }
+  .dim{color:var(--dim)} .hl{background:var(--hl);color:#fff} .yel{color:var(--yel)} .red{color:var(--red)}
+  .grn{color:var(--grn)} .cyn{color:var(--cyn)} .mag{color:var(--mag)} .b{font-weight:700}
+  .notes { max-width:520px; color:#aab; font-family:system-ui,sans-serif; font-size:14px; line-height:1.45; }
+  .notes h3 { margin:6px 0; color:#fff; } .notes li { margin:3px 0; }
+  .bar { position:fixed; bottom:12px; left:50%; transform:translateX(-50%); background:#1c2128; border:1px solid #333b45;
+         border-radius:10px; padding:8px 12px; display:flex; gap:14px; align-items:center; font-family:system-ui,sans-serif; font-size:13px; flex-wrap:wrap; max-width:96vw; }
+  .bar button { background:#2a313b; color:#dde; border:1px solid #3a434f; border-radius:6px; padding:4px 9px; cursor:pointer; }
+  .bar button.on { background:#3d6bd6; color:#fff; border-color:#3d6bd6; }
+  .bar .grp { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+</style></head><body>
+<header><b>PROTOTYPE</b>: hub monitor selector with remote sessions (ticket #199). Throwaway. Keys: ↑/↓, type to search, Backspace, Enter, Esc.</header>
+<div class="wrap">
+  <div><div class="cap" id="cap1"></div><pre id="screen"></pre>
+       <div class="cap" id="cap2"></div><pre id="view"></pre>
+       <div class="cap" id="cap3"></div><pre id="extra"></pre></div>
+  <div class="notes" id="notes"></div>
+</div>
+<div class="bar">
+  <div class="grp"><span>Variant</span><span id="vbtns"></span></div>
+  <div class="grp"><span>Scenario</span><span id="sbtns"></span></div>
+</div>
+<script>
+const W = 78, H = 20;               // selector box size in cells
+const VARIANTS = { A:'Flat list, machine column', B:'Grouped by machine', C:'Prefixed titles + Links dialog' };
+const SCEN = {
+  linked:   'All linked',
+  lost:     'mac-mini link lost (redialling)',
+  hold:     'buildbox cut by its user (on hold)',
+  incompat: 'mac-mini incompatible (upgrade it)',
+  mine:     'You disconnected buildbox',
+  pair:     'Pairing a new relay',
+};
+const q = new URLSearchParams(location.search);
+let variant = q.get('variant') || 'A', scenario = q.get('scenario') || 'linked';
+let search = '', hi = 0, entered = null;
+
+// ---- fake data -----------------------------------------------------------
+const RELAYS = {
+  buildbox: { os:'Linux', ver:'0.9.3', addr:'100.84.2.17:7420' },
+  'mac-mini': { os:'macOS', ver:'0.8.1', addr:'127.0.0.1:17420 (ssh -L)' },
+};
+const SESS = [
+  { m:null,       st:'Needs attention', t:'claude: refactor the parser' },
+  { m:'buildbox', st:'Needs attention', t:'claude: fix the flaky gate' },
+  { m:null,       st:'Running',         t:'cargo test --workspace' },
+  { m:'buildbox', st:'Running',         t:'cargo mutants --in-place' },
+  { m:'mac-mini', st:'Running',         t:'npm run dev' },
+  { m:null,       st:'Idle',            t:'nvim src/main.rs' },
+  { m:'mac-mini', st:'Idle',            t:'zsh' },
+  { m:'buildbox', st:'Succeeded',       t:'make release' },
+];
+// link state per relay per scenario
+function link(r) {
+  const s = scenario;
+  if (r === 'mac-mini' && s === 'lost')     return { k:'lost',    short:'Link lost', why:'link lost', detail:'redialling, next try in 8s', retry:true };
+  if (r === 'buildbox' && s === 'hold')     return { k:'hold',    short:'On hold',   why:'cut by the relay\'s user', detail:'relay on hold; retrying every 60s', retry:true };
+  if (r === 'mac-mini' && s === 'incompat') return { k:'incompat',short:'Upgrade',   why:'incompatible', detail:'no shared link revision; upgrade climon2 on mac-mini', retry:true };
+  if (r === 'buildbox' && s === 'mine')     return { k:'mine',    short:'Disconnected', why:'you disconnected it', detail:'not dialling until you reconnect', retry:false };
+  return { k:'up', short:'Linked', why:'', detail:'linked', retry:false };
+}
+const down = r => r && link(r).k !== 'up';
+function effStatus(s) {          // the selector's status column
+  if (!down(s.m)) return s.st;
+  if (s.st === 'Succeeded') return s.st;   // finals are already known
+  return 'Disconnected';
+}
+const ORDER = ['Needs attention','Acknowledged','Running','Idle','Succeeded','Failed','Disconnected'];
+const sorted = arr => arr.slice().sort((a,b) => ORDER.indexOf(effStatus(a)) - ORDER.indexOf(effStatus(b)));
+function fuzzy(text, qy) { text = text.toLowerCase(); let i = 0; for (const c of qy.toLowerCase()) { i = text.indexOf(c, i); if (i < 0) return false; i++; } return true; }
+const stCls = st => st==='Needs attention'?'yel':st==='Disconnected'||st.startsWith('Failed')?'red':st==='Succeeded'?'grn':st==='Idle'?'dim':'';
+
+// ---- cell helpers --------------------------------------------------------
+const pad = (s,n) => s.length > n ? s.slice(0,n-1)+'…' : s + ' '.repeat(n - s.length);
+function boxed(lines, w, h, footer) {     // lines: [[text,cls],...] per row (interior)
+  const out = [[['╔'+'═'.repeat(w-2)+'╗','dim']]];
+  const inner = w - 2;
+  for (let i = 0; i < h - 2; i++) {
+    let row = lines[i] || [];
+    if (i === h - 3 && footer) row = footer;
+    let len = row.reduce((n,[t]) => n + t.length, 0);
+    const segs = row.map(x => x.slice());
+    if (len > inner) { segs.length = 0; segs.push([pad(row.map(r=>r[0]).join(''), inner), '']); len = inner; }
+    const tailCls = segs.length && segs[segs.length-1][1] && segs[segs.length-1][1].includes('hl') ? 'hl' : '';
+    out.push([['║','dim'], ...segs, [' '.repeat(inner-len), tailCls], ['║','dim']]);
+  }
+  out.push([['╚'+'═'.repeat(w-2)+'╝','dim']]);
+  return out;
+}
+const sep = w => [['╟'+'─'.repeat(w-2)+'╢','dim']];
+function render(el, rows) {
+  el.innerHTML = rows.map(r => r.map(([t,c]) => `<span class="${c||''}">${t.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`).join('')).join('\n');
+}
+function withSep(lines) { return lines; }
+
+// ---- variants: each returns {items:[selectable], lines:[], view(item), extra} --------
+function searchLine() { return [[' Search: ',''],[search,'b'],['█','dim']]; }
+const FOOT = [[' Enter select · Esc cancel · prefix+? help','dim']];
+
+function variantA() {
+  // Flat list. Machine column between status and title. Local is "this machine".
+  const rows = sorted(SESS).filter(s => fuzzy(`${effStatus(s)} ${s.m||'local'} ${s.t}`, search));
+  const items = rows.map(s => ({ kind:'session', s }));
+  const lines = items.map((it,i) => {
+    const s = it.s, st = effStatus(s), h = i === hi ? ' hl' : '';
+    return [[' '+pad(st,16), stCls(st)+h], [pad(s.m||'local',10), (s.m?'cyn':'dim')+h], [pad(s.t, W-2-1-16-10), h.trim()]];
+  });
+  // status strip above footer: reason for the highlighted remote row, or link summary
+  const cur = items[hi];
+  let strip;
+  if (cur && cur.s.m && down(cur.s.m)) { const l = link(cur.s.m); strip = [[` ${cur.s.m}: ${l.why}; ${l.detail}`, 'red']]; }
+  else {
+    const parts = Object.keys(RELAYS).map(r => { const l = link(r); return [`${r} ${l.k==='up'?'●':'○'} `, l.k==='up'?'grn':'red']; });
+    strip = [[' Links: ','dim'], ...parts];
+  }
+  return { items, lines, strip,
+    notes: `<h3>A: flat list, machine column</h3><ul>
+      <li>One list, ordered exactly as today: remote and local sessions interleave by status.</li>
+      <li>New <b>machine</b> column: <code>local</code> or the relay's name. Search covers it, so <code>bb</code> finds every buildbox row.</li>
+      <li>A relay that is down turns its rows <b>Disconnected</b> (existing label and sort position). The reason appears on a <b>status strip</b> above the footer while such a row is highlighted; otherwise the strip summarises the links.</li>
+      <li>Linking, disconnecting and forgetting happen <b>outside the monitor</b>: <code>c2 link</code> on the command line (see the pairing scenario).</li>
+      <li>Amends the selector spec: a third column and a status strip.</li></ul>` };
+}
+
+function variantB() {
+  // Grouped: a header row per machine (selectable), sessions under it, "+ Link a machine…" last.
+  const groups = [null, ...Object.keys(RELAYS)];
+  const items = [];
+  for (const g of groups) {
+    const ss = sorted(SESS.filter(s => s.m === g)).filter(s => fuzzy(`${effStatus(s)} ${g||'this machine'} ${s.t}`, search));
+    if (!ss.length && search) continue;
+    items.push({ kind:'header', m:g });
+    ss.forEach(s => items.push({ kind:'session', s }));
+  }
+  if (!search) items.push({ kind:'add' });
+  const lines = items.map((it,i) => {
+    const h = i === hi ? ' hl' : '';
+    if (it.kind === 'header') {
+      if (!it.m) return [[pad(' This machine', W-2), 'b'+h]];
+      const l = link(it.m), r = RELAYS[it.m];
+      const right = l.k === 'up' ? `${r.os} · climon2 ${r.ver} · linked` : `${l.short.toLowerCase()} · ${l.detail}`;
+      return [[' '+it.m+'  ', 'b cyn'+h], [pad(right, W-2-it.m.length-3), (l.k==='up'?'dim':'red')+h]];
+    }
+    if (it.kind === 'add') return [[pad(' + Link a machine…', W-2), 'dim'+h]];
+    const s = it.s, st = effStatus(s), dimmed = down(s.m) ? ' dim' : '';
+    return [['   '+pad(st,16), stCls(st)+h], [pad(s.t, W-2-3-16), dimmed+h]];
+  });
+  return { items, lines, strip:null,
+    notes: `<h3>B: grouped by machine</h3><ul>
+      <li>The list is split into sections: <b>This machine</b> first, then each relay. Status order applies <i>within</i> a section, so attention on a relay no longer floats to the top.</li>
+      <li>Each relay has a <b>header row</b> carrying its link state, OS and release version, or the reason it is down and what happens next.</li>
+      <li>A down relay's rows go Disconnected and dim under its header.</li>
+      <li>Headers are selectable: Enter on one opens <b>Disconnect / Reconnect / Forget</b>. The last row, <b>+ Link a machine…</b>, opens pairing inside the monitor.</li>
+      <li>Amends the selector spec more heavily: non-session rows, a new order, and create/forget actions (the spec says "no selector create/rename actions").</li></ul>` };
+}
+
+function variantC() {
+  // Flat list; remote title prefixed "machine: ", link-state status labels; separate Links dialog (prefix+l).
+  const lbl = s => (s.m ? s.m + ': ' : '') + s.t;
+  const st = s => down(s.m) && s.st !== 'Succeeded' ? link(s.m).short : s.st;
+  const ord = s => { const x = st(s); const i = ORDER.indexOf(x); return i < 0 ? ORDER.length : i; };
+  const rows = SESS.slice().sort((a,b) => ord(a)-ord(b)).filter(s => fuzzy(`${st(s)} ${lbl(s)}`, search));
+  const items = rows.map(s => ({ kind:'session', s }));
+  const lines = items.map((it,i) => {
+    const s = it.s, x = st(s), h = i === hi ? ' hl' : '';
+    const cls = ['Link lost','On hold','Upgrade','Disconnected'].includes(x) ? 'red' : stCls(x);
+    const pre = s.m ? s.m + ': ' : '';
+    return [[' '+pad(x,16), cls+h], [pre, 'cyn'+h], [pad(s.t, W-2-1-16-pre.length), h.trim()]];
+  });
+  const FOOTC = [[' Enter select · Esc cancel · prefix+l links · prefix+? help','dim']];
+  return { items, lines, strip:null, footer:FOOTC, links:true,
+    notes: `<h3>C: prefixed titles + Links dialog</h3><ul>
+      <li>One interleaved list as today. A remote title reads <code>buildbox: make release</code>, so search covers the machine without a new column.</li>
+      <li>A down relay's rows show <b>why</b> in the status column instead of the generic Disconnected: <b>Link lost</b>, <b>On hold</b>, <b>Upgrade</b>, <b>Disconnected</b> (you disconnected it). They sort with Disconnected rows.</li>
+      <li>Link management lives in a separate <b>Links</b> dialog (prefix+l, shown below): every relay with state, version, address hint and last reason; keys to pair, disconnect/reconnect and forget. The selector itself gains no actions.</li>
+      <li>Amends the selector spec: new status labels, a title prefix, a new prefix binding and dialog.</li></ul>` };
+}
+
+// ---- the session view behind the selector after Enter ------------------
+function viewFor(it) {
+  if (!it) return [[['(nothing highlighted)','dim']]];
+  if (it.kind === 'header') {
+    if (!it.m) return [[['(header: nothing to select)','dim']]];
+    const l = link(it.m);
+    const acts = l.k==='mine' ? ['Reconnect','Forget','Cancel'] : ['Disconnect','Forget','Cancel'];
+    return boxed([[[` ${it.m}: ${l.detail}`, l.k==='up'?'':'red']], [], [[' '+acts.map((a,i)=>i===2?`[ ${a} ]`:`  ${a}  `).join('  '),'']]], 60, 6);
+  }
+  if (it.kind === 'add') return pairInMonitor();
+  const s = it.s;
+  if (!down(s.m)) return [[[`(session view of "${s.t}"${s.m?' on '+s.m:''}: acquired, live)`,'dim']]];
+  const l = link(s.m);
+  const line = variant === 'A' ? `Reconnecting...` :
+               l.retry ? `Reconnecting to ${s.m}... (${l.why})` : `${s.m}: ${l.why}. prefix+l to reconnect.`;
+  const top = variant === 'A' ? ` Disconnected · ${s.m}: ${l.why}` : ` ${s.m}: ${l.detail}`;
+  return [[[pad(top, W), 'hl']], [['  (retained history, read-only)','dim']], [], [['            ',''],[line, l.retry?'yel':'red']]];
+}
+
+function pairInMonitor() {
+  return boxed([[[' Link a machine','b']], [],
+    [[' Address  ',''],['100.84.2.17:7420','b']], [[' PIN      ',''],['••••','b'],['____','dim']], [],
+    [[' The PIN is shown in the relay\'s terminal (c2 relay → Pair).','dim']], [],
+    [['        [ Link ]   Cancel','']]], 60, 11);
+}
+
+function linksDialog() {
+  const rows = Object.keys(RELAYS).map(r => { const l = link(r), x = RELAYS[r];
+    return [[' '+pad(r,10),'cyn'], [pad(l.k==='up'?'Linked':l.short,14), l.k==='up'?'grn':'red'], [pad(`${x.os} ${x.ver}`,13),'dim'], [pad(l.k==='up'?x.addr:l.detail, 36), l.k==='up'?'dim':'']]; });
+  return boxed([[[' Links','b']], ...rows, [], [[' p pair a machine · d disconnect/reconnect · Del forget · Esc close','dim']]], W, 8);
+}
+
+function cliPair() {
+  return [[['$ ','grn'],['c2 link 100.84.2.17:7420','b']], [['PIN shown by the relay: ',''],['••••••••','']],
+    [['Linked to ',''],['buildbox','cyn'],[' (Linux, climon2 0.9.3). Its sessions appear in your monitor.','']],
+    [['$ ','grn'],['c2 link --list','b']],
+    [['buildbox   linked     100.84.2.17:7420','']], [['mac-mini   link lost  127.0.0.1:17420   redialling','red']],
+    [['$ ','grn'],['c2 link --disconnect mac-mini','b'],['   |   ','dim'],['c2 link --forget mac-mini','b']]];
+}
+
+// ---- main render -------------------------------------------------------
+function draw() {
+  const v = { A:variantA, B:variantB, C:variantC }[variant]();
+  if (hi >= v.items.length) hi = Math.max(0, v.items.length - 1);
+  const v2 = { A:variantA, B:variantB, C:variantC }[variant](); // re-render with clamped hi
+  const lines = [searchLine(), sep(W).map(x=>[x[0].slice(1,-1),'dim']), ...v2.lines];
+  const footer = v2.footer || FOOT;
+  if (v2.strip) { while (lines.length < H - 4) lines.push([]); lines.push(v2.strip); }
+  const box = boxed(lines, W, H, footer);
+  box[2] = sep(W);  // proper separator joins
+  render(document.getElementById('screen'), box);
+  document.getElementById('cap1').textContent = `Variant ${variant}: ${VARIANTS[variant]} · ${SCEN[scenario]}`;
+  document.getElementById('cap2').textContent = entered ? 'After Enter on the highlighted row:' : 'Press Enter to see what selecting the highlighted row shows';
+  render(document.getElementById('view'), entered ? viewFor(v2.items[hi]) : [[['',''] ]]);
+  let extra = [], cap3 = '';
+  if (scenario === 'pair') {
+    if (variant === 'A') { extra = cliPair(); cap3 = 'Pairing in A: a command, outside the monitor'; }
+    if (variant === 'B') { extra = pairInMonitor(); cap3 = 'Pairing in B: Enter on "+ Link a machine…" in the selector'; }
+    if (variant === 'C') { extra = pairInMonitor(); cap3 = 'Pairing in C: p in the Links dialog'; }
+  } else if (v2.links) { extra = linksDialog(); cap3 = 'C\'s Links dialog (prefix+l), opened over the selector'; }
+  document.getElementById('cap3').textContent = cap3;
+  render(document.getElementById('extra'), extra.length ? extra : [[['','']]]);
+  document.getElementById('notes').innerHTML = v2.notes;
+  for (const b of document.querySelectorAll('[data-v]')) b.classList.toggle('on', b.dataset.v === variant);
+  for (const b of document.querySelectorAll('[data-s]')) b.classList.toggle('on', b.dataset.s === scenario);
+  console.log('state', { variant, scenario, search, hi, entered });
+}
+function setQ() { const u = new URL(location); u.searchParams.set('variant', variant); u.searchParams.set('scenario', scenario); history.replaceState(null,'',u); }
+document.getElementById('vbtns').innerHTML = Object.keys(VARIANTS).map(k => `<button data-v="${k}" title="${VARIANTS[k]}">${k}</button>`).join('');
+document.getElementById('sbtns').innerHTML = Object.entries(SCEN).map(([k,t]) => `<button data-s="${k}">${t}</button>`).join('');
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (t.dataset.v) { variant = t.dataset.v; hi = 0; entered = null; setQ(); draw(); }
+  if (t.dataset.s) { scenario = t.dataset.s; entered = null; setQ(); draw(); }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') hi++;
+  else if (e.key === 'ArrowUp') hi = Math.max(0, hi - 1);
+  else if (e.key === 'Enter') entered = true;
+  else if (e.key === 'Escape') { search = ''; entered = null; }
+  else if (e.key === 'Backspace') search = search.slice(0, -1);
+  else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) { search += e.key; hi = 0; }
+  else return;
+  e.preventDefault(); draw();
+});
+draw();
+</script></body></html>
