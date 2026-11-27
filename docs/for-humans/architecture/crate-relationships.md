@@ -111,9 +111,9 @@ flowchart TB
 
 The plan keeps Ratatui in `climon2-monitor-tui` and `climon2-relay` only, and
 keeps `climon2-vt` to the session daemon and the monitor library, which
-re-exports its read-only views. Whether `climon2-web` also needs `climon2-vt`
-is decided by
-[Define the browser protocol and where the terminal model lives](https://github.com/jackgeek/climon2/issues/240).
+re-exports its read-only views. `climon2-web` does not depend on `climon2-vt`:
+it forwards terminal bytes for the browser to interpret and keeps no model of
+its own ([ADR 0012](../../adr/0012-browser-as-disposable-renderer.md)).
 The edges to `core` and `platform` are expected, not yet fixed.
 
 ## Development and test-only crates
