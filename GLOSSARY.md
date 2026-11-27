@@ -420,6 +420,22 @@ _Avoid_: Fake app, mock TUI
 A clearly labelled, test-only client library that is exact or carries one deliberate defect, and is never shipped; carrying a defect, it is a faulty library.
 _Avoid_: Mock library, fake library
 
+**Link peer stand-in**:
+A clearly labelled, test-only program that speaks the monitor link's bytes as a hub monitor or as a relay, exact or carrying one deliberate defect, and is never shipped.
+_Avoid_: Mock relay, fake hub, malicious peer
+
+**On-path proxy**:
+A test-only TCP proxy placed between a hub monitor and a relay that can drop, delay, reorder, replay, edit and inject the bytes it carries; it stands for every attacker on the path of a monitor link.
+_Avoid_: Man in the middle, network simulator
+
+**Protocol transcript**:
+The recorded bytes of one complete exchange in one link revision, made with fixed test keys and fixed randomness, that each end must reproduce exactly and that never changes once that link revision ships.
+_Avoid_: Golden file, wire capture
+
+**Content fixture**:
+A recording of one scripted real session, holding the client interface events it produced and the unencrypted link records they become, that every operating system's test run replays on both ends of a monitor link.
+_Avoid_: Session capture, sample data
+
 **Second-release fixture**:
 A clearly labelled, test-only second release, installed beside the release under test in a sibling version folder: the client library source built with its own release identity and without test hooks, and a session daemon with its release compiled in and a private behaviour of its own, so that a call or a connection crossing releases shows. It is never shipped.
 _Avoid_: Fake release, old version
