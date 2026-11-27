@@ -92,12 +92,18 @@ under [Decisions with no scenario](#decisions-with-no-scenario).
 | R | [What the relay and hub monitor record about links](https://github.com/jackgeek/climon2/issues/479#issuecomment-7228936965) |
 | W | [The link protocol's records for link revision 1](https://github.com/jackgeek/climon2/issues/480#issuecomment-7229751020) |
 
-The resolutions name the cryptographic constructions these scenarios mention:
-CPace, the key exchange that pairing runs on the PIN, and Noise `IK`, the
-handshake a remembered pairing uses. The **opening exchange** is the pair of
-unencrypted messages that starts every connection and picks the
-[link revision](../../../../GLOSSARY.md#monitor-links). A **unit** is one
-encrypted piece of a link, and a **record** is one message carried in units.
+The messages and records these scenarios name are specified byte for byte in
+the [monitor link protocol](../../protocol/monitor-link/README.md) for link revision 1. Its
+[cryptography](../../protocol/monitor-link/README.md#cryptography) section names the two
+constructions: CPace, the key exchange that pairing runs on the PIN, and
+Noise `IK`, the handshake a remembered pairing uses. The **opening exchange**
+is the [request](../../protocol/monitor-link/opening-request.md) and
+[reply](../../protocol/monitor-link/opening-reply.md) that start every connection, unencrypted, and
+pick the [link revision](../../../../GLOSSARY.md#monitor-links). A
+[unit](../../protocol/monitor-link/README.md#units) is one encrypted piece of a link, and a **record**
+is one message carried in units. The protocol's
+[limits](../../protocol/monitor-link/README.md#limits) and [timings](../../protocol/monitor-link/README.md#timings) sections
+hold the numbers the scenarios quote.
 
 ## Pairing
 
@@ -315,11 +321,11 @@ randomness. Link revision 1 has these:
 
 | Transcript | Exchange |
 |---|---|
-| Opening | A request and reply that choose revision 1, and a refusal with no shared revision. |
-| Pairing | The four pairing messages for a correct PIN, and a run that fails on a wrong PIN. |
-| Handshake | The pinned-key handshake and both Hello records. |
-| Refusal | A handshake answered by Close alone, once for each refusal reason. |
-| Link | A short link: a snapshot, one stream opened, requests, events split into fragments, credit, a keepalive, a stream ending and a Close. |
+| Opening | An [opening request](../../protocol/monitor-link/opening-request.md) and [reply](../../protocol/monitor-link/opening-reply.md) that choose revision 1, and a refusal with no shared revision. |
+| Pairing | The four pairing messages ([shares](../../protocol/monitor-link/pairing-share.md) and [confirmations](../../protocol/monitor-link/pairing-confirmation.md)) for a correct PIN, and a run that fails on a wrong PIN. |
+| Handshake | The pinned-key handshake ([initiation](../../protocol/monitor-link/handshake-initiation.md) and [reply](../../protocol/monitor-link/handshake-reply.md)) and both [Hello](../../protocol/monitor-link/hello.md) records. |
+| Refusal | A handshake answered by [Close](../../protocol/monitor-link/close.md) alone, once for each refusal reason. |
+| Link | A short link: a snapshot, one stream opened, requests, events split into fragments, [credit](../../protocol/monitor-link/credit.md), a [keepalive](../../protocol/monitor-link/keepalive.md), a stream ending and a Close. |
 
 Replay gives one end the recorded bytes of its peer and requires it to emit
 its own recorded bytes exactly, then does the same for the other end.
