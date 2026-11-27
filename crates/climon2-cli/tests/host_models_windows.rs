@@ -148,14 +148,15 @@ fn read_exactly(home: &Home, out: &Path, bytes: &[u8]) {
 /// Starts a headless session of `pwsh` at the prompt `INNER> ` and returns
 /// its id.
 fn headless(package: &Package, home: &Home, pwsh: &Path) -> String {
-    let output = Command::new(package.launcher())
-        .args(["exec", "--headless", "--"])
-        .arg(pwsh)
-        .args(pwsh_arguments("INNER"))
-        .env("CLIMON2_HOME", home.home())
-        .env("LOCALAPPDATA", home.local())
-        .output()
-        .unwrap();
+    let output =
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+            .args(["exec", "--headless", "--"])
+            .arg(pwsh)
+            .args(pwsh_arguments("INNER"))
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.local())
+            .output()
+            .unwrap();
     assert!(output.status.success(), "{output:?}\n{}", home.logs());
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }

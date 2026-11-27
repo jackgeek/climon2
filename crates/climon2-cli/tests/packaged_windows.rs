@@ -648,7 +648,7 @@ impl Home {
 
     /// `c2 <arguments>` run to its end without a console, with this home.
     fn run(&self, package: &Package, arguments: &[&OsStr]) -> std::process::Output {
-        Command::new(package.launcher())
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
             .args(arguments)
             .env("CLIMON2_HOME", self.home())
             .env("LOCALAPPDATA", self.local())

@@ -171,12 +171,13 @@ impl Home {
     }
 
     fn list(&self, install: &Install) -> String {
-        let output = Command::new(install.cli())
-            .arg("list")
-            .env("CLIMON2_HOME", self.home())
-            .env("LOCALAPPDATA", self.local())
-            .output()
-            .unwrap();
+        let output =
+            climon2_test_term::process_outside_any_session(&mut Command::new(install.cli()))
+                .arg("list")
+                .env("CLIMON2_HOME", self.home())
+                .env("LOCALAPPDATA", self.local())
+                .output()
+                .unwrap();
         assert!(output.status.success(), "{output:?}");
         String::from_utf8(output.stdout).unwrap()
     }
@@ -247,7 +248,7 @@ impl Home {
     /// `c2 kill <selector>`, which starts no daemon, so it runs in the
     /// test's own job.
     fn kill(&self, install: &Install, selector: &str) -> std::process::Output {
-        Command::new(install.cli())
+        climon2_test_term::process_outside_any_session(&mut Command::new(install.cli()))
             .args(["kill", selector])
             .env("CLIMON2_HOME", self.home())
             .env("LOCALAPPDATA", self.local())
@@ -999,13 +1000,17 @@ fn a_nested_start_waits_on_screen_for_enter_and_ctrl_c_cancels_it() {
 /// #437: a test run from inside a climon2 session starts `c2 exec` outside
 /// it, so neither the headless CLI outside the job nor the one in a
 /// terminal of its own warns or waits at the nested prompt. The test runs
-/// again with the session's variables set.
+/// again, outside every job, with the session's variables set; its own
+/// marker, not those variables, which a real session also sets, tells that
+/// run from the first.
 #[test]
 fn the_tests_start_exec_outside_the_session_they_run_in() {
     const NAME: &str = "the_tests_start_exec_outside_the_session_they_run_in";
-    if std::env::var_os("CLIMON2_SESSION_ID").is_none() {
+    const MARKER: &str = "CLIMON2_TEST_IN_A_SESSION";
+    if std::env::var_os(MARKER).is_none() {
         let finished = Outside::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(MARKER, "1")
             .env("CLIMON2_SESSION_ID", "outer")
             .env("CLIMON2_SESSION_DEPTH", "1")
             .run(Duration::from_secs(180))
