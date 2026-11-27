@@ -148,14 +148,15 @@ fn read_exactly(home: &Home, out: &Path, bytes: &[u8]) {
 /// Starts a headless session of `pwsh` at the prompt `INNER> ` and returns
 /// its id.
 fn headless(package: &Package, home: &Home, pwsh: &Path) -> String {
-    let output = Command::new(package.launcher())
-        .args(["exec", "--headless", "--"])
-        .arg(pwsh)
-        .args(pwsh_arguments("INNER"))
-        .env("CLIMON2_HOME", home.home())
-        .env("LOCALAPPDATA", home.local())
-        .output()
-        .unwrap();
+    let output =
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+            .args(["exec", "--headless", "--"])
+            .arg(pwsh)
+            .args(pwsh_arguments("INNER"))
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.local())
+            .output()
+            .unwrap();
     assert!(output.status.success(), "{output:?}\n{}", home.logs());
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
@@ -468,12 +469,13 @@ fn a_vs_code_hosted_client_detaches_and_ends_when_its_session_is_killed() {
         &format!("c2 attach {id}; \"ATTACH-STATUS=$LASTEXITCODE\""),
     );
     wait(&mut terminal, &home, "INNER> ");
-    let killed = Command::new(package.launcher())
-        .args(["kill", &id])
-        .env("CLIMON2_HOME", home.home())
-        .env("LOCALAPPDATA", home.local())
-        .output()
-        .unwrap();
+    let killed =
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+            .args(["kill", &id])
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.local())
+            .output()
+            .unwrap();
     assert_eq!(killed.status.code(), Some(0), "{killed:?}\n{}", home.logs());
     wait(&mut terminal, &home, "ATTACH-STATUS=");
     no_sessions(&home);

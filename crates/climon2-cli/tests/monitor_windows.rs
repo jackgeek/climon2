@@ -120,23 +120,24 @@ fn work(home: &Home) -> PathBuf {
 /// Starts a headless session running [`WATCHED`] as `name`, and returns
 /// its id.
 fn headless(package: &Package, home: &Home, pwsh: &Path, name: &str) -> String {
-    let output = Command::new(package.launcher())
-        .args(["exec", "--headless"])
-        .arg(pwsh)
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(work(home).join("watched.ps1"))
-        .arg(name)
-        .arg(work(home))
-        .env("CLIMON2_HOME", home.home())
-        .env("LOCALAPPDATA", home.local())
-        .output()
-        .unwrap();
+    let output =
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+            .args(["exec", "--headless"])
+            .arg(pwsh)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(work(home).join("watched.ps1"))
+            .arg(name)
+            .arg(work(home))
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.local())
+            .output()
+            .unwrap();
     assert!(output.status.success(), "{output:?}\n{}", home.logs());
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
@@ -303,7 +304,7 @@ fn finish(home: &Home) {
 fn the_monitor_needs_a_console_and_a_missing_one_names_its_version() {
     let (package, home) = (Package::new(), Home::new());
     let monitor = |arguments: &[&str]| {
-        Command::new(package.launcher())
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
             .args(arguments)
             .env("CLIMON2_HOME", home.home())
             .env("LOCALAPPDATA", home.local())

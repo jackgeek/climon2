@@ -169,6 +169,7 @@ impl Home {
     /// predictions and no saved history, with the package on `PATH`.
     pub fn pwsh(&self, package: &Package, pwsh: &Path, prompt: &str) -> CommandBuilder {
         let mut command = CommandBuilder::new(pwsh);
+        climon2_test_term::outside_any_session(&mut command);
         command.args(pwsh_arguments(prompt));
         let path = env::var_os("PATH").unwrap_or_default();
         let mut paths = vec![package.folder.clone()];

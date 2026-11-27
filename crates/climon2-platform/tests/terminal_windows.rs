@@ -534,7 +534,7 @@ fn prompt(report: &Path) -> i32 {
 #[test]
 fn a_hang_up_opening_a_prompt_answers_gone() {
     use climon2_core::session::Answer;
-    // ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE and ERROR_ACCESS_DENIED.
+    // ERROR_BROKEN_PIPE and ERROR_INVALID_HANDLE.
     for code in [109, 6] {
         let failed = || Err(io::Error::from_raw_os_error(code));
         assert_eq!(
@@ -542,6 +542,7 @@ fn a_hang_up_opening_a_prompt_answers_gone() {
             Answer::Gone
         );
     }
+    // ERROR_ACCESS_DENIED is no hang-up, so it is returned.
     let denied = terminal::ask(
         Err(io::Error::from_raw_os_error(5)),
         Err(io::Error::from_raw_os_error(5)),
