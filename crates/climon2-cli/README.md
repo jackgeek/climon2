@@ -1,11 +1,12 @@
 # climon2-cli
 
-CLI orchestration for `exec [--headless] COMMAND [ARG...]`, `attach SESSION-ID`,
+CLI orchestration for `exec [--headless] [--nested] COMMAND [ARG...]`, `attach SESSION-ID`,
 `kill SESSION-ID`, `list [--json]` and `monitor`. Each command has a
 single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`; `r` is
-reserved for `relay`), `-h` is the short form of `--headless`, and help has
-only `--help` (#287). The usage string is
-`usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
+reserved for `relay`), `-h` is the short form of `--headless`, `-n` of
+`--nested` (#139), and help has only `--help` (#287). exec's options come
+before the command, in either order, each at most once. The usage string is
+`usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -55,7 +56,10 @@ execution alias, in a job, and `kill` ends it (#393); elsewhere, such as on
 CI, that test prints `SKIP` and passes. Without console handles,
 `exec`, `attach` and the session's client refuse to run; Ctrl+C during `kill`
 interrupts its client, and kill exits 130 with it; an ordinary `exec` whose
-client is missing exits 125 and stops its daemon. It needs the daemon binary
+client is missing exits 125 and stops its daemon. A nested ordinary `exec`
+keeps the nesting warning and its prompt on screen and starts nothing until
+Enter; Ctrl+C exits 130 with no session or session log, and `--nested` starts
+the session with neither warning nor wait (#139). It needs the daemon binary
 built first (`cargo test -p climon2-daemon --test windows`), and the client
 binary and library (`cargo test -p climon2-client --test library_windows`).
 `tests/attach_deadline_windows.rs` (#323), with the same version folder,
@@ -133,12 +137,30 @@ general log and prunes old logs before any command. Exec reads and validates the
 whole `config.jsonc`, its `monitor` section included, then, unless headless,
 checks stdin and stdout TTYs, all before any session side effect. It resolves
 canonical companions
-from its own canonical version-layout path, generates one v4 GUID and socket,
-and switches to the linked session log. Core projects the exact OS-string
-command environment and provides depth/ordinal rules; `TERM=xterm-256color` and
+from its own canonical version-layout path and generates one v4 GUID. Core
+projects the exact OS-string command environment (a depth overflow is 125
+here, recorded in the general log, which the error names). It then resolves
+the runtime directory and the working directory (126), so a start bound to
+fail is never offered. Then, for a nested start without `--nested` (#139), a headless exec
+prints core's nesting warning to stderr. An ordinary exec instead opens
+`climon2-platform`'s `terminal::Prompt` on stdin and stdout, both terminals:
+raw, earlier input discarded, the warning and core's `PROMPT` written to
+stdout, so a redirected stderr cannot hide them. It reads one key at a time,
+leaving input after the answer to the client, until Enter, which starts the
+session, or Ctrl+C, which exits 130, as Ctrl+C in a client does; a lost
+terminal exits 129, as does a hang-up while opening the terminal or showing
+the prompt (`terminal::ask`), and a hang-up, interrupt, quit or termination signal
+(Ctrl+Break or a close on Windows) restores the terminal and exits 128 +
+signal (`0xC000013A` for Ctrl+Break). None creates a session log, socket or
+daemon. Only then
+does exec switch to the linked session log and start the daemon, which
+creates the socket. Core
+provides the depth/ordinal rules; `TERM=xterm-256color` and
 `COLORTERM=truecolor` are always set. The command's inherited `CLIMON2_HOME`
 and `CLIMON2_LOG` are not rewritten. The initial size is the stdin terminal's,
-or 80x24 when stdin is not a terminal (only possible for headless exec).
+or 80x24 when stdin is not a terminal (only possible for headless exec). It
+is taken as the daemon starts, after any nested prompt, so for a nested
+start it is the size when Enter answers the prompt (#437).
 
 Daemon startup uses the exact private interface documented in
 `../climon2-daemon/README.md`, including `--scrollback-max-rows` and the
@@ -211,7 +233,8 @@ With `test-hooks` only, `CLIMON2_CLI_HOLD=<path>` makes exec, after the daemon
 is ready and immediately before the client starts, create `<path>` with its
 extension replaced by `.held`, then wait, without a bound, until `<path>`
 exists. It lets a test change the configuration between session start and
-client start.
+client start, and see the size the daemon gave the command before any client
+resizes it (#437).
 
 ## Behavioral evidence
 
@@ -225,6 +248,22 @@ client start.
 - `exec_restores_a_waiting_alternate_screen_without_application_redraw`
 - `packaged_client_can_detach_and_reattach_to_a_live_session`
 - `nested_warning_uses_exact_ordinal_and_overflow_never_spawns`
+- `a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it`,
+  `neither_a_top_level_nor_a_deliberate_nested_start_warns_or_waits`,
+  `a_nested_headless_start_warns_without_waiting_unless_deliberate`,
+  `the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected`,
+  `a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal`,
+  `after_enter_sigterm_and_sighup_end_exec_while_the_session_starts`,
+  `a_nested_start_from_a_deleted_working_directory_fails_before_the_prompt`
+  (#139)
+- `a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at`
+  (#437; uses `CLIMON2_CLI_HOLD`). `tests/exec_windows.rs` has a test of the
+  same name, and also
+  `a_nested_session_is_released_only_once_its_client_has_attached` (uses
+  `CLIMON2_CLI_HOLD`) and
+  `the_tests_start_exec_outside_the_session_they_run_in`, which runs again
+  with `CLIMON2_SESSION_ID` and `CLIMON2_SESSION_DEPTH` set and shows the
+  tests' builders clear them.
 - `actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_identity`
 - `startup_failure_codes_and_signal_exit_are_preserved`
 - `resizing_outer_terminal_resizes_the_running_command`

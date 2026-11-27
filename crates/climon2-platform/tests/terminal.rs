@@ -95,6 +95,8 @@ fn issue20_real_pty_size_and_zero_fallback() {
 
 #[test]
 fn issue20_signals_coalesce_resize_and_report_exit_signal() {
+    // A prompt's signals would hear this test's SIGTERM too.
+    let _lock = RAW_TEST.lock().unwrap();
     let signals = terminal::Signals::client().unwrap();
     unsafe {
         libc::raise(libc::SIGWINCH);
@@ -108,6 +110,151 @@ fn issue20_signals_coalesce_resize_and_report_exit_signal() {
     assert_eq!(signals.termination_signal(), Some(15));
     // Unix terminals have no Ctrl+Break (#326): no signal is one.
     assert!(!signals.take_break());
+}
+
+/// Reads `master` until what it has read ends with `text`.
+fn read_until(master: &mut File, text: &[u8]) {
+    use std::io::Read;
+    let mut read = Vec::new();
+    while !read.ends_with(text) {
+        let mut chunk = [0u8; 64];
+        let count = master.read(&mut chunk).unwrap();
+        assert_ne!(count, 0, "{read:?}");
+        read.extend_from_slice(&chunk[..count]);
+    }
+}
+
+/// #139: a nested-start prompt discards input typed before it, shows its
+/// text on its output, gives typed bytes one at a time, so nothing after an
+/// answer is taken, ends its wait on each signal that would end the process,
+/// with 128 + signal, and restores the terminal when dropped.
+#[test]
+fn a_prompt_flushes_type_ahead_reads_bytes_singly_and_ends_on_signals() {
+    use climon2_core::session::Input;
+    use std::io::Write;
+    let _lock = RAW_TEST.lock().unwrap();
+    with_handlers(&[libc::SIG_DFL; 4], || {
+        let (mut master, slave) = pty();
+        let original = flags(&slave);
+        master.write_all(b"early\r").unwrap();
+        read_until(&mut master, b"early\r\n");
+        let mut prompt =
+            terminal::Prompt::new(slave.try_clone().unwrap(), slave.try_clone().unwrap()).unwrap();
+        prompt.show("SHOWN\r\n").unwrap();
+        read_until(&mut master, b"SHOWN\r\n");
+        master.write_all(b"yz").unwrap();
+        assert_eq!(prompt.read_input().unwrap(), Input::Key(b'y'));
+        assert_eq!(prompt.read_input().unwrap(), Input::Key(b'z'));
+        for signal in PROMPT_SIGNALS {
+            unsafe { libc::raise(signal) };
+            assert_eq!(
+                prompt.read_input().unwrap(),
+                Input::Ended(128 + signal as u32)
+            );
+        }
+        drop(prompt);
+        assert_eq!(flags(&slave), original);
+    });
+}
+
+/// #139: a signal the prompt recorded wins over a typed Enter: its answer
+/// is the ending, given once the terminal is restored.
+#[test]
+fn a_prompt_answers_with_a_recorded_signal_over_enter() {
+    use climon2_core::session::Answer;
+    use std::io::Write;
+    let _lock = RAW_TEST.lock().unwrap();
+    with_handlers(&[libc::SIG_DFL; 4], || {
+        let (mut master, slave) = pty();
+        let original = flags(&slave);
+        let prompt =
+            terminal::Prompt::new(slave.try_clone().unwrap(), slave.try_clone().unwrap()).unwrap();
+        master.write_all(b"\r").unwrap();
+        unsafe { libc::raise(libc::SIGTERM) };
+        assert_eq!(prompt.answer().unwrap(), Answer::Ended(143));
+        assert_eq!(flags(&slave), original);
+    });
+}
+
+const PROMPT_SIGNALS: [libc::c_int; 4] = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM];
+
+/// Each prompt signal's current disposition.
+fn dispositions() -> Vec<libc::sigaction> {
+    PROMPT_SIGNALS
+        .iter()
+        .map(|signal| {
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { libc::sigaction(*signal, std::ptr::null(), &mut action) },
+                0
+            );
+            action
+        })
+        .collect()
+}
+
+/// Each prompt signal's current handler.
+fn handlers() -> Vec<libc::sighandler_t> {
+    dispositions()
+        .iter()
+        .map(|action| action.sa_sigaction)
+        .collect()
+}
+
+/// Runs `body` with the prompt signals' handlers set to `handlers`, then
+/// puts back the dispositions this process had.
+fn with_handlers(handlers: &[libc::sighandler_t; 4], body: impl FnOnce()) {
+    let saved = dispositions();
+    for (signal, handler) in PROMPT_SIGNALS.iter().zip(handlers) {
+        unsafe { libc::signal(*signal, *handler) };
+    }
+    body();
+    for (signal, action) in PROMPT_SIGNALS.iter().zip(&saved) {
+        unsafe { libc::sigaction(*signal, action, std::ptr::null_mut()) };
+    }
+}
+
+/// #139: a prompt handles each signal that is not ignored, leaves ignored
+/// ones ignored, as a background job of a non-interactive shell has SIGINT
+/// and SIGQUIT, and when dropped puts back exactly what it replaced: the
+/// default action, so that the signals end the process again while the
+/// session starts.
+#[test]
+fn a_prompt_keeps_ignored_signals_and_puts_back_each_disposition() {
+    let _lock = RAW_TEST.lock().unwrap();
+    let (default, ignore) = (libc::SIG_DFL, libc::SIG_IGN);
+    for earlier in [
+        [default; 4],
+        [ignore; 4],
+        // SIGHUP, SIGINT, SIGQUIT, SIGTERM.
+        [default, ignore, ignore, default],
+    ] {
+        with_handlers(&earlier, || {
+            let (_master, slave) = pty();
+            let prompt =
+                terminal::Prompt::new(slave.try_clone().unwrap(), slave.try_clone().unwrap())
+                    .unwrap();
+            for (during, before) in handlers().iter().zip(&earlier) {
+                assert_eq!(*during == ignore, *before == ignore, "{earlier:?}");
+                assert_ne!(*during, default, "{earlier:?}");
+            }
+            drop(prompt);
+            assert_eq!(handlers(), earlier, "{earlier:?}");
+        });
+    }
+}
+
+/// #139: a prompt whose terminal is lost, its pty master closed, reads it
+/// as gone (EIO on Linux), never as a failure.
+#[test]
+fn a_prompt_reads_a_lost_terminal_as_gone() {
+    use climon2_core::session::Input;
+    let _lock = RAW_TEST.lock().unwrap();
+    let (master, slave) = pty();
+    let mut prompt =
+        terminal::Prompt::new(slave.try_clone().unwrap(), slave.try_clone().unwrap()).unwrap();
+    drop(master);
+    assert_eq!(prompt.read_input().unwrap(), Input::Gone);
 }
 
 fn terminal_fixture(mode: &str) -> Command {
@@ -198,4 +345,39 @@ fn issue20_tty_requires_both_stdin_and_stdout_but_not_stderr() {
             .stderr(Stdio::null());
         wait_fixture(command.spawn().unwrap());
     }
+}
+
+/// #139: a hang-up opening the prompt's terminal, or showing its text on a
+/// terminal already lost, answers the prompt as a terminal gone, as a lost
+/// terminal does while it waits; any other failure is returned.
+#[test]
+fn a_hang_up_anywhere_in_a_prompt_answers_gone() {
+    use climon2_core::session::Answer;
+    use std::io;
+    let _lock = RAW_TEST.lock().unwrap();
+    let eio = || Err(io::Error::from_raw_os_error(libc::EIO));
+    let (_master, slave) = pty();
+    assert_eq!(
+        terminal::ask(eio(), slave.try_clone(), "text").unwrap(),
+        Answer::Gone
+    );
+    assert_eq!(
+        terminal::ask(slave.try_clone(), eio(), "text").unwrap(),
+        Answer::Gone
+    );
+    let ebadf = terminal::ask(
+        Err(io::Error::from_raw_os_error(libc::EBADF)),
+        slave.try_clone(),
+        "text",
+    )
+    .unwrap_err();
+    assert_eq!(ebadf.raw_os_error(), Some(libc::EBADF));
+    let (master, slave) = pty();
+    drop(master);
+    with_handlers(&[libc::SIG_DFL; 4], || {
+        assert_eq!(
+            terminal::ask(slave.try_clone(), slave.try_clone(), "text").unwrap(),
+            Answer::Gone
+        );
+    });
 }

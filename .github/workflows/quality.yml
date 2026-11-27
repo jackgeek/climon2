@@ -16,6 +16,12 @@ name: Quality
 # CLIMON2_OWN_RUNNERS (for example "linux,windows,macos"), so a push never waits
 # for a machine that is not registered yet. Release qualification keeps running
 # on GitHub-hosted runners (check.yml, called by release.yml).
+#
+# A push to main whose tree a branch's head already had, as a squash-merge of an
+# up-to-date pull request gives, skips the gates when that head's run passed every
+# gate CLIMON2_OWN_RUNNERS lists (#442), as does one whose merged branch's latest
+# passed run differs from it only in paths this workflow ignores (#447). The prior
+# job finds that run on a hosted runner; any doubt runs the gates.
 on:
   push:
     branches: ["**"]
@@ -64,10 +70,37 @@ jobs:
           fi
           echo "sha=$(git rev-parse "$base")" >> "$GITHUB_OUTPUT"
 
+  # Only a push to main looks, and only a run on another branch whose head had
+  # this tree, or differs from it only in ignored paths, and passed every listed
+  # gate counts. Anything else, this job failing included, leaves its output
+  # empty, so the gates run. A failed look-up never turns main's run red (#447).
+  prior:
+    name: Find a passed run of this tree
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.find.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWN_RUNNERS: ${{ vars.CLIMON2_OWN_RUNNERS }}
+        run: python3 tools/quality-prior-run.py --repo "$GITHUB_REPOSITORY" --tree "$(git rev-parse "$GITHUB_SHA^{tree}")" --commit "$GITHUB_SHA" --own-runners "$OWN_RUNNERS"
+
   linux:
     name: Linux CRAP and mutation / own hardware
-    needs: base
-    if: contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
+    needs: [base, prior]
+    if: >-
+      !cancelled()
+      && needs.base.result == 'success'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
+      && needs.prior.outputs.run == ''
     runs-on: [self-hosted, Linux, X64, climon2-quality]
     # A hung gate holds the only Linux runner, so every other push waits on it
     # (#401). The longest passing Linux gate took 171 min (287 mutants,
@@ -110,8 +143,12 @@ jobs:
 
   windows:
     name: Windows-only CRAP and mutation / own hardware
-    needs: base
-    if: contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
+    needs: [base, prior]
+    if: >-
+      !cancelled()
+      && needs.base.result == 'success'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
+      && needs.prior.outputs.run == ''
     runs-on: [self-hosted, Windows, X64, climon2-quality]
     # The longest passing Windows gate took 68 min (2026-11-23) (#401).
     timeout-minutes: 120
@@ -157,8 +194,12 @@ jobs:
 
   macos:
     name: macOS-only CRAP and mutation / own hardware
-    needs: base
-    if: contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
+    needs: [base, prior]
+    if: >-
+      !cancelled()
+      && needs.base.result == 'success'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
+      && needs.prior.outputs.run == ''
     runs-on: [self-hosted, macOS, X64, climon2-quality]
     # No macOS gate has run here yet; as Windows, which also qualifies only
     # native source (#401).

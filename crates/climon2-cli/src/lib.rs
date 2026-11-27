@@ -18,6 +18,7 @@ use climon2_core::{
     layout::{ExecutableLayout, VersionBinary},
     lifetime::Lifetime,
     selector::Selector,
+    session::NestedStart,
 };
 use climon2_platform::{
     home,
@@ -45,7 +46,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
 
 /// The subcommands that need a home; help and version are answered here.
 enum Work {
-    Exec(Lifetime, CommandArgs),
+    Exec(Lifetime, NestedStart, CommandArgs),
     List { json: bool },
     Handoff(Handoff),
 }
@@ -60,7 +61,11 @@ enum Handoff {
 
 fn work(arguments: CliArgs) -> Result<Work, String> {
     match arguments {
-        CliArgs::Exec { lifetime, command } => Ok(Work::Exec(lifetime, command)),
+        CliArgs::Exec {
+            lifetime,
+            nested,
+            command,
+        } => Ok(Work::Exec(lifetime, nested, command)),
         CliArgs::List { json } => Ok(Work::List { json }),
         other => handoff(other).map(Work::Handoff),
     }

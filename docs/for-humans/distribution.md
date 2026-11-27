@@ -76,7 +76,7 @@ Shared and Linux-specific coverage-backed CRAP and mutation, including
 instrumentation/worker-isolation proofs, run on the dedicated Linux development
 host. CI does not repeat them. macOS arm64 CI runs
 `cargo xtask mutate --native-only`, scoring only registered macOS-exclusive
-source and mutating changed files in that set. Shared-only changes skip this
+source and mutating changed functions in that set. Shared-only changes skip this
 quality run. The native-only run still collects real workspace coverage and
 requires the unchanged full-workspace worker baseline before mutation.
 Both scopes keep CRAP <= 5 and zero surviving mutants.

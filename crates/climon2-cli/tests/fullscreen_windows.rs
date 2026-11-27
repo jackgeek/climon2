@@ -287,6 +287,7 @@ fn kill_ends_an_apps_attached_client_with_the_apps_close_status() {
         let appdata = home.0.path().join("appdata");
         fs::create_dir_all(&appdata).unwrap();
         let mut command = CommandBuilder::new(package.launcher());
+        climon2_test_term::outside_any_session(&mut command);
         command.arg("exec");
         command.arg(app.program().unwrap());
         command.args(app.arguments(&document));
@@ -297,12 +298,13 @@ fn kill_ends_an_apps_attached_client_with_the_apps_close_status() {
         wait(&mut terminal, &home, ORIGINAL);
         let [session] = home.sessions().try_into().unwrap();
 
-        let killed = Command::new(package.launcher())
-            .args(["kill", session.session_id.as_str()])
-            .env("CLIMON2_HOME", home.home())
-            .env("LOCALAPPDATA", home.local())
-            .output()
-            .unwrap();
+        let killed =
+            climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+                .args(["kill", session.session_id.as_str()])
+                .env("CLIMON2_HOME", home.home())
+                .env("LOCALAPPDATA", home.local())
+                .output()
+                .unwrap();
         assert_eq!(killed.status.code(), Some(0), "{app:?} {killed:?}");
         assert_eq!(
             terminal.wait_exit(TIMEOUT).unwrap(),

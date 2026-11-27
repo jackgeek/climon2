@@ -1,12 +1,13 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
+use climon2_core::session::PROMPT;
 use climon2_test_term::{Terminal, bin_path, copy_executable};
 use portable_pty::CommandBuilder;
 use std::{
     ffi::{OsStr, OsString},
     fs,
     os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, Weak},
     time::Duration,
@@ -550,6 +551,7 @@ fn packaged_exec_preserves_runtime_argv_cwd_environment_and_initial_size() {
 }
 
 /// #29: malformed enclosing depth defaults to one; ordinal exceptions are exact.
+/// #139: each waits for Enter; the overflow fails before it asks.
 #[test]
 fn nested_warning_uses_exact_ordinal_and_overflow_never_spawns() {
     let layout = Layout::new();
@@ -578,6 +580,10 @@ fn nested_warning_uses_exact_ordinal_and_overflow_never_spawns() {
                 Duration::from_secs(8),
             )
             .unwrap();
+        terminal
+            .wait_for_text(PROMPT, Duration::from_secs(8))
+            .unwrap();
+        terminal.send("\r").unwrap();
         assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
         layout.clean();
     }
@@ -592,6 +598,28 @@ fn nested_warning_uses_exact_ordinal_and_overflow_never_spawns() {
         .wait_for_text("session depth exceeds u32", Duration::from_secs(3))
         .unwrap();
     assert_eq!(terminal.wait_exit(Duration::from_secs(3)).unwrap(), 125);
+    // #139: before any session log exists, the general log records the
+    // overflow, and the error names it.
+    let received = String::from_utf8_lossy(&terminal.received()).into_owned();
+    let recorded: Vec<_> = fs::read_dir(layout.home().join("logs/general"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("session depth exceeds u32")
+        })
+        .collect();
+    let [general] = recorded.as_slice() else {
+        panic!("{recorded:?}")
+    };
+    assert!(
+        received.contains(&format!(
+            "(logs: {})",
+            general.canonicalize().unwrap().display()
+        )),
+        "{received}"
+    );
     layout.clean();
 }
 
@@ -611,7 +639,7 @@ fn actual_nested_bash_session_increments_depth_and_sees_the_fixed_terminal_ident
         "--noprofile",
         "--norc",
         "-c",
-        "\"$1\" exec \"$2\" report",
+        "\"$1\" exec --nested \"$2\" report",
         "bash",
     ]);
     command.arg(layout.cli());
@@ -1238,5 +1266,379 @@ fn a_config_edit_before_the_client_starts_changes_neither_client_nor_daemon() {
     assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
     let selector = metadata.session_id.as_str();
     assert_eq!(kill_session(&layout, selector).0, 0);
+    layout.clean();
+}
+
+const NESTED_WARNING: &str = "Starting climon2 session nested for the 1st time";
+
+/// `c2 exec [options] <fixture> hold` inside session `outer`, in a terminal.
+fn nested_exec(layout: &Layout, options: &[&str]) -> Terminal {
+    let mut command = layout.command();
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.arg("exec");
+    command.args(options);
+    command.arg(layout.fixture());
+    command.arg("hold");
+    Terminal::spawn(command, 24, 80).unwrap()
+}
+
+/// What `exec` left in the home: session metadata and session log folders.
+fn session_traces(layout: &Layout) -> Vec<String> {
+    let names = |folder: &str| -> Vec<String> {
+        fs::read_dir(layout.home().join(folder))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut traces = names("sessions");
+    traces.extend(names("logs").into_iter().filter(|name| name != "general"));
+    traces
+}
+
+/// Ends the fixture `hold` runs once its client takes input.
+fn end_hold(terminal: &mut Terminal) {
+    type_until(terminal, "probe\n", "probe");
+    terminal.send("exit\n").unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+}
+
+/// #139: a nested ordinary start leaves its warning and prompt on screen and
+/// starts nothing, whatever else is typed, until Enter; then the session
+/// starts. Ctrl+C instead exits 130 and leaves no session, log or process.
+#[test]
+fn a_nested_start_keeps_its_warning_on_screen_until_enter_and_ctrl_c_cancels_it() {
+    let layout = Layout::new();
+    // Cancelled first: the started session's log outlives it.
+    let mut terminal = nested_exec(&layout, &[]);
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    terminal.send([0x03]).unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 130);
+    assert!(!terminal.screen().contains("FIXTURE_READY"));
+    assert_eq!(session_traces(&layout), Vec::<String>::new());
+    layout.clean();
+
+    let mut terminal = nested_exec(&layout, &[]);
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    terminal.send("typed, not Enter").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    let screen = terminal.screen();
+    assert!(screen.contains(NESTED_WARNING), "{screen}");
+    assert!(screen.contains(PROMPT), "{screen}");
+    assert!(!screen.contains("FIXTURE_READY"), "{screen}");
+    assert_eq!(session_traces(&layout), Vec::<String>::new());
+    terminal.send("\r").unwrap();
+    terminal
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    only_metadata(&layout);
+    end_hold(&mut terminal);
+    layout.clean();
+}
+
+/// #437: a nested session starts at the terminal's size when Enter answers
+/// the prompt, not at its size when the prompt showed. The CLI is held
+/// before its client (`CLIMON2_CLI_HOLD`), so the command reports the size
+/// the daemon gave it before any client resizes it.
+#[test]
+fn a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at() {
+    let layout = Layout::new();
+    let directory = layout.directory.path();
+    let (report, release) = (directory.join("report"), directory.join("release"));
+    let mut command = layout.command();
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.env("CLIMON2_CLI_HOLD", &release);
+    command.env("FIXTURE_REPORT_PATH", &report);
+    command.env("FIXTURE_REPORT_RELEASE", directory.join("release-report"));
+    command.arg("exec");
+    command.arg(layout.fixture());
+    command.arg("report");
+    let mut terminal = Terminal::spawn(command, 24, 80).unwrap();
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    terminal.resize(44, 132).unwrap();
+    terminal.send("\r").unwrap();
+    let report: serde_json::Value =
+        written(&report, &terminal, |text| serde_json::from_str(text).ok());
+    assert_eq!(
+        (&report["cols"], &report["rows"]),
+        (&132.into(), &44.into())
+    );
+    fs::write(&release, b"").unwrap();
+    terminal
+        .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+        .unwrap();
+    fs::write(directory.join("release-report"), b"").unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+    layout.clean();
+}
+
+/// #139: neither a top-level start nor a deliberate nested one (`--nested`,
+/// `-n`) warns or waits.
+#[test]
+fn neither_a_top_level_nor_a_deliberate_nested_start_warns_or_waits() {
+    let layout = Layout::new();
+    let (top, _) = held_session(&layout, "hold");
+    let mut started = vec![top];
+    for option in ["--nested", "-n"] {
+        let mut terminal = nested_exec(&layout, &[option]);
+        terminal
+            .wait_for_text("FIXTURE_READY", Duration::from_secs(8))
+            .unwrap();
+        started.push(terminal);
+    }
+    for mut terminal in started {
+        let received = String::from_utf8_lossy(&terminal.received()).into_owned();
+        assert!(!received.contains("nested for the"), "{received}");
+        assert!(!received.contains(PROMPT), "{received}");
+        end_hold(&mut terminal);
+    }
+    layout.clean();
+}
+
+/// #139: a nested headless start, which needs no terminal and clears no
+/// screen, warns on stderr without waiting; `--nested` silences it.
+#[test]
+fn a_nested_headless_start_warns_without_waiting_unless_deliberate() {
+    let layout = Layout::new();
+    for (options, expected) in [
+        (&["--headless"][..], format!("{NESTED_WARNING}\n")),
+        (&["--headless", "--nested"], String::new()),
+        (&["-n", "-h"], String::new()),
+    ] {
+        let output = layout
+            .process()
+            .env("CLIMON2_SESSION_ID", "outer")
+            .env("PATH", "/usr/bin:/bin")
+            .env("CLIMON2_TEST_ID", layout.marker())
+            .arg("exec")
+            .args(options)
+            .arg(layout.fixture())
+            .args(["exit", "0"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{options:?} {output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            expected,
+            "{options:?}"
+        );
+        layout.clean();
+    }
+}
+
+/// `/bin/sh -c <script> <cli> <fixture> [extra]` inside session `outer`, in
+/// a terminal, in the layout's directory.
+fn nested_shell(layout: &Layout, script: &str, extra: &[&OsStr]) -> Terminal {
+    let mut command = CommandBuilder::new("/bin/sh");
+    layout.configure(&mut command);
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.args(["-c", script]);
+    command.arg(layout.cli());
+    command.arg(layout.fixture());
+    command.args(extra);
+    Terminal::spawn(command, 24, 80).unwrap()
+}
+
+/// #139: with stderr redirected, the warning and prompt still show on the
+/// terminal, and none of them reaches the file.
+#[test]
+fn the_nested_prompt_shows_on_the_terminal_when_stderr_is_redirected() {
+    let layout = Layout::new();
+    let errors = layout.directory.path().join("errors");
+    let mut terminal = nested_shell(
+        &layout,
+        r#"exec "$0" exec "$1" hold 2>"$2""#,
+        &[errors.as_os_str()],
+    );
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(8))
+        .unwrap();
+    assert!(terminal.screen().contains(NESTED_WARNING));
+    terminal.send([0x03]).unwrap();
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 130);
+    assert_eq!(fs::read_to_string(&errors).unwrap(), "");
+    layout.clean();
+}
+
+/// What the shell in `terminal` writes to `path` while the test runs, once
+/// `complete` makes a value of it: the file can exist, empty or with part of
+/// its text, before the shell has finished writing it (#437).
+fn written<T>(path: &Path, terminal: &Terminal, complete: impl Fn(&str) -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let text = fs::read_to_string(path).unwrap_or_default();
+        if let Some(value) = complete(&text) {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} holds {text:?}\n{}",
+            path.display(),
+            terminal.screen()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A whole line, as `echo` and `stty -g` write one.
+fn line(text: &str) -> Option<String> {
+    text.ends_with('\n').then(|| text.to_owned())
+}
+
+/// Darwin's `PENDIN` (`<sys/termios.h>`), which its kernel sets when input
+/// is pending as the terminal returns to canonical mode, and clears at the
+/// next read: kernel state, not configuration (see the client's README).
+const DARWIN_PENDIN: u64 = 0x2000_0000;
+
+#[cfg(target_os = "macos")]
+const _: () = assert!(libc::PENDIN == DARWIN_PENDIN);
+
+/// `stty -g` settings without Darwin's transient `PENDIN`. Only macOS's
+/// `gfmt1:...:lflag=<hex>:...` format names `lflag`; Linux's positional
+/// format passes through unchanged (#465).
+fn settings(stty: &str) -> String {
+    stty.split(':')
+        .map(|field| match field.strip_prefix("lflag=") {
+            Some(flags) => {
+                let flags = u64::from_str_radix(flags, 16).unwrap() & !DARWIN_PENDIN;
+                format!("lflag={flags:x}")
+            }
+            None => field.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// #465: the settings from macOS job 140557380514 match once `PENDIN` is
+/// masked, and any other difference still shows.
+#[test]
+fn settings_ignore_only_darwins_pendin() {
+    let format = |lflag: &str| {
+        format!(
+            "gfmt1:cflag=4b00:iflag=2b02:lflag={lflag}:oflag=3:discard=f:dsusp=19:eof=4:\
+             eol=ff:eol2=ff:erase=7f:intr=3:kill=15:lnext=16:min=1:quit=1c:reprint=12:\
+             start=11:status=14:stop=13:susp=1a:time=0:werase=17:ispeed=9600:ospeed=9600\n"
+        )
+    };
+    assert_eq!(settings(&format("200005cb")), settings(&format("5cb")));
+    assert_ne!(settings(&format("5c3")), settings(&format("5cb")));
+    assert_ne!(settings(&format("600005cb")), settings(&format("5cb")));
+    assert_ne!(
+        settings(&format("5cb").replace("iflag=2b02", "iflag=2b03")),
+        settings(&format("5cb"))
+    );
+    let linux =
+        "500:5:bf:8a3b:3:1c:7f:15:4:0:1:0:11:13:1a:0:12:f:17:16:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0\n";
+    assert_eq!(settings(linux), linux);
+}
+
+/// The process ID on a whole line.
+fn pid(text: &str) -> Option<i32> {
+    text.strip_suffix('\n')?.parse().ok()
+}
+
+/// #139: SIGTERM or SIGHUP sent while the prompt waits ends exec with
+/// 128 + signal, the terminal's settings restored exactly, apart from
+/// Darwin's transient `PENDIN` (#465). (A background job
+/// of a non-interactive shell starts with SIGINT and SIGQUIT ignored, and
+/// the prompt keeps them so.)
+#[test]
+fn a_signal_while_the_prompt_waits_exits_with_its_status_and_restores_the_terminal() {
+    let layout = Layout::new();
+    let directory = layout.directory.path();
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
+        let mut terminal = nested_shell(
+            &layout,
+            r#"stty -g > before; "$0" exec "$1" hold </dev/tty & echo $! > pid; wait $!; echo "STATUS=$?"; stty -g > after; read line"#,
+            &[],
+        );
+        terminal
+            .wait_for_text(PROMPT, Duration::from_secs(8))
+            .unwrap();
+        let pid = written(&directory.join("pid"), &terminal, pid);
+        assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+        terminal
+            .wait_for_text(&format!("STATUS={}", 128 + signal), Duration::from_secs(8))
+            .unwrap();
+        assert_eq!(
+            settings(&written(&directory.join("after"), &terminal, line)),
+            settings(&written(&directory.join("before"), &terminal, line)),
+            "signal {signal}"
+        );
+        assert_eq!(session_traces(&layout), Vec::<String>::new());
+        terminal.send("\n").unwrap();
+        assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+        for file in ["before", "after", "pid"] {
+            fs::remove_file(directory.join(file)).unwrap();
+        }
+        layout.clean();
+    }
+}
+
+/// #139: once Enter has answered the prompt, SIGTERM and SIGHUP end exec
+/// again, as they did before the prompt, while it is still starting the
+/// session (held before its client by `CLIMON2_CLI_HOLD`).
+#[test]
+fn after_enter_sigterm_and_sighup_end_exec_while_the_session_starts() {
+    let layout = Layout::new();
+    let directory = layout.directory.path();
+    // A background job of a non-interactive shell starts with SIGINT and
+    // SIGQUIT ignored, which the prompt leaves ignored.
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
+        let mut terminal = nested_shell(
+            &layout,
+            r#"CLIMON2_CLI_HOLD="$PWD/release" "$0" exec "$1" hold </dev/tty & echo $! > pid; wait $!; echo "STATUS=$?"; read line"#,
+            &[],
+        );
+        terminal
+            .wait_for_text(PROMPT, Duration::from_secs(8))
+            .unwrap();
+        terminal.send("\r").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while !directory.join("release.held").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{}",
+                terminal.screen()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pid = written(&directory.join("pid"), &terminal, pid);
+        assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+        terminal
+            .wait_for_text(&format!("STATUS={}", 128 + signal), Duration::from_secs(8))
+            .unwrap();
+        terminal.send("\n").unwrap();
+        assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 0);
+        for file in ["release.held", "pid"] {
+            fs::remove_file(directory.join(file)).unwrap();
+        }
+        layout.clean();
+    }
+}
+
+/// #139: a nested start bound to fail is not offered: from a deleted working
+/// directory, exec exits 126 before it warns or asks.
+#[test]
+fn a_nested_start_from_a_deleted_working_directory_fails_before_the_prompt() {
+    let layout = Layout::new();
+    let mut terminal = nested_shell(
+        &layout,
+        r#"mkdir gone && cd gone && rmdir ../gone && exec "$0" exec "$1" hold"#,
+        &[],
+    );
+    assert_eq!(terminal.wait_exit(Duration::from_secs(8)).unwrap(), 126);
+    let received = String::from_utf8_lossy(&terminal.received()).into_owned();
+    assert!(!received.contains("nested for the"), "{received}");
+    assert!(!received.contains(PROMPT), "{received}");
     layout.clean();
 }

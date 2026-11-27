@@ -21,6 +21,125 @@ Every gate mutates only the source a push changes. On `main` that means the
 push itself, and on any other branch it means the branch's difference from
 `main`. A gate with nothing to mutate passes in a minute.
 
+## What a gate mutates
+
+Each gate mutates only the functions a push adds or changes, as the local
+ticket gate does ([The quality gate](development.md#the-quality-gate)). Before
+[#445](https://github.com/jackgeek/climon2/issues/445) it mutated every
+function in every changed file. So three edited functions in a 2,000-line
+file kept the Linux gate busy for one to two hours.
+
+- **Changed functions.** A function counts as changed if it is new, or if its
+  code differs from the base's. Whitespace and comments don't count.
+- **Its dependents.** A changed `struct`, `enum`, `const`, `static` or `type`
+  can change how functions that didn't change behave. So it also selects every
+  function in the same file whose code names it, counting the header of the
+  `impl` the function is in. For example, a new field in `Frame` selects every
+  method in `impl Frame`. The rule goes one step only: a function chosen this
+  way does not choose the functions that call it. Deleting or renaming one
+  selects the functions that used it. A name written inside a format string,
+  such as `"{LIMIT}"`, counts, and so do the names a `use` imports from it, so
+  changing `Mode` selects the functions that use `A` after `use Mode::{A, B}`.
+- **Imports.** Each name a `use` imports is compared on its own. A name that
+  is added, removed or imported from somewhere else selects, in the same way,
+  every function that uses it, by its original name or its `as` name. Adding
+  `Placeholder` to `use screen::{Canvas, Scene}` selects only the functions
+  that name `Placeholder`. If no function names a changed import, before or
+  after the change, it is most likely a trait whose methods are called, and
+  those calls can't be found by name, so the whole file is mutated.
+- **Tests.** A test that is added, removed or changed (`mod tests`, `#[test]`
+  or `#[cfg(test)]`) selects the functions in the same file that the test's
+  code names, methods included, under its old and its new version. A
+  weakened or removed test therefore still has to kill the mutants of the
+  functions it covered. If a changed test names no function of the file, the
+  whole file is mutated. The local ticket gate does not apply this rule.
+- **Whole files.** A new file is mutated whole. So is a file in any of these
+  cases:
+  - its base version is not valid Rust;
+  - it adds, removes or changes a glob import (`use x::*`) or an import as
+    `_`, whose names can't be found;
+  - it has a glob import of a changed or deleted item, such as `use Mode::*`
+    when `Mode` changed;
+  - it changes code that has no dependents rule yet: a `macro_rules!` or
+    other item macro, a trait's method signature or associated type, an
+    impl's associated type, a `union` or an `extern` block;
+  - an impl is added, removed or changed without a changed function or
+    `const` in it to select, such as `impl Error for E {}`,
+    `unsafe impl Send for X {}`, or a deleted override of a trait's default
+    method.
+- **CRAP is not narrowed.** Every function of the source the gate scores is
+  still scored, whether or not it changed. A native gate scores its changed
+  native files even when their changes select no mutant, for example a
+  comment-only edit.
+
+The gate prints its choice before it mutates. It lists each file, its
+selected functions and their lines, and the mutants it will try. A whole file
+stays in the list even if no mutant is found in it. If the mutator's scan
+doesn't report a file under the same path as the gate, the gate fails, so a
+file can't be skipped without anyone seeing it. The count is
+taken before coverage, so mutants on lines no test runs are not tried.
+`cargo xtask check --print-mutation-plan` prints the same choice locally,
+with a [`CLIMON2_MUTATION_BASE`](development.md#the-quality-gate) set.
+
+**One run, so one baseline.** A gate starts the mutator once for every file.
+Each run first passes the whole unchanged workspace once (the baseline), which
+takes minutes, so one run per file would repeat it. But the mutator takes only
+one list of lines for all its files. So the gate gives it every line it
+selected in any file, and a file can also be mutated on a line number that
+was chosen in another file. That only ever tries more mutants, never fewer,
+and the plan shows how many each file gains this way. A new file adds all its
+lines to the list, so it can gain the most. Until the mutator takes a list per
+file, the owner keeps this (2026-11-27).
+
+## Skipping a squash-merge's gates on main
+
+A pull request's gates run on its branch's push, and they run again on the
+push its merge makes to `main`. The Linux gate can take hours on the one Linux
+machine, so that second run delays every other branch
+([#442](https://github.com/jackgeek/climon2/issues/442)).
+
+A squash-merge of a branch that is up to date with `main` gives `main` the same
+**tree**, the snapshot of every file, as the branch's last commit. So on a
+push to `main`, a job on a GitHub-hosted runner runs
+`tools/quality-prior-run.py` before the gates start. The script looks through
+the last 100 successful `quality.yml` runs for a push to another branch whose
+commit has that tree. When it finds one in which every gate passed, the gates
+on `main` are skipped. The run's summary names the tree and the run it relied
+on.
+
+"Every gate" means every gate whose machine the repository variable
+`CLIMON2_OWN_RUNNERS` lists (see [Turning it on](#turning-it-on)). A machine
+it doesn't list runs no gate on the branch or on `main`, so its skipped gate
+doesn't stop the match
+([#447](https://github.com/jackgeek/climon2/issues/447)).
+
+`quality.yml` ignores pushes that change only Markdown files, other than the
+protocol's, and `LICENSE`. So a branch whose last push changed only those has
+no run of the merged tree. When no run has the tree, the script asks GitHub
+which pull request the push merged, and takes the latest passed run on that
+pull request's branch. If that run's commit differs from the merged one only
+in files `quality.yml` ignores, and its gates passed, the gates on `main` are
+skipped too.
+
+The gates on `main` still run in every other case:
+
+- a push to any other branch, or a manual run of the workflow;
+- a push to `main` whose tree no passed branch run had, such as a direct push
+  or a merge of a branch that was not up to date;
+- a branch run of that tree in which a listed gate failed or was skipped;
+- a merge made while the branch's gates were still running, since the look-up
+  finds only finished runs;
+- the look-up failing, for example because GitHub's API did not answer. Its
+  job may fail without turning `main`'s run red.
+
+So wait for the branch's gates to pass before you merge. A merge made earlier
+runs the gates again on `main`, and the Linux gate holds its machine for up to
+hours while every other branch waits.
+
+The branch's gate mutated at least the source that `main`'s push changes: the
+two trees hold the same gated files, and the branch's gate compared against an
+older or equal `main`.
+
 Release qualification does not use these machines. It still runs on
 GitHub-hosted runners, from `check.yml`, so its evidence records name a
 known image.
@@ -28,6 +147,160 @@ known image.
 The Mac is an Intel machine, while GitHub's macOS gate runs on Apple silicon.
 macOS-only source that differs by architecture is qualified here on x86-64
 only.
+
+## The rolling full mutation pass
+
+A gate that mutates only what a push changed misses some faults: a mutant
+that survives in code no recent pull request touched, a change in one file
+that weakens the tests of another, and anything a narrowed selection left out.
+So each pull request merged to `main` also mutates one **slice**, a tenth of
+the shipped files, whole. Ten merges in a row mutate every file once
+([#452](https://github.com/jackgeek/climon2/issues/452)). The workflow
+`.github/workflows/quality-full.yml` chooses the slice and runs
+`.github/workflows/quality-slice.yml` for it.
+
+### Slices
+
+A file's slice is a number from 0 to 9, taken from a SHA-256 hash of its
+path. A file keeps its slice when other files are added or removed, and a new
+file joins a slice straight away, so no file misses its turn. Slices hold
+whole files, so they differ in size: by lines of source, in November 2026 the
+largest was about five times the smallest.
+
+Each machine mutates the files of the slice that it qualifies:
+
+| Machine | Slice pass | What it mutates |
+| --- | --- | --- |
+| Omarchy PC | `cargo xtask mutate --mutate-slice <k>` | The slice's shared and Linux-only files |
+| Windows VM | `cargo xtask mutate --native-only --mutate-slice <k>` | The slice's registered Windows files |
+| MacBook | `cargo xtask mutate --native-only --mutate-slice <k>` | The slice's macOS-only files |
+
+A native machine whose slice holds none of its files passes at once. On the
+Omarchy PC such a slice prints "No shipped Rust source in slice k to mutate."
+The CRAP check scores only the slice's files too, so each slice's findings are
+its own.
+
+### When it runs
+
+On every push to `main`, a job on a GitHub-hosted runner counts the
+squash-merges in `main`'s history with `tools/quality-full-run.py`. A
+squash-merge is a commit on `main` itself, not on a merged branch, whose
+subject ends with its pull request's number, such as `... (#432) (#438)`. The
+merge that takes the count to n mutates slice n mod 10: the 110th mutates
+slice 0, the 111th slice 1. The count needs no stored counter, setting or
+secret. A direct push to `main` adds no squash-merge, so it mutates nothing.
+
+The count goes by the subject alone, without asking GitHub whether a pull
+request made the commit. So a direct push whose subject ends with a number in
+that form, such as `Fix the typo (#12)`, counts as a squash-merge and mutates
+the next slice. After a force push to `main`, which may lower the count, only
+the commits the push brought count as added.
+
+Some slices are skipped until their next turn, 10 merges later:
+
+- a push that adds several squash-merges at once mutates only the last one's
+  slice;
+- a slice skipped because the gates stayed busy for 20 hours (see below);
+- a slice whose set-up fails, or that times out or fails before it mutates.
+
+You can also run a pass by hand: under Actions > Full mutation, choose Run
+workflow on `main`, then a slice, or `all`. `all` runs the ten slices one
+after another, each with a slice's time limit, and each waits for idle gates
+before it starts, as a merge's slice does. So gates go between its slices,
+but the whole run can take days, and slices from later merges wait for it for
+up to 20 hours, then are skipped. A manual run doesn't change the rotation. On
+any other branch the workflow does nothing.
+
+### How it stays out of the way
+
+The pass never blocks a merge or turns `main` red:
+
+- **It runs after the merge.** It runs on `main`'s push only, never on a
+  branch's, so no pull request waits for it.
+- **It waits for idle gates.** Each machine has one runner, which runs one
+  job at a time. So before a slice asks for the machines, jobs on GitHub's
+  hosted runners wait until no `quality.yml` run, and no older run of the full
+  pass, is queued or in progress. A newer full run doesn't count, so two never
+  wait for each other: the older one goes first. A merge's own `quality.yml`
+  run may not be queued yet when its slice first looks, so when the push runs
+  `quality.yml` at all, the slice also waits until that run has appeared. A
+  hosted job runs for at most 6 hours, so four such jobs wait in turn, 5 hours
+  each.
+  - **Checks.** They look every 5 minutes, with at most two calls to GitHub's
+    API each: one lists the full pass's latest runs, and only if no older one
+    is unfinished, a second lists `quality.yml`'s. Each other full run that is
+    waiting too adds 5 minutes between checks, so several waiting runs don't
+    use up the workflow token's API limit.
+  - **Giving up.** If the gates are still busy after 20 hours, or GitHub's API
+    keeps failing, the slice is skipped, and its comment in the issue says
+    "Skipped ... gates were busy". If a waiting job itself fails, the comment
+    says so instead.
+
+  A gate pushed while a slice runs still waits for it, for up to the slice's
+  time limit.
+- **It never waits in a machine's queue for long.** GitHub fails a job that
+  waits more than 24 hours for a self-hosted runner, which would turn `main`
+  red. A slice asks for a machine only once the gates are idle, so it starts
+  at once unless the machine is offline.
+- **A later merge never cancels it.** Neither workflow has a concurrency group,
+  not even on the job that writes the results, because GitHub keeps only one
+  waiting job per group and cancels the others without saying so. The results
+  need none: each slice writes only its own comment (see below), so reports of
+  different slices never rewrite the same text.
+- **It's short.** A slice's mutation may run for 3 h 45 min on Linux and
+  1 h 45 min on Windows and macOS. Its job ends at 5 h and 2 h 30 min, which
+  leaves time for checkout, set-up and the log's upload. No slice has run on
+  these machines yet, so change these limits in `quality-slice.yml` once some
+  have been timed.
+- **A failed pass doesn't fail its job.** Before anything else, each
+  machine's job records that its set-up hasn't finished. Its checkout and
+  set-up steps, and the pass itself, may fail or time out; the job still
+  passes, and the failure goes to the issue instead. The pass runs only if
+  every set-up step succeeded, and a failed upload of its log counts as a
+  missing log. Every step runs in bash with `pipefail`, so the pass's own exit
+  status is recorded, not that of the `tee` that saves its log.
+
+### Reading the results
+
+After the machines finish, a hosted job reads each one's log. It lists:
+
+- each function whose CRAP score is over 5;
+- each `SURVIVED` mutant, which no test killed;
+- each `UNCOVERED` mutant, on a line no test runs;
+- a machine whose pass failed without any of these, such as a failed
+  baseline, whose set-up failed, or that timed out;
+- a machine listed in `CLIMON2_OWN_RUNNERS` whose job left no log at all.
+
+It writes that list in the slice's own comment on one open issue titled
+**Full mutation pass findings**, opened by `github-actions`. The issue's
+description is a fixed note on how to read it. Each slice has one comment,
+headed "Slice k of 10", with a part per machine, and a hidden marker by which
+each pass finds its own slice's comment. A pass rewrites only that comment,
+or adds it when the slice has none yet, so the issue always holds each
+slice's latest findings, and a clean pass clears its comment. A later pass of
+the same slice simply rewrites it.
+
+What didn't run keeps its earlier result. A skipped slice keeps its comment,
+with a dated note such as "Skipped on 2026-11-28: gates were busy". A machine
+that didn't run keeps its part with a dated "Did not run on ..." note, saying
+whether it isn't in `CLIMON2_OWN_RUNNERS` or its job left no log. Each new
+note replaces the one before. When `CLIMON2_OWN_RUNNERS` lists no machine at
+all, the run's summary says that no pass of the slice ran, not that it found
+nothing.
+
+A pass that needs you opens the issue if none is open, or adds a short
+comment with the run's link, which notifies you, since an edited comment
+doesn't: one with findings, a failure or a missing log, or a slice skipped
+because a waiting job failed. A clean pass, or one skipped because the gates
+were busy, never opens the issue or adds such a notice; it edits its slice's
+comment quietly. Close the issue once every slice's comment is clean. Each
+machine's whole log is kept with the run, as artifacts
+such as `full-run-linux-3` for slice 3. On the Mac it also holds the evidence
+of any daemon test whose readiness wait failed.
+
+A pass whose CRAP check fails stops before it mutates, as every gate does.
+CRAP scores every function in every gate, so a pull request that breaks it
+has already failed its own gates.
 
 ## Why the jobs run on push
 

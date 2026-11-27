@@ -269,7 +269,9 @@ runs again outside every job, through the harness's relay.
 The same file holds the Windows forms of two more scenarios
 ([#324](https://github.com/jackgeek/climon2/issues/324)):
 
-- **Nested `pwsh` sessions.** Inside a session, `c2 exec pwsh` starts a second
+- **Nested `pwsh` sessions.** Inside a session, `c2 exec pwsh` shows the
+  nesting warning and waits for Enter
+  ([#139](https://github.com/jackgeek/climon2/issues/139)), then starts a second
   session at depth 2. Its daemon is in no job, so it has left the outer
   session's job. `exit 7` in the inner session reaches the outer session's
   shell, and `exit 9` in the outer one reaches the host's shell.

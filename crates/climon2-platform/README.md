@@ -159,6 +159,31 @@ dispatch or shell-specific logic.
   Drop and a chained panic hook restore termios only. One raw-mode
   owner is permitted in a process. No screen reset sequences are emitted.
 - `Signals::client()` defers HUP/INT/TERM and coalesces WINCH.
+- `terminal::Prompt::new(input, output)` is the terminal while `exec` waits
+  for an answer to its nested-start prompt (#139): raw, input typed before it
+  discarded (`tcflush(TCIFLUSH)`, `FlushConsoleInputBuffer`), `show` writing
+  to `output` (stdout, from `terminal::output()`). `read_input` gives one
+  key at a time (one byte; one console record on Windows), a lost terminal
+  (EOF or EIO; a broken pipe or invalid handle on Windows, any other failure
+  being returned) as `Input::Gone`, and a signal that would end the process
+  as `Input::Ended`: 128 + HUP, INT, QUIT or TERM on Unix, 129 after a close
+  and `0xC000013A` after Ctrl+Break on Windows. On Unix it installs its own
+  `sigaction` handler, without `SA_RESTART`, for each of those four not
+  ignored on entry (an ignored one stays ignored), and dropping it puts back
+  exactly the dispositions it replaced, default actions included, so they
+  end the process again while the session starts. Dropping it restores the
+  terminal first, then the dispositions; on Windows, the console's modes
+  first, then it removes its console handler routine. `new` installs the
+  dispositions or handler before going raw, so a signal in between still
+  finds them, and a failure undoes raw mode, then them. On Windows a record
+  is read whole: keys decoded from it beyond the answer (a held key's
+  repeats, a surrogate half) are discarded. `terminal::ask(input, output,
+  text)` opens a prompt, shows `text` and answers it, mapping a hang-up
+  anywhere (`terminal::hung_up`: EIO; a broken pipe or invalid handle on
+  Windows) to `Answer::Gone`, as `read_input` does. `answer(self)` reads the answer
+  through core's `Answer::read`, restores both, and only then checks for a
+  recorded signal or console event, which wins over the answer
+  (`Answer::or_ended`), so one arriving with or after Enter still ends exec.
   `termination_signal()` and `take_resize()` are polled by the event loop,
   which must reread the size and suppress unchanged resizes.
   `Signals::daemon()` ignores HUP/INT/PIPE and defers TERM. Registrations are
@@ -574,7 +599,15 @@ refusal proves nothing called them.
 
 `tests/terminal.rs`: `issue20_real_pty_raw_mode_restores_on_drop_and_panic_without_screen_sequences`,
 `issue20_real_pty_size_and_zero_fallback`,
-`issue20_signals_coalesce_resize_and_report_exit_signal`.
+`issue20_signals_coalesce_resize_and_report_exit_signal`,
+`a_prompt_flushes_type_ahead_reads_bytes_singly_and_ends_on_signals`,
+`a_prompt_reads_a_lost_terminal_as_gone`,
+`a_prompt_keeps_ignored_signals_and_puts_back_each_disposition`,
+`a_prompt_answers_with_a_recorded_signal_over_enter`,
+`a_hang_up_anywhere_in_a_prompt_answers_gone` (#139). `tests/terminal_windows.rs`
+adds `a_prompt_discards_type_ahead_takes_keys_singly_and_ends_restored_on_ctrl_break`,
+`a_hang_up_opening_a_prompt_answers_gone`
+(#139).
 
 `tests/waiting.rs` (#310): `issue310_one_wait_reports_each_ready_handle_until_the_timeout`,
 `issue310_a_hung_up_peer_is_ready`, `issue310_idle_slots_wait_out_the_timeout`.

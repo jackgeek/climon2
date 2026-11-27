@@ -615,7 +615,10 @@ impl State {
             }
             self.internals();
             self.schedule();
-            self.poll();
+            // A shutdown command sent meanwhile is read once this tick's
+            // wait ends: its deadline is fixed, so that only shortens the
+            // shutdown, and the UI's handover grace covers the report.
+            self.poll(None);
         };
         self.begin_shutdown();
         self.settle_input(deadline);
@@ -643,7 +646,7 @@ impl State {
         let deadline = deadline.min(Instant::now() + bound);
         while self.input_pending() && before(deadline) {
             self.internals();
-            self.poll();
+            self.poll(Some(deadline));
         }
     }
 
@@ -1497,10 +1500,11 @@ impl State {
         self.advance(id);
     }
 
-    /// Waits one tick on the descriptor of every live instance that is not
+    /// Waits a tick on the descriptor of every live instance that is not
     /// congested, then drains each of those; a congested one is failed once
-    /// its congestion outlasts `deadlines.delivery_stall_ms` (#119).
-    fn poll(&mut self) {
+    /// its congestion outlasts `deadlines.delivery_stall_ms` (#119). During
+    /// shutdown neither the wait nor the drains go past its `deadline`.
+    fn poll(&mut self, deadline: Option<Instant>) {
         let mut table: Vec<_> = self
             .instances
             .iter()
@@ -1510,7 +1514,7 @@ impl State {
             // descriptor open, and the table ends with this wait.
             .map(|descriptor| unsafe { notifier::watch_raised(descriptor) })
             .collect();
-        wait(&mut table);
+        wait(&mut table, deadline.map_or(TICK, within));
         let live: Vec<_> = self
             .instances
             .iter()
@@ -1523,7 +1527,7 @@ impl State {
                 self.congestion(&id, now);
             } else {
                 self.congested.remove(&id);
-                self.drain_within(&id);
+                self.drain_within(&id, deadline);
             }
         }
     }
@@ -1551,8 +1555,8 @@ impl State {
 
     /// Drains `id` until it has nothing more or its reports fill its
     /// allowance ([`State::throttled`]), reporting every delivery.
-    fn drain_within(&mut self, id: &SessionId) {
-        while !self.throttled(id) && self.drain_one(id) {}
+    fn drain_within(&mut self, id: &SessionId, deadline: Option<Instant>) {
+        while !self.throttled(id) && deadline.is_none_or(before) && self.drain_one(id) {}
     }
 
     /// Drains one delivery of `id`'s, if it is live: whether there may be
@@ -1838,7 +1842,7 @@ impl State {
         self.ask_shutdown();
         while !(self.instances.is_empty() && self.loads.is_empty()) && before(deadline) {
             self.internals();
-            self.poll();
+            self.poll(Some(deadline));
             self.tell_waiting();
             self.ask_shutdown();
         }
@@ -1950,14 +1954,26 @@ fn stack(bytes: u64) -> usize {
     usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
-/// Waits one tick for any of `table`'s descriptors, or simply one tick. A
-/// failed wait only ends the tick early.
-fn wait(table: &mut [Watch<'_>]) {
+/// One wait of a round before `deadline`: a tick, or what is left of it if
+/// that is less, so the last round ends at the deadline, not a tick past it
+/// (#455). It is whole milliseconds rounded up, as a wait is: rounded down,
+/// the last round would end before the deadline and cut a bounded wait,
+/// such as settling input for `deadlines.operation_ms`, short, or spin
+/// through its last millisecond; rounded up, it ends under a millisecond
+/// past the deadline, well inside the UI's handover grace.
+fn within(deadline: Instant) -> Duration {
+    let left = TICK.min(deadline.saturating_duration_since(Instant::now()));
+    u64::try_from(left.as_nanos().div_ceil(1_000_000)).map_or(TICK, Duration::from_millis)
+}
+
+/// Waits `bound` for any of `table`'s descriptors, or simply `bound`. A
+/// failed wait only ends it early.
+fn wait(table: &mut [Watch<'_>], bound: Duration) {
     if table.is_empty() {
-        thread::sleep(TICK);
+        thread::sleep(bound);
         return;
     }
-    let _ = waiting::wait(table, TICK);
+    let _ = waiting::wait(table, bound);
 }
 
 #[cfg(test)]
@@ -2042,6 +2058,9 @@ mod tests {
         client_fails: Option<&'static [u8]>,
         /// Releasing the control handle stays busy.
         release_fails: bool,
+        /// Once shutdown is asked, every drain is another delivery, without
+        /// end (#455).
+        floods: bool,
     }
 
     /// How the fake answers a Kill (#117).
@@ -2646,7 +2665,13 @@ mod tests {
         let mut state = fake.state();
         // SAFETY: the supervisor passes an output struct.
         let out = unsafe { &mut *out };
-        match state.queue.pop_front() {
+        let flood = fake.script.floods && state.shutdown;
+        let next = if flood {
+            Some(Item::Delivery(Vec::new()))
+        } else {
+            state.queue.pop_front()
+        };
+        match next {
             Some(Item::Delivery(records)) => {
                 state.outstanding += 1;
                 let records = Box::leak(records.into_boxed_slice());
@@ -3105,6 +3130,61 @@ mod tests {
         });
         until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
         assert_eq!(seen(&id), [Seen::Created, Seen::OwnerExited]);
+    }
+
+    /// EXT-02 (Fault, #118; #455): a round's wait ends at the shutdown
+    /// deadline, never a tick past it, so the supervisor's report is ready
+    /// while the UI thread still waits for it: a tick while one is left,
+    /// what is left of it near the deadline, in whole milliseconds, and none
+    /// once it has passed.
+    #[test]
+    fn a_round_waits_no_further_than_the_shutdown_deadline() {
+        let now = Instant::now();
+        assert_eq!(within(now + Duration::from_secs(60)), TICK);
+        assert!(within(now + Duration::from_millis(5)) <= Duration::from_millis(5));
+        assert!(within(now + Duration::from_micros(1500)) <= Duration::from_millis(2));
+        let near = within(now + Duration::from_micros(12_700));
+        assert_eq!(near.subsec_nanos() % 1_000_000, 0, "{near:?}");
+        assert_eq!(within(now), Duration::ZERO);
+    }
+
+    /// EXT-02 (Fault, #118; #455): an instance that has deliveries without
+    /// end once shutdown is asked is drained only until the shutdown
+    /// deadline: then the supervisor reports, leaving it unconfirmed, so its
+    /// report reaches the UI thread within the handover grace rather than
+    /// never. When the report arrives is not asserted against the grace,
+    /// since a loaded host can delay any thread.
+    #[test]
+    fn draining_stops_at_the_shutdown_deadline() {
+        let flooding = session(0x45, 1);
+        script(
+            &flooding,
+            Script {
+                stalls: true,
+                floods: true,
+                ..Script::default()
+            },
+        );
+        let mut supervised = supervisor(1, 200, fake_library());
+        let supervisor = &mut supervised.supervisor;
+        supervisor.start_client(metadata(&flooding, "2026-11-13T10:00:00.000Z"));
+        assert_eq!(
+            next(supervisor),
+            (flooding.clone(), ClientEvent::Opened { status: false })
+        );
+        let report = supervisor.stop();
+        let unconfirmed = Evidence {
+            current: true,
+            published: true,
+            ..Evidence::default()
+        };
+        assert_eq!(report.instances, [(flooding.clone(), unconfirmed)]);
+        let id = guid(&flooding);
+        assert!(world().drains[&id] > 1);
+        changed(&mut world(), |world| {
+            world.unstalled.insert(id);
+        });
+        until(|world| world.seen.contains(&(id, Seen::OwnerExited)));
     }
 
     /// EXT-01 (Monitor, Fault; #118): shutdown asks every instance at once,

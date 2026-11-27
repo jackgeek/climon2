@@ -30,7 +30,7 @@
 //! runner, so each `exec` runs outside both, through the harness
 //! (`climon2_test_term::Outside`, whose relay this binary declares).
 #![cfg(windows)]
-use climon2_core::metadata::SessionMetadata;
+use climon2_core::{metadata::SessionMetadata, session::PROMPT};
 use climon2_platform::process;
 use climon2_test_term::{
     ConPty, Finished, JobShape, Key, Modifiers, Outside, Terminal, end_process, local_app_data,
@@ -148,6 +148,7 @@ impl Home {
 
     fn outside(&self, install: &Install) -> Outside {
         Outside::new(install.cli())
+            .outside_any_session()
             .env("CLIMON2_HOME", self.home())
             .env("LOCALAPPDATA", self.local())
             .cwd(self.work())
@@ -170,12 +171,13 @@ impl Home {
     }
 
     fn list(&self, install: &Install) -> String {
-        let output = Command::new(install.cli())
-            .arg("list")
-            .env("CLIMON2_HOME", self.home())
-            .env("LOCALAPPDATA", self.local())
-            .output()
-            .unwrap();
+        let output =
+            climon2_test_term::process_outside_any_session(&mut Command::new(install.cli()))
+                .arg("list")
+                .env("CLIMON2_HOME", self.home())
+                .env("LOCALAPPDATA", self.local())
+                .output()
+                .unwrap();
         assert!(output.status.success(), "{output:?}");
         String::from_utf8(output.stdout).unwrap()
     }
@@ -195,11 +197,27 @@ impl Home {
         fs::read_to_string(self.home().join("logs").join(id).join("daemon.log")).unwrap()
     }
 
-    /// Waits until a client of session `id` has created its library
-    /// instance, as its log says.
-    fn wait_for_client_instance(&self, id: &str) {
+    /// Waits until `count` clients of session `id` have created their
+    /// library instances, as their logs say.
+    fn wait_for_client_instances(&self, id: &str, count: usize) {
         let deadline = Instant::now() + Duration::from_secs(20);
-        while !self.session_logs(id).contains("client instance created") {
+        while self.session_logs(id).matches(CLIENT_INSTANCE).count() < count {
+            assert!(Instant::now() < deadline, "{}", self.session_logs(id));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Waits until session `id` has admitted its client, as the client's
+    /// log says (at the debug level, which a test build logs by default).
+    /// Its command's exit then reaches that client, and no longer refuses
+    /// it as a session already ending (#437).
+    fn wait_for_client_attached(&self, id: &str) {
+        self.wait_for_session_log(id, CLIENT_ATTACHED);
+    }
+
+    fn wait_for_session_log(&self, id: &str, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !self.session_logs(id).contains(text) {
             assert!(Instant::now() < deadline, "{}", self.session_logs(id));
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -234,7 +252,7 @@ impl Home {
     /// `c2 kill <selector>`, which starts no daemon, so it runs in the
     /// test's own job.
     fn kill(&self, install: &Install, selector: &str) -> std::process::Output {
-        Command::new(install.cli())
+        climon2_test_term::process_outside_any_session(&mut Command::new(install.cli()))
             .args(["kill", selector])
             .env("CLIMON2_HOME", self.home())
             .env("LOCALAPPDATA", self.local())
@@ -405,6 +423,17 @@ const HELD: &[&str] = &[
     "-NoProfile",
     "-Command",
     "while (-not (Test-Path release)) { Start-Sleep -Milliseconds 50 }; exit -1073741510",
+];
+
+/// [`HELD`], which first writes `mode con`'s report of its console's size
+/// to `seen.txt`.
+const SIZED_HELD: &[&str] = &[
+    "powershell",
+    "-NoLogo",
+    "-NoProfile",
+    "-Command",
+    "mode con | Out-File -Encoding ascii seen.txt; \
+     while (-not (Test-Path release)) { Start-Sleep -Milliseconds 50 }; exit -1073741510",
 ];
 
 /// Puts a built file into a test install as a hard link, so Windows Defender
@@ -808,6 +837,7 @@ fn exec_attach_and_the_client_need_a_console() {
 /// directory.
 fn hosted_cli(install: &Install, home: &Home, arguments: &[&str]) -> Terminal {
     let mut command = CommandBuilder::new(install.cli());
+    climon2_test_term::outside_any_session(&mut command);
     command.args(arguments);
     command.env("CLIMON2_HOME", home.home());
     command.env("LOCALAPPDATA", home.local());
@@ -822,11 +852,13 @@ fn hosted_cli(install: &Install, home: &Home, arguments: &[&str]) -> Terminal {
 fn ctrl_c_during_kill_interrupts_the_client_and_kill_exits_with_its_status() {
     let (install, home) = (Install::new(&[]), Home::new());
     let id = session_id(&home.exec(&install, HELD));
+    warm_the_client(&install, &home, &id);
     let mut killing = hosted_cli(&install, &home, &["kill", &id[..8]]);
     // The client submits the Kill as soon as its library instance exists. A
     // second later the kill is still waiting out the hang-up's five-second
-    // grace, however long the CLI and the client took to start.
-    home.wait_for_client_instance(&id);
+    // grace, as long as the CLI and the client started within the rest of
+    // kill's ten seconds, which count from before the client starts (#450).
+    home.wait_for_client_instances(&id, 2);
     std::thread::sleep(Duration::from_secs(1));
     killing.press(Key::Char('c'), Modifiers::CTRL).unwrap();
     assert_eq!(
@@ -868,4 +900,337 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
     );
     assert!(home.sessions().is_empty());
     assert!(install.daemon_stopped());
+}
+
+/// Attaches to session `id` and detaches again, so that the install's client
+/// and its library have been launched once, and a later client's cold
+/// launch, slow under load, is not charged to kill's deadline (#450).
+fn warm_the_client(install: &Install, home: &Home, id: &str) {
+    let mut attaching = hosted_cli(install, home, &["attach", &id[..8]]);
+    home.wait_for_client_attached(id);
+    attaching.press(Key::Char(']'), Modifiers::CTRL).unwrap();
+    attaching.type_text("d").unwrap();
+    assert_eq!(
+        attaching.wait_exit(Duration::from_secs(20)).unwrap(),
+        0,
+        "{}",
+        attaching.screen()
+    );
+}
+
+/// `c2 exec <options> -- <HELD>` inside session `outer`, in a pseudoconsole
+/// of its own, with this home, in its working directory.
+fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
+    Terminal::spawn(nested_command(install, home, options, HELD), 24, 100).unwrap()
+}
+
+/// `c2 exec <options> -- <command>` inside session `outer`, with this home, in
+/// its working directory.
+fn nested_command(
+    install: &Install,
+    home: &Home,
+    options: &[&str],
+    held: &[&str],
+) -> CommandBuilder {
+    let mut command = CommandBuilder::new(install.cli());
+    climon2_test_term::outside_any_session(&mut command);
+    command.arg("exec");
+    command.args(options);
+    command.arg("--");
+    command.args(held);
+    command.env("CLIMON2_HOME", home.home());
+    command.env("LOCALAPPDATA", home.local());
+    command.env("CLIMON2_SESSION_ID", "outer");
+    command.cwd(home.work());
+    command
+}
+
+/// What the client logs once its session has admitted it.
+const CLIENT_ATTACHED: &str = "client attached";
+
+/// What a client's library logs once its instance exists.
+const CLIENT_INSTANCE: &str = "client instance created";
+
+/// The ID of the one session in `home`, once it runs.
+fn the_only_session(terminal: &Terminal, home: &Home) -> String {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while home.sessions().len() != 1 {
+        assert!(Instant::now() < deadline, "{}", terminal.screen());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    home.sessions()[0].session_id.as_str().to_owned()
+}
+
+/// Waits until one session runs and its client has attached, then releases
+/// its command, which ends the session; the CLI exits with the command's
+/// status. Released any earlier, even once the client's library instance
+/// exists, the command's exit can reach the session before the client's
+/// attach does, and the session refuses the client as ending (#437).
+fn release_the_only_session(terminal: &mut Terminal, home: &Home) {
+    let id = the_only_session(terminal, home);
+    home.wait_for_client_attached(&id);
+    fs::write(home.work().join("release"), b"").unwrap();
+    assert_eq!(
+        terminal.wait_exit(Duration::from_secs(30)).unwrap(),
+        0xC000_013A,
+        "{}",
+        terminal.screen()
+    );
+    fs::remove_file(home.work().join("release")).unwrap();
+}
+
+/// #139: a nested ordinary start keeps the nesting warning and its prompt on
+/// screen and starts nothing until Enter, which starts the session; Ctrl+C
+/// instead exits 130, as Ctrl+C in a client does, with no session or session
+/// log. `--nested` starts the session with neither warning nor wait.
+#[test]
+fn a_nested_start_waits_on_screen_for_enter_and_ctrl_c_cancels_it() {
+    if climon2_test_term::rerun_outside(
+        "a_nested_start_waits_on_screen_for_enter_and_ctrl_c_cancels_it",
+        Duration::from_secs(180),
+    ) {
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let warning = "Starting climon2 session nested for the 1st time";
+    let session_logs = || {
+        fs::read_dir(home.home().join("logs"))
+            .map(|entries| entries.count())
+            .unwrap_or_default()
+    };
+
+    let mut cancelled = nested_cli(&install, &home, &[]);
+    cancelled
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    cancelled.type_text("typed, not Enter").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    let screen = cancelled.screen();
+    assert!(
+        screen.contains(warning) && screen.contains(PROMPT),
+        "{screen}"
+    );
+    assert!(home.sessions().is_empty());
+    cancelled.press(Key::Char('c'), Modifiers::CTRL).unwrap();
+    assert_eq!(
+        cancelled.wait_exit(Duration::from_secs(20)).unwrap(),
+        130,
+        "{}",
+        cancelled.screen()
+    );
+    assert!(home.sessions().is_empty());
+    // Only the general log's folder.
+    assert_eq!(session_logs(), 1);
+
+    let mut started = nested_cli(&install, &home, &[]);
+    started
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(home.sessions().is_empty(), "{}", started.screen());
+    started.press(Key::Enter, Modifiers::NONE).unwrap();
+    release_the_only_session(&mut started, &home);
+    home.wait_until_ended(&install);
+
+    let mut deliberate = nested_cli(&install, &home, &["--nested"]);
+    release_the_only_session(&mut deliberate, &home);
+    let received = String::from_utf8_lossy(&deliberate.received()).into_owned();
+    assert!(!received.contains("nested for the"), "{received}");
+    assert!(!received.contains(PROMPT), "{received}");
+    home.wait_until_ended(&install);
+}
+
+/// #437: a test run from inside a climon2 session starts `c2 exec` outside
+/// it, so neither the headless CLI outside the job nor the one in a
+/// terminal of its own warns or waits at the nested prompt. The test runs
+/// again, outside every job, with the session's variables set; its own
+/// marker, not those variables, which a real session also sets, tells that
+/// run from the first.
+#[test]
+fn the_tests_start_exec_outside_the_session_they_run_in() {
+    const NAME: &str = "the_tests_start_exec_outside_the_session_they_run_in";
+    const MARKER: &str = "CLIMON2_TEST_IN_A_SESSION";
+    if std::env::var_os(MARKER).is_none() {
+        let finished = Outside::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(MARKER, "1")
+            .env("CLIMON2_SESSION_ID", "outer")
+            .env("CLIMON2_SESSION_DEPTH", "1")
+            .run(Duration::from_secs(180))
+            .unwrap();
+        assert!(
+            finished.status == 0 && finished.stdout.contains("1 passed"),
+            "{finished:?}"
+        );
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let finished = home.exec(&install, HELD);
+    assert_eq!(finished.stderr, "", "{finished:?}");
+    session_id(&finished);
+    fs::write(home.work().join("release"), b"").unwrap();
+    home.wait_until_ended(&install);
+    fs::remove_file(home.work().join("release")).unwrap();
+
+    let arguments: Vec<&str> = ["exec", "--"].iter().chain(HELD).copied().collect();
+    let mut execing = hosted_cli(&install, &home, &arguments);
+    release_the_only_session(&mut execing, &home);
+    home.wait_until_ended(&install);
+}
+
+/// #437: a nested session starts at the size its terminal has when Enter
+/// answers the prompt, not the size it had when the prompt showed. The CLI
+/// is held before its client (`CLIMON2_CLI_HOLD`), so the command sees the
+/// size the daemon gave it before any client resizes it. ConPTY applies a
+/// resize apart from input, so Enter waits until the console reports the
+/// new size.
+#[test]
+fn a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at() {
+    if climon2_test_term::rerun_outside(
+        "a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at",
+        Duration::from_secs(180),
+    ) {
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let (seen, hold) = (home.work().join("seen.txt"), home.work().join("hold"));
+    let mut command = nested_command(&install, &home, &[], SIZED_HELD);
+    command.env("CLIMON2_CLI_HOLD", &hold);
+    let mut terminal = Terminal::spawn(command, 24, 100).unwrap();
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    terminal.resize(40, 120).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let size = console_size(terminal.pid());
+        if size == "120x40" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the console stays {size}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
+    let size = loop {
+        let text = fs::read_to_string(&seen).unwrap_or_default();
+        if let Some(size) = mode_size(&text) {
+            break size;
+        }
+        assert!(Instant::now() < deadline, "{text:?}\n{}", terminal.screen());
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(size, "40x120");
+    fs::write(&hold, b"").unwrap();
+    release_the_only_session(&mut terminal, &home);
+    home.wait_until_ended(&install);
+}
+
+/// `<lines>x<columns>` from `mode con`'s report, once both its lines are
+/// whole.
+fn mode_size(text: &str) -> Option<String> {
+    let value = |label: &str| {
+        text.split_inclusive('\n')
+            .find(|line| line.contains(label) && line.ends_with('\n'))
+            .and_then(|line| line.split_whitespace().last())
+    };
+    Some(format!("{}x{}", value("Lines:")?, value("Columns:")?))
+}
+
+/// #437: `release_the_only_session` releases the command only once the
+/// client has attached. With the CLI held before its client
+/// (`CLIMON2_CLI_HOLD`), the session runs with no client and its logs show
+/// no attach; once the CLI goes on, the client attaches and the command's
+/// status reaches it.
+#[test]
+fn a_nested_session_is_released_only_once_its_client_has_attached() {
+    if climon2_test_term::rerun_outside(
+        "a_nested_session_is_released_only_once_its_client_has_attached",
+        Duration::from_secs(180),
+    ) {
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let hold = home.work().join("hold");
+    let mut command = nested_command(&install, &home, &[], HELD);
+    command.env("CLIMON2_CLI_HOLD", &hold);
+    let mut terminal = Terminal::spawn(command, 24, 100).unwrap();
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
+    let id = the_only_session(&terminal, &home);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !hold.with_extension("held").exists() {
+        assert!(Instant::now() < deadline, "{}", terminal.screen());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !home.session_logs(&id).contains(CLIENT_ATTACHED),
+        "{}",
+        home.session_logs(&id)
+    );
+    fs::write(&hold, b"").unwrap();
+    release_the_only_session(&mut terminal, &home);
+    home.wait_until_ended(&install);
+}
+
+/// Set in the probe run [`console_size`] starts: the process whose console
+/// it measures.
+const CONSOLE_OF: &str = "CLIMON2_TEST_CONSOLE_OF";
+
+/// `<cols>x<rows>` of the console window process `pid` is attached to, as
+/// the CLI reads it, measured by this test binary run again as a probe.
+fn console_size(pid: u32) -> String {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW: the probe leaves its own console for `pid`'s.
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "climon2_console_size_probe", "--nocapture"])
+        .env(CONSOLE_OF, pid.to_string())
+        .creation_flags(0x0800_0000)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("CONSOLE:"))
+        .unwrap_or_else(|| panic!("{output:?}"))
+        .to_owned()
+}
+
+/// The probe [`console_size`] runs; run as an ordinary test it does nothing.
+#[test]
+fn climon2_console_size_probe() {
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, CONSOLE_SCREEN_BUFFER_INFO, FreeConsole, GetConsoleScreenBufferInfo,
+    };
+    let Some(pid) = std::env::var_os(CONSOLE_OF) else {
+        return;
+    };
+    let pid: u32 = pid.to_str().unwrap().parse().unwrap();
+    // This process's own console, if any, is left; then `pid`'s is shared.
+    unsafe { FreeConsole() };
+    assert_ne!(
+        unsafe { AttachConsole(pid) },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    let output = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("CONOUT$")
+        .unwrap();
+    let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+    // The handle is the attached console's output; the call writes one
+    // CONSOLE_SCREEN_BUFFER_INFO.
+    assert_ne!(
+        unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle(), &mut info) },
+        0
+    );
+    let window = info.srWindow;
+    println!(
+        "CONSOLE:{}x{}",
+        window.Right - window.Left + 1,
+        window.Bottom - window.Top + 1
+    );
 }

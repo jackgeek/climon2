@@ -108,8 +108,18 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
 }
 
 /// One wait for host input during shutdown, and how long shutdown waits
-/// past its deadline for the supervisor's last round.
+/// past its deadline for the discovery pass to end.
 const TICK: Duration = Duration::from_millis(20);
+
+/// How long shutdown waits past its deadline for the supervisor's report
+/// (owner decision on #455). The supervisor's last round ends at the
+/// deadline, but its thread must still be scheduled to hand the report
+/// over, which a loaded host can delay well past one tick; without the
+/// report, every session's evidence is lost to "client supervisor
+/// unfinished". The supervisor may also have read the shutdown command up
+/// to one of its own ticks late, which only shortens its shutdown, never
+/// moves its end. The grace costs time only while the report is late.
+const HANDOVER: Duration = Duration::from_millis(200);
 
 /// Owns the host until an ending, shuts every client down, and releases the
 /// host before any diagnostic, all within `deadlines.final_host_ms` of the
@@ -335,14 +345,12 @@ impl Monitor {
     /// A host that failed is left alone. Returns whether the host still
     /// worked, and what shutdown proved, discovery's end included.
     fn shut_down(&mut self, host: &mut Host, hosting: bool) -> (io::Result<()>, shutdown::Report) {
-        let deadline = self.supervisor.shut_down() + TICK;
+        let deadline = self.supervisor.shut_down();
         self.discovery.stop();
         let mut hosted = Ok(());
         let mut waiting = Vec::new();
         let mut report = None;
-        while !(report.is_some() && self.discovery.join())
-            && deadline.checked_duration_since(Instant::now()).is_some()
-        {
+        while waits(deadline, report.is_some(), self.discovery.join()) {
             waiting = self.supervisor.waiting().unwrap_or(waiting);
             hosted = hosted.and_then(|()| self.exiting(host, hosting, waiting.len()));
             report = report.or_else(|| self.supervisor.report());
@@ -462,12 +470,12 @@ impl Monitor {
 
     /// Paints the current scene when it differs from what the screen shows.
     /// Each terminal first learns whether this frame shows its applied
-    /// restoration, so its control and input readiness describe the frame
-    /// being painted. While the host has yet to take what it was handed,
-    /// the frame is drawn only once it has: one drawn meanwhile would only
-    /// be replaced, and a host that takes little at a time, as a macOS
-    /// terminal does, would wait for a whole frame to be drawn for each
-    /// write (#419).
+    /// restoration, so its control and input readiness are in force once
+    /// this frame comes due, even when its draw waits (#419). While the
+    /// host has yet to take what it was handed, the frame is drawn only
+    /// once it has: one drawn meanwhile would only be replaced, and a host
+    /// that takes little at a time, as a macOS terminal does, would wait for
+    /// a whole frame to be drawn for each write (#419).
     fn show(&mut self) -> io::Result<()> {
         let now = Instant::now();
         self.frames.painted(now);
@@ -1561,6 +1569,19 @@ fn draw(
     Ok(())
 }
 
+/// Whether shutdown, past `deadline` or not, still waits: for the
+/// supervisor's report until the handover grace has passed, and for the
+/// discovery pass until a tick has, so a pass that never ends costs no
+/// grace when the report came in time.
+fn waits(deadline: Instant, reported: bool, discovered: bool) -> bool {
+    let until = |grace: Duration| {
+        (deadline + grace)
+            .checked_duration_since(Instant::now())
+            .is_some()
+    };
+    (!reported && until(HANDOVER)) || (!discovered && until(TICK))
+}
+
 /// What shutdown knows when the supervisor itself never finished: nothing
 /// is confirmed of the sessions it last waited for.
 fn unfinished(waiting: Vec<SessionId>) -> shutdown::Report {
@@ -1673,11 +1694,30 @@ mod tests {
     use super::{
         Canvas, Control, Kind, Mouse, Placeholder, Presentation, Recovery, Shown, Terminal, View,
         also, cache, control, inspected, placeholder, retained, revealed, says, selected, terminal,
-        without_view,
+        waits, without_view,
     };
     use crate::attention::NO_ATTENTION;
     use climon2_core::SessionId;
     use std::time::Instant;
+
+    /// EXT-02 (pure supplement, #455): past the shutdown deadline, shutdown
+    /// waits the 200 ms handover grace only while the supervisor's report
+    /// is missing; a discovery pass that never ends is waited for only a
+    /// tick, as before, so with the report in time it costs no grace.
+    #[test]
+    fn only_a_missing_report_is_waited_for_past_a_tick() {
+        let now = Instant::now();
+        let ticked = now - std::time::Duration::from_millis(60);
+        assert!(waits(ticked, false, true));
+        assert!(waits(ticked, false, false));
+        assert!(!waits(ticked, true, false));
+        assert!(!waits(ticked, true, true));
+        let later = now + std::time::Duration::from_secs(60);
+        assert!(waits(later, true, false));
+        assert!(!waits(later, true, true));
+        let graced = now - std::time::Duration::from_secs(1);
+        assert!(!waits(graced, false, false));
+    }
 
     /// A monitor on an empty home in `directory`, as `c2 monitor` starts it
     /// at 60x12, without a host.
@@ -1697,13 +1737,44 @@ mod tests {
         super::Monitor::start(size, startup, &dispatch, "info".to_owned()).unwrap()
     }
 
+    /// The runtime directory prepared for a home, removed when dropped
+    /// unless kept.
+    struct Runtime {
+        path: std::path::PathBuf,
+        kept: bool,
+    }
+
+    impl Runtime {
+        /// Prepares the runtime directory for `home`, as a monitor does.
+        fn prepared(home: &std::path::Path) -> Self {
+            let directory = climon2_platform::runtime::RuntimeDirectory::prepare(home).unwrap();
+            let path = directory.path().to_owned();
+            Self { path, kept: false }
+        }
+    }
+
+    impl Drop for Runtime {
+        /// Removes the directory unless it is kept; a failure to remove it
+        /// names the path and the error, after no earlier failure.
+        fn drop(&mut self) {
+            if self.kept {
+                return;
+            }
+            let removed = std::fs::remove_dir(&self.path);
+            if let (Err(error), false) = (removed, std::thread::panicking()) {
+                panic!("removing {}: {error}", self.path.display());
+            }
+        }
+    }
+
     /// A started monitor whose supervisor and discovery stop when it is
-    /// dropped, a failed assertion included.
-    struct Stopping(super::Monitor);
+    /// dropped, a failed assertion included, and its home's runtime
+    /// directory, removed once they have.
+    struct Stopping(super::Monitor, Runtime);
 
     impl Drop for Stopping {
-        /// Stops the supervisor and discovery, and waits for both, at most
-        /// 10 s.
+        /// Stops the supervisor and discovery and waits for both, at most
+        /// 10 s; the runtime directory is kept when they have not stopped.
         fn drop(&mut self) {
             let monitor = &mut self.0;
             monitor.supervisor.shut_down();
@@ -1714,8 +1785,14 @@ mod tests {
                 report = report.or_else(|| monitor.supervisor.report());
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
+            let stopped = report.is_some() && monitor.discovery.join();
+            self.1.kept = !stopped;
             if !std::thread::panicking() {
-                assert!(report.is_some(), "the supervisor never stopped");
+                let runtime = self.1.path.display();
+                assert!(
+                    stopped,
+                    "the supervisor or discovery never stopped; {runtime} is left"
+                );
             }
         }
     }
@@ -1727,7 +1804,10 @@ mod tests {
     #[test]
     fn a_frame_due_while_the_host_is_backed_up_is_drawn_once_it_has_room() {
         let directory = tempfile::tempdir().unwrap();
-        let mut stopping = Stopping(started(&std::fs::canonicalize(directory.path()).unwrap()));
+        let home = std::fs::canonicalize(directory.path()).unwrap();
+        let runtime = Runtime::prepared(&home);
+        let path = runtime.path.clone();
+        let mut stopping = Stopping(started(&home), runtime);
         let monitor = &mut stopping.0;
         // The host takes the first attention report, and the key
         // introduction closes.
@@ -1751,6 +1831,8 @@ mod tests {
         assert!(!monitor.screen.undrawn());
         let newest = String::from_utf8_lossy(monitor.output.pending()).into_owned();
         assert!(newest.contains(NO_ATTENTION), "{newest}");
+        drop(stopping);
+        assert!(!path.exists(), "{}", path.display());
     }
 
     /// EXT-03 (pure supplement, #118): a shutdown's failure is said after

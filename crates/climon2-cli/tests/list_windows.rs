@@ -166,6 +166,7 @@ fn list_shows_a_live_session_to_the_consoles_width() {
         write_frame(&mut stream, &Frame::new(1, body.into_bytes()).unwrap()).unwrap();
     });
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_climon2-cli"));
+    climon2_test_term::outside_any_session(&mut command);
     command.arg("list");
     command.env("CLIMON2_HOME", root.path().join("home"));
     command.env("LOCALAPPDATA", local.path());

@@ -20,6 +20,7 @@ mod fixtures;
 mod library;
 mod measure;
 mod mutation_plan;
+mod mutation_slice;
 // Only the Windows dist reads PE files; the reader's tests run everywhere.
 #[cfg_attr(unix, allow(dead_code))]
 mod pe;
@@ -28,13 +29,18 @@ mod quality;
 mod release;
 mod windows_source;
 
+use mutation_slice::{Selection, Slice};
+
 const HELP: &str = "\
-Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|windows-changed <base>|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...|qualify candidate ...>
+Usage: cargo xtask <check [--full] [--mutate-all] [--print-mutation-plan]|test|windows-changed <base>|dist|install [--dir <directory>]|fixtures-check|setup-quality|mutation-probe|tooling-probe|release-check|mutate [--native-only] [--mutate-all|--mutate-slice <0-9>]|measure --archive <archive> --out <directory> [<flag>...]|qualify run ...|qualify verdict ...|qualify candidate ...>
 
 check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutation-load measurement and mutation.
 check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
-added or changed since the merge base of CLIMON2_MUTATION_BASE (default HEAD) and HEAD;
-new files are mutated whole. One mutator run takes every file with a selected site, so the
+added or changed since the merge base of CLIMON2_MUTATION_BASE (default HEAD) and HEAD, and of
+the functions in the same file that name a changed struct, enum, const, static or type;
+a changed import selects the functions naming it; new files are mutated whole, as are files
+with a changed glob import, item macro, trait signature, associated type or union, or an
+unparsable base. One mutator run takes every file with a selected site, so the
 workspace baseline runs once; its --lines is the union of the lines holding each file's
 selected sites (from mutator --scan).
 check --full is the full gate, run before a feature branch merges to main with
@@ -56,7 +62,8 @@ or the x86_64 Windows zip in target/dist.
 install builds verified production artifacts and runs their installer (optional --dir) on
 every dist host; it leaves PATH and shell start-up files alone and prints the PATH entry to add.
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
-mutate runs coverage, crapper and mutation checks on shipped source.
+mutate runs coverage, crapper and mutation checks on shipped source, mutating what check would
+and also the functions a changed test names, or the whole file when it names none.
 measure runs the PERF-01 matrix on an exact candidate archive (climon2-measure; see its README):
 a missed target is a failed Measure case in the report, not a failed command.
 qualify run writes one platform's evidence records (#122) for every acceptance-matrix case on this
@@ -68,6 +75,8 @@ manual checklist.
 qualify candidate names a final tag's latest release candidate, whose checklist records count,
 and fails unless the tag differs from it only in the version stamp and qualification/.
 mutate --native-only excludes shared source; CI qualifies only host-exclusive implementations.
+mutate --mutate-slice <k> mutates the whole shipped files in slice k of 10, chosen by a hash of
+each file's path; main mutates the next slice on each squash-merge.
 On Windows it tests only what builds there, after the sentinel and a probe that a killed
 process keeps its coverage. Windows builds no check, tooling-probe or release-check.
 Each load round runs 8 workspace suites at once before mutating, even with nothing to mutate;
@@ -102,14 +111,8 @@ fn main() -> ExitCode {
         qualify::run(workspace_root(), &args[1..])
     } else if args == ["fixtures-check"] {
         fixtures::check(workspace_root())
-    } else if args == ["mutate"] {
-        quality::check(workspace_root(), false, quality::Scope::Host)
-    } else if args == ["mutate", "--mutate-all"] {
-        quality::check(workspace_root(), true, quality::Scope::Host)
-    } else if args == ["mutate", "--native-only"] {
-        quality::check(workspace_root(), false, quality::Scope::Native)
-    } else if args == ["mutate", "--native-only", "--mutate-all"] {
-        quality::check(workspace_root(), true, quality::Scope::Native)
+    } else if let Some((selection, scope)) = mutate_options(&args) {
+        quality::check(workspace_root(), selection, scope)
     } else {
         eprintln!("xtask: error: unknown arguments\n\n{HELP}");
         return ExitCode::from(2);
@@ -141,6 +144,28 @@ fn unix_command(args: &[OsString]) -> Option<io::Result<()>> {
 #[cfg(not(unix))]
 fn unix_command(_: &[OsString]) -> Option<io::Result<()>> {
     None
+}
+
+/// `mutate [--native-only] [--mutate-all|--mutate-slice <k>]`, in that order.
+fn mutate_options(args: &[OsString]) -> Option<(Selection, quality::Scope)> {
+    let args: Vec<_> = args.iter().map(|arg| arg.to_str()).collect::<Option<_>>()?;
+    let (command, mut rest) = args.split_first()?;
+    if *command != "mutate" {
+        return None;
+    }
+    let scope = if rest.first() == Some(&"--native-only") {
+        rest = &rest[1..];
+        quality::Scope::Native
+    } else {
+        quality::Scope::Host
+    };
+    let selection = match rest {
+        [] => Selection::Changed,
+        ["--mutate-all"] => Selection::All,
+        ["--mutate-slice", slice] => Selection::Slice(Slice::parse(slice)?),
+        _ => return None,
+    };
+    Some((selection, scope))
 }
 
 fn workspace_root() -> &'static Path {
@@ -181,6 +206,14 @@ impl CheckOptions {
         Some(options)
     }
 
+    fn selection(&self) -> Selection {
+        if self.all {
+            Selection::All
+        } else {
+            Selection::Changed
+        }
+    }
+
     fn scope(&self) -> quality::Scope {
         if self.full {
             quality::Scope::Full
@@ -193,13 +226,13 @@ impl CheckOptions {
 #[cfg(unix)]
 fn check(options: CheckOptions) -> io::Result<()> {
     if options.print {
-        return quality::plan(workspace_root(), options.all, options.scope());
+        return quality::plan(workspace_root(), options.selection(), options.scope());
     }
     fixtures::check(workspace_root())?;
     test()?;
     quality::probe(workspace_root())?;
     quality::tooling_probe(workspace_root())?;
-    quality::check(workspace_root(), options.all, options.scope())
+    quality::check(workspace_root(), options.selection(), options.scope())
 }
 
 fn test() -> io::Result<()> {
@@ -242,6 +275,58 @@ fn test() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod mutate_tests {
+    use super::*;
+    use mutation_slice::SLICES;
+    use quality::Scope::{Host, Native};
+
+    fn parse(args: &[&str]) -> Option<(Selection, quality::Scope)> {
+        mutate_options(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn mutate_takes_a_scope_then_one_selection() {
+        assert_eq!(parse(&["mutate"]), Some((Selection::Changed, Host)));
+        assert_eq!(
+            parse(&["mutate", "--mutate-all"]),
+            Some((Selection::All, Host))
+        );
+        assert_eq!(
+            parse(&["mutate", "--native-only"]),
+            Some((Selection::Changed, Native))
+        );
+        assert_eq!(
+            parse(&["mutate", "--native-only", "--mutate-all"]),
+            Some((Selection::All, Native))
+        );
+        for index in 0..SLICES {
+            let text = index.to_string();
+            let slice = Selection::Slice(Slice::parse(&text).unwrap());
+            assert_eq!(
+                parse(&["mutate", "--mutate-slice", &text]),
+                Some((slice, Host))
+            );
+            assert_eq!(
+                parse(&["mutate", "--native-only", "--mutate-slice", &text]),
+                Some((slice, Native))
+            );
+        }
+        for args in [
+            &["mutate", "--mutate-slice"][..],
+            &["mutate", "--mutate-slice", "10"],
+            &["mutate", "--mutate-all", "--mutate-slice", "1"],
+            &["mutate", "--mutate-slice", "1", "--native-only"],
+            &["mutate", "--mutate-all", "--native-only"],
+            &["mutate", "--native-only", "--native-only"],
+            &["mutate", "--full"],
+            &["check", "--mutate-all"],
+        ] {
+            assert_eq!(parse(args), None, "{args:?}");
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
