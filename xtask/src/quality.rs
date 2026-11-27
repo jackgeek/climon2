@@ -376,19 +376,33 @@ fn scanned_plan(root: &Path, targets: Vec<Target>) -> io::Result<RunPlan> {
 }
 
 /// Each site's line in a mutator scan of `path`. A site line starts with a mark, `*` when its
-/// function changed since the mutator's last snapshot, otherwise a space. Fails unless the
-/// scan has `path`'s header and as many of its site lines as the header counts, so that a
-/// path the mutator names differently cannot pass as a file without sites.
+/// function changed since the mutator's last snapshot, otherwise a space. The scan's header
+/// names the file as the mutator does, with either separator, and relative or absolute
+/// (#449 review 2); its site lines name it the same way. Fails unless the scan has a header
+/// for `path` and as many of its site lines as the header counts, so that a path the mutator
+/// names differently cannot pass as a file without sites.
 fn scan_lines(scan: &str, path: &Path) -> io::Result<Vec<usize>> {
-    let path = path.display();
-    let suffix = format!(" mutation sites in {path}");
-    let counted = scan.lines().find_map(|line| {
-        line.strip_prefix("Scan: ")?
-            .strip_suffix(&suffix)?
-            .parse::<usize>()
-            .ok()
-    });
-    let prefix = format!(" {path}:");
+    let path = path.display().to_string();
+    let headers: Vec<(&str, &str)> = scan
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("Scan: ")?
+                .split_once(" mutation sites in ")
+        })
+        .filter(|(_, scanned)| same_file(scanned, &path))
+        .collect();
+    // Prefer the header that spells the path exactly, should another only end with it.
+    let Some((count, scanned)) = headers
+        .iter()
+        .find(|(_, scanned)| *scanned == path)
+        .or(headers.first())
+    else {
+        return Err(io::Error::other(format!(
+            "mutator scan has no \"Scan: N mutation sites in {path}\" header; \
+             it names the file differently from the gate"
+        )));
+    };
+    let prefix = format!(" {scanned}:");
     let lines = scan
         .lines()
         .filter_map(|line| {
@@ -403,17 +417,28 @@ fn scan_lines(scan: &str, path: &Path) -> io::Result<Vec<usize>> {
                 .map_err(|error| io::Error::other(format!("mutator scan: {rest}: {error}")))
         })
         .collect::<io::Result<Vec<usize>>>()?;
-    match counted {
-        Some(count) if count == lines.len() => Ok(lines),
-        Some(count) => Err(io::Error::other(format!(
+    match count.parse::<usize>() {
+        Ok(count) if count == lines.len() => Ok(lines),
+        _ => Err(io::Error::other(format!(
             "mutator scan counts {count} mutation sites in {path} but lists {}",
             lines.len()
         ))),
-        None => Err(io::Error::other(format!(
-            "mutator scan has no \"Scan: N mutation sites in {path}\" header; \
-             it names the file differently from the gate"
-        ))),
     }
+}
+
+/// Whether the mutator's `scanned` path is the gate's relative `path`: the same once both
+/// use `/`, and on Windows either case, or an absolute form ending with it.
+fn same_file(scanned: &str, path: &str) -> bool {
+    let normal = |text: &str| {
+        let text = text.replace('\\', "/");
+        if cfg!(windows) {
+            text.to_lowercase()
+        } else {
+            text
+        }
+    };
+    let (scanned, path) = (normal(scanned), normal(path));
+    scanned == path || scanned.ends_with(&format!("/{path}"))
 }
 
 pub(crate) fn run(command: &mut Command) -> io::Result<()> {
@@ -1910,6 +1935,7 @@ esac
             load_fails: false,
             changed: true,
             added: false,
+            base: None,
         });
         assert!(run.success, "{}", run.output);
         let load = run.started("load").unwrap();
@@ -1932,6 +1958,7 @@ esac
             load_fails: true,
             changed: true,
             added: false,
+            base: None,
         });
         assert!(!run.success, "{}", run.output);
         assert!(run.output.contains("flaky_fixture"), "{}", run.output);
@@ -1946,6 +1973,7 @@ esac
             load_fails: true,
             changed: false,
             added: false,
+            base: None,
         });
         assert!(!run.success, "{}", run.output);
         assert!(run.output.contains("flaky_fixture"), "{}", run.output);
@@ -1954,6 +1982,7 @@ esac
             load_fails: false,
             changed: false,
             added: false,
+            base: None,
         });
         assert!(run.success, "{}", run.output);
         assert!(run.started("load").is_some(), "{:?}", run.events);
@@ -1970,6 +1999,7 @@ esac
                 load_fails: true,
                 changed: true,
                 added: false,
+                base: None,
             });
             assert!(run.success, "{scope}: {}", run.output);
             assert_eq!(run.started("load"), None, "{scope}: {:?}", run.events);
@@ -1990,6 +2020,7 @@ esac
             load_fails: false,
             changed: true,
             added: false,
+            base: None,
         });
         assert!(run.success, "{}", run.output);
         assert_eq!(run.option("load", "--rounds"), "5");
@@ -2010,6 +2041,7 @@ esac
             load_fails: false,
             changed: true,
             added: false,
+            base: None,
         });
         assert!(run.success, "{}", run.output);
         assert_eq!(run.option("load", "--rounds"), "1");
@@ -2024,6 +2056,7 @@ esac
             load_fails: false,
             changed: false,
             added: false,
+            base: None,
         });
         assert!(run.success, "{}", run.output);
         assert_eq!(run.option("load", "--rounds"), "1");
@@ -2585,7 +2618,7 @@ esac
     /// sites than it counts, fails rather than passing as a file without sites.
     #[test]
     fn a_scan_without_the_targets_header_or_with_missing_sites_fails() {
-        let scan = "Scan: 1 mutation sites in C:/work/a.rs\n  C:/work/a.rs:4 + -> -  [defn/f]\n";
+        let scan = "Scan: 1 mutation sites in C:/work/ba.rs\n  C:/work/ba.rs:4 + -> -  [defn/f]\n";
         let error = scan_lines(scan, Path::new("a.rs")).unwrap_err().to_string();
         assert!(
             error.contains("no \"Scan: N mutation sites in a.rs\" header"),
@@ -2600,6 +2633,25 @@ esac
         assert_eq!(
             scan_lines("Scan: 0 mutation sites in a.rs\n", Path::new("a.rs")).unwrap(),
             Vec::<usize>::new()
+        );
+    }
+
+    /// #449 review 2: the mutator may name a target with backslashes, or absolute.
+    #[test]
+    fn a_scan_naming_the_file_with_backslashes_or_absolute_is_read() {
+        let scan = r"Scan: 2 mutation sites in C:\work\crates\core\src\lib.rs
+  C:\work\crates\core\src\lib.rs:4 + -> -  [defn/f]
+* C:\work\crates\core\src\lib.rs:7 < -> <=  [defn/g]
+Scan: 1 mutation sites in crates\core\src\other.rs
+  crates\core\src\other.rs:2 + -> -  [defn/h]
+";
+        assert_eq!(
+            scan_lines(scan, Path::new("crates/core/src/lib.rs")).unwrap(),
+            vec![4, 7]
+        );
+        assert_eq!(
+            scan_lines(scan, Path::new("crates/core/src/other.rs")).unwrap(),
+            vec![2]
         );
     }
 

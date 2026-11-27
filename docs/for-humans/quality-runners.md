@@ -36,12 +36,17 @@ file kept the Linux gate busy for one to two hours.
   function in the same file whose code names it, counting the header of the
   `impl` the function is in. For example, a new field in `Frame` selects every
   method in `impl Frame`. The rule goes one step only: a function chosen this
-  way does not choose the functions that call it.
+  way does not choose the functions that call it. Deleting or renaming one
+  selects the functions that used it. A name written inside a format string,
+  such as `"{LIMIT}"`, counts, and so do the names a `use` imports from it, so
+  changing `Mode` selects the functions that use `A` after `use Mode::{A, B}`.
 - **Imports.** Each name a `use` imports is compared on its own. A name that
   is added, removed or imported from somewhere else selects, in the same way,
   every function that uses it, by its original name or its `as` name. Adding
   `Placeholder` to `use screen::{Canvas, Scene}` selects only the functions
-  that name `Placeholder`.
+  that name `Placeholder`. If no function names a changed import, before or
+  after the change, it is most likely a trait whose methods are called, and
+  those calls can't be found by name, so the whole file is mutated.
 - **Tests.** A test that is added, removed or changed (`mod tests`, `#[test]`
   or `#[cfg(test)]`) selects the functions in the same file that the test's
   code names, methods included, under its old and its new version. A
@@ -53,6 +58,8 @@ file kept the Linux gate busy for one to two hours.
   - its base version is not valid Rust;
   - it adds, removes or changes a glob import (`use x::*`) or an import as
     `_`, whose names can't be found;
+  - it has a glob import of a changed or deleted item, such as `use Mode::*`
+    when `Mode` changed;
   - it changes code that has no dependents rule yet: a `macro_rules!` or
     other item macro, a trait's method signature or associated type, an
     impl's associated type, a `union` or an `extern` block.

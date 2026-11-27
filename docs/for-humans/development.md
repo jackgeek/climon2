@@ -100,7 +100,10 @@ It comes in two levels:
     ([#445](https://github.com/jackgeek/climon2/issues/445)).
   - Each import of a `use` is compared on its own. One that is added, removed
     or changed selects, in the same way, the functions that name it. A
-    changed glob import, or one imported as `_`, marks the whole file.
+    changed glob import, one imported as `_`, one that no function names (most
+    likely a trait), or a glob of a changed item, marks the whole file.
+  - A deleted or renamed item selects the functions that used it. A name in a
+    format string (`"{LIMIT}"`) counts as naming it.
   - A file is mutated whole if a changed item has no such rule yet: for
     example an item macro, a trait method signature, an associated type or a
     `union`. So is a file whose base is not valid Rust.

@@ -26,6 +26,14 @@
 //! names nothing that can be found, so it marks the whole file (owner decision,
 //! #449).
 //!
+//! Review 2 of #449 widened what "names" means, preferring the whole file
+//! where a name can't be found: a deleted or renamed `const`, `static` or type
+//! selects its former users; a function names an identifier written as a format
+//! argument (`"{LIMIT}"`); the names imported from a changed item
+//! (`use Mode::{A, B}`) name it, and a glob of one (`use Mode::*`) marks the
+//! whole file; and a changed import that no function names, before or after,
+//! most likely a trait used only through its methods, marks the whole file.
+//!
 //! Any other changed item outside a function, `const` or `static` (an item
 //! macro such as `macro_rules!`, a trait's method signature or associated type
 //! or const without a default, an impl's associated type or macro, a `union`,
@@ -94,11 +102,30 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
             .collect()
     };
     let imports = names(Kind::Use);
-    let whole = unmatched.iter().any(|record| record.kind == Kind::Other)
+    // A changed import that no function names, before or after, is most likely a trait used
+    // only through its methods, which no name can find.
+    let named_by_functions: BTreeSet<&str> = old
+        .iter()
+        .chain(&new)
+        .filter(|record| record.kind == Kind::Function)
+        .flat_map(|record| record.idents.iter().map(String::as_str))
+        .collect();
+    let mut whole = unmatched.iter().any(|record| record.kind == Kind::Other)
         || imports.contains("*")
-        || imports.contains("_");
+        || imports.contains("_")
+        || unmatched.iter().any(|record| {
+            record.kind == Kind::Use
+                && !record
+                    .idents
+                    .iter()
+                    .any(|ident| named_by_functions.contains(ident.as_str()))
+        });
     let tests = unmatched.iter().any(|record| record.kind == Kind::Test);
     let tested = names(Kind::Test);
+    let uses: Vec<&Record> = new
+        .iter()
+        .filter(|record| record.kind == Kind::Use)
+        .collect();
 
     let mut base: HashMap<(&str, &str), usize> = HashMap::new();
     for record in old.iter().filter(|record| record.selectable()) {
@@ -128,6 +155,27 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
             })
             .map(|(record, _)| record.ident.as_str()),
     );
+    // A deleted or renamed `const`, `static` or type changes the functions that used it.
+    let kept: std::collections::HashSet<(&str, Kind)> = new
+        .iter()
+        .map(|record| (record.name.as_str(), record.kind))
+        .collect();
+    named.extend(
+        old.iter()
+            .filter(|record| matches!(record.kind, Kind::Value | Kind::Type))
+            .filter(|record| !kept.contains(&(record.name.as_str(), record.kind)))
+            .map(|record| record.ident.as_str()),
+    );
+    // Names imported from a changed item (`use Mode::{A, B}`) name it too; a glob of one
+    // (`use Mode::*`) hides which, so the whole file is mutated.
+    let mut imported = BTreeSet::new();
+    for record in &uses {
+        if named.contains(record.ident.as_str()) {
+            whole |= record.idents.contains("*");
+            imported.extend(record.idents.iter().map(String::as_str));
+        }
+    }
+    named.extend(imported);
     let item = |record: &Record| ChangedItem {
         name: record.name.clone(),
         lines: record.lines.clone(),
@@ -177,7 +225,8 @@ enum Kind {
     Value,
     /// A `struct`, `enum` or `type` alias.
     Type,
-    /// One import of a `use`; its idents are the names it binds, `*` for a glob.
+    /// One import of a `use`; its idents are the names it binds, `*` for a glob, and its
+    /// ident the last segment it is imported from.
     Use,
     /// An item no other record's tokens hold and no dependents rule covers.
     Other,
@@ -242,7 +291,31 @@ fn token_idents(stream: TokenStream, idents: &mut BTreeSet<String>) {
             TokenTree::Ident(ident) => {
                 idents.insert(ident.to_string());
             }
-            _ => {}
+            TokenTree::Literal(literal) => format_idents(&literal.to_string(), idents),
+            TokenTree::Punct(_) => {}
+        }
+    }
+}
+
+/// The identifiers a string literal may name as a format argument, `LIMIT` in
+/// `"{LIMIT}"` or `"{LIMIT:?}"`, so that a function naming a value only there names it.
+fn format_idents(literal: &str, idents: &mut BTreeSet<String>) {
+    if !literal.contains('"') {
+        return;
+    }
+    let mut rest = literal;
+    while let Some(start) = rest.find('{') {
+        rest = &rest[start + 1..];
+        if let Some(escaped) = rest.strip_prefix('{') {
+            rest = escaped;
+            continue;
+        }
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let name = &rest[..end];
+        if name.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+            idents.insert(name.to_owned());
         }
     }
 }
@@ -344,10 +417,10 @@ impl Collector {
         };
         let mut imports = Vec::new();
         flatten(&item.tree, leading.to_owned(), None, &mut imports);
-        for (path, idents) in imports {
+        for (path, idents, from) in imports {
             self.records.push(Record {
                 name: self.path(""),
-                ident: String::new(),
+                ident: from,
                 kind: Kind::Use,
                 tokens: format!("{} {path}", prefix.join(" ")),
                 idents,
@@ -676,18 +749,20 @@ fn compact(tokens: &impl ToTokens) -> String {
     compacted
 }
 
-/// Each import of `tree` under `path`: its path, and the names it binds.
+/// Each import of `tree` under `path`: its path, the names it binds, and the last segment it
+/// is imported from (`Mode` for `Mode::A` or `Mode::*`).
 fn flatten(
     tree: &UseTree,
     path: String,
     parent: Option<&syn::Ident>,
-    imports: &mut Vec<(String, BTreeSet<String>)>,
+    imports: &mut Vec<(String, BTreeSet<String>, String)>,
 ) {
     // `self` in a group binds its parent's name.
     let name = |ident: &syn::Ident| match parent {
         Some(parent) if ident == "self" => parent.to_string(),
         _ => ident.to_string(),
     };
+    let from = parent.map(ToString::to_string).unwrap_or_default();
     match tree {
         UseTree::Path(tree) => flatten(
             &tree.tree,
@@ -698,12 +773,16 @@ fn flatten(
         UseTree::Name(tree) => imports.push((
             format!("{path}{}", tree.ident),
             BTreeSet::from([name(&tree.ident)]),
+            from,
         )),
         UseTree::Rename(tree) => imports.push((
             format!("{path}{} as {}", tree.ident, tree.rename),
             BTreeSet::from([name(&tree.ident), tree.rename.to_string()]),
+            from,
         )),
-        UseTree::Glob(_) => imports.push((format!("{path}*"), BTreeSet::from(["*".to_owned()]))),
+        UseTree::Glob(_) => {
+            imports.push((format!("{path}*"), BTreeSet::from(["*".to_owned()]), from))
+        }
         UseTree::Group(group) => {
             for tree in &group.items {
                 flatten(tree, path.clone(), parent, imports);
@@ -1147,9 +1226,7 @@ impl Display for W {
 }
 fn other() {}
 ";
-        let cases: [(&str, &str, &[ChangedItem]); 5] = [
-            // An added import that nothing names selects nothing.
-            ("{self, Display}", "{self, Display, Write}", &[]),
+        let cases: [(&str, &str, &[ChangedItem]); 4] = [
             (
                 "use std::fmt::{self, Display};",
                 "use core::fmt::{self, Display};",
@@ -1159,7 +1236,8 @@ fn other() {}
                     item("<W as Display>::fmt", &[8..=8]),
                 ],
             ),
-            ("Read as Input", "Read as Source", &[item("read", &[4..=4])]),
+            // A renamed import, with its user.
+            ("Input", "Source", &[item("read", &[4..=4])]),
             (
                 "use std::io::Read as Input;\n",
                 "",
@@ -1178,6 +1256,70 @@ fn other() {}
             let new = old.replace(from, to);
             assert_eq!(selected(old, &new), expected, "{from} -> {to}");
         }
+        // #449 review 2: an import no function names, before or after, is most likely a trait
+        // used only through its methods, so the whole file is mutated.
+        let new = old.replace("{self, Display}", "{self, Display, Write}");
+        assert!(changed_items(old, &new).unwrap().whole);
+    }
+
+    /// #449 review 2: a deleted or renamed `const`, `static` or type selects the functions
+    /// that used it.
+    #[test]
+    fn a_deleted_or_renamed_value_or_type_selects_its_former_users() {
+        let old = "\
+const LIMIT: u8 = 1;
+struct Frame;
+fn limited(value: u8) -> bool { value < LIMIT }
+fn framed(_: &Frame) {}
+fn other() {}
+";
+        let deleted = old.replace("const LIMIT: u8 = 1;\n", "");
+        assert_eq!(selected(old, &deleted), vec![item("limited", &[2..=2])]);
+        let renamed = old.replace("struct Frame;", "struct Panel;");
+        assert_eq!(
+            selected(old, &renamed),
+            vec![item("Panel", &[2..=2]), item("framed", &[4..=4])]
+        );
+    }
+
+    /// #449 review 2: a value named only inside a format string is still named.
+    #[test]
+    fn a_value_named_in_a_format_string_is_named() {
+        let old = "\
+const LIMIT: u8 = 1;
+fn shown() -> String { format!(\"at most {LIMIT:?} {{LITERAL}}\") }
+fn escaped() -> String { format!(\"{{LIMIT}}\") }
+";
+        let new = old.replace("= 1", "= 2");
+        assert_eq!(
+            selected(old, &new),
+            vec![item("LIMIT", &[1..=1]), item("shown", &[2..=2])]
+        );
+    }
+
+    /// #449 review 2: names imported from a changed type name it; a glob of one hides which
+    /// names, so the whole file is mutated.
+    #[test]
+    fn imports_from_a_changed_type_select_their_users_and_a_glob_of_one_the_whole_file() {
+        let old = "\
+enum Mode { A, B }
+use Mode::{A, B};
+fn first() -> Mode { A }
+fn second() -> Mode { B }
+fn plain() -> u8 { 1 }
+";
+        let new = old.replace("{ A, B }", "{ A, B, C }");
+        assert_eq!(
+            selected(old, &new),
+            vec![
+                item("Mode", &[1..=1]),
+                item("first", &[3..=3]),
+                item("second", &[4..=4]),
+            ]
+        );
+        let old = "enum Mode { A }\nuse Mode::*;\nfn first() -> u8 { matches!(A, A) as u8 }\n";
+        let new = old.replace("{ A }", "{ A, B }");
+        assert!(changed_items(old, &new).unwrap().whole);
     }
 
     /// #449 review: an item inside a body is in its function's own tokens, so it changes only
