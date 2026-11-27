@@ -207,7 +207,7 @@ sessions in `tests/headless.rs`.
 |---|---|
 | #16/#21.6/#38 outer/inner controlled bash, arithmetic 42, second PTY list exactly one, outer status 7, empty list and leaks | `installer_built_bash_smoke_lists_one_session_and_preserves_exit_seven` |
 | #16/#29 exact literal/empty argv, cwd, whole environment, real initial size/resize/status; #25 TRACE argv/input/environment privacy; continuity 6.1.15 `TERM`/`COLORTERM` overrides, otherwise inherited environment | `installed_generic_fixture_preserves_runtime_contract_and_log_privacy` |
-| #16/#29 real nested bash, both GUIDs and depths, independent exit statuses | `installed_nested_bash_sessions_are_both_listed_and_route_exit_status` |
+| #16/#29 real nested bash, both GUIDs and depths, independent exit statuses; #139 the nested start waits for Enter with its warning on screen | `installed_nested_bash_sessions_are_both_listed_and_route_exit_status` |
 | #16/#20 alternate screen, cursor query replies, SGR mouse, bracketed paste, resize redraw, fixture's final screen survives | `installed_tui_roundtrips_queries_mouse_paste_and_resize_without_reset` |
 | #16/#21.10 real vim edits/saves | `installed_real_vim_edits_and_saves` |
 | #16/#21.10 real less navigation/resize | `installed_real_less_navigates_and_resizes` |

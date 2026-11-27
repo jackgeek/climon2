@@ -16,10 +16,10 @@ use std::process::Command;
 pub(crate) fn logged_run(work: Work, force: bool) -> Result<u32, Error> {
     match work {
         Work::List { json } => crate::logged(force, |home, _, _| crate::list(home, json)),
-        Work::Exec(lifetime, command) => {
+        Work::Exec(lifetime, nested, command) => {
             representable(&command)?;
             crate::logged(force, |home, general, filter| {
-                crate::exec::run(home, (lifetime, force), command, general, filter)
+                crate::exec::run(home, (lifetime, force), nested, command, general, filter)
             })
         }
         Work::Handoff(handoff) => run_handoff(handoff, force),

@@ -27,8 +27,8 @@ fn command(
     filter: Option<&str>,
 ) -> Result<u32, Error> {
     match work {
-        Work::Exec(lifetime, command) => {
-            exec::run(home, (lifetime, force), command, general, filter)
+        Work::Exec(lifetime, nested, command) => {
+            exec::run(home, (lifetime, force), nested, command, general, filter)
         }
         Work::List { json } => crate::list(home, json),
         Work::Handoff(handoff) => handoff.run(home),

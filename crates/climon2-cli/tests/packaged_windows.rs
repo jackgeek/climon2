@@ -30,7 +30,7 @@
 //! (`climon2_test_term::rerun_outside`), where `c2 exec`'s daemon can leave
 //! its host as it does under a real terminal.
 #![cfg(windows)]
-use climon2_core::metadata::SessionMetadata;
+use climon2_core::{metadata::SessionMetadata, session::PROMPT};
 use climon2_platform::process;
 use climon2_test_term::{
     ConPty, HostModel, HostSettings, JobShape, Key, Modifiers, Options, Terminal, controlled_pwsh,
@@ -511,6 +511,16 @@ fn nested_pwsh_sessions_are_both_listed_leave_the_outer_job_and_route_exit_statu
         &mut terminal,
         &exec("NESTED", "\"NESTED-STATUS=$LASTEXITCODE\""),
     );
+    // #139: the nested start waits, with its warning on screen, for Enter.
+    wait(&mut terminal, &home, PROMPT);
+    assert!(
+        terminal
+            .screen()
+            .contains("Starting climon2 session nested for the 1st time"),
+        "{}",
+        terminal.screen()
+    );
+    enter(&mut terminal, "");
     wait(&mut terminal, &home, "NESTED> ");
     enter(&mut terminal, "\"depth:$env:CLIMON2_SESSION_DEPTH\"");
     wait(&mut terminal, &home, "depth:2");

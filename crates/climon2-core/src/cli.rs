@@ -1,5 +1,5 @@
 //! CLI argument data without terminal, process or environment access.
-use crate::{lifetime::Lifetime, selector::Selector};
+use crate::{lifetime::Lifetime, selector::Selector, session::NestedStart};
 use std::{ffi::OsString, fmt, iter::Peekable, vec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,6 +12,7 @@ pub struct CommandArgs {
 pub enum CliArgs {
     Exec {
         lifetime: Lifetime,
+        nested: NestedStart,
         command: CommandArgs,
     },
     List {
@@ -44,7 +45,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec|x [--force] [--headless|-h] <command> [args...] | attach|a [--force] <session-id> | kill|k [--force] <session-id> | list|l [--force] [--json] | monitor|m [--force] | home|h [release [--force]]";
+pub const USAGE: &str = "usage: c2 exec|x [--force] [--headless|-h] [--nested|-n] <command> [args...] | attach|a [--force] <session-id> | kill|k [--force] <session-id> | list|l [--force] [--json] | monitor|m [--force] | home|h [release [--force]]";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -91,8 +92,9 @@ pub fn commands() -> impl Iterator<Item = (&'static str, &'static str)> {
 type Parser = fn(Vec<OsString>) -> Result<CliArgs, UsageError>;
 
 /// A command: its full name, its single-letter shortcut (a pure synonym), its
-/// parser, and whether the home owner check can refuse it, so that it takes
-/// `--force`.
+/// parser, and whether it takes `--force` first: attach, kill, list and
+/// monitor, which the home owner check can refuse. `exec` takes it among its
+/// own options.
 struct Subcommand {
     name: &'static str,
     shortcut: &'static str,
@@ -106,7 +108,7 @@ impl Subcommand {
     fn parse_forcible(&self, arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
         match arguments.split_first() {
             Some((first, rest)) if self.forcible && first == "--force" => {
-                (self.parse)(rest.to_vec()).map(|command| CliArgs::Forced(Box::new(command)))
+                (self.parse)(rest.to_vec()).map(|command| forced(command, true))
             }
             _ => (self.parse)(arguments),
         }
@@ -123,7 +125,7 @@ const SUBCOMMANDS: [Subcommand; 6] = [
         name: "exec",
         shortcut: "x",
         parse: parse_exec,
-        forcible: true,
+        forcible: false,
     },
     Subcommand {
         name: "attach",
@@ -168,18 +170,71 @@ fn parse_flag(name: Option<&str>, remaining: &[OsString]) -> Result<CliArgs, Usa
 
 fn parse_exec(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     let mut args = arguments.into_iter().peekable();
-    let lifetime = lifetime(&mut args);
-    Ok(CliArgs::Exec {
-        lifetime,
+    let options = exec_options(&mut args);
+    let exec = CliArgs::Exec {
+        lifetime: if options.contains(&ExecOption::Headless) {
+            Lifetime::Headless
+        } else {
+            Lifetime::Ordinary
+        },
+        nested: if options.contains(&ExecOption::Nested) {
+            NestedStart::Deliberate
+        } else {
+            NestedStart::Warned
+        },
         command: command(args)?,
-    })
+    };
+    Ok(forced(exec, options.contains(&ExecOption::Force)))
 }
 
-/// `--headless`, or its short form `-h`, is exec's only option, and only as
-/// the first argument.
-fn lifetime(args: &mut Peekable<vec::IntoIter<OsString>>) -> Lifetime {
-    args.next_if(|arg| arg == "--headless" || arg == "-h")
-        .map_or(Lifetime::Ordinary, |_| Lifetime::Headless)
+/// `command`, given `--force` or not (ADR 0011).
+fn forced(command: CliArgs, force: bool) -> CliArgs {
+    if force {
+        CliArgs::Forced(Box::new(command))
+    } else {
+        command
+    }
+}
+
+/// exec's options. `--force` (ADR 0011) is one of them, so it goes in any
+/// order with the others, as the other commands' only option it comes first.
+#[derive(Clone, Copy, PartialEq)]
+enum ExecOption {
+    Headless,
+    Nested,
+    Force,
+}
+
+/// Each of exec's options: its long form and its short form. `--force` has
+/// no short form, so its long form stands in for one.
+const EXEC_OPTIONS: [(&str, &str, ExecOption); 3] = [
+    ("--headless", "-h", ExecOption::Headless),
+    ("--nested", "-n", ExecOption::Nested),
+    ("--force", "--force", ExecOption::Force),
+];
+
+impl ExecOption {
+    fn of(arg: &OsString) -> Option<Self> {
+        EXEC_OPTIONS
+            .iter()
+            .find(|(long, short, _)| arg == long || arg == short)
+            .map(|(_, _, option)| *option)
+    }
+}
+
+/// exec's leading options, in any order, each at most once: a repeated
+/// option is the command.
+fn exec_options(args: &mut Peekable<vec::IntoIter<OsString>>) -> Vec<ExecOption> {
+    let mut options = Vec::new();
+    while let Some(option) = args
+        .peek()
+        .and_then(ExecOption::of)
+        .filter(|option| !options.contains(option))
+    {
+        options.push(option);
+        args.next();
+    }
+    options
 }
 
 /// An optional `--`, then a nonempty command and its untouched arguments.

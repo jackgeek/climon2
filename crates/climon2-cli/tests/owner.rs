@@ -72,6 +72,14 @@ fn issue133_a_home_another_host_owns_is_refused_before_anything_else() {
             "--",
             "climon2-no-such-command",
         ],
+        // With `--nested` too: the owner check comes before the nested prompt.
+        &[
+            "exec",
+            "--nested",
+            "--force",
+            "-h",
+            "climon2-no-such-command",
+        ],
         &["attach", "--force", "1"],
         &["kill", "--force", "1"],
         &["monitor", "--force"],
