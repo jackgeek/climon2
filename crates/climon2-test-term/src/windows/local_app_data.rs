@@ -33,7 +33,8 @@ use windows_sys::Win32::{
     Foundation::{FALSE, WAIT_OBJECT_0},
     Storage::FileSystem::{
         DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FileDispositionInfo, SetFileInformationByHandle,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileDispositionInfo, SetFileInformationByHandle,
     },
     System::Threading::{
         OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
@@ -58,6 +59,8 @@ const STALE: Duration = Duration::from_secs(60 * 60);
 const LOCK: &str = ".lock";
 /// Opens a folder itself, not what it may point to.
 const FOLDER_FLAGS: u32 = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+/// Shares a folder opened to delete it with anyone else who shares delete.
+const FOLDER_SHARING: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 const DISPOSITION_SIZE: u32 = size_of::<FILE_DISPOSITION_INFO>() as u32;
 /// How long [`end_process`] waits for a process to exit.
 const EXIT_WAIT: Duration = Duration::from_secs(10);
@@ -214,7 +217,11 @@ fn sweep(parent: &Path, now: SystemTime) {
     // Checked again right before it is read, in case one was made in its
     // place since; making a folder where one already is makes nothing. One
     // that cannot be checked is not swept.
-    if refuse_reparse_point(parent).is_err() {
+    if let Err(error) = refuse_reparse_point(parent) {
+        eprintln!(
+            "cannot check {}, so it is not swept: {error}",
+            parent.display()
+        );
         return;
     }
     let Ok(entries) = fs::read_dir(parent) else {
@@ -288,10 +295,12 @@ fn remove(folder: &Path, lock: File) {
     if left {
         return;
     }
-    // Fails while anyone else has the folder open, as a process working in it.
+    // Fails while anyone has the folder open without delete sharing, as a
+    // process working in it; an indexer or scanner that shares it does not
+    // stop it.
     let Ok(this) = OpenOptions::new()
         .access_mode(DELETE)
-        .share_mode(0)
+        .share_mode(FOLDER_SHARING)
         .custom_flags(FOLDER_FLAGS)
         .open(folder)
     else {
@@ -368,7 +377,6 @@ fn open(pid: u32, access: u32) -> Option<OwnedHandle> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
     /// Whatever `TEMP` is, the folder is in the parent, leaves a socket path
     /// within budget, and is gone once dropped.
@@ -498,7 +506,8 @@ mod tests {
     /// leftover process has it open as its working folder, its lock is never
     /// removed, so a later sweep tries again. A handle on the folder without
     /// delete sharing stands in for that process; the lock's contents show it
-    /// is the same file, not one made again.
+    /// is the same file, not one made again. A handle that shares delete does
+    /// not stop the removal.
     #[test]
     fn a_folder_that_cannot_be_removed_keeps_its_own_lock() {
         let parent = tempfile::tempdir().unwrap();
@@ -515,8 +524,16 @@ mod tests {
         sweep(parent.path(), SystemTime::now() + STALE);
         assert_eq!(fs::read_to_string(folder.join(LOCK)).unwrap(), "original");
 
+        // One that shares delete, as an indexer or scanner does, does not.
         drop(open);
+        let shared = OpenOptions::new()
+            .read(true)
+            .share_mode(FOLDER_SHARING)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&folder)
+            .unwrap();
         sweep(parent.path(), SystemTime::now() + STALE);
+        drop(shared);
         assert!(!folder.exists());
     }
 
@@ -530,20 +547,37 @@ mod tests {
         let folder = parent.path().join("stale");
         fs::create_dir(&folder).unwrap();
         File::create(folder.join(LOCK)).unwrap();
-        set_read_only(&folder, true);
+        let read_only = ReadOnly::set(&folder);
 
         sweep(parent.path(), SystemTime::now() + STALE);
         assert!(folder.join(LOCK).is_file());
 
-        set_read_only(&folder, false);
+        drop(read_only);
         sweep(parent.path(), SystemTime::now() + STALE);
         assert!(!folder.exists());
     }
 
-    fn set_read_only(path: &Path, read_only: bool) {
-        let mut permissions = fs::metadata(path).unwrap().permissions();
+    /// Marks a folder read-only until dropped, so that a failed assertion
+    /// still leaves it removable.
+    struct ReadOnly<'a>(&'a Path);
+
+    impl<'a> ReadOnly<'a> {
+        fn set(path: &'a Path) -> Self {
+            set_read_only(path, true).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for ReadOnly<'_> {
+        fn drop(&mut self) {
+            let _ = set_read_only(self.0, false);
+        }
+    }
+
+    fn set_read_only(path: &Path, read_only: bool) -> io::Result<()> {
+        let mut permissions = fs::metadata(path)?.permissions();
         permissions.set_readonly(read_only);
-        fs::set_permissions(path, permissions).unwrap();
+        fs::set_permissions(path, permissions)
     }
 
     /// A `c2t` that cannot be checked for some reason other than being
