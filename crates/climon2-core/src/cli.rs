@@ -1,5 +1,5 @@
 //! CLI argument data without terminal, process or environment access.
-use crate::{lifetime::Lifetime, selector::Selector};
+use crate::{lifetime::Lifetime, selector::Selector, session::NestedStart};
 use std::{ffi::OsString, fmt, iter::Peekable, vec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,6 +12,7 @@ pub struct CommandArgs {
 pub enum CliArgs {
     Exec {
         lifetime: Lifetime,
+        nested: NestedStart,
         command: CommandArgs,
     },
     List {
@@ -33,7 +34,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m";
+pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -125,18 +126,57 @@ fn parse_flag(name: Option<&str>, remaining: &[OsString]) -> Result<CliArgs, Usa
 
 fn parse_exec(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
     let mut args = arguments.into_iter().peekable();
-    let lifetime = lifetime(&mut args);
+    let options = exec_options(&mut args);
     Ok(CliArgs::Exec {
-        lifetime,
+        lifetime: if options.contains(&ExecOption::Headless) {
+            Lifetime::Headless
+        } else {
+            Lifetime::Ordinary
+        },
+        nested: if options.contains(&ExecOption::Nested) {
+            NestedStart::Deliberate
+        } else {
+            NestedStart::Warned
+        },
         command: command(args)?,
     })
 }
 
-/// `--headless`, or its short form `-h`, is exec's only option, and only as
-/// the first argument.
-fn lifetime(args: &mut Peekable<vec::IntoIter<OsString>>) -> Lifetime {
-    args.next_if(|arg| arg == "--headless" || arg == "-h")
-        .map_or(Lifetime::Ordinary, |_| Lifetime::Headless)
+/// exec's options, each with a short form.
+#[derive(Clone, Copy, PartialEq)]
+enum ExecOption {
+    Headless,
+    Nested,
+}
+
+/// Each of exec's options: its long form and its short form.
+const EXEC_OPTIONS: [(&str, &str, ExecOption); 2] = [
+    ("--headless", "-h", ExecOption::Headless),
+    ("--nested", "-n", ExecOption::Nested),
+];
+
+impl ExecOption {
+    fn of(arg: &OsString) -> Option<Self> {
+        EXEC_OPTIONS
+            .iter()
+            .find(|(long, short, _)| arg == long || arg == short)
+            .map(|(_, _, option)| *option)
+    }
+}
+
+/// exec's leading options, in any order, each at most once: a repeated
+/// option is the command.
+fn exec_options(args: &mut Peekable<vec::IntoIter<OsString>>) -> Vec<ExecOption> {
+    let mut options = Vec::new();
+    while let Some(option) = args
+        .peek()
+        .and_then(ExecOption::of)
+        .filter(|option| !options.contains(option))
+    {
+        options.push(option);
+        args.next();
+    }
+    options
 }
 
 /// An optional `--`, then a nonempty command and its untouched arguments.

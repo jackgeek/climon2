@@ -2,6 +2,7 @@
 
 mod support;
 
+use climon2_core::session::PROMPT;
 use climon2_fixtures::second_release;
 use climon2_test_term::{Terminal, bin_path, controlled_bash, copy_executable};
 use serde_json::{Value, json};
@@ -202,10 +203,16 @@ fn installed_nested_bash_sessions_are_both_listed_and_route_exit_status() {
             quote(&bash)
         ))
         .unwrap();
-    // The nested client's restoration can scroll the notice away before the screen is read.
-    terminal
-        .wait_for_bytes(b"Starting climon2 session nested for the 1st time", TIMEOUT)
-        .unwrap();
+    // #139: the nested start waits, with its warning on screen, for Enter.
+    terminal.wait_for_text(PROMPT, TIMEOUT).unwrap();
+    assert!(
+        terminal
+            .screen()
+            .contains("Starting climon2 session nested for the 1st time"),
+        "{}",
+        terminal.screen()
+    );
+    terminal.send("\r").unwrap();
     // The outer terminal's quiet says nothing about the nested client's readiness.
     type_until(
         &mut terminal,

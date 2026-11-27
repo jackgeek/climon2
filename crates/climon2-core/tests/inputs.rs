@@ -25,6 +25,7 @@ fn issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_erro
     let args = ["exec", "some command", "--flag", "", "a b", "日本語", "--"];
     let CliArgs::Exec {
         lifetime: Lifetime::Ordinary,
+        nested: NestedStart::Warned,
         command,
     } = CliArgs::parse(args.map(OsString::from)).unwrap()
     else {
@@ -37,6 +38,7 @@ fn issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_erro
     );
     let CliArgs::Exec {
         lifetime: Lifetime::Ordinary,
+        nested: NestedStart::Warned,
         command: literal,
     } = CliArgs::parse(["exec", "--", "-command", ""].map(OsString::from)).unwrap()
     else {
@@ -94,6 +96,7 @@ fn exec_headless_selects_the_headless_lifetime_and_double_dash_keeps_it_literal(
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
     let exec = |lifetime, command: &str, args: &[&str]| CliArgs::Exec {
         lifetime,
+        nested: NestedStart::Warned,
         command: CommandArgs {
             command: command.into(),
             args: args.iter().map(OsString::from).collect(),
@@ -401,13 +404,15 @@ fn shortcuts_parse_exactly_as_their_full_commands() {
     }
 }
 
-/// #287: `-h` is `--headless`'s short form under exactly its rules: only as
-/// exec's first argument, and `--` still ends climon2's options.
+/// #287: `-h` is `--headless`'s short form under exactly its rules: only
+/// among exec's leading options (#139 adds `--nested`), and `--` still ends
+/// climon2's options.
 #[test]
 fn exec_dash_h_is_headless_only_as_the_first_argument() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
     let exec = |lifetime, command: &str, args: &[&str]| CliArgs::Exec {
         lifetime,
+        nested: NestedStart::Warned,
         command: CommandArgs {
             command: command.into(),
             args: args.iter().map(OsString::from).collect(),
@@ -484,4 +489,163 @@ fn every_command_has_its_own_single_letter_shortcut() {
         2,
         "r is reserved, not a command"
     );
+}
+
+/// #139: `--nested`, or `-n`, starts a nested session deliberately. exec's
+/// options come first, in either order, each at most once: a repeated one is
+/// the command, and `--` still ends them.
+#[test]
+fn exec_nested_option_is_a_leading_option_beside_headless() {
+    let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
+    let exec = |lifetime, nested, command: &str, args: &[&str]| CliArgs::Exec {
+        lifetime,
+        nested,
+        command: CommandArgs {
+            command: command.into(),
+            args: args.iter().map(OsString::from).collect(),
+        },
+    };
+    let (headless, ordinary) = (Lifetime::Headless, Lifetime::Ordinary);
+    let (deliberate, warned) = (NestedStart::Deliberate, NestedStart::Warned);
+    for exec_name in ["exec", "x"] {
+        for (tail, expected) in [
+            (
+                &["--nested", "cmd"][..],
+                exec(ordinary, deliberate, "cmd", &[]),
+            ),
+            (
+                &["-n", "cmd", "-n"],
+                exec(ordinary, deliberate, "cmd", &["-n"]),
+            ),
+            (&["-n", "-h", "cmd"], exec(headless, deliberate, "cmd", &[])),
+            (
+                &["--headless", "--nested", "--", "-n"],
+                exec(headless, deliberate, "-n", &[]),
+            ),
+            (
+                &["-n", "-n", "cmd"],
+                exec(ordinary, deliberate, "-n", &["cmd"]),
+            ),
+            (
+                &["-h", "-n", "-h", "cmd"],
+                exec(headless, deliberate, "-h", &["cmd"]),
+            ),
+            (&["--", "-n", "cmd"], exec(ordinary, warned, "-n", &["cmd"])),
+            (
+                &["cmd", "--nested"],
+                exec(ordinary, warned, "cmd", &["--nested"]),
+            ),
+        ] {
+            let args = [&[exec_name][..], tail].concat();
+            assert_eq!(parse(&args).unwrap(), expected, "{args:?}");
+        }
+        for tail in [&["-n"][..], &["--nested", "--"], &["-n", "-h"], &["-n", ""]] {
+            let args = [&[exec_name][..], tail].concat();
+            assert_eq!(parse(&args).unwrap_err().exit_code(), 2, "{args:?}");
+        }
+    }
+    assert!(cli::USAGE.contains("[--headless|-h] [--nested|-n] <command>"));
+}
+
+/// #139: only a warned nested start shows anything: the warning, and for an
+/// ordinary session, whose client clears the screen, the prompt as well.
+#[test]
+fn only_a_warned_nested_start_warns_and_only_an_ordinary_one_asks() {
+    let id = "550e8400-e29b-41d4-a716-446655440000".parse().unwrap();
+    let top = SessionEnvironment::for_session(&id, &[]).unwrap();
+    let nested = SessionEnvironment::for_session(
+        &id,
+        &environment(&[
+            ("CLIMON2_SESSION_ID", "outer"),
+            ("CLIMON2_SESSION_DEPTH", "2"),
+        ]),
+    )
+    .unwrap();
+    let warning = "Starting climon2 session nested for the 2nd time";
+    for lifetime in [Lifetime::Ordinary, Lifetime::Headless] {
+        for start in [NestedStart::Warned, NestedStart::Deliberate] {
+            assert_eq!(top.notice(lifetime, start), Notice::Quiet);
+        }
+        assert_eq!(
+            nested.notice(lifetime, NestedStart::Deliberate),
+            Notice::Quiet
+        );
+    }
+    assert_eq!(
+        nested.notice(Lifetime::Ordinary, NestedStart::Warned),
+        Notice::Ask(warning)
+    );
+    assert_eq!(
+        nested.notice(Lifetime::Headless, NestedStart::Warned),
+        Notice::Warn(warning)
+    );
+    assert_eq!(PROMPT, "Press Enter to start it, or Ctrl+C to cancel.");
+}
+
+/// The input a prompt is given, one item per read, and how many it took
+/// before it answered.
+fn answer(inputs: Vec<std::io::Result<Input>>) -> (std::io::Result<Answer>, usize) {
+    let mut inputs = inputs.into_iter();
+    let mut taken = 0;
+    let answer = Answer::read(|| {
+        taken += 1;
+        inputs.next().expect("read past the end")
+    });
+    (answer, taken)
+}
+
+/// #139: the prompt's answer is the first Enter (CR or LF) or Ctrl+C typed,
+/// whatever keys come before it, and nothing after it is taken; a terminal
+/// gone and an ending answer it too. An interrupted read is tried again;
+/// any other failure is the prompt's. Enter starts the session; Ctrl+C exits
+/// 130, as for Ctrl+C in a client, a terminal gone 129, and an ending with
+/// its own status.
+#[test]
+fn the_prompt_answers_on_the_first_enter_or_ctrl_c_and_maps_to_exit_statuses() {
+    let keys = |bytes: &[u8]| -> Vec<std::io::Result<Input>> {
+        bytes.iter().map(|byte| Ok(Input::Key(*byte))).collect()
+    };
+    for (bytes, expected, taken) in [
+        (&b"\r"[..], Answer::Start, 1),
+        (b"\n", Answer::Start, 1),
+        (b"\x03", Answer::Cancel, 1),
+        (b"a\x1b[Aq\x04\r\x03after", Answer::Start, 7),
+        (b"xy\x03\rafter", Answer::Cancel, 3),
+    ] {
+        let (answer, used) = answer(keys(bytes));
+        assert_eq!((answer.unwrap(), used), (expected, taken), "{bytes:?}");
+    }
+    let interrupted = || Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+    for (inputs, expected, taken) in [
+        (vec![Ok(Input::Gone)], Answer::Gone, 1),
+        (vec![Ok(Input::Key(b'x')), Ok(Input::Gone)], Answer::Gone, 2),
+        (vec![Ok(Input::Ended(143))], Answer::Ended(143), 1),
+        (
+            vec![interrupted(), interrupted(), Ok(Input::Key(b'\r'))],
+            Answer::Start,
+            3,
+        ),
+    ] {
+        let (answer, used) = answer(inputs);
+        assert_eq!((answer.unwrap(), used), (expected, taken));
+    }
+    let (failed, used) = answer(vec![Err(std::io::Error::other("broken"))]);
+    assert_eq!(
+        (failed.unwrap_err().to_string(), used),
+        ("broken".into(), 1)
+    );
+    assert_eq!(Answer::Start.status(), None);
+    assert_eq!(Answer::Cancel.status(), Some(130));
+    assert_eq!(Answer::Gone.status(), Some(129));
+    assert_eq!(Answer::Ended(131).status(), Some(131));
+    // An ending recorded by the time the prompt is done wins, even over Enter.
+    for answer in [
+        Answer::Start,
+        Answer::Cancel,
+        Answer::Gone,
+        Answer::Ended(1),
+    ] {
+        assert_eq!(answer.or_ended(Some(143)), Answer::Ended(143));
+        assert_eq!(answer.or_ended(None), answer);
+    }
 }

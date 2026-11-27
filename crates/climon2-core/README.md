@@ -169,9 +169,11 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   canonicalization, UID, ownership/mode checks and socket operations.
 - `cli::CliArgs::parse`: arguments **exclude** argv[0]. Exec retains
   `CommandArgs { command: OsString, args: Vec<OsString> }`, including empty
-  trailing arguments and option-looking tokens, and a `lifetime`: `--headless`
-  or its short form `-h` as exec's first argument selects `Headless`,
-  otherwise `Ordinary`. An
+  trailing arguments and option-looking tokens, a `lifetime`: `--headless`
+  or its short form `-h` selects `Headless`, otherwise `Ordinary`; and a
+  `nested` start: `--nested` or `-n` selects `session::NestedStart::Deliberate`,
+  otherwise `Warned` (#139). exec's options come first, in either order, each
+  at most once; a repeated one is the command. An
   optional `--` then separates exec from a command, so `exec -- --headless`
   runs a command named `--headless`. Attach and kill take exactly one
   `selector::Selector`. List permits only `--json`; `monitor` and top-level
@@ -267,7 +269,17 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   means nested; malformed enclosing
   depth means 1. `depth` is nonzero; an increment beyond u32 returns
   `DepthOverflow`. `nested_warning` contains exact stderr text without newline.
-  `ordinal` handles English teen/century exceptions.
+  `ordinal` handles English teen/century exceptions. `notice(lifetime,
+  nested)` is what exec shows before it starts the session (#139): `Quiet` at
+  top level or for a `Deliberate` start, else `Warn` for a headless session
+  and `Ask` (the warning, then `PROMPT`) for an ordinary one.
+  `Answer::read` takes `Input`s (one key, `Gone`, or `Ended(status)`) from
+  a closure until Enter (CR or LF, `Start`) or Ctrl+C (`Cancel`), ignoring
+  other keys and taking nothing after the answer; `Gone` and `Ended` answer
+  too, and an `Interrupted` error is retried. `Answer::status` is exec's exit
+  status when nothing starts: `Cancel` 130 (`exit::INTERRUPTED`), `Gone` 129,
+  `Ended` its own. `Answer::or_ended` makes an ending recorded by the time
+  the prompt is done win over any answer, Enter included.
 - `exit::{ExitStatus,LaunchFailure}::code`: neutral platform-exit input,
   preserving raw command u32 codes, checked `128+signal`, and classifications
   for own failure 125, usage 2, launch 127/126 and terminal gone 129.
@@ -319,6 +331,7 @@ Integration tests call only these public boundaries:
 | INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
 | CFG-01 (Docs): the [configuration guide](../../docs/for-humans/guide/configuration.md) spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_guide_documents_every_default_and_the_escape_warning` |
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |
+| #139 `--nested`/`-n` beside `--headless`; the nested-start notice; the prompt's answer and exit statuses | `exec_nested_option_is_a_leading_option_beside_headless`, `only_a_warned_nested_start_warns_and_only_an_ordinary_one_asks`, `the_prompt_answers_on_the_first_enter_or_ctrl_c_and_maps_to_exit_statuses` |
 | Confirmed headless scenario (#73/#78): `exec --headless [--]`, literal `exec -- --headless` | `exec_headless_selects_the_headless_lifetime_and_double_dash_keeps_it_literal` |
 | #17 / #20 exit mapping | `issue17_failures_remain_distinct_from_command_status_and_signal_mapping` |
 | DOC-01 (Contract case for the daemon wire pages and the hello reply): every published example decodes to its documented values and re-encodes byte-identically, except the hello reply without revision 1, which climon2 no longer encodes and only decodes | `published_request_examples_round_trip_byte_identically`, `published_control_request_examples_round_trip_byte_identically`, `published_focus_examples_round_trip_byte_identically`, `published_response_and_fatal_error_examples_round_trip_byte_identically`, `published_core_metadata_examples_round_trip_byte_identically`, `published_control_and_restoration_examples_round_trip_byte_identically`, `published_binary_examples_round_trip_byte_identically`, `every_revision1_page_example_is_exercised`, `published_hello_reply_examples_decode_and_the_encoded_ones_round_trip` |

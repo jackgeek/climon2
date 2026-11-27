@@ -24,7 +24,11 @@ use crate::{
     notifier::Notifier,
     waiting::{self, Watch},
 };
-use climon2_core::{protocol::TerminalSize, utf8};
+use climon2_core::{
+    protocol::TerminalSize,
+    session::{Answer, Input},
+    utf8,
+};
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -40,17 +44,19 @@ use std::{
 };
 use windows_sys::{
     Win32::{
-        Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{
+            ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
         System::{
             Console::{
                 CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT, CTRL_C_EVENT,
                 DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
                 ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE,
                 ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-                ENABLE_WINDOW_INPUT, GetConsoleCP, GetConsoleMode, GetConsoleOutputCP,
-                GetConsoleScreenBufferInfo, INPUT_RECORD, KEY_EVENT, ReadConsoleInputW,
-                SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
-                WINDOW_BUFFER_SIZE_EVENT,
+                ENABLE_WINDOW_INPUT, FlushConsoleInputBuffer, GetConsoleCP, GetConsoleMode,
+                GetConsoleOutputCP, GetConsoleScreenBufferInfo, INPUT_RECORD, KEY_EVENT,
+                ReadConsoleInputW, SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode,
+                SetConsoleOutputCP, WINDOW_BUFFER_SIZE_EVENT,
             },
             Threading::WaitForSingleObject,
         },
@@ -503,26 +509,200 @@ impl Reader {
         Ok(())
     }
 
-    /// The records waiting, after waiting up to `INPUT_POLL` for any.
     fn records(&self) -> io::Result<Vec<INPUT_RECORD>> {
-        let handle = raw(self.console.as_handle());
-        let milliseconds = u32::try_from(INPUT_POLL.as_millis()).unwrap_or_default();
-        // SAFETY: the console's input handle, which this thread owns.
-        match unsafe { WaitForSingleObject(handle, milliseconds) } {
-            WAIT_OBJECT_0 => read_records(handle),
-            WAIT_TIMEOUT => Ok(Vec::new()),
-            _ => Err(io::Error::last_os_error()),
-        }
+        wait_records(self.console.as_handle(), RECORDS)
     }
 }
 
-fn read_records(handle: HANDLE) -> io::Result<Vec<INPUT_RECORD>> {
-    let mut records = vec![INPUT_RECORD::default(); RECORDS];
+/// Up to `most` of the records waiting, after waiting up to `INPUT_POLL`
+/// for any.
+fn wait_records(console: BorrowedHandle<'_>, most: usize) -> io::Result<Vec<INPUT_RECORD>> {
+    let handle = raw(console);
+    let milliseconds = u32::try_from(INPUT_POLL.as_millis()).unwrap_or_default();
+    // SAFETY: a console input handle the caller owns.
+    match unsafe { WaitForSingleObject(handle, milliseconds) } {
+        WAIT_OBJECT_0 => read_records(handle, most),
+        WAIT_TIMEOUT => Ok(Vec::new()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+fn read_records(handle: HANDLE, most: usize) -> io::Result<Vec<INPUT_RECORD>> {
+    let mut records = vec![INPUT_RECORD::default(); most];
     let mut count = 0u32;
-    // SAFETY: room for `RECORDS` records; the call writes `count` of them.
-    check(unsafe { ReadConsoleInputW(handle, records.as_mut_ptr(), RECORDS as u32, &mut count) })?;
+    let length = u32::try_from(most).unwrap_or(u32::MAX);
+    // SAFETY: room for `most` records; the call writes `count` of them.
+    check(unsafe { ReadConsoleInputW(handle, records.as_mut_ptr(), length, &mut count) })?;
     records.truncate(count as usize);
     Ok(records)
+}
+
+/// An owned duplicate of the console's output; closing it never closes the
+/// process's stdout.
+pub fn output() -> io::Result<File> {
+    let stdout = io::stdout();
+    mode(stdout.as_handle())?;
+    Ok(File::from(stdout.as_handle().try_clone_to_owned()?))
+}
+
+/// A console operation failing because the console is gone, a hang-up:
+/// its pipe broken or
+/// its handle no longer valid.
+pub fn hung_up(error: &io::Error) -> bool {
+    [ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE]
+        .iter()
+        .any(|code| error.raw_os_error() == i32::try_from(*code).ok())
+}
+
+/// What a failed console read means to a prompt: a hang-up is the console
+/// gone; any other failure is returned.
+fn failed_read(error: io::Error) -> io::Result<Option<Input>> {
+    if hung_up(&error) {
+        return Ok(Some(Input::Gone));
+    }
+    Err(error)
+}
+
+/// What Ctrl+Break, or any program ended by a console event, exits with:
+/// `STATUS_CONTROL_C_EXIT`.
+const CONTROL_C_EXIT: u32 = 0xC000_013A;
+
+/// The console while `exec` waits for an answer to its nested-start prompt
+/// (#139): raw, with input typed before it discarded, read one record at a
+/// time so that no record after the answer is taken. A record is read whole:
+/// keys decoded from it beyond the answer, a held key's repeats or a
+/// surrogate half, are discarded with the prompt. Ctrl+Break and a close end
+/// the wait instead of the process, so dropping the prompt always restores
+/// the console.
+pub struct Prompt {
+    /// Until the prompt restores the console.
+    raw: Option<RawModeGuard>,
+    /// Until the prompt removes its handler routine, after `raw`.
+    handler: Option<ConsoleHandler>,
+    input: File,
+    output: File,
+    keys: Keys,
+    /// Bytes decoded from a record and not yet given out.
+    typed: std::collections::VecDeque<u8>,
+}
+
+impl Prompt {
+    /// The handler routine goes in before raw mode, so an event in between
+    /// still finds it; a failure undoes raw mode, then the handler.
+    pub fn new(input: File, output: File) -> io::Result<Self> {
+        let handler = ConsoleHandler::add()?;
+        let guard = RawModeGuard::new(&input)?;
+        // SAFETY: the console's input handle, which this prompt owns.
+        check(unsafe { FlushConsoleInputBuffer(raw(input.as_handle())) })?;
+        Ok(Self {
+            raw: Some(guard),
+            handler: Some(handler),
+            input,
+            output,
+            keys: Keys::default(),
+            typed: std::collections::VecDeque::new(),
+        })
+    }
+
+    /// Writes `text` to the console; raw output needs CR LF.
+    pub fn show(&mut self, text: &str) -> io::Result<()> {
+        self.output.write_all(text.as_bytes())
+    }
+
+    /// Reads the answer, then restores the console and removes the handler
+    /// routine. A console event recorded any time before that, even after
+    /// Enter, ends exec as one during the wait does.
+    pub fn answer(mut self) -> io::Result<Answer> {
+        let answer = Answer::read(|| self.read_input())?;
+        self.restore();
+        Ok(answer.or_ended(self.ended()))
+    }
+
+    /// Restores the console's modes and code pages, then removes the
+    /// handler routine, as Unix restores the terminal before the signals'
+    /// dispositions; once only.
+    fn restore(&mut self) {
+        drop(self.raw.take());
+        drop(self.handler.take());
+    }
+
+    /// The next byte typed, a console that is gone, or the status a console
+    /// event ends with: 129 for a close, `STATUS_CONTROL_C_EXIT` for
+    /// Ctrl+Break. Any other failure is returned.
+    pub fn read_input(&mut self) -> io::Result<Input> {
+        loop {
+            if let Some(input) = self.next_input()? {
+                return Ok(input);
+            }
+        }
+    }
+
+    /// What is pending, else what the next record brings, if anything.
+    fn next_input(&mut self) -> io::Result<Option<Input>> {
+        match self.pending() {
+            Some(input) => Ok(Some(input)),
+            None => self.take_record(),
+        }
+    }
+
+    /// An ending recorded, else a key already decoded.
+    fn pending(&mut self) -> Option<Input> {
+        self.ended()
+            .map(Input::Ended)
+            .or_else(|| self.typed.pop_front().map(Input::Key))
+    }
+
+    /// Decodes the next record, if one comes within the poll; a console
+    /// that is gone instead.
+    fn take_record(&mut self) -> io::Result<Option<Input>> {
+        match wait_records(self.input.as_handle(), 1) {
+            Ok(records) => {
+                self.typed.extend(self.keys.feed(&records));
+                Ok(None)
+            }
+            Err(error) => failed_read(error),
+        }
+    }
+
+    fn ended(&self) -> Option<u32> {
+        ending(Signals.take_break(), Signals.termination_signal())
+    }
+}
+
+/// The status a prompt's recorded console event ends with: Ctrl+Break's
+/// `STATUS_CONTROL_C_EXIT`, else 128 + the signal a termination stands for,
+/// 129 for a close.
+fn ending(broke: bool, signal: Option<u32>) -> Option<u32> {
+    if broke {
+        return Some(CONTROL_C_EXIT);
+    }
+    signal.map(|signal| 128 + signal)
+}
+
+/// The client's handler routine, added for a prompt and removed when this
+/// drops, so a later Ctrl+C or close acts as it did before.
+struct ConsoleHandler;
+
+impl ConsoleHandler {
+    fn add() -> io::Result<Self> {
+        Signals::client()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for ConsoleHandler {
+    fn drop(&mut self) {
+        // SAFETY: removes the routine `Signals::client` added.
+        unsafe { SetConsoleCtrlHandler(Some(console_event), 0) };
+    }
+}
+
+/// Raw mode goes before the handler routine, as on Unix the terminal is
+/// restored before the signals' dispositions.
+impl Drop for Prompt {
+    fn drop(&mut self) {
+        self.restore();
+    }
 }
 
 /// Whether any record is a window-size record.
@@ -607,6 +787,43 @@ mod tests {
             EventType: WINDOW_BUFFER_SIZE_EVENT as u16,
             ..INPUT_RECORD::default()
         }
+    }
+
+    /// #139: only a broken pipe or an invalid handle means the prompt's
+    /// console is gone; any other failure is the prompt's to report.
+    #[test]
+    fn only_a_broken_pipe_or_invalid_handle_is_a_hang_up() {
+        for code in [ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE] {
+            assert!(hung_up(&io::Error::from_raw_os_error(code as i32)));
+        }
+        // ERROR_ACCESS_DENIED and ERROR_NOT_ENOUGH_MEMORY.
+        for code in [5, 8] {
+            assert!(!hung_up(&io::Error::from_raw_os_error(code)));
+        }
+        assert!(!hung_up(&io::Error::other("no OS error")));
+    }
+
+    /// #139: a prompt's recorded console close ends it with 129, an
+    /// interrupt with 130, and Ctrl+Break, whatever else was recorded, with
+    /// `STATUS_CONTROL_C_EXIT`.
+    #[test]
+    fn a_prompt_ends_with_129_on_a_close_and_0xc000013a_on_ctrl_break() {
+        assert_eq!(ending(false, None), None);
+        assert_eq!(ending(false, Some(HANGUP)), Some(129));
+        assert_eq!(ending(false, Some(INTERRUPT)), Some(130));
+        assert_eq!(ending(true, None), Some(0xC000_013A));
+        assert_eq!(ending(true, Some(HANGUP)), Some(0xC000_013A));
+    }
+
+    /// #139: a prompt reads a failed console read that is a hang-up as the
+    /// console gone, and returns any other.
+    #[test]
+    fn a_prompt_reads_a_hang_up_as_gone_and_returns_other_failures() {
+        let gone = failed_read(io::Error::from_raw_os_error(ERROR_BROKEN_PIPE as i32));
+        assert_eq!(gone.unwrap(), Some(Input::Gone));
+        // ERROR_ACCESS_DENIED.
+        let denied = failed_read(io::Error::from_raw_os_error(5)).unwrap_err();
+        assert_eq!(denied.raw_os_error(), Some(5));
     }
 
     #[test]

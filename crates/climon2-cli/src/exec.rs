@@ -7,7 +7,7 @@ use climon2_core::{
     lifetime::Lifetime,
     metadata::SessionMetadata,
     protocol::TerminalSize,
-    session::SessionEnvironment,
+    session::{NestedStart, Notice, PROMPT, SessionEnvironment},
     startup_envelope::{ENVIRONMENT_VARIABLE, StartupEnvelope},
 };
 use climon2_platform::{
@@ -23,19 +23,62 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// A nested start the user cancels creates nothing, not even a log, and
+/// exits with the status [`Answer::status`](climon2_core::session::Answer::status) gives.
 pub fn run(
     home: &Path,
     lifetime: Lifetime,
+    nested: NestedStart,
     command: CommandArgs,
     general: &LogFile,
     filter: Option<&str>,
 ) -> Result<u32, Error> {
+    let (config, layout, session) = checked(home, lifetime, general)?;
+    // The working and runtime directories are checked before the prompt, so
+    // no one is asked to start a session that is bound to fail.
+    let startup = Startup::new(home, &layout, &session.id, lifetime, &config)?;
+    if let Some(status) = confirm(session.environment.notice(lifetime, nested))? {
+        return Ok(status);
+    }
+    start(
+        &startup,
+        session.environment,
+        command,
+        general,
+        filter,
+        config.client,
+    )
+}
+
+/// Configuration, terminals and the session's environment, all checked
+/// before anything is created.
+fn checked(
+    home: &Path,
+    lifetime: Lifetime,
+    general: &LogFile,
+) -> Result<(ExecConfig, ExecutableLayout, NewSession), Error> {
     let (config, layout) = prepare(home, lifetime)?;
-    let (id, session) = new_session(home, general)?;
-    let dispatch = session.dispatch(filter)?;
+    let session = NewSession::create().map_err(|error| error.logged(general.path()))?;
+    Ok((config, layout, session))
+}
+
+/// Switches to the session's own log, then starts its daemon and, for an
+/// ordinary session, its client.
+fn start(
+    startup: &Startup<'_>,
+    environment: SessionEnvironment,
+    command: CommandArgs,
+    general: &LogFile,
+    filter: Option<&str>,
+    settings: climon2_core::keys::ClientSettings,
+) -> Result<u32, Error> {
+    let log = session_log(startup.home, startup.id, general)?;
+    let dispatch = log.dispatch(filter)?;
     tracing::dispatcher::with_default(&dispatch, || {
-        launch(home, lifetime, command, &layout, &id, filter, config)
-            .map_err(|error| error.logged(session.path().parent().expect("session log directory")))
+        startup
+            .ready(command, environment, filter)
+            .and_then(|daemon| startup.finish(daemon, filter, settings))
+            .map_err(|error| error.logged(log.path().parent().expect("session log directory")))
     })
 }
 
@@ -45,10 +88,48 @@ fn prepare(home: &Path, lifetime: Lifetime) -> Result<(ExecConfig, ExecutableLay
     Ok((config, preflight(lifetime)?))
 }
 
-fn new_session(home: &Path, general: &LogFile) -> io::Result<(SessionId, LogFile)> {
-    let id = new_session_id()?;
-    let session = session_log(home, &id, general)?;
-    Ok((id, session))
+/// A session's ID and the environment its command gets.
+struct NewSession {
+    id: SessionId,
+    environment: SessionEnvironment,
+}
+
+impl NewSession {
+    /// Before any session log exists, so a depth overflow is recorded in
+    /// the general log, which its error names.
+    fn create() -> Result<Self, Error> {
+        let id = new_session_id()?;
+        let inherited = std::env::vars_os().collect::<Vec<_>>();
+        let environment = SessionEnvironment::for_session(&id, &inherited).map_err(|error| {
+            tracing::error!(%error, "cannot start the session");
+            Error::new(125, error)
+        })?;
+        Ok(Self { id, environment })
+    }
+}
+
+/// Shows `notice`: a headless session's warning on stderr; the warning and
+/// prompt on the terminal itself, stdout, which an ordinary exec has checked
+/// is one, then waits for the answer. The status to exit with unless it was
+/// Enter.
+fn confirm(notice: Notice<'_>) -> io::Result<Option<u32>> {
+    match notice {
+        Notice::Quiet => Ok(None),
+        Notice::Warn(warning) => {
+            eprintln!("{warning}");
+            Ok(None)
+        }
+        Notice::Ask(warning) => ask(warning),
+    }
+}
+
+/// The terminal is raw, and earlier input discarded, before the prompt
+/// shows, so only a key typed once it shows answers it, and Ctrl+C is a key,
+/// never a signal. A hang-up anywhere, opening the terminal included, is a
+/// terminal gone.
+fn ask(warning: &str) -> io::Result<Option<u32>> {
+    let text = format!("{warning}\r\n{PROMPT}\r\n");
+    Ok(terminal::ask(terminal::input(), terminal::output(), &text)?.status())
 }
 
 fn exec_config(home: &Path) -> Result<ExecConfig, Error> {
@@ -95,30 +176,6 @@ struct Startup<'a> {
     socket: PathBuf,
     size: TerminalSize,
     cwd: PathBuf,
-}
-
-fn launch(
-    home: &Path,
-    lifetime: Lifetime,
-    command: CommandArgs,
-    layout: &ExecutableLayout,
-    id: &SessionId,
-    filter: Option<&str>,
-    config: ExecConfig,
-) -> Result<u32, Error> {
-    let startup = Startup::new(home, layout, id, lifetime, &config)?;
-    let inherited = std::env::vars_os().collect::<Vec<_>>();
-    let environment =
-        SessionEnvironment::for_session(id, &inherited).map_err(|error| Error::new(125, error))?;
-    warn_if_nested(&environment);
-    let daemon = startup.ready(command, environment, filter)?;
-    startup.finish(daemon, filter, config.client)
-}
-
-fn warn_if_nested(environment: &SessionEnvironment) {
-    if let Some(warning) = &environment.nested_warning {
-        eprintln!("{warning}");
-    }
 }
 
 impl Startup<'_> {

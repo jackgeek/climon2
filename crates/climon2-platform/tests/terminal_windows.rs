@@ -4,8 +4,9 @@
 //! harness's Windows Terminal model, and the program plays one role: it uses
 //! the seam as the client does and reports what its console did to a file.
 #![cfg(windows)]
+use climon2_core::session::Input;
 use climon2_platform::{
-    terminal::{self, Bridged, RawModeGuard, Signals},
+    terminal::{self, Bridged, Prompt, RawModeGuard, Signals},
     waiting,
 };
 use climon2_test_term::{Key, Modifiers, Terminal};
@@ -49,6 +50,7 @@ fn climon2_console_role() {
         "tty" => tty(),
         "signals" => signals(&report),
         "close" => close(&report),
+        "prompt" => prompt(&report),
         other => panic!("unknown role {other}"),
     };
     std::process::exit(status);
@@ -466,4 +468,85 @@ fn a_closed_console_is_a_hang_up_the_program_outlives() {
     terminal.close();
     assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 129);
     assert_eq!(report.read(&terminal), "1");
+}
+
+/// #139: keys typed before a nested-start prompt are discarded; keys typed
+/// once it shows come one at a time; Ctrl+Break ends its wait with
+/// `STATUS_CONTROL_C_EXIT` instead of ending the program, and dropping it
+/// puts the console's modes and code pages back and stops handling console
+/// events, so a later Ctrl+C ends the program.
+#[test]
+fn a_prompt_discards_type_ahead_takes_keys_singly_and_ends_restored_on_ctrl_break() {
+    let (mut terminal, report) = hosted("prompt");
+    report.wait_ready(&terminal);
+    terminal.type_text("early").unwrap();
+    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
+    // The typed records reach the console before the prompt starts.
+    thread::sleep(Duration::from_millis(500));
+    fs::write(report.path().with_extension("go"), b"").unwrap();
+    terminal.wait_for_text("PROMPT-SHOWN", TIMEOUT).unwrap();
+    terminal.type_text("yz").unwrap();
+    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
+    thread::sleep(Duration::from_millis(500));
+    terminal.press(Key::Break, Modifiers::CTRL).unwrap();
+    assert_eq!(
+        report.read(&terminal),
+        "[Key(121), Key(122), Key(13), Ended(3221225786)]|true"
+    );
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 0xC000_013A);
+}
+
+/// Waits for the `.go` file, so keys typed before it wait in the console,
+/// then takes a prompt's input until its wait ends, and reports it and
+/// whether the console came back as it was.
+fn prompt(report: &Path) -> i32 {
+    oem_code_pages();
+    say_ready(report);
+    let go = report.with_extension("go");
+    while !go.exists() {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let before = console_state();
+    let mut prompt = Prompt::new(terminal::input().unwrap(), terminal::output().unwrap()).unwrap();
+    prompt.show("PROMPT-SHOWN\r\n").unwrap();
+    let mut inputs = Vec::new();
+    loop {
+        let input = prompt.read_input().unwrap();
+        inputs.push(input);
+        if matches!(input, Input::Ended(_) | Input::Gone) {
+            break;
+        }
+    }
+    drop(prompt);
+    let after = console_state();
+    write_report(report, &format!("{inputs:?}|{}", before == after));
+    // The prompt's handler routine went with it, so Ctrl+C ends the program
+    // as it would have before.
+    // SAFETY: events for every process on this console, which is this one.
+    unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) };
+    thread::sleep(TIMEOUT);
+    0
+}
+
+/// #139: a hang-up opening the prompt's console (a broken pipe or an
+/// invalid handle) answers the prompt as a console gone, as a lost console
+/// does while it waits; any other failure is returned.
+#[test]
+fn a_hang_up_opening_a_prompt_answers_gone() {
+    use climon2_core::session::Answer;
+    // ERROR_BROKEN_PIPE, ERROR_INVALID_HANDLE and ERROR_ACCESS_DENIED.
+    for code in [109, 6] {
+        let failed = || Err(io::Error::from_raw_os_error(code));
+        assert_eq!(
+            terminal::ask(failed(), failed(), "text").unwrap(),
+            Answer::Gone
+        );
+    }
+    let denied = terminal::ask(
+        Err(io::Error::from_raw_os_error(5)),
+        Err(io::Error::from_raw_os_error(5)),
+        "text",
+    )
+    .unwrap_err();
+    assert_eq!(denied.raw_os_error(), Some(5));
 }
