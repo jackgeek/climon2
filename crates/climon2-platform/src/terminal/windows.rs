@@ -631,12 +631,17 @@ impl Prompt {
     /// Ctrl+Break. Any other failure is returned.
     pub fn read_input(&mut self) -> io::Result<Input> {
         loop {
-            if let Some(input) = self.pending() {
+            if let Some(input) = self.next_input()? {
                 return Ok(input);
             }
-            if let Some(input) = self.take_record()? {
-                return Ok(input);
-            }
+        }
+    }
+
+    /// What is pending, else what the next record brings, if anything.
+    fn next_input(&mut self) -> io::Result<Option<Input>> {
+        match self.pending() {
+            Some(input) => Ok(Some(input)),
+            None => self.take_record(),
         }
     }
 
