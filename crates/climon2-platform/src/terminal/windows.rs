@@ -665,11 +665,18 @@ impl Prompt {
     }
 
     fn ended(&self) -> Option<u32> {
-        if Signals.take_break() {
-            return Some(CONTROL_C_EXIT);
-        }
-        Signals.termination_signal().map(|signal| 128 + signal)
+        ending(Signals.take_break(), Signals.termination_signal())
     }
+}
+
+/// The status a prompt's recorded console event ends with: Ctrl+Break's
+/// `STATUS_CONTROL_C_EXIT`, else 128 + the signal a termination stands for,
+/// 129 for a close.
+fn ending(broke: bool, signal: Option<u32>) -> Option<u32> {
+    if broke {
+        return Some(CONTROL_C_EXIT);
+    }
+    signal.map(|signal| 128 + signal)
 }
 
 /// The client's handler routine, added for a prompt and removed when this
@@ -794,6 +801,18 @@ mod tests {
             assert!(!hung_up(&io::Error::from_raw_os_error(code)));
         }
         assert!(!hung_up(&io::Error::other("no OS error")));
+    }
+
+    /// #139: a prompt's recorded console close ends it with 129, an
+    /// interrupt with 130, and Ctrl+Break, whatever else was recorded, with
+    /// `STATUS_CONTROL_C_EXIT`.
+    #[test]
+    fn a_prompt_ends_with_129_on_a_close_and_0xc000013a_on_ctrl_break() {
+        assert_eq!(ending(false, None), None);
+        assert_eq!(ending(false, Some(HANGUP)), Some(129));
+        assert_eq!(ending(false, Some(INTERRUPT)), Some(130));
+        assert_eq!(ending(true, None), Some(0xC000_013A));
+        assert_eq!(ending(true, Some(HANGUP)), Some(0xC000_013A));
     }
 
     /// #139: a prompt reads a failed console read that is a hang-up as the
