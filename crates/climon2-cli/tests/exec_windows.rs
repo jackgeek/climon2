@@ -421,6 +421,17 @@ const HELD: &[&str] = &[
     "while (-not (Test-Path release)) { Start-Sleep -Milliseconds 50 }; exit -1073741510",
 ];
 
+/// [`HELD`], which first writes `mode con`'s report of its console's size
+/// to `seen.txt`.
+const SIZED_HELD: &[&str] = &[
+    "powershell",
+    "-NoLogo",
+    "-NoProfile",
+    "-Command",
+    "mode con | Out-File -Encoding ascii seen.txt; \
+     while (-not (Test-Path release)) { Start-Sleep -Milliseconds 50 }; exit -1073741510",
+];
+
 /// Puts a built file into a test install as a hard link, so Windows Defender
 /// scans it once, not on each install's first launch, which under the coverage
 /// build pushed daemon start-up past its five-second deadline. A copy where a
@@ -888,16 +899,23 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
 /// `c2 exec <options> -- <HELD>` inside session `outer`, in a pseudoconsole
 /// of its own, with this home, in its working directory.
 fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
-    Terminal::spawn(nested_command(install, home, options), 24, 100).unwrap()
+    Terminal::spawn(nested_command(install, home, options, HELD), 24, 100).unwrap()
 }
 
-fn nested_command(install: &Install, home: &Home, options: &[&str]) -> CommandBuilder {
+/// `c2 exec <options> -- <command>` inside session `outer`, with this home, in
+/// its working directory.
+fn nested_command(
+    install: &Install,
+    home: &Home,
+    options: &[&str],
+    held: &[&str],
+) -> CommandBuilder {
     let mut command = CommandBuilder::new(install.cli());
     climon2_test_term::outside_any_session(&mut command);
     command.arg("exec");
     command.args(options);
     command.arg("--");
-    command.args(HELD);
+    command.args(held);
     command.env("CLIMON2_HOME", home.home());
     command.env("LOCALAPPDATA", home.local());
     command.env("CLIMON2_SESSION_ID", "outer");
@@ -1038,7 +1056,9 @@ fn the_tests_start_exec_outside_the_session_they_run_in() {
 /// #437: a nested session starts at the size its terminal has when Enter
 /// answers the prompt, not the size it had when the prompt showed. The CLI
 /// is held before its client (`CLIMON2_CLI_HOLD`), so the command sees the
-/// size the daemon gave it before any client resizes it.
+/// size the daemon gave it before any client resizes it. ConPTY applies a
+/// resize apart from input, so Enter waits until the console reports the
+/// new size.
 #[test]
 fn a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at() {
     if climon2_test_term::rerun_outside(
@@ -1049,38 +1069,46 @@ fn a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at() {
     }
     let (install, home) = (Install::new(&[]), Home::new());
     let (seen, hold) = (home.work().join("seen.txt"), home.work().join("hold"));
-    let mut command = CommandBuilder::new(install.cli());
-    climon2_test_term::outside_any_session(&mut command);
-    command.args(["exec", "--", "cmd", "/d", "/c", "mode con > seen.txt"]);
-    command.env("CLIMON2_HOME", home.home());
-    command.env("LOCALAPPDATA", home.local());
-    command.env("CLIMON2_SESSION_ID", "outer");
+    let mut command = nested_command(&install, &home, &[], SIZED_HELD);
     command.env("CLIMON2_CLI_HOLD", &hold);
-    command.cwd(home.work());
     let mut terminal = Terminal::spawn(command, 24, 100).unwrap();
     terminal
         .wait_for_text(PROMPT, Duration::from_secs(20))
         .unwrap();
     terminal.resize(40, 120).unwrap();
-    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let size = console_size(terminal.pid());
+        if size == "120x40" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the console stays {size}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
     let size = loop {
         let text = fs::read_to_string(&seen).unwrap_or_default();
-        let size: Vec<&str> = text
-            .lines()
-            .filter(|line| line.contains("Lines:") || line.contains("Columns:"))
-            .filter_map(|line| line.split_whitespace().last())
-            .collect();
-        if size.len() == 2 {
-            break size.join("x");
+        if let Some(size) = mode_size(&text) {
+            break size;
         }
         assert!(Instant::now() < deadline, "{text:?}\n{}", terminal.screen());
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(size, "40x120");
     fs::write(&hold, b"").unwrap();
-    terminal.wait_exit(Duration::from_secs(30)).unwrap();
+    release_the_only_session(&mut terminal, &home);
     home.wait_until_ended(&install);
+}
+
+/// `<lines>x<columns>` from `mode con`'s report, once both its lines are
+/// whole.
+fn mode_size(text: &str) -> Option<String> {
+    let value = |label: &str| {
+        text.split_inclusive('\n')
+            .find(|line| line.contains(label) && line.ends_with('\n'))
+            .and_then(|line| line.split_whitespace().last())
+    };
+    Some(format!("{}x{}", value("Lines:")?, value("Columns:")?))
 }
 
 /// #437: `release_the_only_session` releases the command only once the
@@ -1098,7 +1126,7 @@ fn a_nested_session_is_released_only_once_its_client_has_attached() {
     }
     let (install, home) = (Install::new(&[]), Home::new());
     let hold = home.work().join("hold");
-    let mut command = nested_command(&install, &home, &[]);
+    let mut command = nested_command(&install, &home, &[], HELD);
     command.env("CLIMON2_CLI_HOLD", &hold);
     let mut terminal = Terminal::spawn(command, 24, 100).unwrap();
     terminal
@@ -1111,7 +1139,6 @@ fn a_nested_session_is_released_only_once_its_client_has_attached() {
         assert!(Instant::now() < deadline, "{}", terminal.screen());
         std::thread::sleep(Duration::from_millis(50));
     }
-    std::thread::sleep(Duration::from_secs(1));
     assert!(
         !home.session_logs(&id).contains(CLIENT_ATTACHED),
         "{}",
@@ -1120,4 +1147,65 @@ fn a_nested_session_is_released_only_once_its_client_has_attached() {
     fs::write(&hold, b"").unwrap();
     release_the_only_session(&mut terminal, &home);
     home.wait_until_ended(&install);
+}
+
+/// Set in the probe run [`console_size`] starts: the process whose console
+/// it measures.
+const CONSOLE_OF: &str = "CLIMON2_TEST_CONSOLE_OF";
+
+/// `<cols>x<rows>` of the console window process `pid` is attached to, as
+/// the CLI reads it, measured by this test binary run again as a probe.
+fn console_size(pid: u32) -> String {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW: the probe leaves its own console for `pid`'s.
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "climon2_console_size_probe", "--nocapture"])
+        .env(CONSOLE_OF, pid.to_string())
+        .creation_flags(0x0800_0000)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("CONSOLE:"))
+        .unwrap_or_else(|| panic!("{output:?}"))
+        .to_owned()
+}
+
+/// The probe [`console_size`] runs; run as an ordinary test it does nothing.
+#[test]
+fn climon2_console_size_probe() {
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, CONSOLE_SCREEN_BUFFER_INFO, FreeConsole, GetConsoleScreenBufferInfo,
+    };
+    let Some(pid) = std::env::var_os(CONSOLE_OF) else {
+        return;
+    };
+    let pid: u32 = pid.to_str().unwrap().parse().unwrap();
+    // This process's own console, if any, is left; then `pid`'s is shared.
+    unsafe { FreeConsole() };
+    assert_ne!(
+        unsafe { AttachConsole(pid) },
+        0,
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    let output = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("CONOUT$")
+        .unwrap();
+    let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+    // The handle is the attached console's output; the call writes one
+    // CONSOLE_SCREEN_BUFFER_INFO.
+    assert_ne!(
+        unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle(), &mut info) },
+        0
+    );
+    let window = info.srWindow;
+    println!(
+        "CONSOLE:{}x{}",
+        window.Right - window.Left + 1,
+        window.Bottom - window.Top + 1
+    );
 }

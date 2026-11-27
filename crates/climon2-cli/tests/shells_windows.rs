@@ -198,12 +198,13 @@ fn the_shell_subset(shell: Shell) {
     );
     let session = one_session(&home);
     wait(&mut terminal, &home, "INNER> ");
-    let killed = Command::new(package.launcher())
-        .args(["kill", session.session_id.as_str()])
-        .env("CLIMON2_HOME", home.home())
-        .env("LOCALAPPDATA", home.local())
-        .output()
-        .unwrap();
+    let killed =
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+            .args(["kill", session.session_id.as_str()])
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.local())
+            .output()
+            .unwrap();
     assert_eq!(killed.status.code(), Some(0), "{killed:?}");
     wait(&mut terminal, &home, &format!("KILLED-STATUS={CLOSED}"));
     assert!(home.sessions().is_empty(), "{}", home.logs());

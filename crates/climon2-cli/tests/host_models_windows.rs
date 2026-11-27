@@ -469,12 +469,13 @@ fn a_vs_code_hosted_client_detaches_and_ends_when_its_session_is_killed() {
         &format!("c2 attach {id}; \"ATTACH-STATUS=$LASTEXITCODE\""),
     );
     wait(&mut terminal, &home, "INNER> ");
-    let killed = Command::new(package.launcher())
-        .args(["kill", &id])
-        .env("CLIMON2_HOME", home.home())
-        .env("LOCALAPPDATA", home.local())
-        .output()
-        .unwrap();
+    let killed =
+        climon2_test_term::process_outside_any_session(&mut Command::new(package.launcher()))
+            .args(["kill", &id])
+            .env("CLIMON2_HOME", home.home())
+            .env("LOCALAPPDATA", home.local())
+            .output()
+            .unwrap();
     assert_eq!(killed.status.code(), Some(0), "{killed:?}\n{}", home.logs());
     wait(&mut terminal, &home, "ATTACH-STATUS=");
     no_sessions(&home);
