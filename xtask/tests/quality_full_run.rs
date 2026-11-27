@@ -266,16 +266,27 @@ fn a_manual_run_mutates_the_slice_it_names_or_all_ten() {
     );
 }
 
-fn runs_path(status: &str) -> String {
+const RUN_ID: u64 = 500;
+
+fn gate_runs(status: &str) -> String {
     format!("repos/{REPO}/actions/workflows/quality.yml/runs?status={status}&per_page=1")
 }
 
-/// The run count for each unfinished status, `busy` of them in progress.
-fn runs(busy: u32) -> Value {
+fn full_runs(status: &str) -> String {
+    format!("repos/{REPO}/actions/workflows/quality-full.yml/runs?status={status}&per_page=100")
+}
+
+/// The unfinished runs: `gates` quality.yml runs and these quality-full.yml runs in
+/// progress, nothing else.
+fn runs(gates: u32, full: &[u64]) -> Value {
     let mut responses = json!({});
     for status in ["queued", "in_progress", "pending", "waiting", "requested"] {
-        let count = if status == "in_progress" { busy } else { 0 };
-        responses[runs_path(status)] = json!({"total_count": count, "workflow_runs": []});
+        let busy = status == "in_progress";
+        let count = if busy { gates } else { 0 };
+        responses[gate_runs(status)] = json!({"total_count": count, "workflow_runs": []});
+        let ids: Vec<_> = if busy { full.to_vec() } else { vec![] };
+        let listed: Vec<_> = ids.iter().map(|id| json!({ "id": id })).collect();
+        responses[full_runs(status)] = json!({"total_count": ids.len(), "workflow_runs": listed});
     }
     responses
 }
@@ -283,35 +294,122 @@ fn runs(busy: u32) -> Value {
 /// The wait's output and message, with no time to wait.
 fn wait(responses: Value) -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
-    let args = ["wait", "--repo", REPO, "--interval", "60", "--limit", "0"];
+    let id = RUN_ID.to_string();
+    let args = [
+        "wait",
+        "--repo",
+        REPO,
+        "--run-id",
+        &id,
+        "--interval",
+        "60",
+        "--limit",
+        "0",
+    ];
     let outcome = script(dir.path(), &args, Some(responses));
     assert_eq!(outcome.summary, format!("- {}", outcome.stdout));
     (outcome.output, outcome.stdout)
 }
 
 #[test]
-fn a_slice_starts_only_once_no_gate_is_queued_or_in_progress() {
+fn a_slice_starts_only_once_no_gate_or_older_full_run_is_unfinished() {
+    // This run itself and newer full runs never hold it back, so two never wait on each other.
     assert_eq!(
-        wait(runs(0)),
+        wait(runs(0, &[RUN_ID, RUN_ID + 1])),
         (
             "idle=true\n".to_owned(),
-            "Gates idle: no quality.yml run was queued or in progress after 0 min.\n".to_owned()
+            "Gates idle: no quality.yml or older full run was unfinished after 0 min.\n".to_owned()
         )
     );
     assert_eq!(
-        wait(runs(2)),
+        wait(runs(2, &[])),
         (
             "idle=false\n".to_owned(),
-            "Gates still busy: 2 quality.yml runs unfinished after 0 min.\n".to_owned()
+            "Gates still busy: 2 quality.yml and 0 older quality-full.yml runs unfinished \
+             after 0 min.\n"
+                .to_owned()
+        )
+    );
+    // An older full run, such as a manual run of all slices, holds the machines.
+    assert_eq!(
+        wait(runs(0, &[RUN_ID - 1, RUN_ID])),
+        (
+            "idle=false\n".to_owned(),
+            "Gates still busy: 0 quality.yml and 1 older quality-full.yml runs unfinished \
+             after 0 min.\n"
+                .to_owned()
         )
     );
     // An API that fails counts as busy, so a slice never starts while gates may wait.
     let (output, message) = wait(json!({}));
     assert_eq!(output, "idle=false\n");
     assert!(
-        message.starts_with("Gates still busy: could not look up quality.yml runs: "),
+        message.starts_with("Gates still busy: could not look up unfinished runs: "),
         "{message}"
     );
+}
+
+/// The start job's state and message for the wait jobs' `needs` context.
+fn start(needs: Value) -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let needs = needs.to_string();
+    let outcome = script(dir.path(), &["start", "--needs", &needs], None);
+    (outcome.output, outcome.stdout)
+}
+
+fn waited(results: [(&str, &str); 4]) -> Value {
+    let mut needs = json!({ "slice": {"result": "success", "outputs": {"slices": "[\"3\"]"}} });
+    for (index, (result, idle)) in results.into_iter().enumerate() {
+        let outputs = if idle.is_empty() {
+            json!({})
+        } else {
+            json!({ "idle": idle })
+        };
+        needs[format!("wait{}", index + 1)] = json!({"result": result, "outputs": outputs});
+    }
+    needs
+}
+
+#[test]
+fn the_start_job_tells_idle_gates_from_busy_ones_and_failed_waits() {
+    let skipped = ("skipped", "");
+    assert_eq!(
+        start(waited([("success", "true"), skipped, skipped, skipped])),
+        (
+            "state=idle\n".to_owned(),
+            "Gates idle: the gates went idle.\n".to_owned()
+        )
+    );
+    assert_eq!(
+        start(waited([
+            ("success", "false"),
+            ("success", "false"),
+            ("success", "true"),
+            skipped
+        ]))
+        .0,
+        "state=idle\n"
+    );
+    assert_eq!(
+        start(waited([("success", "false"); 4])),
+        (
+            "state=busy\n".to_owned(),
+            "Gates busy: the gates stayed busy through 4 waits.\n".to_owned()
+        )
+    );
+    let (state, message) = start(waited([
+        ("success", "false"),
+        ("failure", ""),
+        skipped,
+        skipped,
+    ]));
+    assert_eq!(state, "state=failed\n");
+    assert_eq!(
+        message,
+        "Gates failed: a wait job did not finish: wait1 success, wait2 failure, \
+         wait3 skipped, wait4 skipped.\n"
+    );
+    assert_eq!(start(waited([skipped; 4])).0, "state=failed\n");
 }
 
 const LINUX_LOG: &str = "\
@@ -330,8 +428,12 @@ SURVIVED  crates/climon2-core/src/wire.rs:42 == -> !=
 UNCOVERED crates/climon2-core/src/wire.rs:57 true -> false
 Function Namespace Killed Survived Uncovered Sites Score
 ";
+const KILLED: &str = "KILLED    a.rs:1 + -> -\n";
+const DATE: &str = "2026-11-28";
+/// CLIMON2_OWN_RUNNERS in the tests: macOS is not listed.
+const OWN: &str = "linux,windows";
 
-/// Writes a platform's log, and its exit status unless it timed out, for slice `slice`.
+/// Writes a platform's log, and its status unless it has none, for slice `slice`.
 fn platform(logs: &Path, key: &str, slice: &str, log: &str, status: Option<&str>) {
     let folder = logs.join(format!("full-run-{key}-{slice}"));
     fs::create_dir(&folder).unwrap();
@@ -346,40 +448,32 @@ fn logs(slice: &str) -> tempfile::TempDir {
     let logs = tempfile::tempdir().unwrap();
     let crlf = LINUX_LOG.replace('\n', "\r\n");
     platform(logs.path(), "linux", slice, &crlf, Some("3"));
-    platform(
-        logs.path(),
-        "windows",
-        slice,
-        "KILLED    a.rs:1 + -> -\n",
-        Some("0"),
-    );
+    platform(logs.path(), "windows", slice, KILLED, Some("0"));
     logs
 }
 
-/// Logs for `slice` in which every platform that ran found nothing.
+/// Logs for `slice` in which both listed platforms found nothing.
 fn clean_logs(slice: &str) -> tempfile::TempDir {
     let logs = tempfile::tempdir().unwrap();
-    platform(
-        logs.path(),
-        "linux",
-        slice,
-        "KILLED    a.rs:1 + -> -\n",
-        Some("0"),
-    );
+    platform(logs.path(), "linux", slice, KILLED, Some("0"));
+    platform(logs.path(), "windows", slice, KILLED, Some("0"));
     logs
 }
 
-fn report(logs: &Path, slices: &str, idle: bool, responses: Value) -> Outcome {
+fn report(logs: &Path, slices: &str, gates: &str, responses: Value) -> Outcome {
     let logs = logs.to_str().unwrap();
-    let idle = if idle { "true" } else { "false" };
     let args = [
         "report",
         "--repo",
         REPO,
         "--slices",
         slices,
-        "--idle",
-        idle,
+        "--gates",
+        gates,
+        "--own-runners",
+        OWN,
+        "--date",
+        DATE,
         "--logs",
         logs,
         "--run-url",
@@ -404,15 +498,19 @@ fn tracker(body: &str) -> Value {
     json!({ ISSUES: [issue(9, "Full mutation pass findings", "github-actions[bot]", body)] })
 }
 
-/// The section a slice's report writes, between its markers.
-fn section<'a>(body: &'a str, slice: &str) -> &'a str {
-    let start = format!("<!-- slice {slice} -->\n");
-    let end = format!("<!-- end slice {slice} -->\n");
-    let from = body
+/// The block between `<!-- {kind} {key} -->` and its end marker, markers included.
+fn block<'a>(text: &'a str, kind: &str, key: &str) -> &'a str {
+    let start = format!("<!-- {kind} {key} -->\n");
+    let end = format!("<!-- end {kind} {key} -->\n");
+    let from = text
         .find(&start)
-        .unwrap_or_else(|| panic!("no {slice}: {body}"));
-    let to = body[from..].find(&end).unwrap() + from + end.len();
-    &body[from..to]
+        .unwrap_or_else(|| panic!("no {kind} {key}: {text}"));
+    let to = text[from..].find(&end).unwrap() + from + end.len();
+    &text[from..to]
+}
+
+fn section<'a>(body: &'a str, slice: &str) -> &'a str {
+    block(body, "slice", slice)
 }
 
 /// The body of the issue write `index`.
@@ -426,7 +524,7 @@ fn findings_open_the_tracking_issue_when_none_is_open() {
     let outcome = report(
         logs.path(),
         &one(4),
-        true,
+        "idle",
         json!({ ISSUES: [
             // Same title, but a person's issue, and a pull request: neither is the tracker.
             issue(5, "Full mutation pass findings", "someone", ""),
@@ -444,12 +542,15 @@ fn findings_open_the_tracking_issue_when_none_is_open() {
     let body = written(&outcome, 0);
     let expected = format!(
         "<!-- slice 4 -->\n## Slice 4 of 10, at {SHA}\n\n{RUN_URL}\n\n\
-         ### Linux: 3 findings, exit 3\n\n```text\n\
+         <!-- platform linux -->\n### Linux: 3 findings, exit 3\n\n```text\n\
          CRAP parse climon2_core::wire 6 40.0% 14.2\n\
          SURVIVED  crates/climon2-core/src/wire.rs:42 == -> !=\n\
-         UNCOVERED crates/climon2-core/src/wire.rs:57 true -> false\n```\n\n\
-         ### Windows: no findings\n\n\
-         ### macOS\n\nDid not run.\n<!-- end slice 4 -->\n"
+         UNCOVERED crates/climon2-core/src/wire.rs:57 true -> false\n```\n\
+         <!-- end platform linux -->\n\n\
+         <!-- platform windows -->\n### Windows: no findings\n<!-- end platform windows -->\n\n\
+         <!-- platform macos -->\n### macOS\n\n\
+         > Did not run on {DATE}: it is not in CLIMON2_OWN_RUNNERS.\n\
+         <!-- end platform macos -->\n<!-- end slice 4 -->\n"
     );
     assert_eq!(section(body, "4"), expected);
     assert!(
@@ -458,23 +559,26 @@ fn findings_open_the_tracking_issue_when_none_is_open() {
     );
     assert_eq!(
         outcome.stdout,
-        format!("Findings in slice 4 opened in https://github.com/repos/{REPO}/issues.\n")
+        format!("Findings in slice 4; https://github.com/repos/{REPO}/issues is opened.\n")
     );
 }
 
-/// An issue body as GitHub returns it: with CRLF line ends once edited in the browser.
-fn old_body(line_end: &str) -> String {
-    "Old header\n\n<!-- slice 9 -->\nnine\n<!-- end slice 9 -->\n\n\
-     <!-- slice 7 -->\nseven\n<!-- end slice 7 -->\n\n\
-     <!-- slice 2 -->\nstale two\n<!-- end slice 2 -->\n"
-        .replace('\n', line_end)
+/// An issue body as GitHub returns it, with `line_end` ends, and with or without its
+/// final newline, as a body edited in the browser may come back.
+fn old_body(line_end: &str, final_newline: bool) -> String {
+    let body = "Old header\n\n<!-- slice 9 -->\nnine\n<!-- end slice 9 -->\n\n\
+                <!-- slice 7 -->\nseven\n<!-- end slice 7 -->\n\n\
+                <!-- slice 2 -->\nstale two\n<!-- end slice 2 -->\n";
+    let body = if final_newline { body } else { body.trim_end() };
+    body.replace('\n', line_end)
 }
 
 #[test]
 fn findings_replace_only_their_slices_section_in_the_open_issue() {
-    for line_end in ["\n", "\r\n"] {
+    for (line_end, final_newline) in [("\n", true), ("\r\n", true), ("\r\n", false)] {
         let logs = logs("2");
-        let outcome = report(logs.path(), &one(2), true, tracker(&old_body(line_end)));
+        let old = old_body(line_end, final_newline);
+        let outcome = report(logs.path(), &one(2), "idle", tracker(&old));
         let paths: Vec<_> = outcome
             .writes
             .iter()
@@ -498,7 +602,8 @@ fn findings_replace_only_their_slices_section_in_the_open_issue() {
         );
         assert_eq!(
             section(body, "9"),
-            "<!-- slice 9 -->\nnine\n<!-- end slice 9 -->\n"
+            "<!-- slice 9 -->\nnine\n<!-- end slice 9 -->\n",
+            "{line_end:?} {final_newline}"
         );
         let two = body.find("<!-- slice 2 -->").unwrap();
         let seven = body.find("<!-- slice 7 -->").unwrap();
@@ -506,24 +611,27 @@ fn findings_replace_only_their_slices_section_in_the_open_issue() {
         assert!(two < seven && seven < nine, "{body}");
         assert_eq!(
             outcome.writes[1]["body"]["body"],
-            format!("New findings in slice 2: {RUN_URL}")
-        );
-        assert_eq!(
-            outcome.stdout,
-            format!("Findings in slice 2 updated in https://github.com/{REPO}/issues/9.\n")
+            format!("Findings in slice 2: {RUN_URL}")
         );
     }
 }
 
 #[test]
-fn a_failed_or_timed_out_slice_without_findings_is_reported() {
+fn a_failed_timed_out_or_unset_up_pass_is_reported() {
     for (status, outcome) in [
         (Some("2"), "exit 2"),
+        (
+            Some("started"),
+            "no exit status: the slice timed out or was cancelled",
+        ),
         (None, "no exit status: the slice timed out or was cancelled"),
+        (Some("setup-failed"), "its set-up failed"),
     ] {
-        let logs = tempfile::tempdir().unwrap();
+        let logs = clean_logs("1");
+        fs::remove_dir_all(logs.path().join("full-run-linux-1")).unwrap();
         platform(logs.path(), "linux", "1", "baseline failed\n", status);
-        let result = report(logs.path(), &one(1), true, json!({ ISSUES: [] }));
+        let result = report(logs.path(), &one(1), "idle", json!({ ISSUES: [] }));
+        assert_eq!(result.writes.len(), 1, "{status:?}: {}", result.stdout);
         let expected = format!("### Linux: no findings, {outcome}\n\nSee the run's log.\n");
         assert!(
             section(written(&result, 0), "1").contains(&expected),
@@ -533,58 +641,133 @@ fn a_failed_or_timed_out_slice_without_findings_is_reported() {
     }
 }
 
+/// The section of slice 3 from an earlier pass: Linux and macOS had findings.
+fn earlier() -> String {
+    "<!-- slice 3 -->\n## Slice 3 of 10, at 1111\n\nold-run\n\n\
+         <!-- platform linux -->\n### Linux: 1 findings, exit 3\n\n\
+         ```text\nSURVIVED  old.rs:1 + -> -\n```\n<!-- end platform linux -->\n\n\
+         <!-- platform windows -->\n### Windows: no findings\n<!-- end platform windows -->\n\n\
+         <!-- platform macos -->\n\
+         > Did not run on 2026-11-01: it is not in CLIMON2_OWN_RUNNERS.\n\n\
+         ### macOS: 1 findings, exit 3\n\n\
+         ```text\nSURVIVED  mac.rs:2 + -> -\n```\n<!-- end platform macos -->\n\
+         <!-- end slice 3 -->\n"
+        .to_owned()
+}
+
 #[test]
-fn a_clean_slice_clears_its_section_without_a_comment_and_opens_no_issue() {
-    let clean = report(clean_logs("3").path(), &one(3), true, json!({ ISSUES: [] }));
-    assert!(clean.writes.is_empty(), "{:#?}", clean.writes);
-    assert_eq!(clean.stdout, "No findings in slice 3.\n");
-    let old = "<!-- slice 3 -->\nSURVIVED old\n<!-- end slice 3 -->\n";
-    let open = report(clean_logs("3").path(), &one(3), true, tracker(old));
-    assert_eq!(open.writes.len(), 1, "{:#?}", open.writes);
-    assert_eq!(open.writes[0]["method"], "PATCH");
-    let body = written(&open, 0);
-    assert!(
-        section(body, "3").contains("### Linux: no findings\n"),
-        "{body}"
-    );
-    assert!(!body.contains("SURVIVED old"), "{body}");
+fn a_platform_that_did_not_run_keeps_its_earlier_result_with_a_dated_note() {
+    // Linux ran clean; Windows is listed but left no log; macOS is not listed.
+    let logs = tempfile::tempdir().unwrap();
+    platform(logs.path(), "linux", "3", KILLED, Some("0"));
+    let outcome = report(logs.path(), &one(3), "idle", tracker(&earlier()));
+    let body = written(&outcome, 0);
+    let section = section(body, "3");
+    assert!(section.starts_with(&format!("<!-- slice 3 -->\n## Slice 3 of 10, at {SHA}\n")));
     assert_eq!(
-        open.stdout,
+        block(section, "platform", "linux"),
+        "<!-- platform linux -->\n### Linux: no findings\n<!-- end platform linux -->\n"
+    );
+    assert_eq!(
+        block(section, "platform", "windows"),
         format!(
-            "No findings in slice 3; its section in https://github.com/{REPO}/issues/9 \
-             is updated.\n"
+            "<!-- platform windows -->\n\
+             > Did not run on {DATE}: its job left no log ({RUN_URL}).\n\n\
+             ### Windows: no findings\n<!-- end platform windows -->\n"
+        )
+    );
+    // The earlier note is replaced, not stacked.
+    assert_eq!(
+        block(section, "platform", "macos"),
+        format!(
+            "<!-- platform macos -->\n\
+             > Did not run on {DATE}: it is not in CLIMON2_OWN_RUNNERS.\n\n\
+             ### macOS: 1 findings, exit 3\n\n\
+             ```text\nSURVIVED  mac.rs:2 + -> -\n```\n<!-- end platform macos -->\n"
+        )
+    );
+    // A listed platform that left no log needs the owner, so it comments.
+    assert_eq!(outcome.writes.len(), 2, "{:#?}", outcome.writes);
+    assert_eq!(
+        outcome.writes[1]["body"]["body"],
+        format!("Findings in slice 3: {RUN_URL}")
+    );
+}
+
+#[test]
+fn a_skipped_slice_keeps_its_earlier_findings_with_a_dated_note() {
+    let empty = tempfile::tempdir().unwrap();
+    let busy = report(empty.path(), &one(3), "busy", tracker(&earlier()));
+    assert_eq!(busy.writes.len(), 1, "no comment: {:#?}", busy.writes);
+    let section = section(written(&busy, 0), "3");
+    let note = format!("> Skipped on {DATE}: gates were busy ({RUN_URL}).\n\n");
+    assert_eq!(
+        section,
+        format!(
+            "<!-- slice 3 -->\n{note}{}",
+            &earlier()["<!-- slice 3 -->\n".len()..]
+        )
+    );
+    assert!(section.contains("SURVIVED  old.rs:1"), "{section}");
+    assert_eq!(
+        busy.stdout,
+        format!(
+            "Slice 3 skipped: gates were busy; https://github.com/{REPO}/issues/9 is updated.\n"
+        )
+    );
+    // Skipped again: the newer note replaces the older one.
+    let again = report(empty.path(), &one(3), "busy", tracker(written(&busy, 0)));
+    assert_eq!(section_count(written(&again, 0), "> Skipped on "), 1);
+    // With no issue open, a busy skip opens none.
+    let none = report(empty.path(), &one(6), "busy", json!({ ISSUES: [] }));
+    assert!(none.writes.is_empty(), "{:#?}", none.writes);
+    assert_eq!(none.stdout, "Slice 6 skipped: gates were busy.\n");
+}
+
+fn section_count(text: &str, needle: &str) -> usize {
+    text.matches(needle).count()
+}
+
+#[test]
+fn a_failed_wait_is_told_apart_from_busy_gates_and_reported() {
+    let empty = tempfile::tempdir().unwrap();
+    let failed = report(empty.path(), &one(6), "failed", json!({ ISSUES: [] }));
+    assert_eq!(failed.writes.len(), 1, "{:#?}", failed.writes);
+    assert_eq!(
+        section(written(&failed, 0), "6"),
+        format!(
+            "<!-- slice 6 -->\n## Slice 6 of 10\n\n\
+             > Skipped on {DATE}: a job that waits for the gates failed ({RUN_URL}).\n\
+             <!-- end slice 6 -->\n"
+        )
+    );
+    assert_eq!(
+        failed.stdout,
+        format!(
+            "Slice 6 skipped: a job that waits for the gates failed; \
+             https://github.com/repos/{REPO}/issues is opened.\n"
         )
     );
 }
 
 #[test]
-fn a_slice_skipped_because_gates_were_busy_is_reported() {
-    let skipped = "Skipped: gates were busy, so its files wait for their next turn.\n";
-    let none = report(
-        tempfile::tempdir().unwrap().path(),
-        &one(6),
-        false,
+fn a_clean_slice_clears_its_section_without_a_comment_and_opens_no_issue() {
+    let clean = report(
+        clean_logs("3").path(),
+        &one(3),
+        "idle",
         json!({ ISSUES: [] }),
     );
-    assert!(none.writes.is_empty(), "{:#?}", none.writes);
-    assert_eq!(none.stdout, "Slice 6 skipped: gates were busy.\n");
-    let old = "<!-- slice 6 -->\nSURVIVED old\n<!-- end slice 6 -->\n";
-    let open = report(
-        tempfile::tempdir().unwrap().path(),
-        &one(6),
-        false,
-        tracker(old),
-    );
+    assert!(clean.writes.is_empty(), "{:#?}", clean.writes);
+    assert_eq!(clean.stdout, "No findings in slice 3.\n");
+    let open = report(clean_logs("3").path(), &one(3), "idle", tracker(&earlier()));
     assert_eq!(open.writes.len(), 1, "{:#?}", open.writes);
-    let section = section(written(&open, 0), "6");
-    assert!(section.contains(skipped), "{section}");
-    assert!(!section.contains("Did not run"), "{section}");
+    assert_eq!(open.writes[0]["method"], "PATCH");
+    let body = written(&open, 0);
+    assert!(!body.contains("old.rs"), "{body}");
     assert_eq!(
         open.stdout,
-        format!(
-            "Slice 6 skipped: gates were busy; its section in \
-             https://github.com/{REPO}/issues/9 is updated.\n"
-        )
+        format!("No findings in slice 3; https://github.com/{REPO}/issues/9 is updated.\n")
     );
 }
 
@@ -596,13 +779,14 @@ fn a_run_of_all_slices_writes_each_slices_section() {
         let log = if slice == "5" {
             "SURVIVED  crates/climon2-core/src/wire.rs:42 == -> !=\n"
         } else {
-            "KILLED    a.rs:1 + -> -\n"
+            KILLED
         };
         let status = if slice == "5" { "3" } else { "0" };
         platform(logs.path(), "linux", &slice, log, Some(status));
+        platform(logs.path(), "windows", &slice, KILLED, Some("0"));
     }
     let all = r#"["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]"#;
-    let outcome = report(logs.path(), all, true, json!({ ISSUES: [] }));
+    let outcome = report(logs.path(), all, "idle", json!({ ISSUES: [] }));
     let body = written(&outcome, 0);
     for slice in 0..10 {
         let text = section(body, &slice.to_string());
@@ -610,18 +794,19 @@ fn a_run_of_all_slices_writes_each_slices_section() {
     }
     assert_eq!(
         outcome.stdout,
-        format!("Findings in slice 5 opened in https://github.com/repos/{REPO}/issues.\n")
+        format!("Findings in slice 5; https://github.com/repos/{REPO}/issues is opened.\n")
     );
 }
 
 #[test]
 fn a_long_list_is_cut_short_inside_its_section() {
-    let logs = tempfile::tempdir().unwrap();
+    let logs = clean_logs("8");
+    fs::remove_dir_all(logs.path().join("full-run-linux-8")).unwrap();
     let log: String = (0..2000)
         .map(|line| format!("SURVIVED  crates/climon2-core/src/wire.rs:{line} == -> !=\n"))
         .collect();
     platform(logs.path(), "linux", "8", &log, Some("3"));
-    let outcome = report(logs.path(), &one(8), true, json!({ ISSUES: [] }));
+    let outcome = report(logs.path(), &one(8), "idle", json!({ ISSUES: [] }));
     let text = section(written(&outcome, 0), "8");
     // Ten such sections fit in GitHub's 65,536-character limit.
     assert!(text.len() < 6000, "{}", text.len());
@@ -638,7 +823,7 @@ fn a_long_list_is_cut_short_inside_its_section() {
 #[test]
 fn an_api_error_is_reported_without_failing_the_job() {
     let logs = logs("5");
-    let outcome = report(logs.path(), &one(5), true, json!({}));
+    let outcome = report(logs.path(), &one(5), "idle", json!({}));
     assert!(outcome.writes.is_empty());
     assert!(
         outcome.stdout.starts_with(

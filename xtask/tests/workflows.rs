@@ -599,6 +599,31 @@ fn the_look_up_requires_every_gate_by_its_job_name() {
     }
 }
 
+/// The names of the workflow's jobs, in order.
+fn jobs(text: &str) -> Vec<&str> {
+    let block = text.split("\njobs:\n").nth(1).expect("a jobs: block");
+    block
+        .lines()
+        .filter(|line| line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':'))
+        .map(|line| line.trim().trim_end_matches(':'))
+        .collect()
+}
+
+/// The job's `if:`, on one line or folded.
+fn job_condition(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix("    if: "))
+        .map(|text| {
+            if text == ">-" {
+                condition(lines)
+            } else {
+                text.to_owned()
+            }
+        })
+        .unwrap_or_default()
+}
+
 /// #452: the rolling full mutation pass runs on pushes to main and manual runs
 /// only, so a branch never starts one. Every push to main chooses its slice, a
 /// Markdown-only one too, so no merge's slice is missed, and every job checks
@@ -615,15 +640,57 @@ fn the_full_pass_never_runs_on_a_branch() {
         !full.contains("paths"),
         "no push to main may skip the count"
     );
-    for name in [
-        "slice", "wait1", "wait2", "wait3", "wait4", "start", "linux", "windows", "macos", "report",
-    ] {
+    let names = jobs(&full);
+    assert_eq!(
+        names,
+        [
+            "slice", "wait1", "wait2", "wait3", "wait4", "start", "linux", "windows", "macos",
+            "report"
+        ]
+    );
+    for name in names {
+        let condition = job_condition(&job(&full, name));
+        assert!(
+            condition.contains("github.ref == 'refs/heads/main'"),
+            "{name}: {condition}"
+        );
+    }
+}
+
+/// #452: GitHub gives a job without a status function an implied success(),
+/// which fails whenever a job it needs was skipped, as the later waits usually
+/// are. So every job that needs another starts its condition with !cancelled()
+/// and checks the results it relies on itself.
+#[test]
+fn every_job_that_needs_another_states_its_own_status_check() {
+    let full = workflow("quality-full.yml");
+    for name in jobs(&full) {
         let lines = job(&full, name);
-        let guarded = lines
-            .iter()
-            .any(|line| line.starts_with("    if: github.ref == 'refs/heads/main'"))
-            || condition(&lines).contains("github.ref == 'refs/heads/main' &&");
-        assert!(guarded, "{name}: {lines:#?}");
+        if !lines.iter().any(|line| line.starts_with("    needs:")) {
+            continue;
+        }
+        let condition = job_condition(&lines);
+        assert!(
+            condition.starts_with("!cancelled() && "),
+            "{name}: {condition}"
+        );
+    }
+    for name in ["linux", "windows", "macos"] {
+        assert_eq!(
+            condition(&job(&full, name)),
+            format!(
+                "!cancelled() && github.ref == 'refs/heads/main' \
+                 && needs.slice.result == 'success' && needs.start.result == 'success' \
+                 && needs.start.outputs.state == 'idle' \
+                 && contains(vars.CLIMON2_OWN_RUNNERS, '{name}')"
+            ),
+            "{name}"
+        );
+    }
+    let slice_chosen = "!cancelled() && github.ref == 'refs/heads/main' \
+                        && needs.slice.result == 'success' && needs.slice.outputs.slices != ''";
+    for name in ["wait1", "start", "report"] {
+        assert_eq!(condition(&job(&full, name)), slice_chosen, "{name}");
     }
 }
 
@@ -665,14 +732,6 @@ fn the_full_pass_mutates_the_slices_the_merge_count_chooses() {
         ] {
             assert!(lines.contains(&line), "{name}: {line}: {lines:#?}");
         }
-        assert_eq!(
-            condition(&lines),
-            format!(
-                "github.ref == 'refs/heads/main' && needs.start.outputs.go == 'true' \
-                 && contains(vars.CLIMON2_OWN_RUNNERS, '{name}')"
-            ),
-            "{name}"
-        );
         let gate = format!("cargo xtask mutate {native}--mutate-slice \"$SLICE\" 2>&1 | tee ");
         assert!(
             lines
@@ -687,32 +746,37 @@ fn the_full_pass_mutates_the_slices_the_merge_count_chooses() {
     }
 }
 
-/// #452: a slice never holds a machine a gate is waiting for. Hosted jobs wait,
-/// four in turn for up to 5 hours each, until no quality.yml run is queued or in
-/// progress, and only then is a machine's job requested, so it never waits in a
-/// machine's queue for GitHub's 24 hours. If no wait saw idle gates, every
-/// machine's job is skipped, and the report says so.
+/// #452: a slice never holds a machine a gate or an earlier slice is waiting
+/// for. Hosted jobs wait, four in turn for up to 5 hours each, until no
+/// quality.yml run and no older quality-full.yml run is unfinished; a start job
+/// tells idle gates from busy ones and from a failed wait; and only on idle is
+/// a machine's job requested, so it never waits in a machine's queue for
+/// GitHub's 24 hours.
 #[test]
 fn a_slice_waits_on_hosted_runners_until_the_gates_are_idle() {
     let full = workflow("quality-full.yml");
-    for (index, needs, after) in [
-        (1, "slice", "needs.slice.outputs.slices != ''"),
-        (2, "wait1", "needs.wait1.outputs.idle == 'false'"),
-        (3, "wait2", "needs.wait2.outputs.idle == 'false'"),
-        (4, "wait3", "needs.wait3.outputs.idle == 'false'"),
-    ] {
+    for (index, previous) in [(2, 1), (3, 2), (4, 3)] {
+        let lines = job(&full, &format!("wait{index}"));
+        let needs = format!("    needs: wait{previous}");
+        assert!(lines.contains(&needs.as_str()), "wait{index}");
+        assert_eq!(
+            condition(&lines),
+            format!(
+                "!cancelled() && github.ref == 'refs/heads/main' \
+                 && needs.wait{previous}.result == 'success' \
+                 && needs.wait{previous}.outputs.idle == 'false'"
+            )
+        );
+    }
+    for index in 1..=4 {
         let name = format!("wait{index}");
         let lines = job(&full, &name);
-        let needs = format!("    needs: {needs}");
-        let condition = format!("    if: github.ref == 'refs/heads/main' && {after}");
         for line in [
-            needs.as_str(),
-            condition.as_str(),
             "    runs-on: ubuntu-24.04",
             "    timeout-minutes: 330",
             "      actions: read",
             "      idle: ${{ steps.wait.outputs.idle }}",
-            "        run: python3 tools/quality-full-run.py wait --repo \"$GITHUB_REPOSITORY\"",
+            "        run: python3 tools/quality-full-run.py wait --repo \"$GITHUB_REPOSITORY\" --run-id \"$GITHUB_RUN_ID\"",
         ] {
             assert!(lines.contains(&line), "{name}: {line}: {lines:#?}");
         }
@@ -724,23 +788,113 @@ fn a_slice_waits_on_hosted_runners_until_the_gates_are_idle() {
     .unwrap();
     assert!(script.contains("add_argument(\"--limit\", type=int, default=5 * 60 * 60)"));
     let start = job(&full, "start");
-    assert!(start.contains(&"    needs: [slice, wait1, wait2, wait3, wait4]"));
-    assert!(start.contains(&"    runs-on: ubuntu-24.04"));
-    let go = start
-        .iter()
-        .skip_while(|line| !line.starts_with("          GO: >-"))
-        .skip(1)
-        .take_while(|line| !line.trim_start().starts_with("run:"))
-        .map(|line| line.trim())
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert_eq!(
-        go,
-        "${{ needs.wait1.outputs.idle == 'true' || needs.wait2.outputs.idle == 'true' \
-         || needs.wait3.outputs.idle == 'true' || needs.wait4.outputs.idle == 'true' }}"
-    );
+    for line in [
+        "    needs: [slice, wait1, wait2, wait3, wait4]",
+        "    runs-on: ubuntu-24.04",
+        "      state: ${{ steps.start.outputs.state }}",
+        "          NEEDS: ${{ toJSON(needs) }}",
+        "        run: python3 tools/quality-full-run.py start --needs \"$NEEDS\"",
+    ] {
+        assert!(start.contains(&line), "{line}: {start:#?}");
+    }
     let report = job(&full, "report");
-    assert!(report.contains(&"          IDLE: ${{ needs.start.outputs.go == 'true' }}"));
+    assert!(report.contains(
+        &"          GATES: ${{ needs.start.result == 'success' && needs.start.outputs.state || 'failed' }}"
+    ));
+}
+
+/// #452: a failed set-up never turns main red and is always reported. Each
+/// machine's job first records that set-up has not finished, every set-up step
+/// continues on error, and the pass runs only if all of them succeeded; it
+/// records that it started, then its exit status. The log is uploaded whatever
+/// happened.
+#[test]
+fn a_failed_set_up_is_reported_not_red() {
+    let full = workflow("quality-full.yml");
+    for (name, ids) in [
+        (
+            "linux",
+            &["checkout", "toolchain", "bash", "workers", "tools"][..],
+        ),
+        ("windows", &["checkout", "toolchain", "workers", "tools"]),
+        (
+            "macos",
+            &[
+                "checkout",
+                "toolchain",
+                "targets",
+                "bash",
+                "workers",
+                "tools",
+            ],
+        ),
+    ] {
+        let lines = job(&full, name);
+        let steps = lines.iter().position(|line| *line == "    steps:").unwrap();
+        assert_eq!(
+            lines[steps + 1..steps + 5],
+            [
+                "      - name: Record that set-up has started",
+                "        run: |",
+                "          mkdir -p \"$RUNNER_TEMP/full-run\"",
+                "          echo setup-failed > \"$RUNNER_TEMP/full-run/status\"",
+            ],
+            "{name}"
+        );
+        for id in ids {
+            let at = lines
+                .iter()
+                .position(|line| *line == format!("      - id: {id}"))
+                .unwrap_or_else(|| panic!("{name}: no step {id}"));
+            let step: Vec<_> = lines[at + 1..]
+                .iter()
+                .take_while(|line| !line.starts_with("      - "))
+                .collect();
+            assert!(
+                step.contains(&&"        continue-on-error: true"),
+                "{name}: {id}: {step:#?}"
+            );
+        }
+        let mutate = lines
+            .iter()
+            .position(|line| line.starts_with("      - name: Mutate the slice's"))
+            .unwrap();
+        let step: Vec<_> = lines[mutate + 1..]
+            .iter()
+            .take_while(|line| !line.starts_with("      - "))
+            .map(|line| line.trim())
+            .collect();
+        let condition = step
+            .iter()
+            .skip_while(|line| **line != "if: >-")
+            .skip(1)
+            .take_while(|line| line.starts_with("!cancelled()") || line.starts_with("&&"))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let expected = std::iter::once("!cancelled()".to_owned())
+            .chain(
+                ids.iter()
+                    .map(|id| format!("&& steps.{id}.outcome == 'success'")),
+            )
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(condition, expected, "{name}");
+        assert!(step.contains(&"continue-on-error: true"), "{name}");
+        assert!(
+            step.contains(&"echo started > \"$RUNNER_TEMP/full-run/status\""),
+            "{name}"
+        );
+        assert!(
+            step.contains(&"echo \"$status\" > \"$RUNNER_TEMP/full-run/status\""),
+            "{name}"
+        );
+        let upload = lines
+            .iter()
+            .position(|line| *line == "      - name: Upload the pass's log")
+            .unwrap();
+        assert_eq!(lines[upload + 1], "        if: ${{ !cancelled() }}");
+    }
 }
 
 /// #452: a slice runs on its machine's own runner with quality.yml's worker
@@ -769,7 +923,6 @@ fn a_slice_never_reddens_main_or_gets_cancelled() {
             format!("    timeout-minutes: {job_minutes}"),
             format!("        timeout-minutes: {step_minutes}"),
             "        run: rm -rf target/mutation-workers".to_owned(),
-            "        continue-on-error: true".to_owned(),
             artifact,
         ] {
             assert!(lines.contains(&line.as_str()), "{name}: {line}: {lines:#?}");
@@ -805,6 +958,7 @@ fn a_piped_pass_keeps_its_exit_status() {
 
 /// #452: the report job puts each slice's findings into one tracking issue with
 /// the workflow's own token, the only write the workflow has; it uses no secret.
+/// It knows which machines should have run, and the date for its notes.
 #[test]
 fn the_full_pass_reports_its_findings_in_one_issue() {
     let full = workflow("quality-full.yml");
@@ -822,12 +976,9 @@ fn the_full_pass_reports_its_findings_in_one_issue() {
         "      issues: write",
         "          pattern: full-run-*",
         "          GH_TOKEN: ${{ github.token }}",
-        "        run: python3 tools/quality-full-run.py report --repo \"$GITHUB_REPOSITORY\" --slices \"$SLICES\" --idle \"$IDLE\" --logs \"$RUNNER_TEMP/full-run\" --run-url \"$RUN_URL\" --sha \"$GITHUB_SHA\"",
+        "          OWN_RUNNERS: ${{ vars.CLIMON2_OWN_RUNNERS }}",
+        "        run: python3 tools/quality-full-run.py report --repo \"$GITHUB_REPOSITORY\" --slices \"$SLICES\" --gates \"$GATES\" --own-runners \"$OWN_RUNNERS\" --date \"$(date -u +%Y-%m-%d)\" --logs \"$RUNNER_TEMP/full-run\" --run-url \"$RUN_URL\" --sha \"$GITHUB_SHA\"",
     ] {
         assert!(report.contains(&line), "{line}: {report:#?}");
     }
-    assert_eq!(
-        condition(&report),
-        "!cancelled() && github.ref == 'refs/heads/main' && needs.slice.outputs.slices != ''"
-    );
 }

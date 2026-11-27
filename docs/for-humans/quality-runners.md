@@ -169,16 +169,16 @@ Some slices are skipped until their next turn, 10 merges later:
 
 - a push that adds several squash-merges at once mutates only the last one's
   slice;
-- a slice whose gates stay busy for 20 hours is skipped (see below);
-- a slice that times out or fails before it mutates leaves its files
-  unmutated.
+- a slice skipped because the gates stayed busy for 20 hours (see below);
+- a slice whose set-up fails, or that times out or fails before it mutates.
 
 You can also run a pass by hand: under Actions > Full mutation, choose Run
 workflow on `main`, then a slice, or `all`. `all` runs the ten slices one
 after another on each machine, each as its own job with a slice's time
 limit. Once it has started, it doesn't wait for gates between its slices, so
-it can hold the machines for a day or more. A manual run doesn't change the
-rotation. On any other branch the workflow does nothing.
+it can hold the machines for a day or more; slices from later merges wait for
+it, for up to 20 hours. A manual run doesn't change the rotation. On any other
+branch the workflow does nothing.
 
 ### How it stays out of the way
 
@@ -188,12 +188,15 @@ The pass never blocks a merge or turns `main` red:
   branch's, so no pull request waits for it.
 - **It waits for idle gates.** Each machine has one runner, which runs one
   job at a time. So before a slice asks for the machines, jobs on GitHub's
-  hosted runners wait until no `quality.yml` run is queued or in progress,
-  checking every 5 minutes. A hosted job runs for at most 6 hours, so four
-  such jobs wait in turn, 5 hours each. If the gates are still busy after 20
-  hours, or GitHub's API keeps failing, the slice is skipped and the issue
-  says "Skipped: gates were busy". A gate pushed while a slice runs still
-  waits for it, for up to the slice's time limit.
+  hosted runners wait until no `quality.yml` run, and no older run of the full
+  pass, is queued or in progress, checking every 5 minutes. A newer full run
+  doesn't count, so two never wait for each other: the older one goes first. A
+  hosted job runs for at most 6 hours, so four such jobs wait in turn, 5 hours
+  each. If the gates are still busy after 20 hours, or GitHub's API keeps
+  failing, the slice is skipped, and its section in the issue says "Skipped
+  ... gates were busy". If a waiting job itself fails, the section says so
+  instead. A gate pushed while a slice runs still waits for it, for up to the
+  slice's time limit.
 - **It never waits in a machine's queue for long.** GitHub fails a job that
   waits more than 24 hours for a self-hosted runner, which would turn `main`
   red. A slice asks for a machine only once the gates are idle, so it starts
@@ -206,10 +209,13 @@ The pass never blocks a merge or turns `main` red:
   leaves time for checkout, set-up and the log's upload. No slice has run on
   these machines yet, so change these limits in `quality-full.yml` once some
   have been timed.
-- **A failed pass doesn't fail its job.** The pass's step may fail or time
-  out; the job still passes, and the findings go to an issue instead. Every
-  step runs in bash with `pipefail`, so the pass's own exit status is
-  recorded, not that of the `tee` that saves its log.
+- **A failed pass doesn't fail its job.** Before anything else, each
+  machine's job records that its set-up hasn't finished. Its checkout and
+  set-up steps, and the pass itself, may fail or time out; the job still
+  passes, and the failure goes to the issue instead. The pass runs only if
+  every set-up step succeeded. Every step runs in bash with `pipefail`, so the
+  pass's own exit status is recorded, not that of the `tee` that saves its
+  log.
 
 ### Reading the results
 
@@ -219,17 +225,27 @@ After the machines finish, a hosted job reads each one's log. It lists:
 - each `SURVIVED` mutant, which no test killed;
 - each `UNCOVERED` mutant, on a line no test runs;
 - a machine whose pass failed without any of these, such as a failed
-  baseline, or that timed out;
-- a slice skipped because the gates stayed busy.
+  baseline, whose set-up failed, or that timed out;
+- a machine listed in `CLIMON2_OWN_RUNNERS` whose job left no log at all.
 
 It writes that list in the slice's section of one open issue titled **Full
 mutation pass findings**, opened by `github-actions`. The issue has a section
-per slice. Each pass replaces only its own slice's section, so the issue
-always holds each slice's latest findings, and a clean pass clears its
-section. A pass with findings opens the issue if none is open, or comments on
-it with the run's link. A clean or skipped pass never opens or comments on the
-issue. Close it once every section is clean. Each machine's whole log is kept
-with the run, as artifacts such as `full-run-linux-3` for slice 3.
+per slice, and each slice's section a part per machine. Each pass replaces
+only its own slice's section, so the issue always holds each slice's latest
+findings, and a clean pass clears its section.
+
+What didn't run keeps its earlier result. A skipped slice keeps its section,
+with a dated note such as "Skipped on 2026-11-28: gates were busy". A machine
+that didn't run keeps its part with a dated "Did not run on ..." note, saying
+whether it isn't in `CLIMON2_OWN_RUNNERS` or its job left no log. Each new
+note replaces the one before.
+
+A pass that needs you opens the issue if none is open, or comments on it with
+the run's link: one with findings, a failure or a missing log, or a slice
+skipped because a waiting job failed. A clean pass, or one skipped because the
+gates were busy, never opens or comments on the issue. Close it once every
+section is clean. Each machine's whole log is kept with the run, as artifacts
+such as `full-run-linux-3` for slice 3.
 
 A pass whose CRAP check fails stops before it mutates, as every gate does.
 CRAP scores every function in every gate, so a pull request that breaks it

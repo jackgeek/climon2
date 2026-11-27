@@ -13,14 +13,18 @@ a row mutate every file once. This script holds the workflow's decisions:
   mutates nothing. A manual run mutates the slice it names, or all ten.
   Writes the slices as a JSON list, such as `slices=["3"]`, or an empty
   `slices=` for none, to `$GITHUB_OUTPUT`.
-- `wait`: waits, on a hosted runner, until no `quality.yml` run is queued or
-  in progress, so a slice never holds a machine that a gate is waiting for.
-  Writes `idle=true` when the gates are idle, or `idle=false` when they were
-  still busy, or GitHub's API still failed, after `--limit` seconds.
-- `report`: reads each platform's log and exit status and puts its CRAP,
-  SURVIVED and UNCOVERED findings, and any failure or timeout without
-  findings, into each slice's section of one open tracking issue, which it
-  opens or updates. A slice skipped because the gates stayed busy says so.
+- `wait`: waits, on a hosted runner, until no `quality.yml` run and no older
+  `quality-full.yml` run is queued or in progress, so a slice never holds a
+  machine that a gate or an earlier slice is waiting for. Writes `idle=true`
+  when they are idle, or `idle=false` when they were still busy, or GitHub's
+  API still failed, after `--limit` seconds.
+- `start`: from the wait jobs' results, whether the gates went idle (`idle`),
+  stayed busy (`busy`), or a wait job failed (`failed`). Writes `state=`.
+- `report`: reads each platform's log and status and puts its CRAP, SURVIVED
+  and UNCOVERED findings, and any failure, timeout or missing log, into each
+  slice's section of one open tracking issue, which it opens or updates. A
+  slice or platform that did not run keeps its earlier result, with a dated
+  note saying why it did not run this time.
 
 Each outcome is printed and added to `$GITHUB_STEP_SUMMARY`.
 """
@@ -32,15 +36,17 @@ import re
 import subprocess
 import sys
 import time
+from collections import namedtuple
 from pathlib import Path
 
 SLICES = 10
 LABELS = [str(index) for index in range(SLICES)]
 SQUASH = re.compile(r"\(#\d+\)$")
 ZERO = "0" * 40
-# The statuses of a quality.yml run that has not finished.
+# The statuses of a run that has not finished.
 UNFINISHED = ("queued", "in_progress", "pending", "waiting", "requested")
-RUNS = "repos/{repo}/actions/workflows/quality.yml/runs?status={status}&per_page=1"
+GATE_RUNS = "repos/{repo}/actions/workflows/quality.yml/runs?status={status}&per_page=1"
+FULL_RUNS = "repos/{repo}/actions/workflows/quality-full.yml/runs?status={status}&per_page=100"
 # The tracking issue: the one open issue the workflow's token opened with this title.
 TITLE = "Full mutation pass findings"
 BOT = "github-actions[bot]"
@@ -48,7 +54,11 @@ ISSUES = "repos/{repo}/issues?state=open&creator=github-actions%5Bbot%5D&per_pag
 PLATFORMS = (("linux", "Linux"), ("windows", "Windows"), ("macos", "macOS"))
 CRAP_THRESHOLD = 5.0
 MUTANT = re.compile(r"^(SURVIVED|UNCOVERED) +\S+:\d+ ")
-SECTION = re.compile(r"<!-- slice (\w+) -->\n.*?<!-- end slice \1 -->\n", re.S)
+# A section may lack its final newline once the body has been edited in the browser.
+SECTION = re.compile(r"<!-- slice (\w+) -->\n(.*?)<!-- end slice \1 -->(?:\n|\Z)", re.S)
+PLATFORM = re.compile(r"<!-- platform (\w+) -->\n(.*?)<!-- end platform \1 -->(?:\n|\Z)", re.S)
+# The dated note of why a slice or platform did not run; the next note replaces it.
+NOTE = re.compile(r"\A> (Skipped|Did not run) on .*\n\n?")
 HEADER = (
     "Each squash-merge to main mutates one slice of the shipped files, so ten in a row "
     "mutate every file (docs/for-humans/quality-runners.md). Each slice's section below "
@@ -56,6 +66,14 @@ HEADER = (
 )
 # GitHub refuses an issue body over 65,536 characters; each of the 10 sections gets a share.
 SECTION_LIMIT = 6000
+# What a platform's status file says before its pass records an exit status.
+SETUP_FAILED = "setup-failed"
+STARTED = "started"
+
+
+# What a report knows of its run: the platforms' logs, the run's link, CLIMON2_OWN_RUNNERS,
+# today's date and the commit.
+Run = namedtuple("Run", "logs url own date sha")
 
 
 class ApiError(Exception):
@@ -156,30 +174,54 @@ def fixture_api(file, record):
     return api
 
 
-def busy(repo, api):
-    """The number of quality.yml runs that have not finished."""
-    return sum(
-        api("GET", RUNS.format(repo=repo, status=status))["total_count"] for status in UNFINISHED
-    )
+def busy(repo, api, run_id):
+    """(quality.yml runs, older quality-full.yml runs) that have not finished. Only older
+    full runs count, so two full runs never wait for each other: the older goes first."""
+    gates = 0
+    older = 0
+    for status in UNFINISHED:
+        gates += api("GET", GATE_RUNS.format(repo=repo, status=status))["total_count"]
+        runs = api("GET", FULL_RUNS.format(repo=repo, status=status))["workflow_runs"]
+        older += sum(1 for run in runs if int(run["id"]) < run_id)
+    return gates, older
 
 
-def wait(repo, api, interval, limit, sleep=time.sleep):
-    """(whether the gates went idle within `limit` seconds, why). An API error counts as
-    busy, so a slice never starts while the gates may be waiting."""
+def wait(repo, api, run_id, interval, limit, sleep=time.sleep):
+    """(whether the gates and older full runs went idle within `limit` seconds, why). An
+    API error counts as busy, so a slice never starts while they may be waiting."""
     waited = 0
     while True:
         try:
-            runs = busy(repo, api)
-            why = f"{runs} quality.yml runs unfinished"
-        except (ApiError, KeyError, TypeError) as error:
-            runs = None
-            why = f"could not look up quality.yml runs: {error}"
-        if runs == 0:
-            return True, f"no quality.yml run was queued or in progress after {waited // 60} min"
+            gates, older = busy(repo, api, run_id)
+            why = f"{gates} quality.yml and {older} older quality-full.yml runs unfinished"
+            idle = gates == 0 and older == 0
+        except (ApiError, KeyError, TypeError, ValueError) as error:
+            idle = False
+            why = f"could not look up unfinished runs: {error}"
+        if idle:
+            return True, f"no quality.yml or older full run was unfinished after {waited // 60} min"
         if waited >= limit:
             return False, f"{why} after {waited // 60} min"
         sleep(interval)
         waited += interval
+
+
+def start(needs):
+    """(idle, busy or failed, why) from the wait jobs' `needs` context."""
+    waits = [needs.get(f"wait{index}") or {} for index in range(1, 5)]
+    ran = [job for job in waits if job.get("result") != "skipped"]
+    if any(
+        job.get("result") == "success" and (job.get("outputs") or {}).get("idle") == "true"
+        for job in ran
+    ):
+        return "idle", "the gates went idle"
+    if ran and all(
+        job.get("result") == "success" and (job.get("outputs") or {}).get("idle") == "false"
+        for job in ran
+    ):
+        return "busy", f"the gates stayed busy through {len(ran)} waits"
+    results = ", ".join(f"wait{index + 1} {job.get('result')}" for index, job in enumerate(waits))
+    return "failed", f"a wait job did not finish: {results}"
 
 
 def crap_findings(lines):
@@ -202,15 +244,16 @@ def crap_findings(lines):
 
 
 def platform_result(folder):
-    """(exit status or None, findings) from a platform's log and status files."""
+    """(status, findings) from a platform's log and status files. The status is an exit
+    status, SETUP_FAILED, or STARTED when the pass never recorded its end."""
     log = folder / "gate.log"
     lines = (
         log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
     )
     findings = crap_findings(lines) + [line.rstrip() for line in lines if MUTANT.match(line)]
     status_file = folder / "status"
-    status = status_file.read_text(encoding="utf-8").strip() if status_file.is_file() else None
-    return status, findings
+    status = status_file.read_text(encoding="utf-8").strip() if status_file.is_file() else ""
+    return status or STARTED, findings
 
 
 def listed(findings, run_url, room):
@@ -228,46 +271,77 @@ def listed(findings, run_url, room):
     return text
 
 
-def section(logs, label, idle, run_url, sha):
-    """(slice `label`'s section of the issue body, whether it needs the owner's attention)."""
-    parts = [f"## Slice {label} of {SLICES}, at {sha}\n\n{run_url}\n"]
-    attention = False
-    if not idle:
-        parts.append("Skipped: gates were busy, so its files wait for their next turn.\n")
+def blocks(pattern, text):
+    """Each block `pattern` finds in `text`, by its key, with its content."""
+    return {match.group(1): match.group(2) for match in pattern.finditer(text or "")}
+
+
+def kept(old, note, fallback):
+    """An earlier block's content with `note` in place of its earlier note, or `fallback`
+    and the note when there is none."""
+    if old is None:
+        return f"{fallback}{note}\n"
+    return f"{note}\n\n{NOTE.sub('', old)}"
+
+
+def platform_block(key, text):
+    return f"<!-- platform {key} -->\n{text}<!-- end platform {key} -->\n"
+
+
+def platform_text(key, name, label, run):
+    """(a platform's new content or None to keep its old one with a note, the note,
+    whether it needs the owner's attention)."""
+    folder = run.logs / f"full-run-{key}-{label}"
+    if not folder.is_dir():
+        if key not in run.own.lower():
+            return None, f"> Did not run on {run.date}: it is not in CLIMON2_OWN_RUNNERS.", False
+        return None, f"> Did not run on {run.date}: its job left no log ({run.url}).", True
+    status, findings = platform_result(folder)
+    if status == SETUP_FAILED:
+        outcome = "its set-up failed"
+    elif status == STARTED:
+        outcome = "no exit status: the slice timed out or was cancelled"
+    else:
+        outcome = f"exit {status}"
     room = SECTION_LIMIT // len(PLATFORMS) - 200
-    for key, name in PLATFORMS if idle else ():
-        folder = logs / f"full-run-{key}-{label}"
-        if not folder.is_dir():
-            parts.append(f"### {name}\n\nDid not run.\n")
-            continue
-        status, findings = platform_result(folder)
-        if status is None:
-            outcome = "no exit status: the slice timed out or was cancelled"
-        else:
-            outcome = f"exit {status}"
-        if findings:
-            parts.append(
-                f"### {name}: {len(findings)} findings, {outcome}\n\n"
-                + listed(findings, run_url, room)
-            )
-            attention = True
-        elif status != "0":
-            parts.append(f"### {name}: no findings, {outcome}\n\nSee the run's log.\n")
-            attention = True
-        else:
-            parts.append(f"### {name}: no findings\n")
-    text = "\n".join(parts)
-    return f"<!-- slice {label} -->\n{text}<!-- end slice {label} -->\n", attention
+    if findings:
+        head = f"### {name}: {len(findings)} findings, {outcome}\n\n"
+        return head + listed(findings, run.url, room), None, True
+    if status != "0":
+        return f"### {name}: no findings, {outcome}\n\nSee the run's log.\n", None, True
+    return f"### {name}: no findings\n", None, False
+
+
+def section(old, label, gates, run):
+    """(slice `label`'s new section content, whether it needs the owner's attention).
+    `old` is its earlier content, or None."""
+    if gates != "idle":
+        why = "gates were busy" if gates == "busy" else "a job that waits for the gates failed"
+        note = f"> Skipped on {run.date}: {why} ({run.url})."
+        return kept(old, note, f"## Slice {label} of {SLICES}\n\n"), gates == "failed"
+    parts = [f"## Slice {label} of {SLICES}, at {run.sha}\n\n{run.url}\n"]
+    earlier = blocks(PLATFORM, old)
+    attention = False
+    for key, name in PLATFORMS:
+        text, note, needs = platform_text(key, name, label, run)
+        attention = attention or needs
+        if text is None:
+            text = kept(earlier.get(key), note, f"### {name}\n\n")
+        parts.append(platform_block(key, text))
+    return "\n".join(parts), attention
 
 
 def merged(body, new):
-    """The issue body with each section of `new` replacing its slice's, slices in order.
-    A body edited in the browser comes back with CRLF line ends, which would hide its
-    sections from the pattern and drop them."""
-    body = (body or "").replace("\r\n", "\n")
-    sections = {match.group(1): match.group(0) for match in SECTION.finditer(body)}
+    """The issue body with each slice's content in `new` replacing its section, slices in
+    order. A body edited in the browser comes back with CRLF line ends, which would hide
+    its sections from the pattern and drop them."""
+    sections = blocks(SECTION, (body or "").replace("\r\n", "\n"))
     sections.update(new)
-    return HEADER + "\n".join(sections[key] for key in LABELS if key in sections)
+    return HEADER + "\n".join(
+        f"<!-- slice {key} -->\n{sections[key]}<!-- end slice {key} -->\n"
+        for key in LABELS
+        if key in sections
+    )
 
 
 def tracking_issue(repo, api):
@@ -282,23 +356,33 @@ def tracking_issue(repo, api):
     return None
 
 
-def report(repo, api, logs, slices, idle, run_url, sha):
+def report(repo, api, slices, gates, run):
     """What the report did with the tracking issue."""
+    try:
+        issue = tracking_issue(repo, api)
+        failure = None
+    except (ApiError, KeyError, TypeError, AttributeError) as error:
+        issue = None
+        failure = error
+    earlier = blocks(SECTION, ((issue or {}).get("body") or "").replace("\r\n", "\n"))
     new = {}
     noted = []
     for label in slices:
-        new[label], attention = section(logs, label, idle, run_url, sha)
+        new[label], attention = section(earlier.get(label), label, gates, run)
         if attention:
             noted.append(label)
     name = named(slices)
-    if not idle:
+    if gates == "busy":
         lead = f"{name} skipped: gates were busy"
+    elif gates == "failed":
+        lead = f"{name} skipped: a job that waits for the gates failed"
     elif noted:
         lead = f"findings in {named(noted)}"
     else:
         lead = f"no findings in {name}"
     try:
-        issue = tracking_issue(repo, api)
+        if failure:
+            raise ApiError(failure)
         if issue:
             # A clean pass clears the slice's old findings, so the issue keeps only open ones.
             body = merged(issue.get("body"), new)
@@ -307,14 +391,13 @@ def report(repo, api, logs, slices, idle, run_url, sha):
                 api(
                     "POST",
                     f"repos/{repo}/issues/{issue['number']}/comments",
-                    {"body": f"New findings in {named(noted)}: {run_url}"},
+                    {"body": f"{lead[0].upper()}{lead[1:]}: {run.url}"},
                 )
-                return f"findings in {named(noted)} updated in {issue['html_url']}"
-            return f"{lead}; its section in {issue['html_url']} is updated"
+            return f"{lead}; {issue['html_url']} is updated"
         if noted:
             body = merged("", new)
             created = api("POST", f"repos/{repo}/issues", {"title": TITLE, "body": body})
-            return f"findings in {named(noted)} opened in {created['html_url']}"
+            return f"{lead}; {created['html_url']} is opened"
         return lead
     except (ApiError, KeyError, TypeError, AttributeError) as error:
         return f"{lead}, but could not update the tracking issue: {error}"
@@ -335,16 +418,22 @@ def main():
     choose_command.add_argument("--requested", default="")
     choose_command.add_argument("--before", default="")
     choose_command.add_argument("--after", required=True)
+    start_command = commands.add_parser("start")
+    start_command.add_argument("--needs", required=True, type=json.loads)
     for name in ("wait", "report"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
         command.add_argument("--fixtures", help="answer API calls from this JSON file (tests)")
         command.add_argument("--record", help="append API writes to this file (tests)")
-    commands.choices["wait"].add_argument("--interval", type=int, default=300)
-    commands.choices["wait"].add_argument("--limit", type=int, default=5 * 60 * 60)
+    wait_command = commands.choices["wait"]
+    wait_command.add_argument("--run-id", required=True, type=int)
+    wait_command.add_argument("--interval", type=int, default=300)
+    wait_command.add_argument("--limit", type=int, default=5 * 60 * 60)
     report_command = commands.choices["report"]
     report_command.add_argument("--slices", required=True, type=json.loads)
-    report_command.add_argument("--idle", required=True, choices=("true", "false"))
+    report_command.add_argument("--gates", required=True, choices=("idle", "busy", "failed"))
+    report_command.add_argument("--own-runners", default="")
+    report_command.add_argument("--date", required=True)
     report_command.add_argument("--logs", required=True, type=Path)
     report_command.add_argument("--run-url", required=True)
     report_command.add_argument("--sha", required=True)
@@ -357,19 +446,22 @@ def main():
             message = f"Full mutation pass mutates {named(chosen)}: {why}."
         else:
             message = f"Full mutation pass skipped: {why}."
+    elif args.command == "start":
+        state, why = start(args.needs)
+        append("GITHUB_OUTPUT", f"state={state}\n")
+        message = f"Gates {state}: {why}."
     else:
         api = fixture_api(args.fixtures, args.record) if args.fixtures else gh_api
         if args.command == "wait":
-            idle, why = wait(args.repo, api, args.interval, args.limit)
+            idle, why = wait(args.repo, api, args.run_id, args.interval, args.limit)
             append("GITHUB_OUTPUT", f"idle={'true' if idle else 'false'}\n")
-            state = "Gates idle" if idle else "Gates still busy"
-            message = f"{state}: {why}."
+            message = f"{'Gates idle' if idle else 'Gates still busy'}: {why}."
         else:
             slices = [label for label in args.slices if label in LABELS]
             if not slices:
                 parser.error(f"--slices names no slice: {args.slices!r}")
-            idle = args.idle == "true"
-            message = report(args.repo, api, args.logs, slices, idle, args.run_url, args.sha)
+            run = Run(args.logs, args.run_url, args.own_runners, args.date, args.sha)
+            message = report(args.repo, api, slices, args.gates, run)
             message = message[0].upper() + message[1:] + "."
     print(message)
     append("GITHUB_STEP_SUMMARY", f"- {message}\n")
