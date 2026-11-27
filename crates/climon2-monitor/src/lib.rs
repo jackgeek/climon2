@@ -107,10 +107,18 @@ fn monitor(startup: Startup, dispatch: &tracing::Dispatch, filter: String) -> io
     Ok(status)
 }
 
-/// One wait for host input during shutdown, and how long shutdown waits
-/// past its deadline for the supervisor's report: its last round ends at
-/// the deadline, so this is left for handing the report over (#455).
+/// One wait for host input during shutdown.
 const TICK: Duration = Duration::from_millis(20);
+
+/// How long shutdown waits past its deadline for the supervisor's report
+/// (owner decision on #455). The supervisor's last round ends at the
+/// deadline, but its thread must still be scheduled to hand the report
+/// over, which a loaded host can delay well past one tick; without the
+/// report, every session's evidence is lost to "client supervisor
+/// unfinished". The supervisor may also have read the shutdown command up
+/// to one of its own ticks late, which only shortens its shutdown, never
+/// moves its end. The grace costs time only while the report is late.
+const HANDOVER: Duration = Duration::from_millis(200);
 
 /// Owns the host until an ending, shuts every client down, and releases the
 /// host before any diagnostic, all within `deadlines.final_host_ms` of the
@@ -336,7 +344,7 @@ impl Monitor {
     /// A host that failed is left alone. Returns whether the host still
     /// worked, and what shutdown proved, discovery's end included.
     fn shut_down(&mut self, host: &mut Host, hosting: bool) -> (io::Result<()>, shutdown::Report) {
-        let deadline = self.supervisor.shut_down() + TICK;
+        let deadline = self.supervisor.shut_down() + HANDOVER;
         self.discovery.stop();
         let mut hosted = Ok(());
         let mut waiting = Vec::new();
