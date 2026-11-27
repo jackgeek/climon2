@@ -199,8 +199,20 @@ impl Home {
     /// Waits until a client of session `id` has created its library
     /// instance, as its log says.
     fn wait_for_client_instance(&self, id: &str) {
+        self.wait_for_session_log(id, "client instance created");
+    }
+
+    /// Waits until session `id` has admitted its client, as the client's
+    /// log says (at the debug level, which a test build logs by default).
+    /// Its command's exit then reaches that client, and no longer refuses
+    /// it as a session already ending (#437).
+    fn wait_for_client_attached(&self, id: &str) {
+        self.wait_for_session_log(id, CLIENT_ATTACHED);
+    }
+
+    fn wait_for_session_log(&self, id: &str, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(20);
-        while !self.session_logs(id).contains("client instance created") {
+        while !self.session_logs(id).contains(text) {
             assert!(Instant::now() < deadline, "{}", self.session_logs(id));
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -875,6 +887,10 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
 /// `c2 exec <options> -- <HELD>` inside session `outer`, in a pseudoconsole
 /// of its own, with this home, in its working directory.
 fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
+    Terminal::spawn(nested_command(install, home, options), 24, 100).unwrap()
+}
+
+fn nested_command(install: &Install, home: &Home, options: &[&str]) -> CommandBuilder {
     let mut command = CommandBuilder::new(install.cli());
     climon2_test_term::outside_any_session(&mut command);
     command.arg("exec");
@@ -885,22 +901,30 @@ fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
     command.env("LOCALAPPDATA", home.local());
     command.env("CLIMON2_SESSION_ID", "outer");
     command.cwd(home.work());
-    Terminal::spawn(command, 24, 100).unwrap()
+    command
 }
 
-/// Waits until one session runs and its client has attached, then releases
-/// its command, which ends the session; the CLI exits with the command's
-/// status. Released any earlier, the command's exit is held for the client
-/// only five seconds, which a loaded machine (the coverage gate) can take to
-/// start the client, which then finds the session gone.
-fn release_the_only_session(terminal: &mut Terminal, home: &Home) {
+/// What the client logs once its session has admitted it.
+const CLIENT_ATTACHED: &str = "client attached";
+
+/// The ID of the one session in `home`, once it runs.
+fn the_only_session(terminal: &Terminal, home: &Home) -> String {
     let deadline = Instant::now() + Duration::from_secs(20);
     while home.sessions().len() != 1 {
         assert!(Instant::now() < deadline, "{}", terminal.screen());
         std::thread::sleep(Duration::from_millis(50));
     }
-    let id = home.sessions()[0].session_id.as_str().to_owned();
-    home.wait_for_client_instance(&id);
+    home.sessions()[0].session_id.as_str().to_owned()
+}
+
+/// Waits until one session runs and its client has attached, then releases
+/// its command, which ends the session; the CLI exits with the command's
+/// status. Released any earlier, even once the client's library instance
+/// exists, the command's exit can reach the session before the client's
+/// attach does, and the session refuses the client as ending (#437).
+fn release_the_only_session(terminal: &mut Terminal, home: &Home) {
+    let id = the_only_session(terminal, home);
+    home.wait_for_client_attached(&id);
     fs::write(home.work().join("release"), b"").unwrap();
     assert_eq!(
         terminal.wait_exit(Duration::from_secs(30)).unwrap(),
@@ -1051,5 +1075,44 @@ fn a_resize_while_the_prompt_waits_is_the_size_the_session_starts_at() {
     assert_eq!(size, "40x120");
     fs::write(&hold, b"").unwrap();
     terminal.wait_exit(Duration::from_secs(30)).unwrap();
+    home.wait_until_ended(&install);
+}
+
+/// #437: `release_the_only_session` releases the command only once the
+/// client has attached. With the CLI held before its client
+/// (`CLIMON2_CLI_HOLD`), the session runs with no client and its logs show
+/// no attach; once the CLI goes on, the client attaches and the command's
+/// status reaches it.
+#[test]
+fn a_nested_session_is_released_only_once_its_client_has_attached() {
+    if climon2_test_term::rerun_outside(
+        "a_nested_session_is_released_only_once_its_client_has_attached",
+        Duration::from_secs(180),
+    ) {
+        return;
+    }
+    let (install, home) = (Install::new(&[]), Home::new());
+    let hold = home.work().join("hold");
+    let mut command = nested_command(&install, &home, &[]);
+    command.env("CLIMON2_CLI_HOLD", &hold);
+    let mut terminal = Terminal::spawn(command, 24, 100).unwrap();
+    terminal
+        .wait_for_text(PROMPT, Duration::from_secs(20))
+        .unwrap();
+    terminal.press(Key::Enter, Modifiers::NONE).unwrap();
+    let id = the_only_session(&terminal, &home);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !hold.with_extension("held").exists() {
+        assert!(Instant::now() < deadline, "{}", terminal.screen());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        !home.session_logs(&id).contains(CLIENT_ATTACHED),
+        "{}",
+        home.session_logs(&id)
+    );
+    fs::write(&hold, b"").unwrap();
+    release_the_only_session(&mut terminal, &home);
     home.wait_until_ended(&install);
 }
