@@ -885,14 +885,19 @@ fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
     Terminal::spawn(command, 24, 100).unwrap()
 }
 
-/// Waits until one session runs, then releases its command, which ends the
-/// session; the CLI exits with the command's status.
+/// Waits until one session runs and its client has attached, then releases
+/// its command, which ends the session; the CLI exits with the command's
+/// status. Released any earlier, the command's exit is held for the client
+/// only five seconds, which a loaded machine (the coverage gate) can take to
+/// start the client, which then finds the session gone.
 fn release_the_only_session(terminal: &mut Terminal, home: &Home) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while home.sessions().len() != 1 {
         assert!(Instant::now() < deadline, "{}", terminal.screen());
         std::thread::sleep(Duration::from_millis(50));
     }
+    let id = home.sessions()[0].session_id.as_str().to_owned();
+    home.wait_for_client_instance(&id);
     fs::write(home.work().join("release"), b"").unwrap();
     assert_eq!(
         terminal.wait_exit(Duration::from_secs(30)).unwrap(),
