@@ -1,22 +1,26 @@
-"""Choose and report the rolling full mutation pass on main (#452).
+"""Choose, start and report the rolling full mutation pass on main (#452).
 
 Each pull request squash-merged to main mutates one tenth of the shipped files,
 whole, on Linux, Windows and macOS (`quality-full.yml`). A file's slice comes
 from a hash of its path (`cargo xtask mutate --mutate-slice`), so ten merges in
-a row mutate every file once. This script holds the workflow's two decisions:
+a row mutate every file once. This script holds the workflow's decisions:
 
-- `slice`: which slice a push to main mutates. A squash-merge is a
+- `slice`: which slices a push to main mutates. A squash-merge is a
   first-parent commit of main whose subject ends with the pull request's
   number, such as "Fix the frame (#432) (#438)". The merge that takes main to
   n squash-merges mutates slice n mod 10, so the rotation is read from git
   history alone and needs no stored counter. A push that adds no squash-merge
-  mutates nothing. A manual run mutates the slice it names, or all of them.
-  Writes `slice=<0-9 or all>`, or an empty `slice=` for none, to
-  `$GITHUB_OUTPUT`.
+  mutates nothing. A manual run mutates the slice it names, or all ten.
+  Writes the slices as a JSON list, such as `slices=["3"]`, or an empty
+  `slices=` for none, to `$GITHUB_OUTPUT`.
+- `wait`: waits, on a hosted runner, until no `quality.yml` run is queued or
+  in progress, so a slice never holds a machine that a gate is waiting for.
+  Writes `idle=true` when the gates are idle, or `idle=false` when they were
+  still busy, or GitHub's API still failed, after `--limit` seconds.
 - `report`: reads each platform's log and exit status and puts its CRAP,
   SURVIVED and UNCOVERED findings, and any failure or timeout without
-  findings, into the slice's section of one open tracking issue, which it
-  opens or updates.
+  findings, into each slice's section of one open tracking issue, which it
+  opens or updates. A slice skipped because the gates stayed busy says so.
 
 Each outcome is printed and added to `$GITHUB_STEP_SUMMARY`.
 """
@@ -27,12 +31,16 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SLICES = 10
-LABELS = [str(index) for index in range(SLICES)] + ["all"]
+LABELS = [str(index) for index in range(SLICES)]
 SQUASH = re.compile(r"\(#\d+\)$")
 ZERO = "0" * 40
+# The statuses of a quality.yml run that has not finished.
+UNFINISHED = ("queued", "in_progress", "pending", "waiting", "requested")
+RUNS = "repos/{repo}/actions/workflows/quality.yml/runs?status={status}&per_page=1"
 # The tracking issue: the one open issue the workflow's token opened with this title.
 TITLE = "Full mutation pass findings"
 BOT = "github-actions[bot]"
@@ -46,8 +54,8 @@ HEADER = (
     "mutate every file (docs/for-humans/quality-runners.md). Each slice's section below "
     "holds its latest pass's findings and is replaced by its next pass.\n\n"
 )
-# GitHub refuses an issue body over 65,536 characters; each of the 11 sections gets a share.
-SECTION_LIMIT = 5500
+# GitHub refuses an issue body over 65,536 characters; each of the 10 sections gets a share.
+SECTION_LIMIT = 6000
 
 
 class ApiError(Exception):
@@ -70,21 +78,23 @@ def squash_merges(commit):
 
 
 def choose(event, requested, before, after):
-    """(the slice to mutate or "" for none, why) for a push or manual run at `after`."""
+    """(the slices to mutate, none for nothing, and why) for a push or manual run."""
     if event == "workflow_dispatch":
+        if requested == "all":
+            return LABELS, "a manual run asked for all of them"
         if requested not in LABELS:
-            return "", f"a manual run names slice 0 to 9 or all, not {requested!r}"
-        return requested, f"a manual run asked for slice {requested}"
+            return [], f"a manual run names slice 0 to 9 or all, not {requested!r}"
+        return [requested], f"a manual run asked for slice {requested}"
     now = squash_merges(after)
     if now is None:
-        return "", f"{after} is not a commit here"
+        return [], f"{after} is not a commit here"
     then = squash_merges(before)
     if then is None:
         # A first push, or a force push whose old head is gone: count this push's own commit.
         parent = squash_merges(f"{after}^")
         then = parent if parent is not None else 0
     if now <= then:
-        return "", f"the push adds no squash-merge; main still has {now}"
+        return [], f"the push adds no squash-merge; main still has {now}"
     chosen = str(now % SLICES)
     why = f"main has {now} squash-merges, so slice {chosen} of {SLICES}"
     if now - then > 1:
@@ -92,7 +102,16 @@ def choose(event, requested, before, after):
             f"; the push adds {now - then}, and the slices of the others wait"
             " for their next turn"
         )
-    return chosen, why
+    return [chosen], why
+
+
+def named(slices):
+    """`slices` in words, such as "slice 3" or "slices 0 to 9"."""
+    if len(slices) == 1:
+        return f"slice {slices[0]}"
+    if slices == LABELS:
+        return f"slices 0 to {SLICES - 1}"
+    return "slices " + ", ".join(slices)
 
 
 def gh_api(method, path, body=None):
@@ -135,6 +154,32 @@ def fixture_api(file, record):
         return responses[path]
 
     return api
+
+
+def busy(repo, api):
+    """The number of quality.yml runs that have not finished."""
+    return sum(
+        api("GET", RUNS.format(repo=repo, status=status))["total_count"] for status in UNFINISHED
+    )
+
+
+def wait(repo, api, interval, limit, sleep=time.sleep):
+    """(whether the gates went idle within `limit` seconds, why). An API error counts as
+    busy, so a slice never starts while the gates may be waiting."""
+    waited = 0
+    while True:
+        try:
+            runs = busy(repo, api)
+            why = f"{runs} quality.yml runs unfinished"
+        except (ApiError, KeyError, TypeError) as error:
+            runs = None
+            why = f"could not look up quality.yml runs: {error}"
+        if runs == 0:
+            return True, f"no quality.yml run was queued or in progress after {waited // 60} min"
+        if waited >= limit:
+            return False, f"{why} after {waited // 60} min"
+        sleep(interval)
+        waited += interval
 
 
 def crap_findings(lines):
@@ -183,14 +228,15 @@ def listed(findings, run_url, room):
     return text
 
 
-def section(logs, label, run_url, sha):
-    """(the slice's section of the issue body, whether it needs the owner's attention)."""
-    title = "All slices" if label == "all" else f"Slice {label} of {SLICES}"
-    parts = [f"## {title}, at {sha}\n\n{run_url}\n"]
+def section(logs, label, idle, run_url, sha):
+    """(slice `label`'s section of the issue body, whether it needs the owner's attention)."""
+    parts = [f"## Slice {label} of {SLICES}, at {sha}\n\n{run_url}\n"]
     attention = False
+    if not idle:
+        parts.append("Skipped: gates were busy, so its files wait for their next turn.\n")
     room = SECTION_LIMIT // len(PLATFORMS) - 200
-    for key, name in PLATFORMS:
-        folder = logs / f"full-run-{key}"
+    for key, name in PLATFORMS if idle else ():
+        folder = logs / f"full-run-{key}-{label}"
         if not folder.is_dir():
             parts.append(f"### {name}\n\nDid not run.\n")
             continue
@@ -214,10 +260,13 @@ def section(logs, label, run_url, sha):
     return f"<!-- slice {label} -->\n{text}<!-- end slice {label} -->\n", attention
 
 
-def merged(body, label, new):
-    """The issue body with slice `label`'s section replaced by `new`, slices in order."""
-    sections = {match.group(1): match.group(0) for match in SECTION.finditer(body or "")}
-    sections[label] = new
+def merged(body, new):
+    """The issue body with each section of `new` replacing its slice's, slices in order.
+    A body edited in the browser comes back with CRLF line ends, which would hide its
+    sections from the pattern and drop them."""
+    body = (body or "").replace("\r\n", "\n")
+    sections = {match.group(1): match.group(0) for match in SECTION.finditer(body)}
+    sections.update(new)
     return HEADER + "\n".join(sections[key] for key in LABELS if key in sections)
 
 
@@ -233,31 +282,42 @@ def tracking_issue(repo, api):
     return None
 
 
-def report(repo, api, logs, label, run_url, sha):
+def report(repo, api, logs, slices, idle, run_url, sha):
     """What the report did with the tracking issue."""
-    new, attention = section(logs, label, run_url, sha)
-    name = "all slices" if label == "all" else f"slice {label}"
+    new = {}
+    noted = []
+    for label in slices:
+        new[label], attention = section(logs, label, idle, run_url, sha)
+        if attention:
+            noted.append(label)
+    name = named(slices)
+    if not idle:
+        lead = f"{name} skipped: gates were busy"
+    elif noted:
+        lead = f"findings in {named(noted)}"
+    else:
+        lead = f"no findings in {name}"
     try:
         issue = tracking_issue(repo, api)
         if issue:
             # A clean pass clears the slice's old findings, so the issue keeps only open ones.
-            body = merged(issue.get("body"), label, new)
+            body = merged(issue.get("body"), new)
             api("PATCH", f"repos/{repo}/issues/{issue['number']}", {"body": body})
-            if attention:
+            if noted:
                 api(
                     "POST",
                     f"repos/{repo}/issues/{issue['number']}/comments",
-                    {"body": f"New findings in {name}: {run_url}"},
+                    {"body": f"New findings in {named(noted)}: {run_url}"},
                 )
-                return f"Findings in {name} updated in {issue['html_url']}"
-            return f"No findings in {name}; its section in {issue['html_url']} is cleared"
-        if attention:
-            body = merged("", label, new)
+                return f"findings in {named(noted)} updated in {issue['html_url']}"
+            return f"{lead}; its section in {issue['html_url']} is updated"
+        if noted:
+            body = merged("", new)
             created = api("POST", f"repos/{repo}/issues", {"title": TITLE, "body": body})
-            return f"Findings in {name} opened in {created['html_url']}"
-        return f"No findings in {name}"
+            return f"findings in {named(noted)} opened in {created['html_url']}"
+        return lead
     except (ApiError, KeyError, TypeError, AttributeError) as error:
-        return f"Could not update the tracking issue for {name}: {error}"
+        return f"{lead}, but could not update the tracking issue: {error}"
 
 
 def append(variable, text):
@@ -275,27 +335,42 @@ def main():
     choose_command.add_argument("--requested", default="")
     choose_command.add_argument("--before", default="")
     choose_command.add_argument("--after", required=True)
-    report_command = commands.add_parser("report")
-    report_command.add_argument("--repo", required=True)
-    report_command.add_argument("--slice", required=True, choices=LABELS)
+    for name in ("wait", "report"):
+        command = commands.add_parser(name)
+        command.add_argument("--repo", required=True)
+        command.add_argument("--fixtures", help="answer API calls from this JSON file (tests)")
+        command.add_argument("--record", help="append API writes to this file (tests)")
+    commands.choices["wait"].add_argument("--interval", type=int, default=300)
+    commands.choices["wait"].add_argument("--limit", type=int, default=5 * 60 * 60)
+    report_command = commands.choices["report"]
+    report_command.add_argument("--slices", required=True, type=json.loads)
+    report_command.add_argument("--idle", required=True, choices=("true", "false"))
     report_command.add_argument("--logs", required=True, type=Path)
     report_command.add_argument("--run-url", required=True)
     report_command.add_argument("--sha", required=True)
-    report_command.add_argument("--fixtures", help="answer API calls from this JSON file (tests)")
-    report_command.add_argument("--record", help="append API writes to this file (tests)")
     args = parser.parse_args()
 
     if args.command == "slice":
         chosen, why = choose(args.event, args.requested, args.before, args.after)
-        append("GITHUB_OUTPUT", f"slice={chosen}\n")
+        append("GITHUB_OUTPUT", f"slices={json.dumps(chosen) if chosen else ''}\n")
         if chosen:
-            target = "all slices" if chosen == "all" else f"slice {chosen}"
-            message = f"Full mutation pass mutates {target}: {why}."
+            message = f"Full mutation pass mutates {named(chosen)}: {why}."
         else:
             message = f"Full mutation pass skipped: {why}."
     else:
         api = fixture_api(args.fixtures, args.record) if args.fixtures else gh_api
-        message = report(args.repo, api, args.logs, args.slice, args.run_url, args.sha) + "."
+        if args.command == "wait":
+            idle, why = wait(args.repo, api, args.interval, args.limit)
+            append("GITHUB_OUTPUT", f"idle={'true' if idle else 'false'}\n")
+            state = "Gates idle" if idle else "Gates still busy"
+            message = f"{state}: {why}."
+        else:
+            slices = [label for label in args.slices if label in LABELS]
+            if not slices:
+                parser.error(f"--slices names no slice: {args.slices!r}")
+            idle = args.idle == "true"
+            message = report(args.repo, api, args.logs, slices, idle, args.run_url, args.sha)
+            message = message[0].upper() + message[1:] + "."
     print(message)
     append("GITHUB_STEP_SUMMARY", f"- {message}\n")
     return 0

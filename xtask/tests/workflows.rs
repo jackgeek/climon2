@@ -615,19 +615,23 @@ fn the_full_pass_never_runs_on_a_branch() {
         !full.contains("paths"),
         "no push to main may skip the count"
     );
-    for name in ["slice", "linux", "windows", "macos", "report"] {
+    for name in [
+        "slice", "wait1", "wait2", "wait3", "wait4", "start", "linux", "windows", "macos", "report",
+    ] {
         let lines = job(&full, name);
-        let guarded = lines.contains(&"    if: github.ref == 'refs/heads/main'")
+        let guarded = lines
+            .iter()
+            .any(|line| line.starts_with("    if: github.ref == 'refs/heads/main'"))
             || condition(&lines).contains("github.ref == 'refs/heads/main' &&");
         assert!(guarded, "{name}: {lines:#?}");
     }
 }
 
-/// #452: the hosted `slice` job chooses the slice from main's squash-merges
+/// #452: the hosted `slice` job chooses the slices from main's squash-merges
 /// with tools/quality-full-run.py, or takes a manual run's choice of one slice
-/// or all, and every other job runs only when it chose one.
+/// or all ten, and each machine's job runs once per chosen slice, one at a time.
 #[test]
-fn the_full_pass_mutates_the_slice_the_merge_count_chooses() {
+fn the_full_pass_mutates_the_slices_the_merge_count_chooses() {
     let full = workflow("quality-full.yml");
     let inputs = [
         "        type: choice",
@@ -639,7 +643,7 @@ fn the_full_pass_mutates_the_slice_the_merge_count_chooses() {
     let slice = job(&full, "slice");
     for line in [
         "    runs-on: ubuntu-24.04",
-        "      slice: ${{ steps.slice.outputs.slice }}",
+        "      slices: ${{ steps.slice.outputs.slices }}",
         "          fetch-depth: 0",
         "          REQUESTED: ${{ inputs.slice }}",
         "        run: python3 tools/quality-full-run.py slice --event \"$EVENT\" --requested \"$REQUESTED\" --before \"$BEFORE\" --after \"$GITHUB_SHA\"",
@@ -652,38 +656,98 @@ fn the_full_pass_mutates_the_slice_the_merge_count_chooses() {
         ("macos", "--native-only "),
     ] {
         let lines = job(&full, name);
-        assert!(lines.contains(&"    needs: slice"), "{name}");
+        for line in [
+            "    needs: [slice, start]",
+            "      fail-fast: false",
+            "      max-parallel: 1",
+            "        slice: ${{ fromJSON(needs.slice.outputs.slices) }}",
+            "      SLICE: ${{ matrix.slice }}",
+        ] {
+            assert!(lines.contains(&line), "{name}: {line}: {lines:#?}");
+        }
         assert_eq!(
             condition(&lines),
             format!(
-                "github.ref == 'refs/heads/main' && needs.slice.outputs.slice != '' \
+                "github.ref == 'refs/heads/main' && needs.start.outputs.go == 'true' \
                  && contains(vars.CLIMON2_OWN_RUNNERS, '{name}')"
             ),
             "{name}"
         );
-        assert!(lines.contains(&"      SLICE: ${{ needs.slice.outputs.slice }}"));
-        let choice = "if [[ \"$SLICE\" == all ]]; then selection=(--mutate-all); \
-                      else selection=(--mutate-slice \"$SLICE\"); fi";
-        assert!(lines.iter().any(|line| line.trim() == choice), "{name}");
-        let gate = format!("cargo xtask mutate {native}\"${{selection[@]}}\" 2>&1 | tee ");
+        let gate = format!("cargo xtask mutate {native}--mutate-slice \"$SLICE\" 2>&1 | tee ");
         assert!(
             lines
                 .iter()
                 .any(|line| line.trim_start().starts_with(&gate)),
             "{name}: {lines:#?}"
         );
+        assert!(
+            !lines.iter().any(|line| line.contains("--mutate-all")),
+            "{name}: all slices run as separate jobs, each under a day"
+        );
     }
+}
+
+/// #452: a slice never holds a machine a gate is waiting for. Hosted jobs wait,
+/// four in turn for up to 5 hours each, until no quality.yml run is queued or in
+/// progress, and only then is a machine's job requested, so it never waits in a
+/// machine's queue for GitHub's 24 hours. If no wait saw idle gates, every
+/// machine's job is skipped, and the report says so.
+#[test]
+fn a_slice_waits_on_hosted_runners_until_the_gates_are_idle() {
+    let full = workflow("quality-full.yml");
+    for (index, needs, after) in [
+        (1, "slice", "needs.slice.outputs.slices != ''"),
+        (2, "wait1", "needs.wait1.outputs.idle == 'false'"),
+        (3, "wait2", "needs.wait2.outputs.idle == 'false'"),
+        (4, "wait3", "needs.wait3.outputs.idle == 'false'"),
+    ] {
+        let name = format!("wait{index}");
+        let lines = job(&full, &name);
+        let needs = format!("    needs: {needs}");
+        let condition = format!("    if: github.ref == 'refs/heads/main' && {after}");
+        for line in [
+            needs.as_str(),
+            condition.as_str(),
+            "    runs-on: ubuntu-24.04",
+            "    timeout-minutes: 330",
+            "      actions: read",
+            "      idle: ${{ steps.wait.outputs.idle }}",
+            "        run: python3 tools/quality-full-run.py wait --repo \"$GITHUB_REPOSITORY\"",
+        ] {
+            assert!(lines.contains(&line), "{name}: {line}: {lines:#?}");
+        }
+    }
+    // The script's default limit is 5 hours, under the job's 330 minutes.
+    let script = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tools/quality-full-run.py"),
+    )
+    .unwrap();
+    assert!(script.contains("add_argument(\"--limit\", type=int, default=5 * 60 * 60)"));
+    let start = job(&full, "start");
+    assert!(start.contains(&"    needs: [slice, wait1, wait2, wait3, wait4]"));
+    assert!(start.contains(&"    runs-on: ubuntu-24.04"));
+    let go = start
+        .iter()
+        .skip_while(|line| !line.starts_with("          GO: >-"))
+        .skip(1)
+        .take_while(|line| !line.trim_start().starts_with("run:"))
+        .map(|line| line.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert_eq!(
-        condition(&job(&full, "report")),
-        "!cancelled() && github.ref == 'refs/heads/main' && needs.slice.outputs.slice != ''"
+        go,
+        "${{ needs.wait1.outputs.idle == 'true' || needs.wait2.outputs.idle == 'true' \
+         || needs.wait3.outputs.idle == 'true' || needs.wait4.outputs.idle == 'true' }}"
     );
+    let report = job(&full, "report");
+    assert!(report.contains(&"          IDLE: ${{ needs.start.outputs.go == 'true' }}"));
 }
 
 /// #452: a slice runs on its machine's own runner with quality.yml's worker
 /// limits and a time limit of a few hours. It has no concurrency group, so a
-/// later merge never cancels or replaces it: the runner takes the jobs in turn.
-/// A failed or timed-out slice leaves its job green: the step continues on
-/// error, ends before the job's limit, and its log goes to the report.
+/// later merge never cancels or replaces it. A failed or timed-out slice leaves
+/// its job green: the step continues on error, and the job's limit leaves over
+/// 45 minutes beyond it for checkout, set-up and the log's upload.
 #[test]
 fn a_slice_never_reddens_main_or_gets_cancelled() {
     let full = workflow("quality-full.yml");
@@ -693,20 +757,17 @@ fn a_slice_never_reddens_main_or_gets_cancelled() {
         "a slice must never be dropped"
     );
     for (name, os, job_minutes, step_minutes) in [
-        ("linux", "Linux", "2880 || 240", "2850 || 225"),
-        ("windows", "Windows", "540 || 120", "510 || 105"),
-        ("macos", "macOS", "540 || 120", "510 || 105"),
+        ("linux", "Linux", 300, 225),
+        ("windows", "Windows", 150, 105),
+        ("macos", "macOS", 150, 105),
     ] {
+        assert!(job_minutes - step_minutes >= 45, "{name}");
         let lines = job(&full, name);
-        let artifact = format!("          name: full-run-{name}");
+        let artifact = format!("          name: full-run-{name}-${{{{ matrix.slice }}}}");
         for line in [
             format!("    runs-on: [self-hosted, {os}, X64, climon2-quality]"),
-            format!(
-                "    timeout-minutes: ${{{{ needs.slice.outputs.slice == 'all' && {job_minutes} }}}}"
-            ),
-            format!(
-                "        timeout-minutes: ${{{{ needs.slice.outputs.slice == 'all' && {step_minutes} }}}}"
-            ),
+            format!("    timeout-minutes: {job_minutes}"),
+            format!("        timeout-minutes: {step_minutes}"),
             "        run: rm -rf target/mutation-workers".to_owned(),
             "        continue-on-error: true".to_owned(),
             artifact,
@@ -742,7 +803,7 @@ fn a_piped_pass_keeps_its_exit_status() {
     assert_eq!(full.matches("shell:").count(), 1, "nothing overrides it");
 }
 
-/// #452: the report job puts the slice's findings into one tracking issue with
+/// #452: the report job puts each slice's findings into one tracking issue with
 /// the workflow's own token, the only write the workflow has; it uses no secret.
 #[test]
 fn the_full_pass_reports_its_findings_in_one_issue() {
@@ -756,13 +817,17 @@ fn the_full_pass_reports_its_findings_in_one_issue() {
     assert_eq!(writes, ["      issues: write"]);
     let report = job(&full, "report");
     for line in [
-        "    needs: [slice, linux, windows, macos]",
+        "    needs: [slice, start, linux, windows, macos]",
         "    runs-on: ubuntu-24.04",
         "      issues: write",
         "          pattern: full-run-*",
         "          GH_TOKEN: ${{ github.token }}",
-        "        run: python3 tools/quality-full-run.py report --repo \"$GITHUB_REPOSITORY\" --slice \"$SLICE\" --logs \"$RUNNER_TEMP/full-run\" --run-url \"$RUN_URL\" --sha \"$GITHUB_SHA\"",
+        "        run: python3 tools/quality-full-run.py report --repo \"$GITHUB_REPOSITORY\" --slices \"$SLICES\" --idle \"$IDLE\" --logs \"$RUNNER_TEMP/full-run\" --run-url \"$RUN_URL\" --sha \"$GITHUB_SHA\"",
     ] {
         assert!(report.contains(&line), "{line}: {report:#?}");
     }
+    assert_eq!(
+        condition(&report),
+        "!cancelled() && github.ref == 'refs/heads/main' && needs.slice.outputs.slices != ''"
+    );
 }
