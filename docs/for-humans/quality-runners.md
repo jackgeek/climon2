@@ -37,13 +37,27 @@ file kept the Linux gate busy for one to two hours.
   `impl` the function is in. For example, a new field in `Frame` selects every
   method in `impl Frame`. The rule goes one step only: a function chosen this
   way does not choose the functions that call it.
-- **Whole files.** A new file is mutated whole. So is every function of a
-  file whose base version is not valid Rust.
+- **Whole files.** A new file is mutated whole. So is a file in any of these
+  cases:
+  - its base version is not valid Rust;
+  - it changes code that has no dependents rule yet, such as a `use`, a
+    `macro_rules!` or other item macro, a trait's method signature or
+    associated type, an impl's associated type, a `union` or an `extern`
+    block;
+  - its only change is to test code (`mod tests`, `#[test]` or
+    `#[cfg(test)]`). A weakened or removed test then still has to kill every
+    mutant in the file. The local ticket gate skips such a file. A file whose
+    functions changed as well mutates only those functions.
 - **CRAP is not narrowed.** Every function of the source the gate scores is
-  still scored, whether or not it changed.
+  still scored, whether or not it changed. A native gate scores its changed
+  native files even when their changes select no mutant, for example a
+  comment-only edit.
 
 The gate prints its choice before it mutates. It lists each file, its
-selected functions and their lines, and the mutants it will try. The count is
+selected functions and their lines, and the mutants it will try. A whole file
+stays in the list even if no mutant is found in it. If the mutator's scan
+doesn't report a file under the same path as the gate, the gate fails, so a
+file can't be skipped without anyone seeing it. The count is
 taken before coverage, so mutants on lines no test runs are not tried.
 `cargo xtask check --print-mutation-plan` prints the same choice locally,
 with a [`CLIMON2_MUTATION_BASE`](development.md#the-quality-gate) set.

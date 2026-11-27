@@ -1,6 +1,6 @@
 use crate::{
     coverage::Coverage,
-    mutation_plan::{ChangedItem, changed_items},
+    mutation_plan::{ChangedItem, Changes, changed_items},
 };
 use std::{
     collections::{BTreeSet, HashMap},
@@ -222,17 +222,34 @@ impl Scope {
 
     /// Changed sources to mutate without `--mutate-all`, since `CLIMON2_MUTATION_BASE`.
     fn changed_targets(self, root: &Path) -> io::Result<Vec<Target>> {
-        // Upstream --changed reads only git status and cannot limit itself to shipped crates.
-        let base = env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into());
-        // Only the full gate mutates whole changed files (#445).
+        let base = mutation_base();
+        // Only the full gate mutates whole changed files (#445). The own-hardware gates also
+        // mutate whole a file whose only change is to test code, so a weakened test cannot pass (#449).
         let mut targets = if self == Self::Full {
             Target::whole(changed_sources(root, &base)?)
         } else {
-            function_targets(root, &base)?
+            function_targets(root, &base, self != Self::Ticket)?
         };
         targets.retain(|target| self.keeps(&target.path));
         Ok(targets)
     }
+
+    /// Whether the native gate has a selected native source to qualify: one it mutates, or,
+    /// without `--mutate-all`, any changed one, which CRAP scores even when its changes
+    /// select no mutant (#449).
+    fn qualifies(self, root: &Path, all: bool, targets: &[Target]) -> io::Result<bool> {
+        Ok(!targets.is_empty()
+            || (!all
+                && !self
+                    .select(changed_sources(root, &mutation_base())?)
+                    .is_empty()))
+    }
+}
+
+/// The base that changes are measured from. Upstream --changed reads only git status and
+/// cannot limit itself to shipped crates.
+fn mutation_base() -> OsString {
+    env::var_os("CLIMON2_MUTATION_BASE").unwrap_or_else(|| "HEAD".into())
 }
 
 /// One file's mutation selection: changed items, or the whole file when `items` is `None`.
@@ -287,7 +304,8 @@ pub(crate) struct RunPlan {
 
 /// `sites` gives the line of each of a file's mutation sites. `--lines` applies to every file
 /// in a run, so it is the union of the lines that hold each target's own selected sites, every
-/// site of a whole file included, and a target with none is dropped. A file
+/// site of a whole file included, and a target of changed items with none is dropped. A
+/// whole file is kept even without one, so that no scan can drop it unseen. A file
 /// therefore also mutates any site on a line number another file selected: a safe superset,
 /// never less, that a mutator taking each file's own lines would remove (#445 follow-up). The
 /// owner keeps it so that the full-workspace baseline still runs once (2026-11-27).
@@ -307,7 +325,7 @@ fn run_plan(
                 .filter(|line| lines.contains(line))
                 .collect(),
         };
-        if own.is_empty() {
+        if own.is_empty() && target.items.is_some() {
             continue;
         }
         union.extend(&own);
@@ -358,10 +376,21 @@ fn scanned_plan(root: &Path, targets: Vec<Target>) -> io::Result<RunPlan> {
 }
 
 /// Each site's line in a mutator scan of `path`. A site line starts with a mark, `*` when its
-/// function changed since the mutator's last snapshot, otherwise a space.
+/// function changed since the mutator's last snapshot, otherwise a space. Fails unless the
+/// scan has `path`'s header and as many of its site lines as the header counts, so that a
+/// path the mutator names differently cannot pass as a file without sites.
 fn scan_lines(scan: &str, path: &Path) -> io::Result<Vec<usize>> {
-    let prefix = format!(" {}:", path.display());
-    scan.lines()
+    let path = path.display();
+    let suffix = format!(" mutation sites in {path}");
+    let counted = scan.lines().find_map(|line| {
+        line.strip_prefix("Scan: ")?
+            .strip_suffix(&suffix)?
+            .parse::<usize>()
+            .ok()
+    });
+    let prefix = format!(" {path}:");
+    let lines = scan
+        .lines()
         .filter_map(|line| {
             line.strip_prefix([' ', '*'])
                 .and_then(|line| line.strip_prefix(&prefix))
@@ -373,7 +402,18 @@ fn scan_lines(scan: &str, path: &Path) -> io::Result<Vec<usize>> {
                 .parse()
                 .map_err(|error| io::Error::other(format!("mutator scan: {rest}: {error}")))
         })
-        .collect()
+        .collect::<io::Result<Vec<usize>>>()?;
+    match counted {
+        Some(count) if count == lines.len() => Ok(lines),
+        Some(count) => Err(io::Error::other(format!(
+            "mutator scan counts {count} mutation sites in {path} but lists {}",
+            lines.len()
+        ))),
+        None => Err(io::Error::other(format!(
+            "mutator scan has no \"Scan: N mutation sites in {path}\" header; \
+             it names the file differently from the gate"
+        ))),
+    }
 }
 
 pub(crate) fn run(command: &mut Command) -> io::Result<()> {
@@ -724,14 +764,21 @@ fn nul_separated(bytes: &[u8]) -> io::Result<Vec<PathBuf>> {
         .collect()
 }
 
-/// The ticket gate's selection: each changed file's changed items; new files whole.
-fn function_targets(root: &Path, base: &OsStr) -> io::Result<Vec<Target>> {
+/// The selection of the ticket gate and the own-hardware gates: each changed file's changed
+/// items. New files are whole, and so is a file whose changes `changed_items` marks whole,
+/// or, with `tests_whole`, whose only change is to test-only code.
+fn function_targets(root: &Path, base: &OsStr, tests_whole: bool) -> io::Result<Vec<Target>> {
     let (commit, files) = changed_files(root, base)?;
     let mut targets = Vec::new();
     for (path, base_path) in files {
         let items = match base_path {
             None => None,
-            Some(base_path) => Some(file_changes(root, &commit, &base_path, &path)?),
+            Some(base_path) => {
+                let changes = file_changes(root, &commit, &base_path, &path)?;
+                let whole =
+                    changes.whole || (tests_whole && changes.tests && changes.items.is_empty());
+                (!whole).then_some(changes.items)
+            }
         };
         if items.as_ref().is_none_or(|items| !items.is_empty()) {
             targets.push(Target { path, items });
@@ -740,12 +787,7 @@ fn function_targets(root: &Path, base: &OsStr) -> io::Result<Vec<Target>> {
     Ok(targets)
 }
 
-fn file_changes(
-    root: &Path,
-    commit: &str,
-    base_path: &Path,
-    path: &Path,
-) -> io::Result<Vec<ChangedItem>> {
+fn file_changes(root: &Path, commit: &str, base_path: &Path, path: &Path) -> io::Result<Changes> {
     let base = output(
         Command::new("git")
             .current_dir(root)
@@ -944,7 +986,7 @@ pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     let sources = shipped_sources(root)?;
     let scored = scope.select(sources.clone());
     let targets = mutation_targets(root, all, scope)?;
-    if scope == Scope::Native && targets.is_empty() {
+    if scope == Scope::Native && !scope.qualifies(root, all, &targets)? {
         eprintln!("No selected native Rust source to qualify; shared source is checked locally.");
         return Ok(());
     }
@@ -1651,6 +1693,8 @@ mod tests {
         changed: bool,
         /// A three-line shipped source the diff adds, mutated whole beside the changed one.
         added: bool,
+        /// The changed source's base text; by default its one function returns another value.
+        base: Option<&'static str>,
     }
 
     #[cfg(unix)]
@@ -1725,7 +1769,7 @@ mod tests {
              *'ls-files --cached'*) printf '%s\\0' \"$LOAD_GATE_SOURCE\" $LOAD_GATE_ADDED ;;\n\
              *'diff --name-status'*) if [ \"$LOAD_GATE_CHANGED\" = yes ]; then printf 'M\\0%s\\0' \"$LOAD_GATE_SOURCE\"; fi; \
              if [ -n \"$LOAD_GATE_ADDED\" ]; then printf 'A\\0%s\\0' \"$LOAD_GATE_ADDED\"; fi ;;\n\
-             *'cat-file'*) echo 'pub fn changed() -> u8 {{ 0 }}' ;;\n\
+             *'cat-file'*) printf '%s\\n' \"$LOAD_GATE_BASE\" ;;\n\
              esac\n"
             ),
         );
@@ -1756,11 +1800,16 @@ case "$*" in
         fi
         ;;
     *check-mutation-workspace.py*) echo baseline >> "$events" ;;
+    *'-m crapper'*)
+        shift 2
+        printf 'crapper %s\n' "$*" >> "$events"
+        ;;
     *'-m mutator --scan'*)
         for path do
             case "$path" in
                 *.rs)
                     printf 'scan %s\n' "$path" >> "$events"
+                    printf 'Scan: 2 mutation sites in %s\n' "$path"
                     for site in 1 3; do
                         printf '  %s:%s + -> -  [defn/f]\n' "$path" "$site"
                     done
@@ -1799,6 +1848,10 @@ esac
             .env("LOAD_GATE_SCOPE", gate.scope)
             .env("LOAD_GATE_SOURCE", &source)
             .env("LOAD_GATE_ADDED", added)
+            .env(
+                "LOAD_GATE_BASE",
+                gate.base.unwrap_or("pub fn changed() -> u8 { 0 }"),
+            )
             .env("LOAD_GATE_CHANGED", if gate.changed { "yes" } else { "no" })
             .env("LOAD_GATE_FAIL", if gate.load_fails { "yes" } else { "no" })
             .env("PATH", env::join_paths(path).unwrap())
@@ -1998,6 +2051,29 @@ esac
                 run.output
             );
         }
+    }
+
+    /// #449 review: the native gate qualifies a changed native file whose changes select no
+    /// mutant: CRAP still scores it, and nothing is mutated.
+    #[cfg(unix)]
+    #[test]
+    fn the_native_gate_scores_a_changed_file_that_selects_no_mutant() {
+        let run = run_gate(Gate {
+            scope: "native",
+            changed: true,
+            base: Some("// Only a comment differs.\npub fn changed() -> u8 { 1 }"),
+            ..Gate::default()
+        });
+        assert!(run.success, "{}", run.output);
+        let crapper = &run.events[run.started("crapper").unwrap()];
+        assert!(crapper.ends_with(".rs"), "{crapper}");
+        assert_eq!(run.started("mutation"), None, "{:?}", run.events);
+        let run = run_gate(Gate {
+            scope: "native",
+            ..Gate::default()
+        });
+        assert!(run.success, "{}", run.output);
+        assert_eq!(run.started("crapper"), None, "{:?}", run.events);
     }
 
     /// #445 owner decision: the own-hardware gates mutate only the changed functions' lines.
@@ -2263,7 +2339,7 @@ esac
             lines: vec![5..=7],
         }]);
         assert_eq!(
-            function_targets(root, OsStr::new("HEAD~1")).unwrap(),
+            function_targets(root, OsStr::new("HEAD~1"), false).unwrap(),
             vec![
                 Target {
                     path: edited.into(),
@@ -2280,12 +2356,80 @@ esac
             ]
         );
         assert_eq!(
-            function_targets(root, OsStr::new("HEAD"))
+            function_targets(root, OsStr::new("HEAD"), false)
                 .unwrap()
                 .iter()
                 .map(|target| target.items.clone())
                 .collect::<Vec<_>>(),
             vec![None]
+        );
+    }
+
+    /// #449 review: the own-hardware gates mutate whole a file whose test code alone changed,
+    /// as every gate does a file whose changes have no dependents rule or whose base is not Rust.
+    #[test]
+    fn test_unselected_and_unparsable_changes_select_whole_files() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        git(root, &["init", "--quiet"]);
+        let tested = "crates/climon2-cli/src/lib.rs";
+        let imports = "crates/climon2-core/src/lib.rs";
+        let broken = "crates/climon2-vt/src/lib.rs";
+        let both = "crates/climon2-daemon/src/lib.rs";
+        let source = "pub fn f() -> u8 {\n    1\n}\n";
+        let test = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn f() { assert_eq!(super::f(), 1); }\n}\n";
+        for (path, text) in [
+            (tested, format!("{source}{test}")),
+            (imports, source.to_owned()),
+            (broken, "pub fn f( {".to_owned()),
+            (both, format!("{source}{test}")),
+        ] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), text).unwrap();
+        }
+        commit(root);
+        fs::write(
+            root.join(tested),
+            format!("{source}{}", test.replace("1)", "2)")),
+        )
+        .unwrap();
+        fs::write(root.join(imports), format!("use std::fmt;\n{source}")).unwrap();
+        fs::write(root.join(broken), source).unwrap();
+        // A changed function beside a changed test selects only the function.
+        fs::write(
+            root.join(both),
+            format!(
+                "{}{}",
+                source.replace("    1", "    2"),
+                test.replace("1)", "2)")
+            ),
+        )
+        .unwrap();
+        commit(root);
+
+        let whole = |path: &str| Target {
+            path: path.into(),
+            items: None,
+        };
+        let function = Target {
+            path: both.into(),
+            items: Some(vec![ChangedItem {
+                name: "f".to_owned(),
+                lines: vec![1..=3],
+            }]),
+        };
+        assert_eq!(
+            function_targets(root, OsStr::new("HEAD~1"), true).unwrap(),
+            vec![
+                whole(tested),
+                whole(imports),
+                function.clone(),
+                whole(broken)
+            ]
+        );
+        assert_eq!(
+            function_targets(root, OsStr::new("HEAD~1"), false).unwrap(),
+            vec![whole(imports), function, whole(broken)]
         );
     }
 
@@ -2315,7 +2459,7 @@ esac
             vec![PathBuf::from(cli)]
         );
         assert_eq!(
-            function_targets(root, OsStr::new("moved-on"))
+            function_targets(root, OsStr::new("moved-on"), false)
                 .unwrap()
                 .into_iter()
                 .map(|target| target.path)
@@ -2385,6 +2529,16 @@ esac
                 },
             ]
         );
+        // #449 review: a whole file is kept even when its scan finds no site.
+        let empty = run_plan(vec![whole.clone()], |_| Ok(Vec::new())).unwrap();
+        assert_eq!(
+            empty.targets,
+            vec![Planned {
+                target: whole.clone(),
+                selected: 0,
+                mutants: 0,
+            }]
+        );
         let plan = run_plan(vec![whole.clone()], |_| Ok(vec![1, 1, 5])).unwrap();
         assert_eq!(plan.lines, None);
         assert_eq!(
@@ -2403,6 +2557,28 @@ esac
         );
     }
 
+    /// #449 review: a scan that does not name a target as the gate does, or lists fewer
+    /// sites than it counts, fails rather than passing as a file without sites.
+    #[test]
+    fn a_scan_without_the_targets_header_or_with_missing_sites_fails() {
+        let scan = "Scan: 1 mutation sites in C:/work/a.rs\n  C:/work/a.rs:4 + -> -  [defn/f]\n";
+        let error = scan_lines(scan, Path::new("a.rs")).unwrap_err().to_string();
+        assert!(
+            error.contains("no \"Scan: N mutation sites in a.rs\" header"),
+            "{error}"
+        );
+        let scan = "Scan: 2 mutation sites in a.rs\n  a.rs:4 + -> -  [defn/f]\n";
+        let error = scan_lines(scan, Path::new("a.rs")).unwrap_err().to_string();
+        assert!(
+            error.contains("counts 2 mutation sites in a.rs but lists 1"),
+            "{error}"
+        );
+        assert_eq!(
+            scan_lines("Scan: 0 mutation sites in a.rs\n", Path::new("a.rs")).unwrap(),
+            Vec::<usize>::new()
+        );
+    }
+
     /// #445: a scan's site lines are read for its own file whether or not the mutator marks
     /// the site's function as changed since its last snapshot.
     #[test]
@@ -2410,6 +2586,7 @@ esac
         let scan = "\
 Scan: 3 mutation sites in a.rs
   a.rs:4 + -> -  [defn/f]
+Scan: 1 mutation sites in ab.rs
 * a.rs:9 < -> <=  [defn/g]
   a.rs:9 1 -> 0  [defn/g]
   ab.rs:5 + -> -  [defn/h]

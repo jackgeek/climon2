@@ -20,6 +20,13 @@
 //! file that names it: whose own tokens or enclosing headers (an `impl Frame`
 //! header names `Frame`) hold its identifier. This is not transitive: a
 //! function selected this way selects nothing further (owner decision, #445).
+//!
+//! Any other changed item outside a function, `const` or `static` (a `use`, an
+//! item macro such as `macro_rules!`, a trait's method signature or associated
+//! type or const without a default, an impl's associated type or macro, a
+//! `union`, an `extern` block) has no dependents rule yet, so it marks the whole
+//! file to be mutated, as a base that is not Rust does. A change to test-only
+//! code is reported apart, so a gate may mutate that file whole too (#449).
 
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 use quote::ToTokens;
@@ -28,7 +35,7 @@ use std::{
     ops::RangeInclusive,
 };
 use syn::{
-    Attribute, Block, Item, Meta, Stmt, Token,
+    Attribute, Block, ImplItem, Item, Meta, Stmt, Token, TraitItem,
     punctuated::Punctuated,
     visit::{self, Visit},
     visit_mut::{self, VisitMut},
@@ -42,15 +49,54 @@ pub(crate) struct ChangedItem {
     pub lines: Vec<RangeInclusive<usize>>,
 }
 
+/// What a diff of one file changes.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct Changes {
+    /// The changed items and the functions that name a changed `const`, `static` or type.
+    pub items: Vec<ChangedItem>,
+    /// The base is not Rust, or an item with no dependents rule changed: mutate the whole file.
+    pub whole: bool,
+    /// Test-only code was added, removed or changed.
+    pub tests: bool,
+}
+
 /// The items of `new` that `old` lacks, and the functions of `new` that name a changed
-/// `const`, `static` or type, in source order. Errors when `new` is not Rust.
-/// Unparsable base source has no items, so every item of `new` is changed.
-pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Vec<ChangedItem>> {
+/// `const`, `static` or type, in source order, with whether the whole file or its test code
+/// changed. Errors when `new` is not Rust.
+pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
     let new = records(new)?;
+    let Ok(old) = records(old) else {
+        return Ok(Changes {
+            whole: true,
+            ..Changes::default()
+        });
+    };
     let mut base: HashMap<(String, String), usize> = HashMap::new();
-    for record in records(old).unwrap_or_default() {
-        *base.entry((record.name, record.tokens)).or_default() += 1;
+    // Each unselected kind's records, counted up in the base and down in the new file.
+    let mut unselected: HashMap<(bool, String, String), isize> = HashMap::new();
+    for record in old {
+        match record.kind {
+            Kind::Other | Kind::Test => {
+                *unselected
+                    .entry((record.kind == Kind::Test, record.name, record.tokens))
+                    .or_default() += 1
+            }
+            _ => *base.entry((record.name, record.tokens)).or_default() += 1,
+        }
     }
+    let (new, rest): (Vec<_>, Vec<_>) = new
+        .into_iter()
+        .partition(|record| !matches!(record.kind, Kind::Other | Kind::Test));
+    for record in rest {
+        *unselected
+            .entry((record.kind == Kind::Test, record.name, record.tokens))
+            .or_default() -= 1;
+    }
+    let differs = |test: bool| {
+        unselected
+            .iter()
+            .any(|((is_test, ..), count)| *is_test == test && *count != 0)
+    };
     let changed: Vec<bool> = new
         .iter()
         .map(
@@ -66,10 +112,10 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Vec<ChangedItem
     let named: BTreeSet<&str> = new
         .iter()
         .zip(&changed)
-        .filter(|(record, changed)| **changed && record.kind != Kind::Function)
+        .filter(|(record, changed)| **changed && matches!(record.kind, Kind::Value | Kind::Type))
         .map(|(record, _)| record.ident.as_str())
         .collect();
-    Ok(new
+    let items = new
         .iter()
         .zip(changed)
         .filter(|(record, changed)| *changed || record.names_any(&named))
@@ -77,7 +123,12 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Vec<ChangedItem
             name: record.name.clone(),
             lines: record.lines.clone(),
         })
-        .collect())
+        .collect();
+    Ok(Changes {
+        items,
+        whole: differs(false),
+        tests: differs(true),
+    })
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -87,6 +138,10 @@ enum Kind {
     Value,
     /// A `struct`, `enum` or `type` alias.
     Type,
+    /// An item no other record's tokens hold and no dependents rule covers.
+    Other,
+    /// Test-only code.
+    Test,
 }
 
 /// A function, `const`, `static` or type in source order, with its own tokens and the lines
@@ -165,6 +220,9 @@ struct Collector {
     headers: Vec<String>,
     /// The identifiers of each entry of `headers`.
     header_idents: Vec<BTreeSet<String>>,
+    /// How many function, `const`, `static` or type bodies enclose the item visited, since the
+    /// innermost module, impl or trait, whose tokens their records leave out.
+    bodies: usize,
     records: Vec<Record>,
 }
 
@@ -199,6 +257,33 @@ impl Collector {
         });
     }
 
+    /// Records an item that is never selected itself: its tokens, with the enclosing headers.
+    fn mark(&mut self, kind: Kind, item: &impl ToTokens) {
+        let tokens = strip_docs(item.to_token_stream()).to_string();
+        self.records.push(Record {
+            name: self.path(""),
+            ident: String::new(),
+            kind,
+            tokens: self
+                .headers
+                .iter()
+                .cloned()
+                .chain([tokens])
+                .collect::<Vec<_>>()
+                .join("\n"),
+            idents: BTreeSet::new(),
+            lines: Vec::new(),
+        });
+    }
+
+    /// Visits the body of a recorded item, whose record holds the tokens of the items in it
+    /// that are not compared on their own.
+    fn inside(&mut self, name: String, visit: impl FnOnce(&mut Self)) {
+        self.bodies += 1;
+        self.within(name, visit);
+        self.bodies -= 1;
+    }
+
     fn path(&self, name: &str) -> String {
         self.scope
             .iter()
@@ -221,13 +306,73 @@ impl Collector {
         token_idents(header.clone(), &mut idents);
         self.headers.push(header.to_string());
         self.header_idents.push(idents);
+        let bodies = std::mem::take(&mut self.bodies);
         self.within(name, visit);
+        self.bodies = bodies;
         self.headers.pop();
         self.header_idents.pop();
     }
 }
 
 impl<'ast> Visit<'ast> for Collector {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if test_only(item_attrs(item))
+            || matches!(item, Item::Mod(module) if module.ident == "tests")
+        {
+            return self.mark(Kind::Test, item);
+        }
+        // Inside a body, such an item is in the enclosing record's own tokens.
+        if self.bodies == 0
+            && matches!(
+                item,
+                Item::Use(_)
+                    | Item::Macro(_)
+                    | Item::Union(_)
+                    | Item::ExternCrate(_)
+                    | Item::ForeignMod(_)
+                    | Item::TraitAlias(_)
+                    | Item::Verbatim(_)
+            )
+        {
+            self.mark(Kind::Other, item);
+        }
+        visit::visit_item(self, item);
+    }
+
+    fn visit_impl_item(&mut self, item: &'ast ImplItem) {
+        let attrs: &[Attribute] = match item {
+            ImplItem::Const(item) => &item.attrs,
+            ImplItem::Fn(item) => &item.attrs,
+            ImplItem::Type(item) => &item.attrs,
+            ImplItem::Macro(item) => &item.attrs,
+            _ => &[],
+        };
+        if test_only(attrs) {
+            return self.mark(Kind::Test, item);
+        }
+        if !matches!(item, ImplItem::Const(_) | ImplItem::Fn(_)) {
+            self.mark(Kind::Other, item);
+        }
+        visit::visit_impl_item(self, item);
+    }
+
+    fn visit_trait_item(&mut self, item: &'ast TraitItem) {
+        let (attrs, recorded): (&[Attribute], bool) = match item {
+            TraitItem::Const(item) => (&item.attrs, item.default.is_some()),
+            TraitItem::Fn(item) => (&item.attrs, item.default.is_some()),
+            TraitItem::Type(item) => (&item.attrs, false),
+            TraitItem::Macro(item) => (&item.attrs, false),
+            _ => (&[], false),
+        };
+        if test_only(attrs) {
+            return self.mark(Kind::Test, item);
+        }
+        if !recorded {
+            self.mark(Kind::Other, item);
+        }
+        visit::visit_trait_item(self, item);
+    }
+
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         if !test_only(&item.attrs) && item.ident != "tests" {
             let attributes = item.attrs.iter().map(ToTokens::to_token_stream).collect();
@@ -271,7 +416,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_item_fn_mut,
             );
-            self.within(item.sig.ident.to_string(), |c| {
+            self.inside(item.sig.ident.to_string(), |c| {
                 visit::visit_item_fn(c, item)
             });
         }
@@ -285,7 +430,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_impl_item_fn_mut,
             );
-            self.within(item.sig.ident.to_string(), |c| {
+            self.inside(item.sig.ident.to_string(), |c| {
                 visit::visit_impl_item_fn(c, item)
             });
         }
@@ -299,7 +444,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_trait_item_fn_mut,
             );
-            self.within(item.sig.ident.to_string(), |c| {
+            self.inside(item.sig.ident.to_string(), |c| {
                 visit::visit_trait_item_fn(c, item)
             });
         }
@@ -313,7 +458,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_item_const_mut,
             );
-            self.within(item.ident.to_string(), |c| visit::visit_item_const(c, item));
+            self.inside(item.ident.to_string(), |c| visit::visit_item_const(c, item));
         }
     }
 
@@ -325,7 +470,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_item_static_mut,
             );
-            self.within(item.ident.to_string(), |c| {
+            self.inside(item.ident.to_string(), |c| {
                 visit::visit_item_static(c, item)
             });
         }
@@ -339,7 +484,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_item_struct_mut,
             );
-            self.within(item.ident.to_string(), |c| {
+            self.inside(item.ident.to_string(), |c| {
                 visit::visit_item_struct(c, item)
             });
         }
@@ -353,7 +498,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_item_enum_mut,
             );
-            self.within(item.ident.to_string(), |c| visit::visit_item_enum(c, item));
+            self.inside(item.ident.to_string(), |c| visit::visit_item_enum(c, item));
         }
     }
 
@@ -365,7 +510,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_item_type_mut,
             );
-            self.within(item.ident.to_string(), |c| visit::visit_item_type(c, item));
+            self.inside(item.ident.to_string(), |c| visit::visit_item_type(c, item));
         }
     }
 
@@ -377,7 +522,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_impl_item_const_mut,
             );
-            self.within(item.ident.to_string(), |c| {
+            self.inside(item.ident.to_string(), |c| {
                 visit::visit_impl_item_const(c, item)
             });
         }
@@ -391,7 +536,7 @@ impl<'ast> Visit<'ast> for Collector {
                 item,
                 StripNested::visit_trait_item_const_mut,
             );
-            self.within(item.ident.to_string(), |c| {
+            self.inside(item.ident.to_string(), |c| {
                 visit::visit_trait_item_const(c, item)
             });
         }
@@ -432,6 +577,27 @@ fn compact(tokens: &impl ToTokens) -> String {
         }
     }
     compacted
+}
+
+fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::ExternCrate(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::ForeignMod(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::TraitAlias(item) => &item.attrs,
+        Item::Type(item) => &item.attrs,
+        Item::Union(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
 }
 
 /// `#[test]`, `#[cfg(test)]` or `#[cfg(all(.., test, ..))]`.
@@ -504,6 +670,13 @@ mod tests {
         }
     }
 
+    /// The selected items, where the change does not mark the whole file.
+    fn selected(old: &str, new: &str) -> Vec<ChangedItem> {
+        let changes = changed_items(old, new).unwrap();
+        assert!(!changes.whole, "{changes:?}");
+        changes.items
+    }
+
     const BASE: &str = "\
 fn kept() -> u8 {
     1
@@ -517,19 +690,13 @@ fn edited() -> u8 {
     #[test]
     fn a_new_function_is_changed_and_an_untouched_one_is_not() {
         let new = format!("{BASE}\nfn added() -> bool {{\n    true\n}}\n");
-        assert_eq!(
-            changed_items(BASE, &new).unwrap(),
-            vec![item("added", &[9..=11])]
-        );
+        assert_eq!(selected(BASE, &new), vec![item("added", &[9..=11])]);
     }
 
     #[test]
     fn an_edited_body_is_changed() {
         let new = BASE.replace("    2", "    3");
-        assert_eq!(
-            changed_items(BASE, &new).unwrap(),
-            vec![item("edited", &[5..=7])]
-        );
+        assert_eq!(selected(BASE, &new), vec![item("edited", &[5..=7])]);
     }
 
     #[test]
@@ -542,7 +709,7 @@ fn edited() -> u8 {
 // Reordered, with a new comment and different layout.
 fn kept()  ->  u8 { 1 }
 ";
-        assert_eq!(changed_items(BASE, new).unwrap(), vec![]);
+        assert_eq!(selected(BASE, new), vec![]);
     }
 
     /// Owner choice: doc comments carry no mutation sites, so editing only them changes nothing.
@@ -550,13 +717,13 @@ fn kept()  ->  u8 { 1 }
     fn a_doc_comment_only_edit_is_not_changed() {
         let old = format!("/// Old words.\n{BASE}");
         let new = format!("/// New words,\n/// over two lines.\n{BASE}");
-        assert_eq!(changed_items(&old, &new).unwrap(), vec![]);
+        assert_eq!(selected(&old, &new), vec![]);
     }
 
     #[test]
     fn a_deleted_function_leaves_nothing_to_mutate() {
         let new = "fn kept() -> u8 {\n    1\n}\n";
-        assert_eq!(changed_items(BASE, new).unwrap(), vec![]);
+        assert_eq!(selected(BASE, new), vec![]);
     }
 
     #[test]
@@ -581,7 +748,7 @@ impl std::fmt::Display for A {
             )
             .replace("\"a\"", "\"A\"");
         assert_eq!(
-            changed_items(old, &new).unwrap(),
+            selected(old, &new),
             vec![
                 item("B<&'a u8>::new", &[7..=7]),
                 item("<A as std::fmt::Display>::fmt", &[10..=10]),
@@ -603,7 +770,7 @@ static FLAG: bool = true;
 ";
         let new = old.replace("1", "2").replace("true", "false");
         assert_eq!(
-            changed_items(old, &new).unwrap(),
+            selected(old, &new),
             vec![
                 item("T::d", &[2..=2]),
                 item("m::g", &[5..=5]),
@@ -625,17 +792,14 @@ impl<T: Clone> W<T> {
 ";
         let bound = old.replace("T: Clone", "T: Copy");
         assert_eq!(
-            changed_items(old, &bound).unwrap(),
+            selected(old, &bound),
             vec![
                 item("W<T>::first", &[3..=3]),
                 item("W<T>::second", &[4..=4])
             ]
         );
         let method = old.replace("{ 2 }", "{ 3 }");
-        assert_eq!(
-            changed_items(old, &method).unwrap(),
-            vec![item("W<T>::second", &[4..=4])]
-        );
+        assert_eq!(selected(old, &method), vec![item("W<T>::second", &[4..=4])]);
     }
 
     #[test]
@@ -650,12 +814,12 @@ fn outer() -> u8 {
 ";
         let inner_only = old.replace("        1", "        2");
         assert_eq!(
-            changed_items(old, &inner_only).unwrap(),
+            selected(old, &inner_only),
             vec![item("outer::inner", &[2..=4])]
         );
         let outer_only = old.replace("inner() + 1", "inner() + 2");
         assert_eq!(
-            changed_items(old, &outer_only).unwrap(),
+            selected(old, &outer_only),
             vec![item("outer", &[1..=1, 5..=6])]
         );
     }
@@ -670,10 +834,7 @@ static H: fn() -> u8 = {
 };
 ";
         let new = old.replace("{ 1 }", "{ 2 }");
-        assert_eq!(
-            changed_items(old, &new).unwrap(),
-            vec![item("H::h", &[2..=2])]
-        );
+        assert_eq!(selected(old, &new), vec![item("H::h", &[2..=2])]);
     }
 
     /// Review 2 and 3: a parent keeps every line its own tokens are on, even lines
@@ -687,20 +848,14 @@ fn outer() -> usize {
 }
 ";
         let new = old.replace("+ 1", "+ 2");
-        assert_eq!(
-            changed_items(old, &new).unwrap(),
-            vec![item("outer", &[1..=4])]
-        );
+        assert_eq!(selected(old, &new), vec![item("outer", &[1..=4])]);
         let old = "\
 fn outer() -> u8 { fn a() -> u8 { 1 }
     fn b() -> u8 { 2 }
     a() + b() + { fn c() -> u8 { 3 } c() } }
 ";
         let new = old.replace("a() + b()", "a() - b()");
-        assert_eq!(
-            changed_items(old, &new).unwrap(),
-            vec![item("outer", &[1..=1, 3..=3])]
-        );
+        assert_eq!(selected(old, &new), vec![item("outer", &[1..=1, 3..=3])]);
     }
 
     /// Review 4: a trait header edit changes every default method, as an impl header does.
@@ -712,10 +867,7 @@ trait T: Clone {
 }
 ";
         let new = old.replace("Clone", "Copy");
-        assert_eq!(
-            changed_items(old, &new).unwrap(),
-            vec![item("T::d", &[2..=2])]
-        );
+        assert_eq!(selected(old, &new), vec![item("T::d", &[2..=2])]);
     }
 
     /// Review 5: an enclosing module's or impl's attributes belong to its items; doc comments do not.
@@ -729,12 +881,9 @@ mod m {
 }
 ";
         let platform = old.replace("cfg(unix)", "cfg(windows)");
-        assert_eq!(
-            changed_items(old, &platform).unwrap(),
-            vec![item("m::g", &[4..=4])]
-        );
+        assert_eq!(selected(old, &platform), vec![item("m::g", &[4..=4])]);
         let docs = old.replace("Unix only.", "Only on Unix.");
-        assert_eq!(changed_items(old, &docs).unwrap(), vec![]);
+        assert_eq!(selected(old, &docs), vec![]);
     }
 
     #[test]
@@ -752,10 +901,7 @@ fn unix_helper() {}
 #[cfg(not(test))]
 fn production_only() {}
 ";
-        assert_eq!(
-            changed_items(old, new).unwrap(),
-            vec![item("production_only", &[9..=10])]
-        );
+        assert_eq!(selected(old, new), vec![item("production_only", &[9..=10])]);
     }
 
     /// #445 owner decision: a changed type, const or static selects every function in the
@@ -774,12 +920,12 @@ fn unrelated() -> u8 { 3 }
 ";
         let field = old.replace("width: u8", "width: u16");
         assert_eq!(
-            changed_items(old, &field).unwrap(),
+            selected(old, &field),
             vec![item("Frame", &[1..=1]), item("Frame::wide", &[4..=4])]
         );
         let constant = old.replace("LIMIT: u8 = 1", "LIMIT: u8 = 2");
         assert_eq!(
-            changed_items(old, &constant).unwrap(),
+            selected(old, &constant),
             vec![item("LIMIT", &[2..=2]), item("limited", &[6..=6])]
         );
         let old = "\
@@ -790,7 +936,7 @@ fn size() -> Size { 1 }
 ";
         let new = old.replace("{ A }", "{ A, B }").replace("= u8", "= u16");
         assert_eq!(
-            changed_items(old, &new).unwrap(),
+            selected(old, &new),
             vec![
                 item("Mode", &[1..=1]),
                 item("Size", &[2..=2]),
@@ -800,13 +946,90 @@ fn size() -> Size { 1 }
         );
     }
 
-    /// #445: a base that is not Rust has no items, so every item of the new file is selected.
+    /// #445: a base that is not Rust marks the whole file.
     #[test]
-    fn an_unparsable_base_selects_every_item() {
-        assert_eq!(
-            changed_items("fn broken(", BASE).unwrap(),
-            vec![item("kept", &[1..=3]), item("edited", &[5..=7])]
+    fn an_unparsable_base_marks_the_whole_file() {
+        let changes = changed_items("fn broken(", BASE).unwrap();
+        assert!(changes.whole, "{changes:?}");
+    }
+
+    /// #449 review: a changed item with no dependents rule marks the whole file.
+    #[test]
+    fn a_changed_item_of_an_unselected_kind_marks_the_whole_file() {
+        let old = "\
+use std::fmt;
+macro_rules! twice { ($x:expr) => { $x * 2 } }
+trait T {
+    type Out;
+    const N: u8;
+    fn required(&self) -> u8;
+}
+struct S;
+impl T for S {
+    type Out = u8;
+    const N: u8 = 1;
+    fn required(&self) -> u8 { 1 }
+}
+union U { a: u8 }
+extern \"C\" { fn abs(x: i32) -> i32; }
+fn f() -> u8 { 1 }
+";
+        for (from, to) in [
+            ("use std::fmt;", "use std::fmt::Write;"),
+            ("$x * 2", "$x * 3"),
+            ("fn required(&self) -> u8;", "fn required(&self) -> u16;"),
+            ("    type Out;", "    type Out: Copy;"),
+            ("    const N: u8;", "    const N: u16;"),
+            ("type Out = u8;", "type Out = u16;"),
+            ("a: u8 }", "a: u16 }"),
+            ("x: i32) -> i32", "x: i64) -> i64"),
+            ("fn f() -> u8 { 1 }", "use std::io;\nfn f() -> u8 { 1 }"),
+        ] {
+            let new = old.replace(from, to);
+            assert_ne!(new, old, "{from}");
+            let changes = changed_items(old, &new).unwrap();
+            assert!(changes.whole, "{from}: {changes:?}");
+        }
+        assert!(!changed_items(old, old).unwrap().whole);
+        // Removing one is a change too.
+        let removed = old.replace("use std::fmt;\n", "");
+        assert!(changed_items(old, &removed).unwrap().whole);
+    }
+
+    /// #449 review: an item inside a body is in its function's own tokens, so it changes only
+    /// that function.
+    #[test]
+    fn an_unselected_kind_inside_a_function_changes_only_that_function() {
+        let old = "fn f() -> u8 {\n    use std::cmp::max;\n    max(1, 2)\n}\nfn g() {}\n";
+        let new = old.replace("cmp::max", "cmp::{max, min}");
+        assert_eq!(selected(old, &new), vec![item("f", &[1..=4])]);
+    }
+
+    /// #449 review: adding, removing or changing test-only code is reported apart, and
+    /// selects no item.
+    #[test]
+    fn a_test_only_change_is_reported_and_selects_nothing() {
+        let old = format!(
+            "{BASE}\n#[cfg(test)]\nmod tests {{\n    #[test]\n    fn proves() {{ assert_eq!(super::kept(), 1); }}\n}}\n"
         );
+        let changes = changed_items(&old, &old).unwrap();
+        assert!(!changes.tests && !changes.whole, "{changes:?}");
+        for new in [
+            old.replace("super::kept(), 1", "super::kept(), 2"),
+            BASE.to_owned(),
+            format!("{old}#[test]\nfn more() {{}}\n"),
+        ] {
+            let changes = changed_items(&old, &new).unwrap();
+            assert_eq!(
+                changes,
+                Changes {
+                    items: Vec::new(),
+                    whole: false,
+                    tests: true,
+                },
+                "{new}"
+            );
+        }
     }
 
     #[test]
