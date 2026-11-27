@@ -37,17 +37,25 @@ file kept the Linux gate busy for one to two hours.
   `impl` the function is in. For example, a new field in `Frame` selects every
   method in `impl Frame`. The rule goes one step only: a function chosen this
   way does not choose the functions that call it.
+- **Imports.** Each name a `use` imports is compared on its own. A name that
+  is added, removed or imported from somewhere else selects, in the same way,
+  every function that uses it, by its original name or its `as` name. Adding
+  `Placeholder` to `use screen::{Canvas, Scene}` selects only the functions
+  that name `Placeholder`.
+- **Tests.** A test that is added, removed or changed (`mod tests`, `#[test]`
+  or `#[cfg(test)]`) selects the functions in the same file that the test's
+  code names, methods included, under its old and its new version. A
+  weakened or removed test therefore still has to kill the mutants of the
+  functions it covered. If a changed test names no function of the file, the
+  whole file is mutated. The local ticket gate does not apply this rule.
 - **Whole files.** A new file is mutated whole. So is a file in any of these
   cases:
   - its base version is not valid Rust;
-  - it changes code that has no dependents rule yet, such as a `use`, a
-    `macro_rules!` or other item macro, a trait's method signature or
-    associated type, an impl's associated type, a `union` or an `extern`
-    block;
-  - its only change is to test code (`mod tests`, `#[test]` or
-    `#[cfg(test)]`). A weakened or removed test then still has to kill every
-    mutant in the file. The local ticket gate skips such a file. A file whose
-    functions changed as well mutates only those functions.
+  - it adds, removes or changes a glob import (`use x::*`) or an import as
+    `_`, whose names can't be found;
+  - it changes code that has no dependents rule yet: a `macro_rules!` or
+    other item macro, a trait's method signature or associated type, an
+    impl's associated type, a `union` or an `extern` block.
 - **CRAP is not narrowed.** Every function of the source the gate scores is
   still scored, whether or not it changed. A native gate scores its changed
   native files even when their changes select no mutant, for example a

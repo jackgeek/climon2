@@ -35,8 +35,9 @@ check runs test, append-only fixtures, tooling proofs, coverage, crapper, mutati
 check is the ticket gate: 1 load round, then mutation of only the functions, consts and statics
 added or changed since the merge base of CLIMON2_MUTATION_BASE (default HEAD) and HEAD, and of
 the functions in the same file that name a changed struct, enum, const, static or type;
-new files are mutated whole, as are files with another changed item (a use, an item macro, a
-trait signature, an associated type or a union) or an unparsable base. One mutator run takes every file with a selected site, so the
+a changed import selects the functions naming it; new files are mutated whole, as are files
+with a changed glob import, item macro, trait signature, associated type or union, or an
+unparsable base. One mutator run takes every file with a selected site, so the
 workspace baseline runs once; its --lines is the union of the lines holding each file's
 selected sites (from mutator --scan).
 check --full is the full gate, run before a feature branch merges to main with
@@ -59,7 +60,7 @@ install builds verified production artifacts and runs their installer (optional 
 every dist host; it leaves PATH and shell start-up files alone and prints the PATH entry to add.
 fixtures-check refuses any historical or uncommitted edit/deletion of an existing metadata golden.
 mutate runs coverage, crapper and mutation checks on shipped source, mutating what check would
-and also whole files whose only change is to test code.
+and also the functions a changed test names, or the whole file when it names none.
 measure runs the PERF-01 matrix on an exact candidate archive (climon2-measure; see its README):
 a missed target is a failed Measure case in the report, not a failed command.
 qualify run writes one platform's evidence records (#122) for every acceptance-matrix case on this

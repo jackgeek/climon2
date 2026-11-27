@@ -223,8 +223,8 @@ impl Scope {
     /// Changed sources to mutate without `--mutate-all`, since `CLIMON2_MUTATION_BASE`.
     fn changed_targets(self, root: &Path) -> io::Result<Vec<Target>> {
         let base = mutation_base();
-        // Only the full gate mutates whole changed files (#445). The own-hardware gates also
-        // mutate whole a file whose only change is to test code, so a weakened test cannot pass (#449).
+        // Only the full gate mutates whole changed files (#445). In the own-hardware gates a
+        // changed test also selects the functions it names, so a weakened test cannot pass (#449).
         let mut targets = if self == Self::Full {
             Target::whole(changed_sources(root, &base)?)
         } else {
@@ -765,26 +765,45 @@ fn nul_separated(bytes: &[u8]) -> io::Result<Vec<PathBuf>> {
 }
 
 /// The selection of the ticket gate and the own-hardware gates: each changed file's changed
-/// items. New files are whole, and so is a file whose changes `changed_items` marks whole,
-/// or, with `tests_whole`, whose only change is to test-only code.
-fn function_targets(root: &Path, base: &OsStr, tests_whole: bool) -> io::Result<Vec<Target>> {
+/// items. New files are whole, and so is a file whose changes `changed_items` marks whole.
+/// With `tests_select`, a file's changed tests also select the functions they name.
+fn function_targets(root: &Path, base: &OsStr, tests_select: bool) -> io::Result<Vec<Target>> {
     let (commit, files) = changed_files(root, base)?;
     let mut targets = Vec::new();
     for (path, base_path) in files {
         let items = match base_path {
             None => None,
-            Some(base_path) => {
-                let changes = file_changes(root, &commit, &base_path, &path)?;
-                let whole =
-                    changes.whole || (tests_whole && changes.tests && changes.items.is_empty());
-                (!whole).then_some(changes.items)
-            }
+            Some(base_path) => select(
+                file_changes(root, &commit, &base_path, &path)?,
+                tests_select,
+            ),
         };
         if items.as_ref().is_none_or(|items| !items.is_empty()) {
             targets.push(Target { path, items });
         }
     }
     Ok(targets)
+}
+
+/// One file's selection, `None` for the whole file. With `tests_select`, changed tests also
+/// select the functions they name, and the whole file when they name none (#449).
+fn select(changes: Changes, tests_select: bool) -> Option<Vec<ChangedItem>> {
+    if changes.whole {
+        return None;
+    }
+    let mut items = changes.items;
+    if tests_select && let Some(tested) = changes.tested {
+        if tested.is_empty() {
+            return None;
+        }
+        for item in tested {
+            if !items.contains(&item) {
+                items.push(item);
+            }
+        }
+        items.sort_by_key(|item| item.lines.first().map(|lines| *lines.start()));
+    }
+    Some(items)
 }
 
 fn file_changes(root: &Path, commit: &str, base_path: &Path, path: &Path) -> io::Result<Changes> {
@@ -2365,71 +2384,76 @@ esac
         );
     }
 
-    /// #449 review: the own-hardware gates mutate whole a file whose test code alone changed,
-    /// as every gate does a file whose changes have no dependents rule or whose base is not Rust.
+    /// #449 owner decision: in the own-hardware gates a changed test selects the functions its
+    /// body names, or the whole file when it names none. Every gate mutates whole a file with a
+    /// changed glob import or a base that is not Rust.
     #[test]
-    fn test_unselected_and_unparsable_changes_select_whole_files() {
+    fn changed_tests_globs_and_unparsable_bases_select_as_the_gate_requires() {
         let scratch = tempfile::tempdir().unwrap();
         let root = scratch.path();
         git(root, &["init", "--quiet"]);
         let tested = "crates/climon2-cli/src/lib.rs";
         let imports = "crates/climon2-core/src/lib.rs";
-        let broken = "crates/climon2-vt/src/lib.rs";
         let both = "crates/climon2-daemon/src/lib.rs";
-        let source = "pub fn f() -> u8 {\n    1\n}\n";
-        let test = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn f() { assert_eq!(super::f(), 1); }\n}\n";
+        let silent = "crates/climon2-install/src/lib.rs";
+        let broken = "crates/climon2-vt/src/lib.rs";
+        let source = "pub fn f() -> u8 {\n    1\n}\npub fn g() -> u8 {\n    2\n}\n";
+        let test = |body: &str| {
+            format!("#[cfg(test)]\nmod tests {{\n    #[test]\n    fn t() {{ {body} }}\n}}\n")
+        };
+        let base = format!("{source}{}", test("assert_eq!(super::f(), 1);"));
         for (path, text) in [
-            (tested, format!("{source}{test}")),
+            (tested, base.clone()),
             (imports, source.to_owned()),
+            (both, base.clone()),
+            (silent, format!("{source}{}", test("assert_eq!(1, 2);"))),
             (broken, "pub fn f( {".to_owned()),
-            (both, format!("{source}{test}")),
         ] {
             fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
             fs::write(root.join(path), text).unwrap();
         }
         commit(root);
-        fs::write(
-            root.join(tested),
-            format!("{source}{}", test.replace("1)", "2)")),
-        )
-        .unwrap();
-        fs::write(root.join(imports), format!("use std::fmt;\n{source}")).unwrap();
-        fs::write(root.join(broken), source).unwrap();
-        // A changed function beside a changed test selects only the function.
+        let changed = |body: &str| format!("{source}{}", test(body));
+        fs::write(root.join(tested), changed("assert_eq!(super::f(), 3);")).unwrap();
+        fs::write(root.join(imports), format!("use std::fmt::*;\n{source}")).unwrap();
         fs::write(
             root.join(both),
-            format!(
-                "{}{}",
-                source.replace("    1", "    2"),
-                test.replace("1)", "2)")
-            ),
+            changed("assert_eq!(super::g(), 2);").replace("    1\n", "    5\n"),
         )
         .unwrap();
+        fs::write(root.join(silent), changed("assert_eq!(1, 1);")).unwrap();
+        fs::write(root.join(broken), source).unwrap();
         commit(root);
 
-        let whole = |path: &str| Target {
+        let target = |path: &str, items: Option<&[(&str, RangeInclusive<usize>)]>| Target {
             path: path.into(),
-            items: None,
-        };
-        let function = Target {
-            path: both.into(),
-            items: Some(vec![ChangedItem {
-                name: "f".to_owned(),
-                lines: vec![1..=3],
-            }]),
+            items: items.map(|items| {
+                items
+                    .iter()
+                    .map(|(name, lines)| ChangedItem {
+                        name: (*name).to_owned(),
+                        lines: vec![lines.clone()],
+                    })
+                    .collect()
+            }),
         };
         assert_eq!(
             function_targets(root, OsStr::new("HEAD~1"), true).unwrap(),
             vec![
-                whole(tested),
-                whole(imports),
-                function.clone(),
-                whole(broken)
+                target(tested, Some(&[("f", 1..=3)])),
+                target(imports, None),
+                target(both, Some(&[("f", 1..=3), ("g", 4..=6)])),
+                target(silent, None),
+                target(broken, None),
             ]
         );
         assert_eq!(
             function_targets(root, OsStr::new("HEAD~1"), false).unwrap(),
-            vec![whole(imports), function, whole(broken)]
+            vec![
+                target(imports, None),
+                target(both, Some(&[("f", 1..=3)])),
+                target(broken, None),
+            ]
         );
     }
 

@@ -1,4 +1,4 @@
-//! Ticket-gate mutation selection: which functions a diff adds or changes.
+//! Mutation selection: which functions a diff adds or changes.
 //!
 //! A function (or a `const`/`static`, the only mutable items outside a
 //! function) is identified by its path and name, for example
@@ -13,20 +13,28 @@
 //! module's attributes and impl or trait header (generics, bounds, where
 //! clause, self type, trait path, attributes; body excluded), so a header edit
 //! changes every item inside. Test-only code (`mod tests`, `#[test]` and
-//! `#[cfg(test)]` items) is skipped, as the mutator skips it.
+//! `#[cfg(test)]` items) is never selected, as the mutator skips it.
 //!
 //! A changed `struct`, `enum`, `const`, `static` or `type` alias can change how
 //! unchanged functions behave, so it also selects every function in the same
 //! file that names it: whose own tokens or enclosing headers (an `impl Frame`
 //! header names `Frame`) hold its identifier. This is not transitive: a
 //! function selected this way selects nothing further (owner decision, #445).
+//! Each import of a `use` is compared on its own, and one added, removed or
+//! altered selects the same way the functions that name it, by its imported or
+//! its local name. A changed glob import (`use x::*`), or one bound to `_`,
+//! names nothing that can be found, so it marks the whole file (owner decision,
+//! #449).
 //!
-//! Any other changed item outside a function, `const` or `static` (a `use`, an
-//! item macro such as `macro_rules!`, a trait's method signature or associated
-//! type or const without a default, an impl's associated type or macro, a
-//! `union`, an `extern` block) has no dependents rule yet, so it marks the whole
-//! file to be mutated, as a base that is not Rust does. A change to test-only
-//! code is reported apart, so a gate may mutate that file whole too (#449).
+//! Any other changed item outside a function, `const` or `static` (an item
+//! macro such as `macro_rules!`, a trait's method signature or associated type
+//! or const without a default, an impl's associated type or macro, a `union`,
+//! an `extern` block) has no dependents rule yet, so it marks the whole file to
+//! be mutated, as a base that is not Rust does.
+//!
+//! Each test-only item is compared on its own, inside `mod tests` too. The
+//! functions of the file whose names an added, removed or changed test names
+//! are reported apart, for the gates that select them (owner decision, #449).
 
 use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
 use quote::ToTokens;
@@ -35,14 +43,14 @@ use std::{
     ops::RangeInclusive,
 };
 use syn::{
-    Attribute, Block, ImplItem, Item, Meta, Stmt, Token, TraitItem,
+    Attribute, Block, ImplItem, Item, Meta, Stmt, Token, TraitItem, UseTree,
     punctuated::Punctuated,
     visit::{self, Visit},
     visit_mut::{self, VisitMut},
 };
 
 /// A function, `const`, `static` or type the diff adds or changes, or a function that
-/// names a changed `const`, `static` or type, with the lines it owns.
+/// names a changed `const`, `static`, type or import, with the lines it owns.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ChangedItem {
     pub name: String,
@@ -52,17 +60,19 @@ pub(crate) struct ChangedItem {
 /// What a diff of one file changes.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct Changes {
-    /// The changed items and the functions that name a changed `const`, `static` or type.
+    /// The changed items and the functions that name a changed `const`, `static`, type or
+    /// import, in source order.
     pub items: Vec<ChangedItem>,
     /// The base is not Rust, or an item with no dependents rule changed: mutate the whole file.
     pub whole: bool,
-    /// Test-only code was added, removed or changed.
-    pub tests: bool,
+    /// `None` when no test-only code was added, removed or changed. Otherwise the functions
+    /// of the file that those tests name, in source order, which may be none.
+    pub tested: Option<Vec<ChangedItem>>,
 }
 
-/// The items of `new` that `old` lacks, and the functions of `new` that name a changed
-/// `const`, `static` or type, in source order, with whether the whole file or its test code
-/// changed. Errors when `new` is not Rust.
+/// The items of `new` that `old` lacks, the functions of `new` that name a changed `const`,
+/// `static`, type or import, whether the whole file changed, and the functions its changed
+/// tests name. Errors when `new` is not Rust.
 pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
     let new = records(new)?;
     let Ok(old) = records(old) else {
@@ -71,36 +81,36 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
             ..Changes::default()
         });
     };
-    let mut base: HashMap<(String, String), usize> = HashMap::new();
-    // Each unselected kind's records, counted up in the base and down in the new file.
-    let mut unselected: HashMap<(bool, String, String), isize> = HashMap::new();
-    for record in old {
-        match record.kind {
-            Kind::Other | Kind::Test => {
-                *unselected
-                    .entry((record.kind == Kind::Test, record.name, record.tokens))
-                    .or_default() += 1
-            }
-            _ => *base.entry((record.name, record.tokens)).or_default() += 1,
-        }
-    }
-    let (new, rest): (Vec<_>, Vec<_>) = new
-        .into_iter()
-        .partition(|record| !matches!(record.kind, Kind::Other | Kind::Test));
-    for record in rest {
-        *unselected
-            .entry((record.kind == Kind::Test, record.name, record.tokens))
-            .or_default() -= 1;
-    }
-    let differs = |test: bool| {
-        unselected
+    let compared = |record: &&Record| matches!(record.kind, Kind::Other | Kind::Use | Kind::Test);
+    let unmatched = unmatched(
+        old.iter().filter(compared).collect(),
+        new.iter().filter(compared).collect(),
+    );
+    let names = |kind: Kind| -> BTreeSet<&str> {
+        unmatched
             .iter()
-            .any(|((is_test, ..), count)| *is_test == test && *count != 0)
+            .filter(|record| record.kind == kind)
+            .flat_map(|record| record.idents.iter().map(String::as_str))
+            .collect()
     };
+    let imports = names(Kind::Use);
+    let whole = unmatched.iter().any(|record| record.kind == Kind::Other)
+        || imports.contains("*")
+        || imports.contains("_");
+    let tests = unmatched.iter().any(|record| record.kind == Kind::Test);
+    let tested = names(Kind::Test);
+
+    let mut base: HashMap<(&str, &str), usize> = HashMap::new();
+    for record in old.iter().filter(|record| record.selectable()) {
+        *base
+            .entry((record.name.as_str(), record.tokens.as_str()))
+            .or_default() += 1;
+    }
+    let new: Vec<_> = new.iter().filter(|record| record.selectable()).collect();
     let changed: Vec<bool> = new
         .iter()
         .map(
-            |record| match base.get_mut(&(record.name.clone(), record.tokens.clone())) {
+            |record| match base.get_mut(&(record.name.as_str(), record.tokens.as_str())) {
                 Some(count) if *count > 0 => {
                     *count -= 1;
                     false
@@ -109,35 +119,66 @@ pub(crate) fn changed_items(old: &str, new: &str) -> syn::Result<Changes> {
             },
         )
         .collect();
-    let named: BTreeSet<&str> = new
-        .iter()
-        .zip(&changed)
-        .filter(|(record, changed)| **changed && matches!(record.kind, Kind::Value | Kind::Type))
-        .map(|(record, _)| record.ident.as_str())
-        .collect();
-    let items = new
-        .iter()
-        .zip(changed)
-        .filter(|(record, changed)| *changed || record.names_any(&named))
-        .map(|(record, _)| ChangedItem {
-            name: record.name.clone(),
-            lines: record.lines.clone(),
-        })
-        .collect();
+    let mut named = imports;
+    named.extend(
+        new.iter()
+            .zip(&changed)
+            .filter(|(record, changed)| {
+                **changed && matches!(record.kind, Kind::Value | Kind::Type)
+            })
+            .map(|(record, _)| record.ident.as_str()),
+    );
+    let item = |record: &Record| ChangedItem {
+        name: record.name.clone(),
+        lines: record.lines.clone(),
+    };
     Ok(Changes {
-        items,
-        whole: differs(false),
-        tests: differs(true),
+        items: new
+            .iter()
+            .zip(changed)
+            .filter(|(record, changed)| *changed || record.names_any(&named))
+            .map(|(record, _)| item(record))
+            .collect(),
+        whole,
+        tested: tests.then(|| {
+            new.iter()
+                .filter(|record| {
+                    record.kind == Kind::Function && tested.contains(record.ident.as_str())
+                })
+                .map(|record| item(record))
+                .collect()
+        }),
     })
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+/// The records of either side that the other lacks, compared by kind, path and tokens.
+fn unmatched<'a>(old: Vec<&'a Record>, new: Vec<&'a Record>) -> Vec<&'a Record> {
+    let key = |record: &Record| (record.kind, record.name.clone(), record.tokens.clone());
+    let mut lacking = Vec::new();
+    for (side, other) in [(&old, &new), (&new, &old)] {
+        let mut counts: HashMap<_, usize> = HashMap::new();
+        for record in other.iter() {
+            *counts.entry(key(record)).or_default() += 1;
+        }
+        for record in side.iter() {
+            match counts.get_mut(&key(record)) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => lacking.push(*record),
+            }
+        }
+    }
+    lacking
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum Kind {
     Function,
     /// A `const` or `static`.
     Value,
     /// A `struct`, `enum` or `type` alias.
     Type,
+    /// One import of a `use`; its idents are the names it binds, `*` for a glob.
+    Use,
     /// An item no other record's tokens hold and no dependents rule covers.
     Other,
     /// Test-only code.
@@ -158,6 +199,11 @@ struct Record {
 }
 
 impl Record {
+    /// Whether the record is of an item that may be selected.
+    fn selectable(&self) -> bool {
+        matches!(self.kind, Kind::Function | Kind::Value | Kind::Type)
+    }
+
     /// Whether this is a function that names one of `items`.
     fn names_any(&self, items: &BTreeSet<&str>) -> bool {
         self.kind == Kind::Function
@@ -223,6 +269,8 @@ struct Collector {
     /// How many function, `const`, `static` or type bodies enclose the item visited, since the
     /// innermost module, impl or trait, whose tokens their records leave out.
     bodies: usize,
+    /// How many test-only modules enclose the item visited.
+    tests: usize,
     records: Vec<Record>,
 }
 
@@ -257,9 +305,13 @@ impl Collector {
         });
     }
 
-    /// Records an item that is never selected itself: its tokens, with the enclosing headers.
+    /// Records an item that is never selected itself: its tokens, with the enclosing headers,
+    /// and the identifiers in its own tokens.
     fn mark(&mut self, kind: Kind, item: &impl ToTokens) {
-        let tokens = strip_docs(item.to_token_stream()).to_string();
+        let tokens = strip_docs(item.to_token_stream());
+        let mut idents = BTreeSet::new();
+        token_idents(tokens.clone(), &mut idents);
+        let tokens = tokens.to_string();
         self.records.push(Record {
             name: self.path(""),
             ident: String::new(),
@@ -271,9 +323,55 @@ impl Collector {
                 .chain([tokens])
                 .collect::<Vec<_>>()
                 .join("\n"),
-            idents: BTreeSet::new(),
+            idents,
             lines: Vec::new(),
         });
+    }
+
+    /// Records each import of `item` on its own, with its attributes and visibility, and the
+    /// names it binds: its imported and local names, or `*` for a glob.
+    fn uses(&mut self, item: &syn::ItemUse) {
+        let mut prefix: Vec<String> = item
+            .attrs
+            .iter()
+            .map(|attr| strip_docs(attr.to_token_stream()).to_string())
+            .collect();
+        prefix.push(item.vis.to_token_stream().to_string());
+        let leading = if item.leading_colon.is_some() {
+            "::"
+        } else {
+            ""
+        };
+        let mut imports = Vec::new();
+        flatten(&item.tree, leading.to_owned(), None, &mut imports);
+        for (path, idents) in imports {
+            self.records.push(Record {
+                name: self.path(""),
+                ident: String::new(),
+                kind: Kind::Use,
+                tokens: format!("{} {path}", prefix.join(" ")),
+                idents,
+                lines: Vec::new(),
+            });
+        }
+    }
+
+    /// Records a test-only item: each item of a test-only module on its own, and the module
+    /// itself without them.
+    fn test_item(&mut self, item: &Item) {
+        let Item::Mod(module) = item else {
+            return self.mark(Kind::Test, item);
+        };
+        let mut header = module.clone();
+        let items = header.content.take().map(|(_, items)| items);
+        self.mark(Kind::Test, &header);
+        self.tests += 1;
+        self.within(module.ident.to_string(), |c| {
+            for item in items.iter().flatten() {
+                c.visit_item(item);
+            }
+        });
+        self.tests -= 1;
     }
 
     /// Visits the body of a recorded item, whose record holds the tokens of the items in it
@@ -316,25 +414,24 @@ impl Collector {
 
 impl<'ast> Visit<'ast> for Collector {
     fn visit_item(&mut self, item: &'ast Item) {
-        if test_only(item_attrs(item))
+        if self.tests > 0
+            || test_only(item_attrs(item))
             || matches!(item, Item::Mod(module) if module.ident == "tests")
         {
-            return self.mark(Kind::Test, item);
+            return self.test_item(item);
         }
         // Inside a body, such an item is in the enclosing record's own tokens.
-        if self.bodies == 0
-            && matches!(
-                item,
-                Item::Use(_)
-                    | Item::Macro(_)
-                    | Item::Union(_)
-                    | Item::ExternCrate(_)
-                    | Item::ForeignMod(_)
-                    | Item::TraitAlias(_)
-                    | Item::Verbatim(_)
-            )
-        {
-            self.mark(Kind::Other, item);
+        if self.bodies == 0 {
+            match item {
+                Item::Use(item) => self.uses(item),
+                Item::Macro(_)
+                | Item::Union(_)
+                | Item::ExternCrate(_)
+                | Item::ForeignMod(_)
+                | Item::TraitAlias(_)
+                | Item::Verbatim(_) => self.mark(Kind::Other, item),
+                _ => {}
+            }
         }
         visit::visit_item(self, item);
     }
@@ -577,6 +674,42 @@ fn compact(tokens: &impl ToTokens) -> String {
         }
     }
     compacted
+}
+
+/// Each import of `tree` under `path`: its path, and the names it binds.
+fn flatten(
+    tree: &UseTree,
+    path: String,
+    parent: Option<&syn::Ident>,
+    imports: &mut Vec<(String, BTreeSet<String>)>,
+) {
+    // `self` in a group binds its parent's name.
+    let name = |ident: &syn::Ident| match parent {
+        Some(parent) if ident == "self" => parent.to_string(),
+        _ => ident.to_string(),
+    };
+    match tree {
+        UseTree::Path(tree) => flatten(
+            &tree.tree,
+            format!("{path}{}::", tree.ident),
+            Some(&tree.ident),
+            imports,
+        ),
+        UseTree::Name(tree) => imports.push((
+            format!("{path}{}", tree.ident),
+            BTreeSet::from([name(&tree.ident)]),
+        )),
+        UseTree::Rename(tree) => imports.push((
+            format!("{path}{} as {}", tree.ident, tree.rename),
+            BTreeSet::from([name(&tree.ident), tree.rename.to_string()]),
+        )),
+        UseTree::Glob(_) => imports.push((format!("{path}*"), BTreeSet::from(["*".to_owned()]))),
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                flatten(tree, path.clone(), parent, imports);
+            }
+        }
+    }
 }
 
 fn item_attrs(item: &Item) -> &[Attribute] {
@@ -957,7 +1090,6 @@ fn size() -> Size { 1 }
     #[test]
     fn a_changed_item_of_an_unselected_kind_marks_the_whole_file() {
         let old = "\
-use std::fmt;
 macro_rules! twice { ($x:expr) => { $x * 2 } }
 trait T {
     type Out;
@@ -975,7 +1107,6 @@ extern \"C\" { fn abs(x: i32) -> i32; }
 fn f() -> u8 { 1 }
 ";
         for (from, to) in [
-            ("use std::fmt;", "use std::fmt::Write;"),
             ("$x * 2", "$x * 3"),
             ("fn required(&self) -> u8;", "fn required(&self) -> u16;"),
             ("    type Out;", "    type Out: Copy;"),
@@ -983,7 +1114,11 @@ fn f() -> u8 { 1 }
             ("type Out = u8;", "type Out = u16;"),
             ("a: u8 }", "a: u16 }"),
             ("x: i32) -> i32", "x: i64) -> i64"),
-            ("fn f() -> u8 { 1 }", "use std::io;\nfn f() -> u8 { 1 }"),
+            ("fn f() -> u8 { 1 }", "use std::io::*;\nfn f() -> u8 { 1 }"),
+            (
+                "fn f() -> u8 { 1 }",
+                "use std::io::Read as _;\nfn f() -> u8 { 1 }",
+            ),
         ] {
             let new = old.replace(from, to);
             assert_ne!(new, old, "{from}");
@@ -992,8 +1127,57 @@ fn f() -> u8 { 1 }
         }
         assert!(!changed_items(old, old).unwrap().whole);
         // Removing one is a change too.
-        let removed = old.replace("use std::fmt;\n", "");
+        let removed = old.replace("union U { a: u8 }\n", "");
         assert!(changed_items(old, &removed).unwrap().whole);
+    }
+
+    /// #449 owner decision: an import added, removed or altered selects the functions that
+    /// name it by its imported or its local name, impl headers included, one step only.
+    #[test]
+    fn a_changed_import_selects_the_functions_that_name_it() {
+        let old = "\
+use std::fmt::{self, Display};
+use std::io::Read as Input;
+fn show() -> u8 { let _: Option<&dyn Display> = None; 1 }
+fn read(_: &dyn Input) {}
+fn format() -> fmt::Result { Ok(()) }
+struct W;
+impl Display for W {
+    fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result { Ok(()) }
+}
+fn other() {}
+";
+        let cases: [(&str, &str, &[ChangedItem]); 5] = [
+            // An added import that nothing names selects nothing.
+            ("{self, Display}", "{self, Display, Write}", &[]),
+            (
+                "use std::fmt::{self, Display};",
+                "use core::fmt::{self, Display};",
+                &[
+                    item("show", &[3..=3]),
+                    item("format", &[5..=5]),
+                    item("<W as Display>::fmt", &[8..=8]),
+                ],
+            ),
+            ("Read as Input", "Read as Source", &[item("read", &[4..=4])]),
+            (
+                "use std::io::Read as Input;\n",
+                "",
+                &[item("read", &[3..=3])],
+            ),
+            (
+                "{self, Display}",
+                "{self}",
+                &[
+                    item("show", &[3..=3]),
+                    item("<W as Display>::fmt", &[8..=8]),
+                ],
+            ),
+        ];
+        for (from, to, expected) in cases {
+            let new = old.replace(from, to);
+            assert_eq!(selected(old, &new), expected, "{from} -> {to}");
+        }
     }
 
     /// #449 review: an item inside a body is in its function's own tokens, so it changes only
@@ -1005,27 +1189,43 @@ fn f() -> u8 { 1 }
         assert_eq!(selected(old, &new), vec![item("f", &[1..=4])]);
     }
 
-    /// #449 review: adding, removing or changing test-only code is reported apart, and
-    /// selects no item.
+    /// #449 owner decision: a test added, removed or changed reports the functions of the file
+    /// its body names, methods included, one step only; it selects no item itself.
     #[test]
-    fn a_test_only_change_is_reported_and_selects_nothing() {
+    fn a_changed_test_reports_the_functions_it_names() {
         let old = format!(
-            "{BASE}\n#[cfg(test)]\nmod tests {{\n    #[test]\n    fn proves() {{ assert_eq!(super::kept(), 1); }}\n}}\n"
+            "{BASE}\n#[cfg(test)]\nmod tests {{\n    #[test]\n    fn proves() {{ assert_eq!(super::kept(), 1); }}\n    #[test]\n    fn checks() {{ assert_eq!(1, 1); }}\n}}\n"
         );
-        let changes = changed_items(&old, &old).unwrap();
-        assert!(!changes.tests && !changes.whole, "{changes:?}");
-        for new in [
-            old.replace("super::kept(), 1", "super::kept(), 2"),
-            BASE.to_owned(),
-            format!("{old}#[test]\nfn more() {{}}\n"),
+        assert_eq!(changed_items(&old, &old).unwrap(), Changes::default());
+        let kept = vec![item("kept", &[1..=3])];
+        for (new, tested) in [
+            (
+                old.replace("super::kept(), 1", "super::kept(), 2"),
+                kept.clone(),
+            ),
+            (
+                old.replace("fn proves() { assert_eq!(super::kept(), 1); }", ""),
+                kept,
+            ),
+            (
+                old.replace("assert_eq!(1, 1)", "assert_eq!(super::edited(), 2)"),
+                vec![item("edited", &[5..=7])],
+            ),
+            (
+                old.replace("assert_eq!(1, 1)", "assert_eq!(2, 2)"),
+                Vec::new(),
+            ),
+            (
+                format!("{old}#[test]\nfn more() {{ edited(); }}\n"),
+                vec![item("edited", &[5..=7])],
+            ),
         ] {
-            let changes = changed_items(&old, &new).unwrap();
             assert_eq!(
-                changes,
+                changed_items(&old, &new).unwrap(),
                 Changes {
                     items: Vec::new(),
                     whole: false,
-                    tests: true,
+                    tested: Some(tested),
                 },
                 "{new}"
             );

@@ -98,9 +98,12 @@ It comes in two levels:
     function in the same file whose code, or whose impl header, names it. The
     rule goes one step only
     ([#445](https://github.com/jackgeek/climon2/issues/445)).
+  - Each import of a `use` is compared on its own. One that is added, removed
+    or changed selects, in the same way, the functions that name it. A
+    changed glob import, or one imported as `_`, marks the whole file.
   - A file is mutated whole if a changed item has no such rule yet: for
-    example a `use`, an item macro, a trait method signature, an associated
-    type or a `union`. So is a file whose base is not valid Rust.
+    example an item macro, a trait method signature, an associated type or a
+    `union`. So is a file whose base is not valid Rust.
   - Editing an impl or trait header (generics, bounds, where clause, self type,
     trait path or attributes), or the attributes of the module around it,
     changes every item inside.
