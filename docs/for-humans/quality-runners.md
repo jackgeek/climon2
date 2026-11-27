@@ -134,8 +134,9 @@ that survives in code no recent pull request touched, a change in one file
 that weakens the tests of another, and anything a narrowed selection left out.
 So each pull request merged to `main` also mutates one **slice**, a tenth of
 the shipped files, whole. Ten merges in a row mutate every file once
-([#452](https://github.com/jackgeek/climon2/issues/452)). The workflow is
-`.github/workflows/quality-full.yml`.
+([#452](https://github.com/jackgeek/climon2/issues/452)). The workflow
+`.github/workflows/quality-full.yml` chooses the slice and runs
+`.github/workflows/quality-slice.yml` for it.
 
 ### Slices
 
@@ -153,7 +154,9 @@ Each machine mutates the files of the slice that it qualifies:
 | Windows VM | `cargo xtask mutate --native-only --mutate-slice <k>` | The slice's registered Windows files |
 | MacBook | `cargo xtask mutate --native-only --mutate-slice <k>` | The slice's macOS-only files |
 
-A native machine whose slice holds none of its files passes at once.
+A native machine whose slice holds none of its files passes at once. The
+CRAP check scores only the slice's files too, so each slice's findings are its
+own.
 
 ### When it runs
 
@@ -174,11 +177,11 @@ Some slices are skipped until their next turn, 10 merges later:
 
 You can also run a pass by hand: under Actions > Full mutation, choose Run
 workflow on `main`, then a slice, or `all`. `all` runs the ten slices one
-after another on each machine, each as its own job with a slice's time
-limit. Once it has started, it doesn't wait for gates between its slices, so
-it can hold the machines for a day or more; slices from later merges wait for
-it, for up to 20 hours. A manual run doesn't change the rotation. On any other
-branch the workflow does nothing.
+after another, each with a slice's time limit, and each waits for idle gates
+before it starts, as a merge's slice does. So gates go between its slices,
+but the whole run can take days, and slices from later merges wait for it for
+up to 20 hours, then are skipped. A manual run doesn't change the rotation. On
+any other branch the workflow does nothing.
 
 ### How it stays out of the way
 
@@ -189,33 +192,43 @@ The pass never blocks a merge or turns `main` red:
 - **It waits for idle gates.** Each machine has one runner, which runs one
   job at a time. So before a slice asks for the machines, jobs on GitHub's
   hosted runners wait until no `quality.yml` run, and no older run of the full
-  pass, is queued or in progress, checking every 5 minutes. A newer full run
-  doesn't count, so two never wait for each other: the older one goes first. A
+  pass, is queued or in progress. A newer full run doesn't count, so two never
+  wait for each other: the older one goes first. A merge's own `quality.yml`
+  run may not be queued yet when its slice first looks, so when the push runs
+  `quality.yml` at all, the slice also waits until that run has appeared. A
   hosted job runs for at most 6 hours, so four such jobs wait in turn, 5 hours
-  each. If the gates are still busy after 20 hours, or GitHub's API keeps
-  failing, the slice is skipped, and its section in the issue says "Skipped
-  ... gates were busy". If a waiting job itself fails, the section says so
-  instead. A gate pushed while a slice runs still waits for it, for up to the
-  slice's time limit.
+  each.
+  - **Checks.** They look every 5 minutes, with at most two calls to GitHub's
+    API each: one lists the full pass's latest runs, and only if no older one
+    is unfinished, a second lists `quality.yml`'s. Each other full run that is
+    waiting too adds 5 minutes between checks, so several waiting runs don't
+    use up the workflow token's API limit.
+  - **Giving up.** If the gates are still busy after 20 hours, or GitHub's API
+    keeps failing, the slice is skipped, and its section in the issue says
+    "Skipped ... gates were busy". If a waiting job itself fails, the section
+    says so instead.
+
+  A gate pushed while a slice runs still waits for it, for up to the slice's
+  time limit.
 - **It never waits in a machine's queue for long.** GitHub fails a job that
   waits more than 24 hours for a self-hosted runner, which would turn `main`
   red. A slice asks for a machine only once the gates are idle, so it starts
   at once unless the machine is offline.
-- **A later merge never cancels it.** The workflow has no concurrency group,
+- **A later merge never cancels it.** Neither workflow has a concurrency group,
   because GitHub keeps only one waiting run per group and cancels the others
   without saying so.
 - **It's short.** A slice's mutation may run for 3 h 45 min on Linux and
   1 h 45 min on Windows and macOS. Its job ends at 5 h and 2 h 30 min, which
   leaves time for checkout, set-up and the log's upload. No slice has run on
-  these machines yet, so change these limits in `quality-full.yml` once some
+  these machines yet, so change these limits in `quality-slice.yml` once some
   have been timed.
 - **A failed pass doesn't fail its job.** Before anything else, each
   machine's job records that its set-up hasn't finished. Its checkout and
   set-up steps, and the pass itself, may fail or time out; the job still
   passes, and the failure goes to the issue instead. The pass runs only if
-  every set-up step succeeded. Every step runs in bash with `pipefail`, so the
-  pass's own exit status is recorded, not that of the `tee` that saves its
-  log.
+  every set-up step succeeded, and a failed upload of its log counts as a
+  missing log. Every step runs in bash with `pipefail`, so the pass's own exit
+  status is recorded, not that of the `tee` that saves its log.
 
 ### Reading the results
 
@@ -245,7 +258,8 @@ the run's link: one with findings, a failure or a missing log, or a slice
 skipped because a waiting job failed. A clean pass, or one skipped because the
 gates were busy, never opens or comments on the issue. Close it once every
 section is clean. Each machine's whole log is kept with the run, as artifacts
-such as `full-run-linux-3` for slice 3.
+such as `full-run-linux-3` for slice 3. On the Mac it also holds the evidence
+of any daemon test whose readiness wait failed.
 
 A pass whose CRAP check fails stops before it mutates, as every gate does.
 CRAP scores every function in every gate, so a pull request that breaks it

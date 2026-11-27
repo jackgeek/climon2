@@ -12,10 +12,12 @@ a row mutate every file once. This script holds the workflow's decisions:
   history alone and needs no stored counter. A push that adds no squash-merge
   mutates nothing. A manual run mutates the slice it names, or all ten.
   Writes the slices as a JSON list, such as `slices=["3"]`, or an empty
-  `slices=` for none, to `$GITHUB_OUTPUT`.
+  `slices=` for none, to `$GITHUB_OUTPUT`, and `gate=` the pushed commit when
+  its push runs quality.yml, whose own run each slice then waits for.
 - `wait`: waits, on a hosted runner, until no `quality.yml` run and no older
-  `quality-full.yml` run is queued or in progress, so a slice never holds a
-  machine that a gate or an earlier slice is waiting for. Writes `idle=true`
+  `quality-full.yml` run is queued or in progress, and main's own `quality.yml`
+  run for `--gate` has appeared, so a slice never holds a machine that a gate
+  or an earlier slice is waiting for. It makes at most two API calls a check. Writes `idle=true`
   when they are idle, or `idle=false` when they were still busy, or GitHub's
   API still failed, after `--limit` seconds.
 - `start`: from the wait jobs' results, whether the gates went idle (`idle`),
@@ -45,8 +47,9 @@ SQUASH = re.compile(r"\(#\d+\)$")
 ZERO = "0" * 40
 # The statuses of a run that has not finished.
 UNFINISHED = ("queued", "in_progress", "pending", "waiting", "requested")
-GATE_RUNS = "repos/{repo}/actions/workflows/quality.yml/runs?status={status}&per_page=1"
-FULL_RUNS = "repos/{repo}/actions/workflows/quality-full.yml/runs?status={status}&per_page=100"
+# The latest runs of each workflow, newest first, whatever their status.
+GATE_RUNS = "repos/{repo}/actions/workflows/quality.yml/runs?per_page=100"
+FULL_RUNS = "repos/{repo}/actions/workflows/quality-full.yml/runs?per_page=100"
 # The tracking issue: the one open issue the workflow's token opened with this title.
 TITLE = "Full mutation pass findings"
 BOT = "github-actions[bot]"
@@ -174,36 +177,64 @@ def fixture_api(file, record):
     return api
 
 
-def busy(repo, api, run_id):
-    """(quality.yml runs, older quality-full.yml runs) that have not finished. Only older
-    full runs count, so two full runs never wait for each other: the older goes first."""
-    gates = 0
-    older = 0
-    for status in UNFINISHED:
-        gates += api("GET", GATE_RUNS.format(repo=repo, status=status))["total_count"]
-        runs = api("GET", FULL_RUNS.format(repo=repo, status=status))["workflow_runs"]
-        older += sum(1 for run in runs if int(run["id"]) < run_id)
-    return gates, older
+def gated(path):
+    """Whether a push changing `path` runs quality.yml, by its `paths` filter: everything
+    but Markdown and LICENSE, and the protocol's Markdown again."""
+    if path.startswith("docs/for-humans/protocol/") and path.endswith(".md"):
+        return True
+    return not (path.endswith(".md") or path == "LICENSE")
 
 
-def wait(repo, api, run_id, interval, limit, sleep=time.sleep):
+def gate_commit(event, before, after):
+    """The commit whose own quality.yml run a slice waits for, or "" when the push runs
+    none: a manual run, or a push that changes only paths quality.yml ignores."""
+    if event == "workflow_dispatch":
+        return ""
+    base = before if squash_merges(before) is not None else f"{after}^"
+    changed = git("diff", "--name-only", base, after)
+    if changed is None:
+        return after
+    return after if any(gated(path) for path in changed.split()) else ""
+
+
+def busy(repo, api, run_id, gate):
+    """(why the gates are busy, or "" when they are idle, other unfinished full runs).
+
+    One call lists the full runs: an older one that has not finished holds the machines,
+    and only older ones count, so two never wait on each other. Only then, when none does,
+    a second lists the quality.yml runs: one that has not finished holds them, as does the
+    absence of `gate`'s own run, which may not have been queued yet."""
+    runs = api("GET", FULL_RUNS.format(repo=repo))["workflow_runs"]
+    others = [run for run in runs if run["status"] in UNFINISHED and int(run["id"]) != run_id]
+    older = sum(1 for run in others if int(run["id"]) < run_id)
+    if older:
+        return f"{older} older quality-full.yml runs unfinished", len(others)
+    runs = api("GET", GATE_RUNS.format(repo=repo))["workflow_runs"]
+    gates = sum(1 for run in runs if run["status"] in UNFINISHED)
+    if gates:
+        return f"{gates} quality.yml runs unfinished", len(others)
+    if gate and not any(run.get("head_sha") == gate for run in runs):
+        return f"main's own quality.yml run for {gate} has not appeared yet", len(others)
+    return "", len(others)
+
+
+def wait(repo, api, run_id, gate, interval, limit, sleep=time.sleep, clock=time.monotonic):
     """(whether the gates and older full runs went idle within `limit` seconds, why). An
-    API error counts as busy, so a slice never starts while they may be waiting."""
-    waited = 0
+    API error counts as busy, so a slice never starts while they may be waiting. Each
+    other full run that is waiting too stretches the interval, to spare the API."""
+    started = clock()
     while True:
         try:
-            gates, older = busy(repo, api, run_id)
-            why = f"{gates} quality.yml and {older} older quality-full.yml runs unfinished"
-            idle = gates == 0 and older == 0
+            why, others = busy(repo, api, run_id, gate)
         except (ApiError, KeyError, TypeError, ValueError) as error:
-            idle = False
-            why = f"could not look up unfinished runs: {error}"
-        if idle:
+            why, others = f"could not look up unfinished runs: {error}", 0
+        waited = int(clock() - started)
+        if not why:
             return True, f"no quality.yml or older full run was unfinished after {waited // 60} min"
+        pause = interval * (1 + others)
         if waited >= limit:
-            return False, f"{why} after {waited // 60} min"
-        sleep(interval)
-        waited += interval
+            return False, f"{why} after {waited // 60} min, checking every {pause // 60} min"
+        sleep(pause)
 
 
 def start(needs):
@@ -277,11 +308,9 @@ def blocks(pattern, text):
 
 
 def kept(old, note, fallback):
-    """An earlier block's content with `note` in place of its earlier note, or `fallback`
-    and the note when there is none."""
-    if old is None:
-        return f"{fallback}{note}\n"
-    return f"{note}\n\n{NOTE.sub('', old)}"
+    """`note` first, then an earlier block's content without its earlier note, or
+    `fallback` when there is none. The note always comes first, so the next replaces it."""
+    return f"{note}\n\n{NOTE.sub('', old) if old is not None else fallback}"
 
 
 def platform_block(key, text):
@@ -318,7 +347,7 @@ def section(old, label, gates, run):
     if gates != "idle":
         why = "gates were busy" if gates == "busy" else "a job that waits for the gates failed"
         note = f"> Skipped on {run.date}: {why} ({run.url})."
-        return kept(old, note, f"## Slice {label} of {SLICES}\n\n"), gates == "failed"
+        return kept(old, note, f"## Slice {label} of {SLICES}\n"), gates == "failed"
     parts = [f"## Slice {label} of {SLICES}, at {run.sha}\n\n{run.url}\n"]
     earlier = blocks(PLATFORM, old)
     attention = False
@@ -326,7 +355,7 @@ def section(old, label, gates, run):
         text, note, needs = platform_text(key, name, label, run)
         attention = attention or needs
         if text is None:
-            text = kept(earlier.get(key), note, f"### {name}\n\n")
+            text = kept(earlier.get(key), note, f"### {name}\n")
         parts.append(platform_block(key, text))
     return "\n".join(parts), attention
 
@@ -427,6 +456,7 @@ def main():
         command.add_argument("--record", help="append API writes to this file (tests)")
     wait_command = commands.choices["wait"]
     wait_command.add_argument("--run-id", required=True, type=int)
+    wait_command.add_argument("--gate", default="", help="wait for this commit's quality.yml run")
     wait_command.add_argument("--interval", type=int, default=300)
     wait_command.add_argument("--limit", type=int, default=5 * 60 * 60)
     report_command = commands.choices["report"]
@@ -441,7 +471,8 @@ def main():
 
     if args.command == "slice":
         chosen, why = choose(args.event, args.requested, args.before, args.after)
-        append("GITHUB_OUTPUT", f"slices={json.dumps(chosen) if chosen else ''}\n")
+        gate = gate_commit(args.event, args.before, args.after) if chosen else ""
+        append("GITHUB_OUTPUT", f"slices={json.dumps(chosen) if chosen else ''}\ngate={gate}\n")
         if chosen:
             message = f"Full mutation pass mutates {named(chosen)}: {why}."
         else:
@@ -453,7 +484,7 @@ def main():
     else:
         api = fixture_api(args.fixtures, args.record) if args.fixtures else gh_api
         if args.command == "wait":
-            idle, why = wait(args.repo, api, args.run_id, args.interval, args.limit)
+            idle, why = wait(args.repo, api, args.run_id, args.gate, args.interval, args.limit)
             append("GITHUB_OUTPUT", f"idle={'true' if idle else 'false'}\n")
             message = f"{'Gates idle' if idle else 'Gates still busy'}: {why}."
         else:

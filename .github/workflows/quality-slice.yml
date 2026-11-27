@@ -1,0 +1,398 @@
+name: Full mutation slice
+
+# One slice of the rolling full mutation pass (#452,
+# docs/for-humans/quality-runners.md), called by quality-full.yml once per
+# slice, one slice at a time.
+#
+# Hosted jobs first wait, for up to 20 hours, until no quality.yml run and no
+# older full mutation run is queued or in progress, and main's own quality.yml
+# run for the pushed commit has appeared; only then is a machine's job
+# requested, so a slice never sits in a machine's queue ahead of a gate, nor for
+# GitHub's 24-hour queue limit. If they stay busy, the slice is skipped and
+# reported, and its files wait for their next turn. A slice whose set-up or
+# pass fails or times out still ends its job green: its findings go to one
+# tracking issue.
+#
+# Every job that needs another states its own status check, since GitHub's
+# implied success() fails whenever a job it needs was skipped, as the later
+# waits usually are.
+on:
+  workflow_call:
+    inputs:
+      slice:
+        description: "The slice to mutate, 0 to 9"
+        required: true
+        type: string
+      gate:
+        description: "The commit whose own quality.yml run must appear first, if any"
+        required: false
+        type: string
+        default: ""
+
+# Explicitly bash, so each step runs with pipefail, and a failed pass piped
+# through tee keeps its exit status.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TARGET_DIR: target/quality-run
+  SLICE: ${{ inputs.slice }}
+
+jobs:
+  # A hosted job runs for at most 6 hours, so four in turn wait up to 5 hours
+  # each, 20 hours in all; each runs only while the one before saw busy gates.
+  wait1:
+    name: Wait for idle quality gates (1 of 4)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      idle: ${{ steps.wait.outputs.idle }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ inputs.gate }}
+        run: python3 tools/quality-full-run.py wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --gate "$GATE"
+
+  wait2:
+    name: Wait for idle quality gates (2 of 4)
+    needs: wait1
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.wait1.result == 'success'
+      && needs.wait1.outputs.idle == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      idle: ${{ steps.wait.outputs.idle }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ inputs.gate }}
+        run: python3 tools/quality-full-run.py wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --gate "$GATE"
+
+  wait3:
+    name: Wait for idle quality gates (3 of 4)
+    needs: wait2
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.wait2.result == 'success'
+      && needs.wait2.outputs.idle == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      idle: ${{ steps.wait.outputs.idle }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ inputs.gate }}
+        run: python3 tools/quality-full-run.py wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --gate "$GATE"
+
+  wait4:
+    name: Wait for idle quality gates (4 of 4)
+    needs: wait3
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.wait3.result == 'success'
+      && needs.wait3.outputs.idle == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      idle: ${{ steps.wait.outputs.idle }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ inputs.gate }}
+        run: python3 tools/quality-full-run.py wait --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --gate "$GATE"
+
+  # Whether a wait saw idle gates (idle), all of them saw busy ones (busy), or a
+  # wait job failed (failed). Only idle starts the machines' jobs.
+  start:
+    name: Start the slice once the gates are idle
+    needs: [wait1, wait2, wait3, wait4]
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.start.outputs.state }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: start
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/quality-full-run.py start --needs "$NEEDS"
+
+  linux:
+    name: Linux full mutation / own hardware
+    needs: start
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.start.result == 'success'
+      && needs.start.outputs.state == 'idle'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
+    runs-on: [self-hosted, Linux, X64, climon2-quality]
+    permissions:
+      contents: read
+    # The mutation step's limit plus over an hour for checkout, set-up and
+    # upload, so the log is always uploaded.
+    timeout-minutes: 300
+    # As quality.yml's Linux gate, which shares the PC with the Windows gate.
+    env:
+      CLIMON2_MUTATION_WORKERS: "4"
+      CLIMON2_MUTATION_WORKER_JOBS: "4"
+      CARGO_BUILD_JOBS: "4"
+      RUST_TEST_THREADS: "4"
+    # Set-up steps continue on error, so a failure is reported, not a red job:
+    # the status file says set-up failed until the pass starts.
+    steps:
+      - name: Record that set-up has started
+        run: |
+          mkdir -p "$RUNNER_TEMP/full-run"
+          echo setup-failed > "$RUNNER_TEMP/full-run/status"
+      - id: checkout
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+          clean: false
+      - id: toolchain
+        name: Install pinned Rust toolchain
+        continue-on-error: true
+        run: rustup show active-toolchain
+      - id: bash
+        uses: ./.github/actions/controlled-bash
+        continue-on-error: true
+      - id: workers
+        name: Remove leftover mutation workers
+        continue-on-error: true
+        run: rm -rf target/mutation-workers
+      - id: tools
+        name: Set up pinned quality tools
+        continue-on-error: true
+        run: cargo xtask setup-quality
+      # A failed or timed-out pass is reported in the tracking issue, not as a
+      # failed job.
+      - name: Mutate the slice's shipped files
+        if: >-
+          !cancelled()
+          && steps.checkout.outcome == 'success'
+          && steps.toolchain.outcome == 'success'
+          && steps.bash.outcome == 'success'
+          && steps.workers.outcome == 'success'
+          && steps.tools.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 225
+        run: |
+          echo started > "$RUNNER_TEMP/full-run/status"
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --mutate-slice "$SLICE" 2>&1 | tee "$RUNNER_TEMP/full-run/gate.log" || status=$?
+          echo "$status" > "$RUNNER_TEMP/full-run/status"
+          echo "- Linux slice $SLICE on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: Upload the pass's log
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-run-linux-${{ inputs.slice }}
+          path: ${{ runner.temp }}/full-run
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows-only full mutation / own hardware
+    needs: start
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.start.result == 'success'
+      && needs.start.outputs.state == 'idle'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
+    runs-on: [self-hosted, Windows, X64, climon2-quality]
+    permissions:
+      contents: read
+    timeout-minutes: 150
+    # As quality.yml's Windows gate; the runner's .env supplies the rest.
+    env:
+      CLIMON2_NATIVE_MUTATION_WORKERS: "2"
+      CLIMON2_MUTATION_WORKER_JOBS: "4"
+      CARGO_BUILD_JOBS: "4"
+      RUST_TEST_THREADS: "4"
+    steps:
+      - name: Record that set-up has started
+        run: |
+          mkdir -p "$RUNNER_TEMP/full-run"
+          echo setup-failed > "$RUNNER_TEMP/full-run/status"
+      - id: checkout
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+          clean: false
+      - id: toolchain
+        name: Install pinned Rust toolchain
+        continue-on-error: true
+        run: rustup show active-toolchain
+      - id: workers
+        name: Remove leftover mutation workers
+        continue-on-error: true
+        run: rm -rf target/mutation-workers
+      - id: tools
+        name: Set up pinned quality tools
+        continue-on-error: true
+        run: cargo xtask setup-quality
+      - name: Mutate the slice's Windows-exclusive files
+        if: >-
+          !cancelled()
+          && steps.checkout.outcome == 'success'
+          && steps.toolchain.outcome == 'success'
+          && steps.workers.outcome == 'success'
+          && steps.tools.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 105
+        run: |
+          echo started > "$RUNNER_TEMP/full-run/status"
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --native-only --mutate-slice "$SLICE" 2>&1 | tee "$RUNNER_TEMP/full-run/gate.log" || status=$?
+          echo "$status" > "$RUNNER_TEMP/full-run/status"
+          echo "- Windows slice $SLICE on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: Upload the pass's log
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-run-windows-${{ inputs.slice }}
+          path: ${{ runner.temp }}/full-run
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS-only full mutation / own hardware
+    needs: start
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.start.result == 'success'
+      && needs.start.outputs.state == 'idle'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
+    runs-on: [self-hosted, macOS, X64, climon2-quality]
+    permissions:
+      contents: read
+    timeout-minutes: 150
+    steps:
+      - name: Record that set-up has started
+        run: |
+          mkdir -p "$RUNNER_TEMP/full-run"
+          echo setup-failed > "$RUNNER_TEMP/full-run/status"
+      - id: checkout
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          fetch-depth: 0
+          clean: false
+      - id: toolchain
+        name: Install pinned Rust toolchain
+        continue-on-error: true
+        run: rustup show active-toolchain
+      - id: targets
+        name: Install universal payload targets
+        continue-on-error: true
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - id: bash
+        uses: ./.github/actions/controlled-bash
+        continue-on-error: true
+      - id: workers
+        name: Remove leftover mutation workers
+        continue-on-error: true
+        run: rm -rf target/mutation-workers
+      - id: tools
+        name: Set up pinned quality tools
+        continue-on-error: true
+        run: cargo xtask setup-quality
+      # A daemon test whose readiness wait fails keeps its evidence (#158) in the
+      # folder uploaded with the log.
+      - name: Mutate the slice's macOS-exclusive files
+        if: >-
+          !cancelled()
+          && steps.checkout.outcome == 'success'
+          && steps.toolchain.outcome == 'success'
+          && steps.targets.outcome == 'success'
+          && steps.bash.outcome == 'success'
+          && steps.workers.outcome == 'success'
+          && steps.tools.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 105
+        env:
+          CLIMON2_TEST_EVIDENCE: ${{ runner.temp }}/full-run/test-evidence
+        run: |
+          echo started > "$RUNNER_TEMP/full-run/status"
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --native-only --mutate-slice "$SLICE" 2>&1 | tee "$RUNNER_TEMP/full-run/gate.log" || status=$?
+          echo "$status" > "$RUNNER_TEMP/full-run/status"
+          echo "- macOS slice $SLICE on $(hostname), $(sw_vers -productVersion) $(uname -m): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: Upload the pass's log
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-run-macos-${{ inputs.slice }}
+          path: ${{ runner.temp }}/full-run
+          if-no-files-found: ignore
+
+  report:
+    name: Report the slice's findings
+    needs: [start, linux, windows, macos]
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: full-run-*-${{ inputs.slice }}
+          path: ${{ runner.temp }}/full-run
+      # A failed start job, or one that left no state, counts as a failed wait.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GATES: ${{ needs.start.result == 'success' && needs.start.outputs.state || 'failed' }}
+          OWN_RUNNERS: ${{ vars.CLIMON2_OWN_RUNNERS }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 tools/quality-full-run.py report --repo "$GITHUB_REPOSITORY" --slices "[\"$SLICE\"]" --gates "$GATES" --own-runners "$OWN_RUNNERS" --date "$(date -u +%Y-%m-%d)" --logs "$RUNNER_TEMP/full-run" --run-url "$RUN_URL" --sha "$GITHUB_SHA"

@@ -33,6 +33,12 @@ impl Selection {
             Self::Slice(slice) => Slice::of(path) == slice,
         }
     }
+
+    /// Whether CRAP scores `path`: every source the gate scores, except that a slice scores
+    /// only its own files, so its findings are its own.
+    pub(crate) fn scores(self, path: &Path) -> bool {
+        !matches!(self, Self::Slice(_)) || self.keeps(path)
+    }
 }
 
 /// One of the `SLICES` slices.
@@ -113,6 +119,15 @@ mod tests {
             counts.iter().all(|&count| count > 0 && count < 100),
             "{counts:?}"
         );
+    }
+
+    #[test]
+    fn a_slice_scores_only_its_own_files() {
+        let path = Path::new("a.rs");
+        assert!(Selection::Changed.scores(path));
+        assert!(Selection::All.scores(path));
+        assert!(Selection::Slice(Slice(SLICE_OF_A_RS)).scores(path));
+        assert!(!Selection::Slice(Slice(SLICE_OF_B_RS)).scores(path));
     }
 
     #[test]

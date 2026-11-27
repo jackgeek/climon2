@@ -127,6 +127,18 @@ impl History {
     /// The slices a push from `before` to `after` mutates, as the JSON list it wrote
     /// ("" for none), and what it printed.
     fn slice(&self, event: &str, requested: &str, before: &str, after: &str) -> (String, String) {
+        let (slices, _, message) = self.choose(event, requested, before, after);
+        (slices, message)
+    }
+
+    /// The slices, the commit whose quality.yml run they wait for, and the message.
+    fn choose(
+        &self,
+        event: &str,
+        requested: &str,
+        before: &str,
+        after: &str,
+    ) -> (String, String, String) {
         let outcome = script(
             self.dir.path(),
             &[
@@ -143,12 +155,24 @@ impl History {
             None,
         );
         assert_eq!(outcome.summary, format!("- {}", outcome.stdout));
-        let slices = outcome
+        let (slices, gate) = outcome
             .output
             .strip_prefix("slices=")
             .and_then(|rest| rest.strip_suffix('\n'))
+            .and_then(|rest| rest.split_once("\ngate="))
             .unwrap_or_else(|| panic!("unexpected output {:?}", outcome.output));
-        (slices.to_owned(), outcome.stdout)
+        (slices.to_owned(), gate.to_owned(), outcome.stdout)
+    }
+
+    /// Commits a change to each of `paths` and returns the commit.
+    fn change(&self, paths: &[&str], subject: &str) -> String {
+        for path in paths {
+            let file = self.dir.path().join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, subject).unwrap();
+            self.git(&["add", path]);
+        }
+        self.commit(subject)
     }
 
     fn push(&self, before: &str, after: &str) -> String {
@@ -266,33 +290,67 @@ fn a_manual_run_mutates_the_slice_it_names_or_all_ten() {
     );
 }
 
+#[test]
+fn a_slice_waits_for_mains_own_gate_only_when_the_push_runs_one() {
+    let history = History::new();
+    let before = history.git(&["rev-parse", "HEAD"]);
+    let code = history.change(&["crates/a/src/lib.rs"], "Change code (#1)");
+    let (_, gate, _) = history.choose("push", "", &before, &code);
+    assert_eq!(gate, code);
+    // quality.yml ignores Markdown, except the protocol's, and LICENSE.
+    let docs = history.change(&["README.md", "docs/a/b.md", "LICENSE"], "Docs (#2)");
+    assert_eq!(history.choose("push", "", &code, &docs).1, "");
+    let protocol = history.change(&["docs/for-humans/protocol/x/y.md"], "Protocol (#3)");
+    assert_eq!(history.choose("push", "", &docs, &protocol).1, protocol);
+    // An unknown old head compares with the pushed commit's parent.
+    let zero = "0".repeat(40);
+    let readme = history.change(&["README.md"], "Readme (#4)");
+    assert_eq!(history.choose("push", "", &zero, &readme).1, "");
+    // A manual run has no push of its own to wait for, and no slice none.
+    assert_eq!(history.choose("workflow_dispatch", "3", "", &readme).1, "");
+    let direct = history.change(&["crates/a/src/lib.rs"], "Direct push");
+    assert_eq!(
+        history.choose("push", "", &readme, &direct),
+        (
+            String::new(),
+            String::new(),
+            "Full mutation pass skipped: the push adds no squash-merge; main still has 4.\n"
+                .to_owned()
+        )
+    );
+}
+
 const RUN_ID: u64 = 500;
+const GATE: &str = "c0ffee0000000000000000000000000000000000";
 
-fn gate_runs(status: &str) -> String {
-    format!("repos/{REPO}/actions/workflows/quality.yml/runs?status={status}&per_page=1")
+fn gate_runs() -> String {
+    format!("repos/{REPO}/actions/workflows/quality.yml/runs?per_page=100")
 }
 
-fn full_runs(status: &str) -> String {
-    format!("repos/{REPO}/actions/workflows/quality-full.yml/runs?status={status}&per_page=100")
+fn full_runs() -> String {
+    format!("repos/{REPO}/actions/workflows/quality-full.yml/runs?per_page=100")
 }
 
-/// The unfinished runs: `gates` quality.yml runs and these quality-full.yml runs in
-/// progress, nothing else.
-fn runs(gates: u32, full: &[u64]) -> Value {
-    let mut responses = json!({});
-    for status in ["queued", "in_progress", "pending", "waiting", "requested"] {
-        let busy = status == "in_progress";
-        let count = if busy { gates } else { 0 };
-        responses[gate_runs(status)] = json!({"total_count": count, "workflow_runs": []});
-        let ids: Vec<_> = if busy { full.to_vec() } else { vec![] };
-        let listed: Vec<_> = ids.iter().map(|id| json!({ "id": id })).collect();
-        responses[full_runs(status)] = json!({"total_count": ids.len(), "workflow_runs": listed});
+/// The latest runs: quality.yml runs as (status, commit), and quality-full.yml runs as
+/// (id, status). Without `gates`, a look-up of quality.yml fails.
+fn runs(gates: Option<&[(&str, &str)]>, full: &[(u64, &str)]) -> Value {
+    let full: Vec<_> = full
+        .iter()
+        .map(|(id, status)| json!({"id": id, "status": status}))
+        .collect();
+    let mut responses = json!({ full_runs(): {"workflow_runs": full} });
+    if let Some(gates) = gates {
+        let gates: Vec<_> = gates
+            .iter()
+            .map(|(status, sha)| json!({"status": status, "head_sha": sha}))
+            .collect();
+        responses[gate_runs()] = json!({ "workflow_runs": gates });
     }
     responses
 }
 
-/// The wait's output and message, with no time to wait.
-fn wait(responses: Value) -> (String, String) {
+/// The wait's output and message, with no time to wait, for main's own run of `gate`.
+fn wait(gate: &str, responses: Value) -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let id = RUN_ID.to_string();
     let args = [
@@ -301,6 +359,8 @@ fn wait(responses: Value) -> (String, String) {
         REPO,
         "--run-id",
         &id,
+        "--gate",
+        gate,
         "--interval",
         "60",
         "--limit",
@@ -311,42 +371,71 @@ fn wait(responses: Value) -> (String, String) {
     (outcome.output, outcome.stdout)
 }
 
+fn idle() -> (String, String) {
+    (
+        "idle=true\n".to_owned(),
+        "Gates idle: no quality.yml or older full run was unfinished after 0 min.\n".to_owned(),
+    )
+}
+
+fn still_busy(why: &str, every: u32) -> (String, String) {
+    (
+        "idle=false\n".to_owned(),
+        format!("Gates still busy: {why} after 0 min, checking every {every} min.\n"),
+    )
+}
+
 #[test]
 fn a_slice_starts_only_once_no_gate_or_older_full_run_is_unfinished() {
-    // This run itself and newer full runs never hold it back, so two never wait on each other.
+    let done = [("completed", GATE)];
+    // This run itself, newer full runs and finished ones never hold it back, so two
+    // full runs never wait on each other.
+    let full = [
+        (RUN_ID, "in_progress"),
+        (RUN_ID + 1, "queued"),
+        (RUN_ID - 2, "completed"),
+    ];
+    assert_eq!(wait(GATE, runs(Some(&done), &full)), idle());
+    // An unfinished gate holds it; each other full run waiting too stretches the checks.
     assert_eq!(
-        wait(runs(0, &[RUN_ID, RUN_ID + 1])),
-        (
-            "idle=true\n".to_owned(),
-            "Gates idle: no quality.yml or older full run was unfinished after 0 min.\n".to_owned()
-        )
+        wait(
+            GATE,
+            runs(Some(&[("in_progress", "aaaa"), ("completed", GATE)]), &full)
+        ),
+        still_busy("1 quality.yml runs unfinished", 2)
     );
+    // An older full run, such as a manual run of all slices, holds the machines, and
+    // then quality.yml is not even looked up.
     assert_eq!(
-        wait(runs(2, &[])),
-        (
-            "idle=false\n".to_owned(),
-            "Gates still busy: 2 quality.yml and 0 older quality-full.yml runs unfinished \
-             after 0 min.\n"
-                .to_owned()
-        )
-    );
-    // An older full run, such as a manual run of all slices, holds the machines.
-    assert_eq!(
-        wait(runs(0, &[RUN_ID - 1, RUN_ID])),
-        (
-            "idle=false\n".to_owned(),
-            "Gates still busy: 0 quality.yml and 1 older quality-full.yml runs unfinished \
-             after 0 min.\n"
-                .to_owned()
-        )
+        wait(
+            GATE,
+            runs(None, &[(RUN_ID - 1, "waiting"), (RUN_ID, "in_progress")])
+        ),
+        still_busy("1 older quality-full.yml runs unfinished", 2)
     );
     // An API that fails counts as busy, so a slice never starts while gates may wait.
-    let (output, message) = wait(json!({}));
+    let (output, message) = wait(GATE, json!({}));
     assert_eq!(output, "idle=false\n");
     assert!(
         message.starts_with("Gates still busy: could not look up unfinished runs: "),
         "{message}"
     );
+}
+
+#[test]
+fn a_slice_waits_until_mains_own_gate_run_has_appeared() {
+    // Right after the merge, main's own quality.yml run may not be queued yet.
+    let other = [("completed", "bbbb")];
+    assert_eq!(
+        wait(GATE, runs(Some(&other), &[])),
+        still_busy(
+            &format!("main's own quality.yml run for {GATE} has not appeared yet"),
+            1
+        )
+    );
+    // Once it has run, or when the push runs none, the gates are idle.
+    assert_eq!(wait(GATE, runs(Some(&[("completed", GATE)]), &[])), idle());
+    assert_eq!(wait("", runs(Some(&other), &[])), idle());
 }
 
 /// The start job's state and message for the wait jobs' `needs` context.
@@ -548,8 +637,8 @@ fn findings_open_the_tracking_issue_when_none_is_open() {
          UNCOVERED crates/climon2-core/src/wire.rs:57 true -> false\n```\n\
          <!-- end platform linux -->\n\n\
          <!-- platform windows -->\n### Windows: no findings\n<!-- end platform windows -->\n\n\
-         <!-- platform macos -->\n### macOS\n\n\
-         > Did not run on {DATE}: it is not in CLIMON2_OWN_RUNNERS.\n\
+         <!-- platform macos -->\n\
+         > Did not run on {DATE}: it is not in CLIMON2_OWN_RUNNERS.\n\n### macOS\n\
          <!-- end platform macos -->\n<!-- end slice 4 -->\n"
     );
     assert_eq!(section(body, "4"), expected);
@@ -736,9 +825,18 @@ fn a_failed_wait_is_told_apart_from_busy_gates_and_reported() {
     assert_eq!(
         section(written(&failed, 0), "6"),
         format!(
-            "<!-- slice 6 -->\n## Slice 6 of 10\n\n\
-             > Skipped on {DATE}: a job that waits for the gates failed ({RUN_URL}).\n\
-             <!-- end slice 6 -->\n"
+            "<!-- slice 6 -->\n\
+             > Skipped on {DATE}: a job that waits for the gates failed ({RUN_URL}).\n\n\
+             ## Slice 6 of 10\n<!-- end slice 6 -->\n"
+        )
+    );
+    // Skipped again for busy gates: the note comes first, so the newer one replaces it.
+    let again = report(empty.path(), &one(6), "busy", tracker(written(&failed, 0)));
+    assert_eq!(
+        section(written(&again, 0), "6"),
+        format!(
+            "<!-- slice 6 -->\n> Skipped on {DATE}: gates were busy ({RUN_URL}).\n\n\
+             ## Slice 6 of 10\n<!-- end slice 6 -->\n"
         )
     );
     assert_eq!(

@@ -1039,7 +1039,11 @@ pub fn plan(root: &Path, selection: Selection, scope: Scope) -> io::Result<()> {
 
 pub fn check(root: &Path, selection: Selection, scope: Scope) -> io::Result<()> {
     let sources = shipped_sources(root)?;
-    let scored = scope.select(sources.clone());
+    let scored: Vec<_> = scope
+        .select(sources.clone())
+        .into_iter()
+        .filter(|path| selection.scores(path))
+        .collect();
     let targets = mutation_targets(root, selection, scope)?;
     if scope == Scope::Native && !scope.qualifies(root, selection, &targets)? {
         eprintln!("No selected native Rust source to qualify; shared source is checked locally.");
