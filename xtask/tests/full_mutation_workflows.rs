@@ -467,8 +467,9 @@ fn a_piped_pass_keeps_its_exit_status() {
 /// The report job puts the slice's findings into one tracking issue with the
 /// workflow's own token, the only write either workflow has; neither uses a
 /// secret. It knows which machines should have run, and the date for its notes.
-/// #457: report jobs take turns, so two never drop each other's section or
-/// open two issues, and a running report always finishes.
+/// #457: reports of one slice take turns, so two never write its section at
+/// once, and a queued report is replaced only by a newer one of the same slice,
+/// never by another slice's, and a running report always finishes.
 #[test]
 fn each_slice_reports_its_findings_in_one_issue() {
     let full = full();
@@ -487,7 +488,7 @@ fn each_slice_reports_its_findings_in_one_issue() {
         "    needs: [start, linux, windows, macos]",
         "    runs-on: ubuntu-24.04",
         "    concurrency:",
-        "      group: quality-full-report",
+        "      group: quality-full-report-${{ inputs.slice }}",
         "      cancel-in-progress: false",
         "      issues: write",
         "          pattern: full-run-*-${{ inputs.slice }}",

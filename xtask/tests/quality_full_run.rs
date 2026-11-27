@@ -267,6 +267,10 @@ fn a_slice_waits_for_mains_own_gate_only_when_the_push_runs_one() {
     assert_eq!(history.choose("push", "", &code, &docs).1, "");
     let protocol = history.change(&["docs/for-humans/protocol/x/y.md"], "Protocol (#3)");
     assert_eq!(history.choose("push", "", &docs, &protocol).1, protocol);
+    // A move from a gated path to an ignored one counts by its gated old name too.
+    history.git(&["mv", "crates/a/src/lib.rs", "docs/a.md"]);
+    let moved = history.commit("Move (#5)");
+    assert_eq!(history.choose("push", "", &protocol, &moved).1, moved);
     // An unknown old head compares with the pushed commit's parent.
     let zero = "0".repeat(40);
     let readme = history.change(&["README.md"], "Readme (#4)");
@@ -279,7 +283,7 @@ fn a_slice_waits_for_mains_own_gate_only_when_the_push_runs_one() {
         (
             String::new(),
             String::new(),
-            "Full mutation pass skipped: the push adds no squash-merge; main still has 4.\n"
+            "Full mutation pass skipped: the push adds no squash-merge; main still has 5.\n"
                 .to_owned()
         )
     );

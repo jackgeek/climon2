@@ -375,6 +375,48 @@ fn a_difference_in_gated_paths_or_an_unknown_commit_runs_the_gates() {
     assert_eq!(outcome.output, "", "{}", outcome.stdout);
 }
 
+/// A file moved from a gated path to an ignored one removes gated source, so the
+/// move counts by both its names, not only the ignored new one.
+#[test]
+fn a_rename_from_a_gated_path_to_an_ignored_one_runs_the_gates() {
+    let repo = Repo::new();
+    let (gated, gated_tree) = repo.change(&["crates/a/src/lib.rs", "README.md"], "Code");
+    repo.git(&["mv", "crates/a/src/lib.rs", "notes.md"]);
+    repo.git(&["commit", "--quiet", "-m", "Move (#8)"]);
+    let pushed = repo.git(&["rev-parse", "HEAD"]);
+    let tree = repo.git(&["rev-parse", "HEAD^{tree}"]);
+    let outcome = decide_in(
+        repo.dir.path(),
+        &tree,
+        &pushed,
+        ALL,
+        json!({
+            runs_path(): {"workflow_runs": [run_of(9, "fix/move", &gated, &gated_tree)]},
+            jobs_path(9): jobs(["success", "success", "success"]),
+            pulls_path(&pushed): merged_from(&pushed, "fix/move"),
+        }),
+    );
+    assert_eq!(outcome.output, "", "{}", outcome.stdout);
+}
+
+/// When the docs-only fallback's look-up fails after a partial match, the partial
+/// match's message is kept, as the more useful one.
+#[test]
+fn a_failed_fallback_keeps_the_partial_matchs_message() {
+    let outcome = decide(json!({
+        runs_path(): {"workflow_runs": [run(3, "fix/partial", TREE)]},
+        jobs_path(3): jobs(["success", "failure", "success"]),
+    }));
+    assert_eq!(outcome.output, "");
+    assert_eq!(
+        outcome.stdout,
+        format!(
+            "Own-hardware gates run: tree {TREE} did not pass every listed gate in \
+             https://github.com/{REPO}/actions/runs/3.\n"
+        )
+    );
+}
+
 #[test]
 fn an_api_error_runs_the_gates() {
     // No response for the run list.

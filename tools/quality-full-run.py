@@ -29,8 +29,8 @@ a row mutate every file once. This script holds the workflow's decisions:
   and UNCOVERED findings, and any failure, timeout or missing log, into each
   slice's section of one open tracking issue, which it opens or updates. A
   slice or platform that did not run keeps its earlier result, with a dated
-  note saying why it did not run this time. Report jobs share one concurrency
-  group in `quality-slice.yml`, so two never write the issue at once.
+  note saying why it did not run this time. Reports of one slice share a
+  concurrency group in `quality-slice.yml`, so two never write its section at once.
 
 Each outcome is printed and added to `$GITHUB_STEP_SUMMARY`.
 """
@@ -197,7 +197,8 @@ def gate_commit(event, before, after):
     if event == "workflow_dispatch":
         return ""
     base = before if squash_merges(before) is not None else f"{after}^"
-    changed = git("diff", "--name-only", base, after)
+    # Without renames, a file moved to an ignored path still shows its gated old name.
+    changed = git("diff", "--name-only", "--no-renames", base, after)
     if changed is None:
         return after
     return after if any(gated(path) for path in changed.split()) else ""

@@ -245,11 +245,12 @@ The pass never blocks a merge or turns `main` red:
 - **A later merge never cancels it.** Neither workflow has a concurrency group,
   because GitHub keeps only one waiting run per group and cancels the others
   without saying so. Only the job that writes the results (see below) has
-  one, so two never write the issue at once and drop each other's section or
-  open two issues. It holds no mutation, and a running job in it is never
-  cancelled. Only a third report arriving while one runs and another waits
-  would replace the waiting one, and the waits for idle gates keep reports
-  far apart.
+  one, a group per slice, so two reports of one slice never write its section
+  at once. It holds no mutation, and a running job in it is never cancelled.
+  A third report of a slice, arriving while one runs and another waits,
+  replaces the waiting one, whose section the newest would replace anyway. A
+  report of another slice is never dropped. Reports of different slices may
+  still run at once, but the waits for idle gates keep them far apart.
 - **It's short.** A slice's mutation may run for 3 h 45 min on Linux and
   1 h 45 min on Windows and macOS. Its job ends at 5 h and 2 h 30 min, which
   leaves time for checkout, set-up and the log's upload. No slice has run on

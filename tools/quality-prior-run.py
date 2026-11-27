@@ -97,7 +97,8 @@ def ignored_difference(base, commit):
     of them, or None when it gates one, or git cannot compare them."""
     if not (has_commit(base) and has_commit(commit)):
         return None
-    changed = git("diff", "--name-only", "-z", base, commit)
+    # Without renames, a file moved to an ignored path still shows its gated old name.
+    changed = git("diff", "--name-only", "--no-renames", "-z", base, commit)
     if changed is None:
         return None
     paths = [path for path in changed.split("\0") if path]
@@ -147,6 +148,10 @@ def find(tree, commit, repo, api, required):
             if passed(run):
                 return run, f"tree {tree} passed every listed gate in {described(run)}"
             partial.append(run["html_url"])
+    except (ApiError, KeyError, TypeError, AttributeError) as error:
+        return None, f"could not look up passed runs: {error}"
+    # The docs-only fallback fails on its own, so a partial match's message survives it.
+    try:
         branch = merged_branch(repo, commit, api)
         latest = next((run for run in runs if run.get("head_branch") == branch), None)
         if latest is not None and (latest.get("head_commit") or {}).get("tree_id") != tree:
@@ -158,7 +163,8 @@ def find(tree, commit, repo, api, required):
                     f" in {described(latest)}"
                 )
     except (ApiError, KeyError, TypeError, AttributeError) as error:
-        return None, f"could not look up passed runs: {error}"
+        if not partial:
+            return None, f"could not look up passed runs: {error}"
     if partial:
         return None, f"tree {tree} did not pass every listed gate in {', '.join(partial)}"
     return None, (
