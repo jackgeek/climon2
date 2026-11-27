@@ -1,6 +1,7 @@
 use crate::{
     coverage::Coverage,
     mutation_plan::{ChangedItem, Changes, changed_items},
+    mutation_slice::Selection,
 };
 use std::{
     collections::{BTreeSet, HashMap},
@@ -149,7 +150,7 @@ pub(crate) const WINDOWS_SUITE: &[&[&str]] = &[
     ],
 ];
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Scope {
     /// `cargo xtask check`: changed functions of host source, after one round of mutation load.
     Ticket,
@@ -235,11 +236,11 @@ impl Scope {
     }
 
     /// Whether the native gate has a selected native source to qualify: one it mutates, or,
-    /// without `--mutate-all`, any changed one, which CRAP scores even when its changes
+    /// when it selects changes, any changed one, which CRAP scores even when its changes
     /// select no mutant (#449).
-    fn qualifies(self, root: &Path, all: bool, targets: &[Target]) -> io::Result<bool> {
+    fn qualifies(self, root: &Path, selection: Selection, targets: &[Target]) -> io::Result<bool> {
         Ok(!targets.is_empty()
-            || (!all
+            || (!selection.whole_files()
                 && !self
                     .select(changed_sources(root, &mutation_base())?)
                     .is_empty()))
@@ -948,12 +949,18 @@ fn verify_native_coverage(root: &Path, report: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn mutation_targets(root: &Path, all: bool, scope: Scope) -> io::Result<Vec<Target>> {
-    if all {
-        Ok(Target::whole(scope.select(shipped_sources(root)?)))
-    } else {
-        scope.changed_targets(root)
+fn mutation_targets(root: &Path, selection: Selection, scope: Scope) -> io::Result<Vec<Target>> {
+    if !selection.whole_files() {
+        return scope.changed_targets(root);
     }
+    let sources = scope.select(shipped_sources(root)?);
+    // The shipped sources are workspace-relative paths.
+    Ok(Target::whole(
+        sources
+            .into_iter()
+            .filter(|path| selection.keeps(path))
+            .collect(),
+    ))
 }
 
 /// What the gate would mutate: each target, its line counts and mutants, and the single run.
@@ -1020,8 +1027,8 @@ fn span(lines: &RangeInclusive<usize>) -> String {
 }
 
 /// Prints what the gate would mutate, without running anything else.
-pub fn plan(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
-    let targets = mutation_targets(root, all, scope)?;
+pub fn plan(root: &Path, selection: Selection, scope: Scope) -> io::Result<()> {
+    let targets = mutation_targets(root, selection, scope)?;
     if !targets.is_empty() {
         verify_tools(root)?;
     }
@@ -1030,11 +1037,15 @@ pub fn plan(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
     Ok(())
 }
 
-pub fn check(root: &Path, all: bool, scope: Scope) -> io::Result<()> {
+pub fn check(root: &Path, selection: Selection, scope: Scope) -> io::Result<()> {
     let sources = shipped_sources(root)?;
-    let scored = scope.select(sources.clone());
-    let targets = mutation_targets(root, all, scope)?;
-    if scope == Scope::Native && !scope.qualifies(root, all, &targets)? {
+    let scored: Vec<_> = scope
+        .select(sources.clone())
+        .into_iter()
+        .filter(|path| selection.scores(path))
+        .collect();
+    let targets = mutation_targets(root, selection, scope)?;
+    if scope == Scope::Native && !scope.qualifies(root, selection, &targets)? {
         eprintln!("No selected native Rust source to qualify; shared source is checked locally.");
         return Ok(());
     }
@@ -1715,7 +1726,7 @@ mod tests {
             "native" => Scope::Native,
             other => panic!("unknown load-gate scope {other}"),
         };
-        check(Path::new(&root), false, scope).unwrap();
+        check(Path::new(&root), Selection::Changed, scope).unwrap();
     }
 
     /// Only an external `cp` ever opens the script for writing. A write
