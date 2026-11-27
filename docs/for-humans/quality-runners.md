@@ -127,6 +127,79 @@ The Mac is an Intel machine, while GitHub's macOS gate runs on Apple silicon.
 macOS-only source that differs by architecture is qualified here on x86-64
 only.
 
+## The full mutation pass
+
+A gate that mutates only what a push changed misses some faults: a mutant
+that survives in code no recent pull request touched, a change in one file
+that weakens the tests of another, and anything a narrowed selection left out.
+So every 10th pull request merged to `main` starts a **full pass**, which
+mutates every shipped file, whole, on all three machines
+([#452](https://github.com/jackgeek/climon2/issues/452)). The workflow is
+`.github/workflows/quality-full.yml`.
+
+| Machine | Full pass | What it mutates |
+| --- | --- | --- |
+| Omarchy PC | `cargo xtask mutate --mutate-all` | Every shared and Linux-only file |
+| Windows VM | `cargo xtask mutate --native-only --mutate-all` | Every registered Windows file |
+| MacBook | `cargo xtask mutate --native-only --mutate-all` | Every macOS-only file |
+
+### When it runs
+
+On every push to `main`, a job on a GitHub-hosted runner counts the
+squash-merges in `main`'s history with `tools/quality-full-run.py`. A
+squash-merge is a commit on `main` itself, not on a merged branch, whose
+subject ends with its pull request's number, such as `... (#432) (#438)`. When
+the push takes the count to a multiple of 10, such as 110, the full pass runs.
+The other nine merges only print the count, and when the next pass is due, in
+the run's summary. The count needs no stored counter, setting or secret. A
+direct push to `main` doesn't count.
+
+You can also start a full pass by hand: under Actions > Full mutation, choose
+Run workflow on `main`. A manual pass doesn't change when the next counted
+one runs. On any other branch the workflow does nothing.
+
+### How it stays out of the way
+
+The full pass never blocks a merge or turns `main` red:
+
+- **It runs after the merge.** It runs on `main`'s push only, never on a
+  branch's, so no pull request waits for it.
+- **It lets queued gates go first.** Before it starts, a hosted job waits until
+  no `quality.yml` run is queued or in progress, checking every 5 minutes. After
+  5 hours it starts anyway. Once a pass has started on a machine, it holds that
+  machine until it ends, and gates pushed later wait for it, as they wait for
+  each other.
+- **A merge never cancels it.** Each machine's pass has its own concurrency
+  group. If the 20th merge comes while the 10th's pass still runs, its pass
+  waits and then runs.
+- **A failed pass doesn't fail its job.** The pass's step may fail; the job
+  still passes, and the findings go to an issue instead.
+
+Each pass has a time limit: 48 hours on Linux and 8 hours on Windows and
+macOS. No full pass has run on these machines yet, so these are guesses. Change
+them in `quality-full.yml` once a pass has been timed.
+
+### Reading the results
+
+After the three machines finish, a hosted job reads each one's log. It lists:
+
+- each function whose CRAP score is over 5;
+- each `SURVIVED` mutant, which no test killed;
+- each `UNCOVERED` mutant, on a line no test runs;
+- a machine whose pass failed without any of these, such as a failed
+  baseline, or that timed out.
+
+It puts that list in one open issue titled **Full mutation pass findings**,
+opened by `github-actions`. If no such issue is open, it opens one. If one is,
+it replaces its list and adds a comment with the run's link. A clean pass
+only comments on an open issue, so close the issue once its findings are
+fixed. Each machine's whole log is also kept with the run, as the
+`full-run-linux`, `full-run-windows` and `full-run-macos` artifacts.
+
+A pass whose CRAP check fails stops before it mutates, as every gate does.
+CRAP scores every function in every gate, so a pull request that breaks it
+has already failed its own gates.
+
 ## Why the jobs run on push
 
 The repository is public. A pull request from a fork runs the workflow file

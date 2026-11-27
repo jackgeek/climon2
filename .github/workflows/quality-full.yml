@@ -1,0 +1,231 @@
+name: Full mutation
+
+# The full mutation pass (#452, docs/for-humans/quality-runners.md): every 10th
+# pull request squash-merged to main, the own-hardware gates of quality.yml
+# mutate every shipped file, whole, instead of the source a push changed.
+#
+# It never blocks or reddens main. It runs after the merge, on main only, and
+# starts once no quality.yml run is queued or in progress. Each platform's pass
+# has its own concurrency group, so a merge never cancels one, and a pass that
+# fails still ends its job green: its findings go to one tracking issue.
+#
+# Every push to main runs the hosted `due` job, Markdown-only ones included, so
+# the 10th squash-merge is never missed; the other jobs run only when it is due.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TARGET_DIR: target/quality-run
+
+jobs:
+  due:
+    name: Decide whether a full pass is due
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      due: ${{ steps.due.outputs.due }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: due
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: python3 tools/quality-full-run.py due --event "$EVENT" --before "$BEFORE" --after "$GITHUB_SHA"
+
+  # Gates already queued for the machines go first. A pass that has started holds
+  # its machine until it ends; a gate queued after that waits for it.
+  wait:
+    name: Wait for queued quality gates
+    needs: due
+    if: github.ref == 'refs/heads/main' && needs.due.outputs.due == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/quality-full-run.py wait --repo "$GITHUB_REPOSITORY"
+
+  linux:
+    name: Linux full mutation / own hardware
+    needs: [due, wait]
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.due.outputs.due == 'true'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
+    runs-on: [self-hosted, Linux, X64, climon2-quality]
+    concurrency:
+      group: quality-full-linux
+      cancel-in-progress: false
+    timeout-minutes: 2940
+    # As quality.yml's Linux gate, which shares the PC with the Windows gate.
+    env:
+      CLIMON2_MUTATION_WORKERS: "4"
+      CLIMON2_MUTATION_WORKER_JOBS: "4"
+      CARGO_BUILD_JOBS: "4"
+      RUST_TEST_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: ./.github/actions/controlled-bash
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
+      - name: Set up pinned quality tools
+        run: cargo xtask setup-quality
+      # A failed pass is reported in the tracking issue, not as a failed job.
+      - name: Mutate every shipped file
+        continue-on-error: true
+        timeout-minutes: 2880
+        run: |
+          mkdir -p "$RUNNER_TEMP/full-run-linux"
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --mutate-all 2>&1 | tee "$RUNNER_TEMP/full-run-linux/gate.log" || status=$?
+          echo "$status" > "$RUNNER_TEMP/full-run-linux/status"
+          echo "- Linux full pass on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: Upload the pass's log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-run-linux
+          path: ${{ runner.temp }}/full-run-linux
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows-only full mutation / own hardware
+    needs: [due, wait]
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.due.outputs.due == 'true'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
+    runs-on: [self-hosted, Windows, X64, climon2-quality]
+    concurrency:
+      group: quality-full-windows
+      cancel-in-progress: false
+    timeout-minutes: 540
+    defaults:
+      run:
+        shell: bash
+    # As quality.yml's Windows gate; the runner's .env supplies the rest.
+    env:
+      CLIMON2_NATIVE_MUTATION_WORKERS: "2"
+      CLIMON2_MUTATION_WORKER_JOBS: "4"
+      CARGO_BUILD_JOBS: "4"
+      RUST_TEST_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
+      - name: Set up pinned quality tools
+        run: cargo xtask setup-quality
+      - name: Mutate every Windows-exclusive file
+        continue-on-error: true
+        timeout-minutes: 480
+        run: |
+          mkdir -p "$RUNNER_TEMP/full-run-windows"
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --native-only --mutate-all 2>&1 | tee "$RUNNER_TEMP/full-run-windows/gate.log" || status=$?
+          echo "$status" > "$RUNNER_TEMP/full-run-windows/status"
+          echo "- Windows full pass on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: Upload the pass's log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-run-windows
+          path: ${{ runner.temp }}/full-run-windows
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS-only full mutation / own hardware
+    needs: [due, wait]
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.due.outputs.due == 'true'
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
+    runs-on: [self-hosted, macOS, X64, climon2-quality]
+    concurrency:
+      group: quality-full-macos
+      cancel-in-progress: false
+    timeout-minutes: 540
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Install universal payload targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: ./.github/actions/controlled-bash
+      - name: Remove leftover mutation workers
+        run: rm -rf target/mutation-workers
+      - name: Set up pinned quality tools
+        run: cargo xtask setup-quality
+      - name: Mutate every macOS-exclusive file
+        continue-on-error: true
+        timeout-minutes: 480
+        run: |
+          mkdir -p "$RUNNER_TEMP/full-run-macos"
+          started=$SECONDS
+          status=0
+          cargo xtask mutate --native-only --mutate-all 2>&1 | tee "$RUNNER_TEMP/full-run-macos/gate.log" || status=$?
+          echo "$status" > "$RUNNER_TEMP/full-run-macos/status"
+          echo "- macOS full pass on $(hostname): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: Upload the pass's log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-run-macos
+          path: ${{ runner.temp }}/full-run-macos
+          if-no-files-found: ignore
+
+  report:
+    name: Report the full pass's findings
+    needs: [due, linux, windows, macos]
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/main'
+      && needs.due.outputs.due == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: full-run-*
+          path: ${{ runner.temp }}/full-run
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 tools/quality-full-run.py report --repo "$GITHUB_REPOSITORY" --logs "$RUNNER_TEMP/full-run" --run-url "$RUN_URL" --sha "$GITHUB_SHA"

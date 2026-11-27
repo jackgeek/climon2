@@ -598,3 +598,161 @@ fn the_look_up_requires_every_gate_by_its_job_name() {
         );
     }
 }
+
+/// #452: the full mutation pass runs on pushes to main and manual runs only, so a
+/// branch never starts one. Every push to main decides, a Markdown-only one too,
+/// so the 10th squash-merge is never missed, and every job checks the ref again,
+/// since a manual run may name a branch.
+#[test]
+fn the_full_pass_never_runs_on_a_branch() {
+    let full = workflow("quality-full.yml");
+    assert_eq!(triggers(&full), ["push", "workflow_dispatch"]);
+    assert!(
+        full.contains("\non:\n  push:\n    branches: [main]\n  workflow_dispatch:\n"),
+        "only main's pushes"
+    );
+    assert!(
+        !full.contains("paths"),
+        "no push to main may skip the count"
+    );
+    for name in ["due", "wait", "linux", "windows", "macos", "report"] {
+        let lines = job(&full, name);
+        let guarded = lines.iter().any(|line| {
+            *line == "    if: github.ref == 'refs/heads/main'"
+                || line.starts_with("    if: github.ref == 'refs/heads/main' && ")
+        }) || condition(&lines).contains("&& github.ref == 'refs/heads/main' &&");
+        assert!(guarded, "{name}: {lines:#?}");
+    }
+}
+
+/// #452: the hosted `due` job counts main's squash-merges with
+/// tools/quality-full-run.py, and every other job runs only when it says a
+/// full pass is due. The gates wait for queued quality.yml runs first, but
+/// run whatever that wait's own result.
+#[test]
+fn the_full_pass_runs_only_when_due() {
+    let full = workflow("quality-full.yml");
+    let due = job(&full, "due");
+    for line in [
+        "    runs-on: ubuntu-24.04",
+        "      due: ${{ steps.due.outputs.due }}",
+        "          fetch-depth: 0",
+        "        run: python3 tools/quality-full-run.py due --event \"$EVENT\" --before \"$BEFORE\" --after \"$GITHUB_SHA\"",
+    ] {
+        assert!(due.contains(&line), "{line}: {due:#?}");
+    }
+    let wait = job(&full, "wait");
+    for line in [
+        "    needs: due",
+        "    if: github.ref == 'refs/heads/main' && needs.due.outputs.due == 'true'",
+        "    runs-on: ubuntu-24.04",
+        "      actions: read",
+        "        run: python3 tools/quality-full-run.py wait --repo \"$GITHUB_REPOSITORY\"",
+    ] {
+        assert!(wait.contains(&line), "{line}: {wait:#?}");
+    }
+    for name in ["linux", "windows", "macos"] {
+        let lines = job(&full, name);
+        assert!(lines.contains(&"    needs: [due, wait]"), "{name}");
+        assert_eq!(
+            condition(&lines),
+            format!(
+                "!cancelled() && github.ref == 'refs/heads/main' \
+                 && needs.due.outputs.due == 'true' \
+                 && contains(vars.CLIMON2_OWN_RUNNERS, '{name}')"
+            ),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        condition(&job(&full, "report")),
+        "!cancelled() && github.ref == 'refs/heads/main' && needs.due.outputs.due == 'true'"
+    );
+}
+
+/// #452: each platform's own-hardware machine mutates every file its gate
+/// qualifies, whole, with quality.yml's worker limits. A merge never cancels a
+/// pass, and a failed pass leaves its job green: the step continues on error
+/// and its log goes to the report.
+#[test]
+fn the_full_pass_mutates_every_file_without_reddening_main() {
+    let full = workflow("quality-full.yml");
+    let quality = workflow("quality.yml");
+    for (name, os, gate) in [
+        (
+            "linux",
+            "Linux",
+            "cargo xtask mutate --mutate-all 2>&1 | tee ",
+        ),
+        (
+            "windows",
+            "Windows",
+            "cargo xtask mutate --native-only --mutate-all 2>&1 | tee ",
+        ),
+        (
+            "macos",
+            "macOS",
+            "cargo xtask mutate --native-only --mutate-all 2>&1 | tee ",
+        ),
+    ] {
+        let lines = job(&full, name);
+        let group = format!("      group: quality-full-{name}");
+        let artifact = format!("          name: full-run-{name}");
+        for line in [
+            format!("    runs-on: [self-hosted, {os}, X64, climon2-quality]"),
+            "    concurrency:".to_owned(),
+            group,
+            "      cancel-in-progress: false".to_owned(),
+            "        run: rm -rf target/mutation-workers".to_owned(),
+            "        continue-on-error: true".to_owned(),
+            artifact,
+        ] {
+            assert!(lines.contains(&line.as_str()), "{name}: {line}: {lines:#?}");
+        }
+        assert!(
+            lines.iter().any(|line| line.trim_start().starts_with(gate)),
+            "{name}: {lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("if: failure()")),
+            "{name}: a continued step never fails its job"
+        );
+        // Every worker limit the platform's gate sets, the same.
+        for line in job(&quality, name).iter().filter(|line| {
+            line.starts_with("      CLIMON2_") && !line.contains("MUTATION_BASE")
+                || line.starts_with("      CARGO_BUILD_JOBS:")
+                || line.starts_with("      RUST_TEST_THREADS:")
+        }) {
+            assert!(lines.contains(line), "{name}: {line}");
+        }
+    }
+    assert!(
+        !full.contains("cancel-in-progress: true") && !full.contains("\nconcurrency:"),
+        "a later push must never cancel a running pass"
+    );
+}
+
+/// #452: the report job puts the findings into one tracking issue with the
+/// workflow's own token, the only write the workflow has; it uses no secret.
+#[test]
+fn the_full_pass_reports_its_findings_in_one_issue() {
+    let full = workflow("quality-full.yml");
+    assert!(full.contains("\npermissions:\n  contents: read\n\n"));
+    assert!(!full.contains("secrets."));
+    let writes: Vec<_> = full
+        .lines()
+        .filter(|line| line.trim_end().ends_with(": write"))
+        .collect();
+    assert_eq!(writes, ["      issues: write"]);
+    let report = job(&full, "report");
+    for line in [
+        "    needs: [due, linux, windows, macos]",
+        "    runs-on: ubuntu-24.04",
+        "      issues: write",
+        "          pattern: full-run-*",
+        "          GH_TOKEN: ${{ github.token }}",
+        "        run: python3 tools/quality-full-run.py report --repo \"$GITHUB_REPOSITORY\" --logs \"$RUNNER_TEMP/full-run\" --run-url \"$RUN_URL\" --sha \"$GITHUB_SHA\"",
+    ] {
+        assert!(report.contains(&line), "{line}: {report:#?}");
+    }
+}
