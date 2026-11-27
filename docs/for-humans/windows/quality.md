@@ -266,7 +266,12 @@ folder of at most 40 bytes; the tests then use the `c2t` folder in it. Each
 test folder holds a `.lock` file open while its test runs. Each new folder
 first removes, from `c2t` only, test folders over an hour old whose lock no
 one holds, which a killed run left behind. Other files and folders there are
-never removed ([#422](https://github.com/jackgeek/climon2/issues/422)).
+never removed ([#422](https://github.com/jackgeek/climon2/issues/422)). A
+folder's `.lock` is removed last, and kept while anything else in the folder
+cannot be removed, such as a log a leftover process still has open, so a later
+run tries again. A `c2t` that is a symbolic link or junction stops the tests
+with an error naming it, and nothing is made or removed through it
+([#434](https://github.com/jackgeek/climon2/issues/434)).
 
 **Cost.** When no registered Windows file changed, the gate exits before doing
 any mutation work. A release mutates every registered Windows file. That run

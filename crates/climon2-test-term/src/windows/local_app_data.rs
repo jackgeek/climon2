@@ -10,21 +10,24 @@
 //! `%LOCALAPPDATA%`, and they go in its `c2t`. Each folder holds a lock file
 //! open while it is in use. A run that is killed leaves its folder behind, so
 //! each new folder first sweeps, from `c2t` only, the test folders older than
-//! any test runs whose lock no one holds.
+//! any test runs whose lock no one holds. A folder's lock is removed last, and
+//! kept while anything else in it cannot be removed, so that a later sweep
+//! tries again (#434). A `c2t` that is a symbolic link or junction is refused,
+//! never followed.
 
 use std::{
     fs::{self, File, OpenOptions},
     io,
     os::windows::{
-        fs::OpenOptionsExt,
+        fs::{MetadataExt, OpenOptionsExt},
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
-use tempfile::TempDir;
 use windows_sys::Win32::{
     Foundation::WAIT_OBJECT_0,
+    Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT,
     System::Threading::{
         OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     },
@@ -52,14 +55,22 @@ const EXIT_WAIT: Duration = Duration::from_secs(10);
 /// A test's `LOCALAPPDATA`: a new, empty folder but for its lock file, removed
 /// when dropped.
 pub struct LocalAppData {
-    // Declared first, so it is closed before the folder is removed.
-    _lock: File,
-    folder: TempDir,
+    /// Taken when dropped, and closed only once the rest of the folder is gone.
+    lock: Option<File>,
+    path: PathBuf,
 }
 
 impl LocalAppData {
     pub fn path(&self) -> &Path {
-        self.folder.path()
+        &self.path
+    }
+}
+
+impl Drop for LocalAppData {
+    fn drop(&mut self) {
+        if let Some(lock) = self.lock.take() {
+            remove(&self.path, lock);
+        }
     }
 }
 
@@ -89,9 +100,7 @@ fn parent() -> PathBuf {
 /// `TEMP` is.
 pub fn local_app_data() -> LocalAppData {
     let parent = parent();
-    fs::create_dir_all(&parent)
-        .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
-    sweep(&parent, SystemTime::now());
+    ready(&parent, SystemTime::now());
     let folder = tempfile::Builder::new()
         .prefix("")
         .tempdir_in(&parent)
@@ -106,8 +115,35 @@ pub fn local_app_data() -> LocalAppData {
         )
     });
     LocalAppData {
-        _lock: lock,
-        folder,
+        lock: Some(lock),
+        path: folder.keep(),
+    }
+}
+
+/// Makes `parent` where it is missing, then sweeps it. A `parent` that is a
+/// reparse point, such as a symbolic link or junction another user made first,
+/// is refused before either, so neither follows it.
+fn ready(parent: &Path, now: SystemTime) {
+    refuse_reparse_point(parent);
+    fs::create_dir_all(parent)
+        .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
+    // Again, in case one was made in its place meanwhile; making a folder
+    // where one already is makes nothing.
+    refuse_reparse_point(parent);
+    sweep(parent, now);
+}
+
+fn refuse_reparse_point(folder: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(folder) else {
+        return;
+    };
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        panic!(
+            "{} is a symbolic link or junction, which test folders are never made in or \
+             swept through; remove it, and if {SHORT_ROOT} is set, name a folder only you \
+             can write to",
+            folder.display()
+        );
     }
 }
 
@@ -158,9 +194,45 @@ fn sweep(parent: &Path, now: SystemTime) {
         }
         let path = entry.path();
         // Fails while the lock is held, and where there is none.
-        if fs::remove_file(path.join(LOCK)).is_ok() {
-            let _ = fs::remove_dir_all(&path);
+        if let Ok(lock) = take(&path.join(LOCK)) {
+            remove(&path, lock);
         }
+    }
+}
+
+/// Opens the lock file at `path`, which must exist, with no sharing, so it
+/// fails while the folder's test holds it.
+fn take(path: &Path) -> io::Result<File> {
+    OpenOptions::new().read(true).share_mode(0).open(path)
+}
+
+/// Removes test `folder`, whose `lock` is held here: everything but the lock
+/// first, then, only if all of that went, the lock and the folder. Where a
+/// leftover process still holds a file in it, the lock stays, so a later sweep
+/// tries again.
+fn remove(folder: &Path, lock: File) {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    let mut left = false;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            left = true;
+            continue;
+        };
+        if entry.file_name() == LOCK {
+            continue;
+        }
+        let path = entry.path();
+        // Neither follows a symbolic link or junction; it removes the link.
+        left |= fs::remove_dir_all(&path)
+            .or_else(|_| fs::remove_file(&path))
+            .is_err();
+    }
+    drop(lock);
+    if !left {
+        let _ = fs::remove_file(folder.join(LOCK));
+        let _ = fs::remove_dir(folder);
     }
 }
 
@@ -264,6 +336,92 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&file).unwrap(), "unrelated");
         assert!(folder.join("inner").is_dir() && folder.join("data.txt").is_file());
+    }
+
+    /// A stale folder holding a file a leftover process still has open, with
+    /// no sharing, keeps its lock, so a later sweep removes it once the file
+    /// is closed.
+    #[test]
+    fn a_folder_a_sweep_cannot_empty_keeps_its_lock_for_a_later_sweep() {
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("stale");
+        fs::create_dir_all(folder.join("inner")).unwrap();
+        File::create(folder.join(LOCK)).unwrap();
+        let log = hold(&folder.join("daemon.log")).unwrap();
+
+        sweep(parent.path(), SystemTime::now() + STALE);
+        assert!(!folder.join("inner").exists());
+        assert!(folder.join(LOCK).is_file() && folder.join("daemon.log").is_file());
+
+        drop(log);
+        sweep(parent.path(), SystemTime::now() + STALE);
+        assert!(!folder.exists());
+    }
+
+    /// A dropped folder that cannot be emptied keeps its lock in the same way.
+    #[test]
+    fn a_folder_its_drop_cannot_empty_keeps_its_lock_for_a_later_sweep() {
+        let folder = local_app_data();
+        let path = folder.path().to_owned();
+        let log = hold(&path.join("daemon.log")).unwrap();
+
+        drop(folder);
+        assert!(path.join(LOCK).is_file() && path.join("daemon.log").is_file());
+
+        drop(log);
+        sweep(&parent(), SystemTime::now() + STALE);
+        assert!(!path.exists());
+    }
+
+    /// A `c2t` that is a junction or symbolic link is refused, whether or not
+    /// its target exists, and nothing is made or removed through it.
+    #[test]
+    fn a_junction_or_symbolic_link_at_c2t_is_refused_and_its_target_left_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        let stale = target.join("stale");
+        fs::create_dir_all(&stale).unwrap();
+        File::create(stale.join(LOCK)).unwrap();
+        let junction = |name: &str, to: &Path| {
+            let link = root.path().join(name).join("c2t");
+            fs::create_dir(link.parent().unwrap()).unwrap();
+            let made = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(to)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+            link
+        };
+
+        assert_refused(&junction("junction", &target));
+        assert!(stale.join(LOCK).is_file());
+
+        let missing = root.path().join("missing");
+        assert_refused(&junction("dangling", &missing));
+        assert!(!missing.exists());
+
+        let link = root.path().join("symbolic").join("c2t");
+        fs::create_dir(link.parent().unwrap()).unwrap();
+        // Making one needs Developer Mode or an administrator.
+        match std::os::windows::fs::symlink_dir(&target, &link) {
+            Ok(()) => {
+                assert_refused(&link);
+                assert!(stale.join(LOCK).is_file());
+            }
+            Err(error) => eprintln!("no symbolic link to test: {error}"),
+        }
+    }
+
+    fn assert_refused(c2t: &Path) {
+        let payload = std::panic::catch_unwind(|| ready(c2t, SystemTime::now() + STALE))
+            .expect_err("it was not refused");
+        let refusal = payload.downcast::<String>().unwrap();
+        assert!(
+            refusal.contains(&format!("{} is a symbolic link or junction", c2t.display())),
+            "{refusal}"
+        );
     }
 
     /// Test folders go in `c2t` in the root, never in the root itself.
