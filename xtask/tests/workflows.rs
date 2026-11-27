@@ -533,7 +533,9 @@ fn condition(lines: &[&str]) -> String {
 /// #442: a push to main looks for a passed run of its tree first, on a
 /// GitHub-hosted runner, so the look-up never queues behind an own-hardware
 /// gate. Only a push to main looks: any other push or a manual dispatch skips
-/// the look-up, which leaves its output empty.
+/// the look-up, which leaves its output empty. #447: it knows which platforms
+/// CLIMON2_OWN_RUNNERS lists and the pushed commit, and a failed look-up never
+/// turns main's run red.
 #[test]
 fn only_a_push_to_main_looks_for_a_passed_run_of_its_tree_on_a_hosted_runner() {
     let quality = workflow("quality.yml");
@@ -541,10 +543,12 @@ fn only_a_push_to_main_looks_for_a_passed_run_of_its_tree_on_a_hosted_runner() {
     for line in [
         "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
         "    runs-on: ubuntu-24.04",
+        "    continue-on-error: true",
         "      actions: read",
         "      run: ${{ steps.find.outputs.run }}",
         "          GH_TOKEN: ${{ github.token }}",
-        "        run: python3 tools/quality-prior-run.py --repo \"$GITHUB_REPOSITORY\" --tree \"$(git rev-parse \"$GITHUB_SHA^{tree}\")\"",
+        "          OWN_RUNNERS: ${{ vars.CLIMON2_OWN_RUNNERS }}",
+        "        run: python3 tools/quality-prior-run.py --repo \"$GITHUB_REPOSITORY\" --tree \"$(git rev-parse \"$GITHUB_SHA^{tree}\")\" --commit \"$GITHUB_SHA\" --own-runners \"$OWN_RUNNERS\"",
     ] {
         assert!(prior.contains(&line), "{line}: {prior:#?}");
     }
@@ -579,7 +583,8 @@ fn gates_skip_only_when_main_found_a_passed_run_of_its_tree() {
     }
 }
 
-/// #442: the look-up requires every gate job by the name quality.yml gives it.
+/// #442: the look-up requires every gate job by the name quality.yml gives it,
+/// and #447 by the platform key that job's condition looks for.
 #[test]
 fn the_look_up_requires_every_gate_by_its_job_name() {
     let quality = workflow("quality.yml");
@@ -593,7 +598,7 @@ fn the_look_up_requires_every_gate_by_its_job_name() {
             .strip_prefix("    name: ")
             .unwrap_or_else(|| panic!("{name} has no name first"));
         assert!(
-            script.contains(&format!("    \"{title}\",\n")),
+            script.contains(&format!("    (\"{name}\", \"{title}\"),\n")),
             "{title} missing from GATES"
         );
     }
