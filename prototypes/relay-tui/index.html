@@ -1,0 +1,250 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throw me away. Not relay code.
+  Question (wayfinder ticket #408): how should the relay's terminal interface
+  (c2 relay) look and behave?
+  Three structurally different variants, ?variant=A|B|C, each driven through
+  the relay's states with ?scenario=. An HTML mock of an 80x24 terminal.
+  Open by double-clicking. Use the bar at the bottom, or keys 1-3 for the
+  variant and Left/Right for the scenario.
+-->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE: relay terminal interface</title>
+<style>
+  :root { --bg:#111418; --fg:#d6dae0; --dim:#6b737e; --yel:#e5c15a; --red:#e07a6e; --grn:#7cc48a; --cyn:#6fc3d6; }
+  body { margin:0; background:#0a0c0e; color:var(--fg); font:14px/1.25 ui-monospace,"JetBrains Mono",Menlo,monospace; }
+  header { padding:10px 16px; color:var(--dim); } header b { color:var(--fg); }
+  .wrap { display:flex; gap:20px; padding:0 16px 130px; flex-wrap:wrap; }
+  pre { margin:0; background:var(--bg); padding:8px 10px; border-radius:6px; white-space:pre; }
+  .cap { color:var(--dim); margin:6px 0 4px; }
+  .dim{color:var(--dim)} .yel{color:var(--yel)} .red{color:var(--red)} .grn{color:var(--grn)} .cyn{color:var(--cyn)} .b{font-weight:700}
+  .bar-grn{background:#1f4a2c;color:#e6ffe9} .bar-red{background:#5a2420;color:#ffe9e6} .bar-yel{background:#57471a;color:#fff6d6} .bar-dim{background:#262c34;color:#d6dae0}
+  .hl{background:#2f4b7a;color:#fff} .big{color:#fff;font-weight:700}
+  .notes { max-width:480px; color:#aab; font-family:system-ui,sans-serif; font-size:14px; line-height:1.45; }
+  .notes h3 { margin:6px 0; color:#fff; } .notes li { margin:3px 0; }
+  .bar { position:fixed; bottom:12px; left:50%; transform:translateX(-50%); background:#1c2128; border:1px solid #333b45;
+         border-radius:10px; padding:8px 12px; display:flex; gap:14px; align-items:center; font-family:system-ui,sans-serif; font-size:13px; flex-wrap:wrap; max-width:96vw; }
+  .bar button { background:#2a313b; color:#dde; border:1px solid #3a434f; border-radius:6px; padding:4px 9px; cursor:pointer; }
+  .bar button.on { background:#3d6bd6; color:#fff; border-color:#3d6bd6; }
+  .grp { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+</style></head><body>
+<header><b>PROTOTYPE</b>: the relay's terminal interface, <code>c2 relay</code> (ticket #408). Throwaway. Keys: 1-3 variant, ←/→ scenario.</header>
+<div class="wrap">
+  <div><div class="cap" id="cap"></div><pre id="screen"></pre></div>
+  <div class="notes" id="notes"></div>
+</div>
+<div class="bar">
+  <div class="grp"><span>Variant</span><span id="vbtns"></span></div>
+  <div class="grp"><span>Scenario</span><span id="sbtns"></span></div>
+</div>
+<script>
+const W = 80, H = 24;
+const VARIANTS = { A:'Dashboard: status bar, panes, key bar', B:'Console: event log with a status line', C:'State card: one big state, menu list' };
+const SCEN = {
+  listening:'Listening, nobody linked', invite:'Invitation live', failed:'Pairing attempt failed', linked:'Linked',
+  lost:'Link lost', hold:'On hold (after Cut)', incompat:'Incompatible hub monitor', forget:'Forget dialog',
+  stop:'Stop while linked', upgrade:'Restarting for an upgrade',
+};
+const q = new URLSearchParams(location.search);
+let variant = q.get('variant') || 'A', scenario = q.get('scenario') || 'linked';
+
+// ---- relay state per scenario ------------------------------------------
+const HUB = 'jack-laptop', FP = '9f3a 71c2 04be d1e5', SRC = '100.84.2.3:51122';
+const LISTEN = '0.0.0.0:7420';
+function st() {
+  const s = scenario, linkedLike = ['linked','forget','stop'].includes(s);
+  const o = { linked: linkedLike, modal: null, invite: null };
+  if (linkedLike)      { o.cls='grn'; o.state='Linked'; o.line=`Linked to ${HUB}`; o.sub=`${FP} · from ${SRC} (unauthenticated) · 2h 14m · v0.9.3`; o.next='Cut the link to stop its user driving sessions.'; }
+  if (s==='listening') { o.cls='dim'; o.state='Listening'; o.line='No hub monitor linked'; o.sub=`listening on ${LISTEN} · 1 hub monitor remembered`; o.next='A remembered hub monitor can link at any time.'; }
+  if (s==='invite'||s==='failed') { o.cls='yel'; o.state='Pairing'; o.line='Invitation open'; o.sub=`listening on ${LISTEN} · no hub monitor linked`;
+        o.invite={ pin:'4821-9930', left: s==='failed'?'3:07':'4:12', tries: s==='failed'?2:3 }; o.next='Type this PIN into the hub monitor.'; }
+  if (s==='lost')      { o.cls='red'; o.state='Link lost'; o.line=`Link lost, waiting for ${HUB}`; o.sub=`dropped 40s ago · listening on ${LISTEN}`; o.next='It reconnects by itself. Nothing to do.'; }
+  if (s==='hold')      { o.cls='yel'; o.state='On hold'; o.line='On hold: refusing every hub monitor'; o.sub=`you cut ${HUB} 3m ago · pairings kept`; o.next='Accept links to let hub monitors back in.'; }
+  if (s==='incompat')  { o.cls='red'; o.state='Incompatible'; o.line=`${HUB} cannot link: no shared link revision`; o.sub=`it supports revisions 1-2, this relay 4-6 · pairing kept`; o.next=`Upgrade climon2 on ${HUB}; no new PIN needed.`; }
+  if (s==='upgrade')   { o.cls='yel'; o.state='Restarting'; o.line='Restarting into climon2 0.9.4'; o.sub=`link to ${HUB} closed · it will reconnect by itself`; o.next='Nothing to do.'; }
+  if (s==='forget') o.modal='forget';
+  if (s==='stop')   o.modal='stop';
+  return o;
+}
+const SESSIONS = [ ['claude: fix the flaky gate','controlled'], ['cargo mutants --in-place','viewed'], ['make release',''], ['zsh',''], ['npm run dev',''] ];
+function events() {
+  const base = [
+    ['09:02:11','relay started · climon2 0.9.3 · listening on '+LISTEN,''],
+    ['09:02:40',`linked to ${HUB} ${FP} from ${SRC} (unauthenticated)`,'grn'],
+    ['10:47:03','link lost','red'],
+    ['10:47:19',`linked to ${HUB} ${FP} from ${SRC} (unauthenticated)`,'grn'],
+  ];
+  const s = scenario;
+  if (s==='listening') return [base[0], ['09:02:11','1 hub monitor remembered: '+HUB,'dim']];
+  if (s==='invite') return [...base.slice(0,1), ['11:16:20','invitation opened · expires 11:21:20','yel']];
+  if (s==='failed') return [...base.slice(0,1), ['11:16:20','invitation opened · expires 11:21:20','yel'], ['11:17:25','pairing attempt failed from 203.0.113.9 (unauthenticated) · 2 attempts left','red']];
+  if (s==='lost') return [...base, ['11:16:01','link lost · waiting for '+HUB,'red']];
+  if (s==='hold') return [...base, ['11:13:44',`you cut the link to ${HUB} · on hold`,'yel']];
+  if (s==='incompat') return [base[0], ['11:16:40',`${HUB} refused: incompatible (it has revisions 1-2, this relay 4-6)`,'red']];
+  if (s==='upgrade') return [...base, ['11:16:58','climon2 0.9.4 is now current · restarting','yel']];
+  return base;
+}
+
+// ---- grid ---------------------------------------------------------------
+let G;
+const blank = () => { G = Array.from({length:H}, () => Array.from({length:W}, () => ({ch:' ',cls:''}))); };
+function put(x, y, text, cls='') { for (let i = 0; i < text.length && x+i < W; i++) if (y>=0 && y<H && x+i>=0) G[y][x+i] = {ch:text[i], cls}; }
+function fill(y, cls) { for (let x = 0; x < W; x++) G[y][x].cls = cls, 0; }
+function barline(y, text, cls) { put(0, y, text.padEnd(W).slice(0,W), cls); }
+function box(x, y, w, h, cls='dim', dbl=false) {
+  const c = dbl ? '╔═╗║╚╝' : '┌─┐│└┘';
+  put(x, y, c[0]+c[1].repeat(w-2)+c[2], cls); put(x, y+h-1, c[4]+c[1].repeat(w-2)+c[5], cls);
+  for (let i = 1; i < h-1; i++) { put(x, y+i, c[3]+' '.repeat(w-2)+c[3], cls); put(x+1, y+i, ' '.repeat(w-2), ''); }
+}
+function center(y, text, cls='') { put(Math.max(0, Math.floor((W-text.length)/2)), y, text, cls); }
+function paint() {
+  const esc = t => t.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  document.getElementById('screen').innerHTML = G.map(row => {
+    let out = '', run = '', cls = row[0].cls;
+    for (const c of row) { if (c.cls !== cls) { out += `<span class="${cls}">${esc(run)}</span>`; run = ''; cls = c.cls; } run += c.ch; }
+    return out + `<span class="${cls}">${esc(run)}</span>`;
+  }).join('\n');
+}
+
+// ---- shared modals --------------------------------------------------------
+function modal(o) {
+  if (o.modal === 'forget') {
+    box(6, 6, 68, 11, 'dim', true);
+    put(8, 7, 'Forget a hub monitor', 'b');
+    put(8, 9,  ' jack-laptop   9f3a 71c2 04be d1e5   paired 12 Nov   linked now ', 'hl');
+    put(8, 10, ' old-desktop   c0de 88a1 7f20 3b9d   paired 02 Oct   last 9 Oct', '');
+    put(8, 12, 'Forgetting closes its link now. It needs a new PIN to pair again.', 'dim');
+    put(8, 15, '↑/↓ choose · Enter forget · Esc cancel', 'dim');
+  }
+  if (o.modal === 'stop') {
+    box(14, 8, 52, 8, 'dim', true);
+    put(16, 9,  `Stop the relay?`, 'b');
+    put(16, 11, `${HUB} is linked and controls 1 session.`, '');
+    put(16, 12, 'Sessions keep running. The link closes.', 'dim');
+    put(16, 14, '[ Cancel ]    Stop', '');
+  }
+}
+function inviteBox(o, x, y) {
+  box(x, y, 44, 9, 'yel', true);
+  put(x+2, y+1, 'Link invitation', 'b');
+  put(x+2, y+3, 'PIN      ', ''); put(x+11, y+3, o.invite.pin, 'big');
+  put(x+2, y+4, 'Address  ' + '192.168.1.20:7420  (a hint)', '');
+  put(x+2, y+5, `Expires in ${o.invite.left} · ${o.invite.tries} attempt${o.invite.tries===1?'':'s'} left`, o.invite.tries<3?'red':'dim');
+  put(x+2, y+7, 'Esc cancels the invitation', 'dim');
+}
+const menuItems = o => [ ['p','Pair a hub monitor'], ...(o.linked ? [['c','Cut the link']] : scenario==='hold' ? [['a','Accept links']] : []), ['f','Forget a hub monitor'], ['q','Stop the relay'] ];
+
+// ---- variant A: dashboard -------------------------------------------------
+function A(o) {
+  barline(0, ` c2 relay · ${o.line}`, 'bar-'+o.cls);
+  put(1, 1, o.sub, 'dim');
+  box(0, 3, 40, 12); put(2, 3, ' Sessions ', 'dim');
+  if (o.linked) {
+    put(2, 4, '5 live · 2 open by the hub monitor', 'dim');
+    SESSIONS.forEach(([t, m], i) => { put(2, 6+i, m==='controlled'?'◆':m==='viewed'?'◇':' ', m?'cyn':''); put(4, 6+i, t.slice(0,34), m?'':'dim'); });
+    put(2, 12, '◆ controlled by the hub monitor', 'dim'); put(2, 13, '◇ open, not controlled', 'dim');
+  } else { put(2, 5, 'Not looking at sessions while', 'dim'); put(2, 6, 'no hub monitor is linked.', 'dim'); }
+  box(40, 3, 40, 12); put(42, 3, ' Remembered hub monitors ', 'dim');
+  put(42, 5, 'jack-laptop', 'cyn'); put(55, 5, o.linked?'linked':scenario==='incompat'?'incompatible':scenario==='lost'?'waiting':'not linked', o.linked?'grn':'dim');
+  put(42, 6, '  ' + FP, 'dim');
+  put(42, 8, 'old-desktop', 'cyn'); put(55, 8, 'last linked 9 Oct', 'dim');
+  put(42, 9, '  c0de 88a1 7f20 3b9d', 'dim');
+  box(0, 15, 80, 8); put(2, 15, ' Events ', 'dim');
+  events().slice(-6).forEach(([t, m, c], i) => { put(2, 16+i, t, 'dim'); put(11, 16+i, m.slice(0,67), c); });
+  barline(23, ' ' + menuItems(o).map(([k, l]) => `${k} ${l.replace(' a hub monitor','').replace(' the relay','')}`).join(' · '), 'bar-dim');
+  if (o.invite) inviteBox(o, 18, 6);
+  modal(o);
+}
+
+// ---- variant B: console -----------------------------------------------------
+function B(o) {
+  const ev = events();
+  const extra = o.linked ? [['11:02:15','hub monitor opened "cargo mutants --in-place"','dim'], ['11:02:31','hub monitor took control of "claude: fix the flaky gate"','dim']] : [];
+  const all = [...ev, ...extra];
+  put(0, 0, 'c2 relay · climon2 0.9.3 · events', 'dim');
+  all.forEach(([t, m, c], i) => { put(0, 2+i, t, 'dim'); put(10, 2+i, m.slice(0,70), c); });
+  let y = 2 + all.length + 1;
+  if (o.invite) {
+    put(0, y, 'Link invitation', 'b'); put(2, y+1, 'PIN      '); put(11, y+1, o.invite.pin, 'big');
+    put(2, y+2, 'Address  192.168.1.20:7420  (a hint)'); put(2, y+3, `Expires in ${o.invite.left} · ${o.invite.tries} attempts left · Esc cancels`, o.invite.tries<3?'red':'dim');
+  }
+  if (o.modal === 'forget') {
+    put(0, y, 'Forget which hub monitor?', 'b');
+    put(2, y+1, '1  jack-laptop   9f3a 71c2 04be d1e5   paired 12 Nov   linked now');
+    put(2, y+2, '2  old-desktop   c0de 88a1 7f20 3b9d   paired 02 Oct   last 9 Oct');
+    put(2, y+3, 'Type a number, or Esc to cancel. Forgetting closes its link now.', 'dim');
+  }
+  if (o.modal === 'stop') { put(0, y, `Stop the relay? ${HUB} is linked and controls 1 session. `, 'b'); put(2, y+1, 'Sessions keep running. y to stop, any other key to cancel.', 'dim'); }
+  barline(22, ` ${o.line} · ${o.sub}`.slice(0, W), 'bar-'+o.cls);
+  barline(23, ' ' + menuItems(o).map(([k, l]) => `${k} ${l.split(' ')[0].toLowerCase()}`).join('  ') + (o.linked ? '  s sessions' : ''), 'bar-dim');
+}
+
+// ---- variant C: state card ------------------------------------------------------
+function C(o) {
+  put(1, 0, 'c2 relay', 'b'); put(11, 0, `climon2 0.9.3 · listening on ${LISTEN}`, 'dim');
+  // menu, left
+  box(0, 2, 26, 10); put(2, 2, ' Menu ', 'dim');
+  const items = menuItems(o).map(x => x[1]);
+  const sel = scenario==='forget' ? items.length-2 : scenario==='stop' ? items.length-1 : scenario==='hold' ? 1 : 0;
+  items.forEach((l, i) => put(1, 4+i*2, (' ' + l).padEnd(24).slice(0,24), i===sel?'hl':''));
+  // state card, right
+  box(27, 2, 53, 10, o.cls==='dim'?'dim':o.cls, true);
+  center2(4, o.state.toUpperCase(), o.cls==='dim'?'big':o.cls+' b');
+  if (o.invite) {
+    center2(6, o.invite.pin, 'big'); center2(7, 'address 192.168.1.20:7420 (a hint)', 'dim');
+    center2(8, `expires in ${o.invite.left} · ${o.invite.tries} attempts left`, o.invite.tries<3?'red':'dim');
+  } else {
+    center2(6, o.line, ''); wrap2(7, o.sub, 'dim');
+  }
+  center2(10, o.next.slice(0,49), 'dim');
+  function center2(y, t, c) { put(27 + Math.max(1, Math.floor((53-t.length)/2)), y, t.slice(0,51), c); }
+  function wrap2(y, t, c) { const parts = t.split(' · '); let line = '', yy = y; for (const p of parts) { if ((line + ' · ' + p).length > 49 && line) { center2(yy++, line, c); line = p; } else line = line ? line + ' · ' + p : p; } if (line) center2(yy, line, c); }
+  // lower: sessions and events
+  box(0, 12, 80, 11); put(2, 12, o.linked ? ' Open sessions · Recent events ' : ' Recent events ', 'dim');
+  let y = 13;
+  if (o.linked) { SESSIONS.filter(s => s[1]).forEach(([t, m]) => { put(2, y, m==='controlled'?'◆ controlled':'◇ open      ', 'cyn'); put(16, y++, t); }); put(2, y++, '3 more live sessions are served, none open', 'dim'); y++; }
+  events().slice(-(22-y)).forEach(([t, m, c]) => { put(2, y, t, 'dim'); put(11, y++, m.slice(0,66), c); });
+  barline(23, ' ↑/↓ move · Enter choose', 'bar-dim');
+  modal(o);
+}
+
+const NOTES = {
+  A: `<h3>A: dashboard</h3><ul>
+    <li>A coloured <b>status bar</b> on the top row carries the link state; the line under it carries the detail (key fingerprint, unauthenticated source address, duration, version).</li>
+    <li>Three always-visible panes: <b>sessions</b> (marking those the hub monitor has open or controls), <b>remembered hub monitors</b>, and <b>events</b>.</li>
+    <li>The menu is a <b>key bar</b> on the bottom row: one letter per action. Pair, forget and stop open as boxes over the panes.</li>
+    <li>Densest. Everything is visible at once, and nothing needs navigating.</li></ul>`,
+  B: `<h3>B: console</h3><ul>
+    <li>The screen is a <b>timestamped event log</b>, like a server's console. It records links, losses, pairing attempts and what the hub monitor opened and took control of.</li>
+    <li>The <b>status line</b> sits second from the bottom, coloured by state. The bottom row lists one-letter actions.</li>
+    <li>Pairing, forgetting and stopping are <b>inline prompts</b> under the log, not boxes. Sessions are shown only on request (<code>s</code>).</li>
+    <li>Simplest to build and survives a tiny terminal, but the current state is one line and remembered hub monitors are hidden until you press forget.</li></ul>`,
+  C: `<h3>C: state card</h3><ul>
+    <li>One large <b>state card</b> says what the relay is doing in a word, who with, and <b>what you should do next</b>, if anything. During pairing the PIN fills the card.</li>
+    <li>A <b>menu list</b> on the left is navigated with arrows and Enter (letters also work), so no keys need learning. Cut turns into Accept links while on hold.</li>
+    <li>Below: only the sessions the hub monitor has open, then recent events.</li>
+    <li>Friendliest for someone who rarely opens the relay; shows less at once than A.</li></ul>`,
+};
+
+function draw() {
+  blank(); const o = st(); ({A, B, C})[variant](o); paint();
+  document.getElementById('cap').textContent = `Variant ${variant}: ${VARIANTS[variant]} · ${SCEN[scenario]}`;
+  document.getElementById('notes').innerHTML = NOTES[variant];
+  for (const b of document.querySelectorAll('[data-v]')) b.classList.toggle('on', b.dataset.v === variant);
+  for (const b of document.querySelectorAll('[data-s]')) b.classList.toggle('on', b.dataset.s === scenario);
+  const u = new URL(location); u.searchParams.set('variant', variant); u.searchParams.set('scenario', scenario); history.replaceState(null, '', u);
+  console.log('state', { variant, scenario, relay: o });
+}
+document.getElementById('vbtns').innerHTML = Object.keys(VARIANTS).map(k => `<button data-v="${k}" title="${VARIANTS[k]}">${k}</button>`).join('');
+document.getElementById('sbtns').innerHTML = Object.entries(SCEN).map(([k, t]) => `<button data-s="${k}">${t}</button>`).join('');
+document.addEventListener('click', e => { const t = e.target; if (t.dataset.v) variant = t.dataset.v; else if (t.dataset.s) scenario = t.dataset.s; else return; draw(); });
+document.addEventListener('keydown', e => {
+  const ks = Object.keys(SCEN), i = ks.indexOf(scenario);
+  if (e.key === 'ArrowRight') scenario = ks[(i+1) % ks.length];
+  else if (e.key === 'ArrowLeft') scenario = ks[(i+ks.length-1) % ks.length];
+  else if ('123'.includes(e.key)) variant = 'ABC'[+e.key-1];
+  else return;
+  draw();
+});
+draw();
+</script></body></html>
