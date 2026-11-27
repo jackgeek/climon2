@@ -197,10 +197,14 @@ impl Home {
         fs::read_to_string(self.home().join("logs").join(id).join("daemon.log")).unwrap()
     }
 
-    /// Waits until a client of session `id` has created its library
-    /// instance, as its log says.
-    fn wait_for_client_instance(&self, id: &str) {
-        self.wait_for_session_log(id, "client instance created");
+    /// Waits until `count` clients of session `id` have created their
+    /// library instances, as their logs say.
+    fn wait_for_client_instances(&self, id: &str, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while self.session_logs(id).matches(CLIENT_INSTANCE).count() < count {
+            assert!(Instant::now() < deadline, "{}", self.session_logs(id));
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Waits until session `id` has admitted its client, as the client's
@@ -848,11 +852,13 @@ fn hosted_cli(install: &Install, home: &Home, arguments: &[&str]) -> Terminal {
 fn ctrl_c_during_kill_interrupts_the_client_and_kill_exits_with_its_status() {
     let (install, home) = (Install::new(&[]), Home::new());
     let id = session_id(&home.exec(&install, HELD));
+    warm_the_client(&install, &home, &id);
     let mut killing = hosted_cli(&install, &home, &["kill", &id[..8]]);
     // The client submits the Kill as soon as its library instance exists. A
     // second later the kill is still waiting out the hang-up's five-second
-    // grace, however long the CLI and the client took to start.
-    home.wait_for_client_instance(&id);
+    // grace, as long as the CLI and the client started within the rest of
+    // kill's ten seconds, which count from before the client starts (#450).
+    home.wait_for_client_instances(&id, 2);
     std::thread::sleep(Duration::from_secs(1));
     killing.press(Key::Char('c'), Modifiers::CTRL).unwrap();
     assert_eq!(
@@ -896,6 +902,22 @@ fn an_ordinary_exec_that_cannot_start_its_client_stops_its_daemon() {
     assert!(install.daemon_stopped());
 }
 
+/// Attaches to session `id` and detaches again, so that the install's client
+/// and its library have been launched once, and a later client's cold
+/// launch, slow under load, is not charged to kill's deadline (#450).
+fn warm_the_client(install: &Install, home: &Home, id: &str) {
+    let mut attaching = hosted_cli(install, home, &["attach", &id[..8]]);
+    home.wait_for_client_attached(id);
+    attaching.press(Key::Char(']'), Modifiers::CTRL).unwrap();
+    attaching.type_text("d").unwrap();
+    assert_eq!(
+        attaching.wait_exit(Duration::from_secs(20)).unwrap(),
+        0,
+        "{}",
+        attaching.screen()
+    );
+}
+
 /// `c2 exec <options> -- <HELD>` inside session `outer`, in a pseudoconsole
 /// of its own, with this home, in its working directory.
 fn nested_cli(install: &Install, home: &Home, options: &[&str]) -> Terminal {
@@ -925,6 +947,9 @@ fn nested_command(
 
 /// What the client logs once its session has admitted it.
 const CLIENT_ATTACHED: &str = "client attached";
+
+/// What a client's library logs once its instance exists.
+const CLIENT_INSTANCE: &str = "client instance created";
 
 /// The ID of the one session in `home`, once it runs.
 fn the_only_session(terminal: &Terminal, home: &Home) -> String {
