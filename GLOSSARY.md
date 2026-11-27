@@ -28,9 +28,17 @@ _Avoid_: Client library, monitor
 The reusable form of a client hosted by another program.
 _Avoid_: Client executable, daemon library
 
+**Client embedding**:
+The running of client library instances inside another program, one for each session it is connected to, as a monitor and a relay both do.
+_Avoid_: Session hosting, hosting (a host is the user's outer terminal)
+
 **Monitor**:
 A program that lets the user interact with one session at a time and switch between sessions through clients it owns.
 _Avoid_: Dashboard, multiplexer, switcher
+
+**Monitor library**:
+The planned reusable form of a monitor, with no interface of its own, on which the monitor's terminal interface and the web monitor are both built.
+_Avoid_: Monitor core, monitor backend, engine
 
 **Virtual terminal**:
 A model of a session's screen, kept current from the session's output; the session daemon's is the source of truth, and a monitor's is a copy.

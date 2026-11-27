@@ -1,7 +1,8 @@
 # Workspace crate consumption
 
 Two diagrams cover every climon2 workspace crate, including test tooling and
-`xtask`, but exclude third-party crates. Arrows run from consumer to consumed
+`xtask`, but exclude third-party crates. A third shows the crates that are
+planned and not yet built. Arrows run from consumer to consumed
 crate. Solid arrows are normal Cargo dependencies; dotted arrows labelled
 `dev` are dev-dependencies used by tests. Runtime execution and communication
 are shown separately in the [artifact diagram](runtime-artifacts.md).
@@ -53,6 +54,67 @@ flowchart TB
 | `climon2-vt` | The virtual terminal of the session daemon and of the monitor's per-session models: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
 | `climon2-discovery` | Session discovery shared by the CLI, which runs whole passes, and the [monitor](../../../GLOSSARY.md#sessions), which runs incremental, bounded passes. |
 | `climon2-monitor` | The monitor: one terminal that tracks every live session, with the `climon2-monitor` binary that `c2 monitor` starts. |
+
+## Planned crates
+
+Only the crates that [ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md)
+plans, and the normal dependencies planned between them and the shipped
+crates. None of these edges exists yet, so every arrow is dashed. Crates that
+exist today are marked `(exists)`; the edges between them are in the diagram
+above and are not repeated here. `climon2-monitor` exists today as the whole
+monitor and is planned to become a library only.
+
+```mermaid
+flowchart TB
+    tui["climon2-monitor-tui"]
+    web["climon2-web"]
+    relay["climon2-relay"]
+    monitor["climon2-monitor<br/>(exists; becomes a library)"]
+    embed["climon2-embed"]
+    link["climon2-link"]
+    discovery["climon2-discovery (exists)"]
+    platform["climon2-platform (exists)"]
+    core["climon2-core (exists)"]
+    vt["climon2-vt (exists)"]
+
+    tui -.-> monitor
+    tui -.-> platform
+    tui -.-> core
+    web -.-> monitor
+    web -.-> platform
+    web -.-> core
+    relay -.-> embed
+    relay -.-> link
+    relay -.-> discovery
+    relay -.-> platform
+    relay -.-> core
+    monitor -.-> embed
+    monitor -.-> link
+    monitor -.-> discovery
+    monitor -.-> platform
+    monitor -.-> core
+    monitor -.-> vt
+    embed -.-> platform
+    embed -.-> core
+    link -.-> core
+```
+
+| Crate | Purpose |
+| --- | --- |
+| `climon2-monitor-tui` | Planned. The monitor's terminal interface and the `climon2-monitor` binary: it decodes the host's input, paints with Ratatui and invokes the monitor library's actions. |
+| `climon2-web` | Planned. The [web monitor](../../../GLOSSARY.md#web-monitor) that `c2 web` runs: it serves the web view to browsers over HTTP and WebSocket and invokes the same actions. |
+| `climon2-relay` | Planned. The [relay](../../../GLOSSARY.md#monitor-links) that `c2 relay` runs, with a terminal interface of its own. It never depends on the monitor library. |
+| `climon2-monitor` | Planned to become the [monitor library](../../../GLOSSARY.md#sessions): a whole monitor with no interface of its own, including the hub monitor's side of monitor links. |
+| `climon2-embed` | Planned. [Client embedding](../../../GLOSSARY.md#sessions): loading a release's client library and running one client instance for one session. |
+| `climon2-link` | Planned. The monitor link's pairing, handshake, framing and link revisions over a plain byte stream, with no platform dependency. |
+| `climon2-discovery`, `climon2-platform`, `climon2-core`, `climon2-vt` | Exist today; described under the first diagram. |
+
+The plan keeps Ratatui in `climon2-monitor-tui` and `climon2-relay` only, and
+keeps `climon2-vt` to the session daemon and the monitor library, which
+re-exports its read-only views. `climon2-web` does not depend on `climon2-vt`:
+it forwards terminal bytes for the browser to interpret and keeps no model of
+its own ([ADR 0012](../../adr/0012-browser-as-disposable-renderer.md)).
+The edges to `core` and `platform` are expected, not yet fixed.
 
 ## Development and test-only crates
 
@@ -297,12 +359,12 @@ The platform-neutral encoder and validator for
 crate or edge. Beside it, core's `protocol` module now holds only the frozen
 hello; retiring the version-private post-hello message set
 ([#104](https://github.com/jackgeek/climon2/issues/104)) removed no crate or
-edge either. The agreed revision also
-anticipates source-monitor session consumption and browser terminal consumption
-over future forwarding boundaries, shown in the artifact diagram. Their crate
-placement is unassigned; no new crate or Cargo edge is implied. The wire
+edge either. Relays and browsers do not
+consume the revision: a relay is an ordinary client of its own machine's
+daemons, and a browser talks only to a web monitor. The crates planned for
+them are under [Planned crates](#planned-crates). The wire
 specification does not implement these relationships or a native library in a
-browser. All workspace crates above remain unchanged.
+browser. All current workspace crates above remain unchanged.
 
 The [agreed lifecycle](../behaviour/monitor/lifecycle.md) specifies
 concurrent per-instance shutdown/joins (implemented by #118) and exponential
