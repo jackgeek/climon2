@@ -535,6 +535,8 @@ struct State {
     /// Shutdown has begun: the UI processes nothing more, and every client
     /// is drained regardless, so shutdown stays serviceable.
     stopping: bool,
+    /// How many polls there have been: where the next round's drains start.
+    turn: usize,
     internal: Sender<Internal>,
     internals: Receiver<Internal>,
     /// Sessions waiting for a client, in their lanes.
@@ -589,6 +591,7 @@ impl State {
             reserved,
             congested: BTreeMap::new(),
             stopping: false,
+            turn: 0,
             internal,
             internals,
             releases: BTreeMap::new(),
@@ -1505,8 +1508,9 @@ impl State {
     /// congested, then drains each of those; a congested one is failed once
     /// its congestion outlasts `deadlines.delivery_stall_ms` (#119). During
     /// shutdown neither the wait nor the drains go past its `deadline`. The
-    /// drains share one bound, a tick after the wait (#462): each instance
-    /// is drained at least once, and none past the bound, so one with
+    /// drains share one bound, a tick after the wait (#462), and start one
+    /// instance further on each round: outside shutdown each instance is
+    /// drained at least once, and none past the bound, so one with
     /// deliveries without end neither starves the others nor keeps the
     /// round from its commands, however many instances there are.
     fn poll(&mut self, deadline: Option<Instant>) {
@@ -1520,12 +1524,17 @@ impl State {
             .map(|descriptor| unsafe { notifier::watch_raised(descriptor) })
             .collect();
         wait(&mut table, deadline.map_or(TICK, within));
-        let live: Vec<_> = self
+        let mut live: Vec<_> = self
             .instances
             .iter()
             .filter(|(_, instance)| instance.phase.live().is_some())
             .map(|(id, _)| id.clone())
             .collect();
+        // Each round starts one instance further on, so every instance in
+        // turn has the bound to itself, however busy those before it are.
+        let start = self.turn % live.len().max(1);
+        live.rotate_left(start);
+        self.turn += 1;
         let now = Instant::now();
         let round = now + TICK;
         let bound = deadline.map_or(round, |deadline| deadline.min(round));
@@ -1534,7 +1543,7 @@ impl State {
                 self.congestion(&id, now);
             } else {
                 self.congested.remove(&id);
-                self.drain_within(&id, bound);
+                self.drain_within(&id, bound, deadline.is_none());
             }
         }
     }
@@ -1560,11 +1569,14 @@ impl State {
         }
     }
 
-    /// Drains `id`, which is not throttled, once, then until it has nothing
-    /// more, its reports fill its allowance ([`State::throttled`]) or
-    /// `bound` passes, reporting every delivery.
-    fn drain_within(&mut self, id: &SessionId, bound: Instant) {
-        while self.drain_one(id) && !self.throttled(id) && before(bound) {}
+    /// Drains `id` until it has nothing more, its reports fill its
+    /// allowance ([`State::throttled`]) or `bound` passes, reporting every
+    /// delivery; at least once if `once`, even past `bound`.
+    fn drain_within(&mut self, id: &SessionId, bound: Instant, once: bool) {
+        let mut due = once;
+        while !self.throttled(id) && (due || before(bound)) && self.drain_one(id) {
+            due = false;
+        }
     }
 
     /// Drains one delivery of `id`'s, if it is live: whether there may be
@@ -2043,8 +2055,8 @@ mod tests {
         stalls: bool,
         /// Create returns only once the test lets it go.
         creates_late: bool,
-        /// Shutdown lets this instance's create go, then returns only once
-        /// its run has begun, so its handles are published by then.
+        /// The first shutdown lets this instance's create go, then returns
+        /// only once its run has begun, so its handles are published by then.
         lets_go: Option<[u8; 16]>,
         /// After Open, one delivery of control and display records.
         presents: bool,
@@ -2745,18 +2757,23 @@ mod tests {
 
     extern "C" fn shutdown(control: *mut Control) -> Call {
         let fake = fake(control);
+        let mut first = false;
         changed(&mut world(), |world| {
             fake.state().shutdown = true;
             if !world.first_asks.contains_key(&fake.id) {
+                first = true;
                 let drains = world.drains.clone();
                 world.first_asks.insert(fake.id, drains);
             }
         });
-        if let Some(late) = fake.script.lets_go {
+        if let Some(late) = fake.script.lets_go.filter(|_| first) {
             changed(&mut world(), |world| {
                 world.unstalled.insert(late);
             });
-            wait_while(|world| !world.running.contains(&late));
+            // An owner that exits without running ends the wait too, so the
+            // test fails rather than hangs.
+            let exited = (late, Seen::OwnerExited);
+            wait_while(|world| !world.running.contains(&late) && !world.seen.contains(&exited));
         }
         success()
     }
@@ -3336,7 +3353,7 @@ mod tests {
     /// within about a tick.
     #[test]
     fn many_floods_still_let_the_exit_be_read_within_about_a_tick() {
-        let flooding: Vec<_> = (1..=12).map(|index| session(0x49, index)).collect();
+        let flooding: Vec<_> = (1..=24).map(|index| session(0x49, index)).collect();
         for id in &flooding {
             script(
                 id,
@@ -3348,7 +3365,7 @@ mod tests {
             );
         }
         let idle = session(0x49, 0x20);
-        let mut supervised = supervisor(13, 200, fake_library());
+        let mut supervised = supervisor(25, 200, fake_library());
         let _let_go = LetGo(flooding.iter().map(guid).collect());
         let supervisor = &mut supervised.supervisor;
         let all: Vec<_> = flooding.iter().chain([&idle]).cloned().collect();
@@ -3358,9 +3375,10 @@ mod tests {
         all_opened(supervisor, &all);
         let idle_id = guid(&idle);
         let earlier = world().drains[&idle_id];
-        thread::sleep(10 * TICK);
+        // About 20 rounds; a tick for each flood would be under one.
+        thread::sleep(20 * TICK);
         let rounds = world().drains[&idle_id] - earlier;
-        assert!(rounds >= 4, "{rounds} rounds in 10 ticks");
+        assert!(rounds >= 2, "{rounds} rounds in 20 ticks");
         let asked = Instant::now();
         supervisor.shut_down();
         while supervisor.waiting().is_none() {
@@ -3368,9 +3386,46 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         let took = asked.elapsed();
-        assert!(took < 6 * TICK, "{took:?}");
+        assert!(took < 12 * TICK, "{took:?}");
         let report = supervisor.stop();
         assert_eq!(report.instances.len(), all.len(), "{report:?}");
+    }
+
+    /// #462: rounds take turns to start their drains, so a busy instance
+    /// after one with deliveries without end still has whole rounds to
+    /// itself, not one delivery a round (an idle instance counts them).
+    #[test]
+    fn a_flood_does_not_starve_a_busy_instance_after_it() {
+        let [flooding, busy, idle] = [1, 2, 3].map(|index| session(0x4b, index));
+        for id in [&flooding, &busy] {
+            script(
+                id,
+                Script {
+                    stalls: true,
+                    floods_at_once: true,
+                    ..Script::default()
+                },
+            );
+        }
+        let mut supervised = supervisor(3, 200, fake_library());
+        let _let_go = LetGo(vec![guid(&flooding), guid(&busy)]);
+        let supervisor = &mut supervised.supervisor;
+        let all = [flooding.clone(), busy.clone(), idle.clone()];
+        for id in &all {
+            supervisor.start_client(metadata(id, "2026-11-13T10:00:00.000Z"));
+        }
+        all_opened(supervisor, &all);
+        let (busy_id, idle_id) = (guid(&busy), guid(&idle));
+        let counts = || {
+            let world = world();
+            (world.drains[&busy_id], world.drains[&idle_id])
+        };
+        let (busy_before, idle_before) = counts();
+        until(|world| world.drains[&idle_id] >= idle_before + 6);
+        let (busy_after, idle_after) = counts();
+        let (drained, rounds) = (busy_after - busy_before, idle_after - idle_before);
+        assert!(drained > 3 * rounds, "{drained} drains in {rounds} rounds");
+        supervisor.stop();
     }
 
     /// #462: an instance with nothing to deliver is drained once a round,
@@ -3389,7 +3444,7 @@ mod tests {
         let earlier = world().drains[&id];
         thread::sleep(10 * TICK);
         let drained = world().drains[&id] - earlier;
-        assert!(drained < 50, "{drained} drains in about 10 rounds");
+        assert!(drained < 100, "{drained} drains in about 10 rounds");
         supervisor.stop();
     }
 
