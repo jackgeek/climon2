@@ -592,6 +592,19 @@ fn an_unattached_session_ends_after_the_initial_deadline() {
     assert!(started.elapsed() < Duration::from_secs(7));
 }
 
+/// #133 / ADR 0005: a real daemon records where it was created, its machine
+/// and on Linux its PID namespace, as this process reads its own.
+#[test]
+fn issue133_a_daemon_records_its_origin() {
+    let mut session = Session::start("early");
+    let bytes = fs::read(&session.metadata).unwrap();
+    let metadata =
+        climon2_core::metadata::SessionMetadata::from_json(&session.metadata, &bytes).unwrap();
+    let here = climon2_platform::origin::current().unwrap();
+    assert_eq!(metadata.daemon_origin, Some(here));
+    session.finish();
+}
+
 /// A session started like `c2 exec --headless` would start it. Its fixture
 /// ends itself after two minutes, so a test killed before it ends its session
 /// cannot leave that session running forever.
@@ -899,6 +912,44 @@ fn an_existing_session_file_fails_publication_and_is_left_in_place() {
     }
 }
 
+/// #133 / ADR 0011: a daemon started in a home another machine or container owns refuses
+/// before anything else: it reports the refusal, exits 125, and creates no session files and
+/// starts no command. The record is left as it was.
+#[test]
+fn issue133_a_daemon_refuses_a_home_another_host_owns() {
+    const FOREIGN: &str = r#"{"machine_id":"another-machine","pid_namespace":1}"#;
+    let (prepared, readiness, status) = unsupervised(
+        "exit",
+        |_, home| fs::write(home.join("owner"), FOREIGN).unwrap(),
+        false,
+    );
+    let message = "this climon2 home belongs to another machine or container, or cannot be checked";
+    assert_eq!(readiness, failed_readiness(125, message));
+    assert_eq!(status.code(), Some(125));
+    assert!(!prepared.home.join("sessions").exists());
+    assert_startup_files_removed(&prepared);
+    assert_startup_command_gone(&prepared.home);
+    assert_eq!(
+        fs::read_to_string(prepared.home.join("owner")).unwrap(),
+        FOREIGN
+    );
+}
+
+/// #133 / ADR 0011: started by `exec --force` (`--home-owner forced`), a daemon uses a home
+/// another host owns: it starts, runs and ends as usual, and leaves the record as it was.
+#[test]
+fn issue133_a_forced_daemon_uses_a_home_another_host_owns() {
+    const FOREIGN: &str = r#"{"machine_id":"another-machine","pid_namespace":1}"#;
+    let mut session = Session::configured("early", |command, home| {
+        fs::write(home.join("owner"), FOREIGN).unwrap();
+        command.args(["--home-owner", "forced"]);
+    });
+    assert!(session.metadata.exists());
+    let owner = session.directory.path().join("owner");
+    session.finish();
+    assert_eq!(fs::read_to_string(owner).unwrap(), FOREIGN);
+}
+
 /// The same daemon command with one option's value replaced (Command args are append-only).
 fn replace_option(command: &Command, key: &str, value: &str) -> Command {
     let mut arguments: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
@@ -940,7 +991,7 @@ fn rebuilt(command: &Command, arguments: Vec<std::ffi::OsString>) -> Command {
 #[test]
 fn repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations() {
     type Configure = fn(&mut Command, &Path);
-    let cases: [Configure; 6] = [
+    let cases: [Configure; 8] = [
         |command, _| {
             command.args(["--version", VERSION]);
         },
@@ -951,6 +1002,12 @@ fn repeated_unknown_zero_pid_and_relative_options_are_invalid_invocations() {
         |command, _| *command = replace_option(command, "--cwd", "."),
         |command, _| *command = replace_option(command, "--lifetime", "persistent"),
         |command, _| *command = remove_option(command, "--lifetime"),
+        |command, _| {
+            command.args(["--home-owner", "checked"]);
+        },
+        |command, _| {
+            command.args(["--home-owner", "forced", "--home-owner", "forced"]);
+        },
     ];
     for configure in cases {
         let (prepared, readiness, status) = unsupervised("early", configure, false);

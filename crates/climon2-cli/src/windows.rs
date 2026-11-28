@@ -13,16 +13,16 @@ use climon2_platform::{
 };
 use std::process::Command;
 
-pub(crate) fn logged_run(work: Work) -> Result<u32, Error> {
+pub(crate) fn logged_run(work: Work, force: bool) -> Result<u32, Error> {
     match work {
-        Work::List { json } => crate::logged(|home, _, _| crate::list(home, json)),
+        Work::List { json } => crate::logged(force, |home, _, _| crate::list(home, json)),
         Work::Exec(lifetime, nested, command) => {
             representable(&command)?;
-            crate::logged(|home, general, filter| {
-                crate::exec::run(home, lifetime, nested, command, general, filter)
+            crate::logged(force, |home, general, filter| {
+                crate::exec::run(home, (lifetime, force), nested, command, general, filter)
             })
         }
-        Work::Handoff(handoff) => run_handoff(handoff),
+        Work::Handoff(handoff) => run_handoff(handoff, force),
     }
 }
 
@@ -39,11 +39,13 @@ fn representable(command: &CommandArgs) -> Result<(), Error> {
     }
 }
 
-fn run_handoff(handoff: Handoff) -> Result<u32, Error> {
+fn run_handoff(handoff: Handoff, force: bool) -> Result<u32, Error> {
     match handoff {
-        Handoff::Attach(selector) => crate::logged(|home, _, _| crate::attach::run(home, selector)),
-        Handoff::Kill(selector) => crate::logged(|home, _, _| kill(home, &selector)),
-        Handoff::Monitor => crate::logged(|_, _, _| crate::monitor::run()),
+        Handoff::Attach(selector) => {
+            crate::logged(force, |home, _, _| crate::attach::run(home, selector))
+        }
+        Handoff::Kill(selector) => crate::logged(force, |home, _, _| kill(home, &selector)),
+        Handoff::Monitor => crate::logged(force, |_, _, _| crate::monitor::run()),
     }
 }
 

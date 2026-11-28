@@ -12,17 +12,20 @@ mod native;
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod native;
+mod ownership;
 
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
     layout::{ExecutableLayout, VersionBinary},
     lifetime::Lifetime,
+    owner::Refusal,
     selector::Selector,
     session::NestedStart,
 };
 use climon2_platform::{
     home,
     logging::{self, LogFile},
+    owner,
 };
 use std::{ffi::OsString, io, path::Path, time::SystemTime};
 
@@ -35,8 +38,12 @@ pub use climon2_core::failure::Failure as Error;
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
+    let (arguments, force) = arguments.unforced();
+    if let Some(action) = home_command(&arguments) {
+        return unowned(|home, _, _| ownership::run(home, action));
+    }
     match work(arguments) {
-        Ok(work) => native::logged_run(work),
+        Ok(work) => native::logged_run(work, force),
         Err(text) => {
             println!("{text}");
             Ok(0)
@@ -44,7 +51,17 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> 
     }
 }
 
-/// The subcommands that need a home; help and version are answered here.
+/// `home` and `home release`, which use the home without checking its owner.
+fn home_command(arguments: &CliArgs) -> Option<ownership::Action> {
+    match arguments {
+        CliArgs::Home => Some(ownership::Action::Show),
+        CliArgs::HomeRelease { force } => Some(ownership::Action::Release { force: *force }),
+        _ => None,
+    }
+}
+
+/// The subcommands that need a home this host owns; help and version are
+/// answered here.
 enum Work {
     Exec(Lifetime, NestedStart, CommandArgs),
     List { json: bool },
@@ -87,10 +104,38 @@ fn presentation(arguments: &CliArgs) -> String {
     }
 }
 
-/// Runs `command` inside the invocation's climon2 home, with its general log
-/// as the default subscriber and the `CLIMON2_LOG` filter; a failure is also
-/// logged there.
+/// Runs `command` inside the invocation's climon2 home, once the home is
+/// known to be this host's (ADR 0011), or, with `force`, also when another host
+/// owns it or its record cannot be read, with a warning.
 fn logged(
+    force: bool,
+    command: impl FnOnce(&Path, &LogFile, Option<&str>) -> Result<u32, Error>,
+) -> Result<u32, Error> {
+    in_home(|home| forced(home, force), command)
+}
+
+/// The owner check, forgiving what `--force` skips.
+fn forced(home: &Path, force: bool) -> Result<(), Refusal> {
+    if let Some(refusal) = climon2_core::owner::forgive(owner::check(home), force)? {
+        tracing::warn!(%refusal, "--force uses this climon2 home without claiming it");
+        eprintln!("{}", climon2_core::owner::forced_warning(&refusal));
+    }
+    Ok(())
+}
+
+/// Runs `command` inside the invocation's climon2 home whoever owns it: only
+/// `c2 home` and `c2 home release`, which diagnose and clear a refusal.
+fn unowned(
+    command: impl FnOnce(&Path, &LogFile, Option<&str>) -> Result<u32, Error>,
+) -> Result<u32, Error> {
+    in_home(|_| Ok(()), command)
+}
+
+/// Runs `command` inside the invocation's climon2 home, with its general log
+/// as the default subscriber and the `CLIMON2_LOG` filter, after `check`; a
+/// failure is also logged there.
+fn in_home(
+    check: impl FnOnce(&Path) -> Result<(), Refusal>,
     command: impl FnOnce(&Path, &LogFile, Option<&str>) -> Result<u32, Error>,
 ) -> Result<u32, Error> {
     let home = home::canonical()?;
@@ -100,6 +145,8 @@ fn logged(
         .dispatch(filter.as_deref())
         .map_err(|error| Error::from(error).logged(general.path()))?;
     tracing::dispatcher::with_default(&dispatch, || {
+        // Before anything else touches the home.
+        check(&home).map_err(|refusal| Error::new(125, refusal).logged(general.path()))?;
         logging::prune(&home, SystemTime::now());
         command(&home, &general, filter.as_deref()).map_err(|error| error.logged(general.path()))
     })

@@ -1,6 +1,6 @@
 //! ADR 0005 frozen, write-once record. File permissions, atomic publication,
 //! liveness and deletion belong to platform/callers, not to this pure parser.
-pub use crate::identity::MetadataPath;
+pub use crate::identity::{MachineId, MetadataPath};
 use crate::{ContractError, SessionId, Timestamp, VersionName, identity::validate_guid};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -49,6 +49,49 @@ impl LinuxProcessIdentity {
     }
 }
 
+/// Where a process runs (#133): its machine and, on Linux, its PID namespace.
+/// A session daemon records its own as `daemon_origin` for diagnostics (ADR
+/// 0005), and a climon2 home records its owner's (ADR 0011).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SessionOrigin {
+    /// Absent where the machine has no stable identity to read, as in many
+    /// container images without `/etc/machine-id`, or where Linux's is
+    /// transient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<MachineId>,
+    /// The inode of the process's `/proc/self/ns/pid`; Linux only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_namespace: Option<u64>,
+}
+
+impl SessionOrigin {
+    /// Whether two origins are the same host (ADR 0011): when both have a
+    /// stable machine ID, it alone decides, since WSL2, LXC/LXD,
+    /// systemd-nspawn and Flatpak get a new PID namespace at every start.
+    /// Otherwise the PID namespace decides.
+    pub fn is_same_place(&self, other: &Self) -> bool {
+        match (&self.machine_id, &other.machine_id) {
+            (Some(machine), Some(other)) => machine == other,
+            _ => self.pid_namespace == other.pid_namespace,
+        }
+    }
+}
+
+/// For diagnostics: `machine <ID>, PID namespace <inode>`, naming only what is
+/// recorded.
+impl std::fmt::Display for SessionOrigin {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.machine_id, self.pid_namespace) {
+            (Some(machine), Some(namespace)) => {
+                write!(out, "machine {machine}, PID namespace {namespace}")
+            }
+            (Some(machine), None) => write!(out, "machine {machine}"),
+            (None, Some(namespace)) => write!(out, "PID namespace {namespace}"),
+            (None, None) => out.write_str("an unknown machine"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub format_version: NonZeroU32,
@@ -59,6 +102,10 @@ pub struct SessionMetadata {
     pub daemon_start_time: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_linux_identity: Option<LinuxProcessIdentity>,
+    /// Absent in records from older writers, and when the writer could not
+    /// read where it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_origin: Option<SessionOrigin>,
     /// Display only; never use these strings to reconstruct a command.
     pub command: String,
     pub args: Vec<String>,

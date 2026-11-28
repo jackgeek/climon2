@@ -26,6 +26,7 @@ the test harness as shell profiles.
 8. Installer default directory and same-version clobber
 9. Exit-status mapping
 10. Process start time (for the stale-metadata PID-reuse check, ADR 0005)
+    and origin (the home owner, ADR 0011)
 
 More seams may emerge after the first release. Everything else counts as platform-neutral.
 
@@ -50,8 +51,10 @@ Clients reach daemons over AF_UNIX stream sockets on every OS, Windows 11 includ
   ticks establish daemon identity; epoch start time remains a frozen metadata
   field, not Linux's stale-cleanup authority (ADR 0005).
 - Procfs inspection errors are not evidence of process death. All participants
-  sharing session metadata must share a PID namespace. Cross-namespace shared
-  homes are not supported.
+  sharing session metadata must share a PID namespace. **Superseded in part by
+  [ADR 0011](0011-one-home-one-host.md):** a climon2 home belongs to one host,
+  and climon2 refuses a home that another machine or container owns instead of
+  leaving it unsupported.
 - Hanging up closes the PTY master, as closing a terminal window does. Linux
   wakes terminal readers before it signals the session leader, so a leader
   blocked reading the terminal can end with its own status (an interactive
@@ -217,6 +220,9 @@ Decided in [Define Windows platform support and lifecycle contract](https://gith
   128 + signal on Windows.
 - **Process start time.** `GetProcessTimes` creation time in the frozen
   `daemon_start_time`.
+- **Origin.** The machine's `MachineGuid`, which a climon2 home's owner
+  record holds, so a home on a network share used from another machine is
+  refused there (ADR 0011).
 
 ## Notes for future ports
 

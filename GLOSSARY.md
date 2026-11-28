@@ -101,6 +101,10 @@ _Avoid_: Dead session, orphan
 The per-session record in climon2 home that describes a session and how to reach its daemon.
 _Avoid_: Session file, PTY file
 
+**Session origin**:
+The machine, and on Linux the PID namespace, where a session daemon was created, recorded in its session metadata; a session whose origin is another host's is never cleaned up.
+_Avoid_: Host, remote session, foreign session
+
 **Discovery pass**:
 One enumeration of the session metadata in a climon2 home, probing each session and classifying every entry as live, uncertain, stale or invalid.
 _Avoid_: Scan, refresh, poll
@@ -393,6 +397,10 @@ _Avoid_: Install directory, exe dir, `CLIMON2_EXE`
 **Climon2 home**:
 The directory where climon2 keeps its data; `~/.climon2` unless `CLIMON2_HOME` overrides it.
 _Avoid_: Data dir, state dir, config dir
+
+**Home owner**:
+The one host that a climon2 home belongs to, as the home's `owner` record names it: its stable machine ID, or on Linux without one its PID namespace. The first command claims a home without one, every other machine or container is refused, and `c2 home release` removes it.
+_Avoid_: Home host, lock, lease
 
 **Installer**:
 The program shipped in a release archive that places that release's version into a climon2 executable home and makes it the current version.

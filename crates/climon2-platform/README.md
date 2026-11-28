@@ -96,6 +96,37 @@ dispatch or shell-specific logic.
   `daemon_linux_identity` (boot ID plus start ticks) on Linux. Linux's epoch
   conversion is clock-sensitive and is not stale-cleanup authority.
   Missing stable identity makes Linux cleanup fail safely, retaining metadata.
+- `origin::current() -> io::Result<SessionOrigin>`, in its own module with a
+  native file per OS (`src/origin/{linux,macos,windows}.rs`), is where this
+  process runs (#133): on Linux the PID namespace as the inode of
+  `/proc/self/ns/pid` and the machine ID from `/etc/machine-id`, absent when
+  it is not 32 hex digits (`uninitialized`, for one) or when it does not survive a reboot: the last mount holding it
+  (at `/etc/machine-id`, `/etc` or `/`) is a tmpfs or an overlay, as for
+  systemd's transient `/run/machine-id` or a live system's root;
+  on macOS the hardware UUID from `gethostuuid`, as 32 lowercase hex digits;
+  on Windows `MachineGuid`. It is read once per process; a failed read is not
+  kept. `origin::{Sources, current_at}` (Linux) read the same from injected
+  paths. A daemon records it as `daemon_origin` for diagnostics (ADR 0005).
+- `owner::check(home) -> Result<(), Refusal>` is the home owner check of ADR
+  0011, which every command that uses a home and the daemon make first: a
+  home without an `owner` record is claimed for this host (an owner-only file
+  of its own, hard-linked into place, so racing first claims agree); a home
+  another host owns is `Refusal::Foreign`; a recorded home this host cannot
+  read its own origin for is `Refusal::Unchecked`; a record that is not a
+  plain, valid file is `Refusal::Unreadable` and left alone. Without its own
+  origin, or when the record cannot be written, it claims nothing and warns.
+  `owner::check_as` takes the origin, and `owner::check_linking` also the link
+  function, for tests. A claim stages its record under a random name, so a
+  leftover never blocks it, and where linking fails creates the record in place
+  exclusively. `owner::read` names the recorded owner without checking or
+  claiming (`c2 home`), and `owner::release` removes whatever record is there,
+  naming it: a link itself, never its target, and an empty folder; another
+  folder is left with a message to delete it by hand (`c2 home release`). Two origins are one host when
+  their stable machine IDs match; only without one on either side does the PID
+  namespace decide.
+- `private::open_plain_file` opens a file to read only when it is a plain
+  file: never through a symlink (`O_NOFOLLOW`) or reparse point, and not a
+  directory or FIFO.
 - `process::{wait,try_wait}` own reaping by PID and return core `ExitStatus`
   without portable-pty's lossy signal mapping. Do not also wait through
   portable-pty or `std::process::Child`.
@@ -318,6 +349,9 @@ I/O and transport"; docs/for-humans/windows/lifecycle.md, "Identity and liveness
   `WaitForMultipleObjects` takes at most 64 events, so a wait on more watches
   the first 64, and any event already signalled, beyond them too, ends it at
   once (#327, the monitor's instances).
+- `src/origin/windows.rs`: `origin::current`, the machine's `MachineGuid`
+  from `HKLM\SOFTWARE\Microsoft\Cryptography` in the 64-bit view (#133),
+  which the home owner record holds.
 - `src/process/windows.rs`: `start_time`, `is_same_process` and
   `is_same_daemon`. A daemon is its PID plus its `GetProcessTimes` creation
   time in epoch microseconds. Only "no such process"
@@ -532,7 +566,8 @@ directory instead fails with `WSAENETDOWN`, which proves nothing),
 `a_gone_process_is_not_the_same_daemon`,
 `an_exited_process_whose_handle_is_held_is_not_the_same_daemon` and
 `a_process_the_caller_may_not_open_is_never_taken_for_a_gone_one` (an empty
-process DACL, opened without `SeDebugPrivilege`).
+process DACL, opened without `SeDebugPrivilege`) and
+`the_origin_is_this_machines_machine_guid` (checked against `reg query`).
 `tests/presentation_windows.rs`:
 `a_creation_time_is_shown_in_the_systems_local_time` (checked against .NET)
 and `redirected_output_is_80_columns_wide`.
@@ -556,7 +591,26 @@ and on CI it fails without the account.
 `issue15_bad_cwd_is_rejected_before_pty_can_fall_back`,
 `issue312_the_descriptor_limit_is_the_soft_limit`,
 `issue312_only_emfile_and_enfile_are_out_of_descriptors`,
-`issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`.
+`issue312_an_immediate_exit_ends_with_its_code_and_flushes_nothing`,
+`linux_origin_is_the_machine_id_and_the_pid_namespace` (Linux) and
+`macos_origin_is_the_hardware_uuid` (macOS, checked against `ioreg`).
+`tests/origin.rs` (Linux, #133):
+`issue133_only_a_stable_machine_id_is_part_of_the_origin`, through injected
+sources.
+
+`tests/owner.rs` (every OS, #133, ADR 0011), with injected origins:
+`issue133_the_first_check_claims_the_home_and_its_host_passes`,
+`issue133_another_machine_or_pid_namespace_is_refused`,
+`issue133_an_unreadable_origin_claims_nothing_and_cannot_pass_an_owner`,
+`issue133_a_concurrent_first_claim_has_one_owner`,
+`issue133_a_bad_owner_record_is_refused_and_left_alone`,
+`issue133_a_linked_owner_record_is_refused`,
+`issue133_a_home_that_cannot_be_claimed_is_used_unclaimed`,
+`issue133_check_claims_a_home_for_this_host`,
+`issue133_read_names_the_owner_without_claiming`,
+`issue133_release_removes_the_record_so_the_next_check_claims_afresh`,
+`issue133_a_claim_without_links_creates_the_record_in_place` and
+`issue133_a_leftover_temporary_record_does_not_block_a_claim`.
 
 `tests/hangup.rs`: `issue19_closing_real_controlling_pty_delivers_hangup`, in
 its own test binary because a child another test forks would inherit the PTY

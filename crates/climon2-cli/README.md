@@ -1,12 +1,11 @@
 # climon2-cli
 
-CLI orchestration for `exec [--headless] [--nested] COMMAND [ARG...]`, `attach SESSION-ID`,
-`kill SESSION-ID`, `list [--json]` and `monitor`. Each command has a
-single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`; `r` is
-reserved for `relay`), `-h` is the short form of `--headless`, `-n` of
-`--nested` (#139), and help has only `--help` (#287). exec's options come
-before the command, in either order, each at most once. The usage string is
-`usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
+CLI orchestration for `exec [--force] [--headless] [--nested] COMMAND [ARG...]`, `attach SESSION-ID`,
+`kill SESSION-ID`, `list [--json]`, `monitor` and `home [release]`. Each command has a
+single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`, `h`; `r` is
+reserved for `relay`), `-h` is the short form of `--headless`, and help has
+only `--help` (#287). The usage string is
+`usage: c2 exec|x [--force] [--headless|-h] [--nested|-n] <command> [args...] | attach|a [--force] <session-id> | kill|k [--force] <session-id> | list|l [--force] [--json] | monitor|m [--force] | home|h [release [--force]]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
@@ -32,6 +31,32 @@ NUL) is a usage error, 2, and nothing starts. An ordinary `exec` that cannot sta
 the daemon it started (`daemon::stop`), as Unix stops it with signals.
 `src/client.rs` holds what `attach` and `kill` share: selecting one live
 session and the session version's client command.
+Every command that uses a climon2 home checks its owner first, in `logged`,
+before it prunes logs or starts, attaches, lists or kills anything (ADR 0011,
+#133). A home another machine or container owns exits 125 with the refusal,
+unless `--force` was given (`CliArgs::Forced`; among `exec`'s options, in any
+order with `--headless` and `--nested`, and first for the others). The owner
+check runs before `exec`'s nested-session prompt. With `--force` a foreign or unreadable
+record only warns, the home is used unclaimed, and `exec` passes
+`--home-owner forced` to its daemon;
+`--help` and `--version` never check. `home` and `home release`, in
+`src/ownership.rs` (#403), use the home without checking it: `home` prints
+the home, its owner and whether this host is the owner, claiming nothing;
+`home release [--force]` removes the owner record whoever it names, a bad or
+linked one (or an empty folder) itself, after a discovery pass that removes no
+metadata: on the owner it refuses with 125 while any of
+its sessions is live or not proven ended, and `--force` releases with a warning; on any other host, or when the owner
+is unknown, it refuses with 125 while the home holds any session record, unless
+`--force`. `list` logs a session created on another host (`session created on
+another host is kept`, debug) and keeps it. `tests/owner.rs` (every OS):
+`issue133_a_home_another_host_owns_is_refused_before_anything_else`,
+`issue133_the_first_command_claims_the_home_for_this_host`,
+`issue133_home_shows_the_owner_and_whether_this_host_is_it`,
+`issue133_home_release_removes_any_owner_so_the_next_command_claims_the_home`,
+`issue133_home_release_removes_a_bad_or_linked_record_itself`,
+`issue133_a_non_owner_releases_a_home_with_sessions_only_with_force`,
+`issue133_the_owner_releases_only_once_its_sessions_have_ended` and, on Unix,
+`issue133_home_release_is_refused_while_sessions_run_here`.
 `tests/list_windows.rs` proves `list` with no sessions, the reclaim of a
 stale session whose daemon has exited, the sessions it keeps, and a live
 session listed to the width of a pinned-ConPTY console.

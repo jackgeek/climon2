@@ -78,6 +78,8 @@ You can also use one session at a time, in any terminal:
 | `c2 list` | `c2 l` | List running sessions |
 | `c2 kill <id>` | `c2 k` | End a session |
 | `c2 monitor` | `c2 m` | Open the monitor |
+| `c2 home` | `c2 h` | Show the climon2 home and the computer that owns it |
+| `c2 home release [--force]` | `c2 h release` | Let another computer claim the climon2 home |
 
 Press Ctrl+] then `d` to step away from a session (detach); it keeps running.
 An ID can be shortened to its first few characters.

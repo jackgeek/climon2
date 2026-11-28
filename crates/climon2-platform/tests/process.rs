@@ -241,6 +241,51 @@ fn owned_process_fixture() {
     }
 }
 
+/// #133 / ADR 0005: a Linux daemon records its machine as systemd's machine ID,
+/// which survives reboots, and its PID namespace as the inode that
+/// `/proc/self/ns/pid` names.
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_origin_is_the_machine_id_and_the_pid_namespace() {
+    let link = std::fs::read_link("/proc/self/ns/pid").unwrap();
+    let inode: u64 = link
+        .to_str()
+        .and_then(|link| link.strip_prefix("pid:["))
+        .and_then(|link| link.strip_suffix(']'))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let machine = std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty());
+    let origin = climon2_platform::origin::current().unwrap();
+    assert_eq!(origin.pid_namespace, Some(inode));
+    assert_eq!(origin.machine_id.map(String::from), machine);
+}
+
+/// #133 / ADR 0005: a macOS daemon records its machine as the hardware UUID
+/// that `ioreg` shows as `IOPlatformUUID`, and no PID namespace.
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_origin_is_the_hardware_uuid() {
+    let output = Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    let uuid = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("\"IOPlatformUUID\" = \""))
+        .unwrap()
+        .trim_end_matches('"')
+        .replace('-', "")
+        .to_lowercase();
+    let origin = climon2_platform::origin::current().unwrap();
+    assert_eq!(origin.machine_id.map(String::from), Some(uuid));
+    assert_eq!(origin.pid_namespace, None);
+}
+
 #[test]
 #[cfg(target_os = "linux")]
 fn linux_daemon_identity_does_not_depend_on_the_wall_clock_epoch() {

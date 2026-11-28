@@ -25,9 +25,10 @@ use std::{
 
 /// A nested start the user cancels creates nothing, not even a log, and
 /// exits with the status [`Answer::status`](climon2_core::session::Answer::status) gives.
+/// `force` is `exec --force`: the daemon too uses a home it does not own.
 pub fn run(
     home: &Path,
-    lifetime: Lifetime,
+    (lifetime, force): (Lifetime, bool),
     nested: NestedStart,
     command: CommandArgs,
     general: &LogFile,
@@ -36,7 +37,7 @@ pub fn run(
     let (config, layout, session) = checked(home, lifetime, general)?;
     // The working and runtime directories are checked before the prompt, so
     // no one is asked to start a session that is bound to fail.
-    let startup = Startup::new(home, &layout, &session.id, lifetime, &config)?;
+    let startup = Startup::new(home, &layout, &session.id, (lifetime, force), &config)?;
     if let Some(status) = confirm(session.environment.notice(lifetime, nested))? {
         return Ok(status);
     }
@@ -170,6 +171,7 @@ struct Startup<'a> {
     layout: &'a ExecutableLayout,
     id: &'a SessionId,
     lifetime: Lifetime,
+    force: bool,
     max_history_rows: u32,
     assembly: Assembly,
     metadata: PathBuf,
@@ -182,7 +184,7 @@ impl Startup<'_> {
         home: &'a Path,
         layout: &'a ExecutableLayout,
         id: &'a SessionId,
-        lifetime: Lifetime,
+        (lifetime, force): (Lifetime, bool),
         config: &ExecConfig,
     ) -> Result<Startup<'a>, Error> {
         let socket = RuntimeDirectory::prepare(home)?.socket_path(id)?;
@@ -193,6 +195,7 @@ impl Startup<'_> {
             layout,
             id,
             lifetime,
+            force,
             metadata,
             socket,
             cwd,
@@ -267,6 +270,9 @@ impl Startup<'_> {
             .arg(&self.cwd);
         if let Some(filter) = filter {
             launch.arg("--log").arg(filter);
+        }
+        if self.force {
+            launch.arg("--home-owner").arg("forced");
         }
         daemon::spawn(launch, |launch, fd| {
             launch

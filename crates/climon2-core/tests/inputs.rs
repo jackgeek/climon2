@@ -202,6 +202,134 @@ fn issue74_monitor_and_m_take_no_arguments_and_mon_is_gone() {
     }
 }
 
+/// #133 / ADR 0011: `home` and its shortcut `h` take nothing, or `release`
+/// and then optionally `--force`; anything else is a usage error (2).
+#[test]
+fn issue133_home_takes_nothing_or_release() {
+    for home in ["home", "h"] {
+        let parse = |tail: &[&str]| {
+            CliArgs::parse([&[home][..], tail].concat().into_iter().map(OsString::from))
+        };
+        assert_eq!(parse(&[]).unwrap(), CliArgs::Home);
+        assert_eq!(
+            parse(&["release"]).unwrap(),
+            CliArgs::HomeRelease { force: false }
+        );
+        assert_eq!(
+            parse(&["release", "--force"]).unwrap(),
+            CliArgs::HomeRelease { force: true }
+        );
+        for bad in [
+            &["release", "extra"][..],
+            &["release", "--force", "extra"],
+            &["--force"],
+            &["--force", "release"],
+            &["release", "-f"],
+            &["Release"],
+            &[""],
+            &["--help"],
+            &["show"],
+        ] {
+            assert_eq!(parse(bad).unwrap_err().exit_code(), 2, "{home} {bad:?}");
+        }
+    }
+}
+
+/// #133 / ADR 0011: `--force` makes exec, attach, kill, list and monitor use a
+/// home another host owns; the rest parses as without it. It is one of exec's
+/// options, in any order with `--headless` and `--nested` (#139), and the
+/// first argument of the others. A second `--force` is exec's command, as a
+/// repeated option is, and a usage error elsewhere; `home` takes it only after
+/// `release`.
+#[test]
+fn issue133_force_is_an_option_of_every_command_the_owner_check_can_refuse() {
+    let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
+    for tail in [
+        &["exec", "make", "test"][..],
+        &["exec", "--headless", "make"],
+        &["x", "-h", "--", "--force"],
+        &["attach", "01234567"],
+        &["a", "ABCDE-F0"],
+        &["kill", "01234567"],
+        &["list"],
+        &["list", "--json"],
+        &["l", "--json"],
+        &["monitor"],
+        &["m"],
+    ] {
+        let forced = [&[tail[0], "--force"][..], &tail[1..]].concat();
+        let (command, force) = parse(&forced).unwrap().unforced();
+        assert_eq!(command, parse(tail).unwrap(), "{forced:?}");
+        assert!(force, "{forced:?}");
+        assert!(!parse(tail).unwrap().unforced().1, "{tail:?}");
+    }
+    let (command, force) = parse(&["exec", "--force", "--force", "cmd"])
+        .unwrap()
+        .unforced();
+    assert!(force);
+    assert_eq!(
+        command,
+        CliArgs::Exec {
+            lifetime: Lifetime::Ordinary,
+            nested: NestedStart::Warned,
+            command: CommandArgs {
+                command: "--force".into(),
+                args: vec!["cmd".into()],
+            },
+        }
+    );
+    // Among exec's options `--force` goes in any order, once, and combines
+    // with `--headless` and `--nested`.
+    let deliberate = |lifetime| CliArgs::Exec {
+        lifetime,
+        nested: NestedStart::Deliberate,
+        command: CommandArgs {
+            command: "cmd".into(),
+            args: vec![],
+        },
+    };
+    for (args, lifetime) in [
+        (
+            &["exec", "--force", "--nested", "cmd"][..],
+            Lifetime::Ordinary,
+        ),
+        (&["x", "-n", "--force", "cmd"], Lifetime::Ordinary),
+        (&["exec", "-h", "--force", "-n", "cmd"], Lifetime::Headless),
+        (
+            &["x", "--nested", "--headless", "--force", "--", "cmd"],
+            Lifetime::Headless,
+        ),
+    ] {
+        let (command, force) = parse(args).unwrap().unforced();
+        assert!(force, "{args:?}");
+        assert_eq!(command, deliberate(lifetime), "{args:?}");
+    }
+    let (command, force) = parse(&["exec", "--nested", "--force", "--force"])
+        .unwrap()
+        .unforced();
+    assert!(force);
+    assert!(matches!(
+        command,
+        CliArgs::Exec {
+            nested: NestedStart::Deliberate,
+            ..
+        }
+    ));
+    for bad in [
+        &["list", "--force", "--force"][..],
+        &["list", "--json", "--force"],
+        &["monitor", "--force", "extra"],
+        &["attach", "--force"],
+        &["kill", "01234567", "--force"],
+        &["home", "--force"],
+        &["h", "--force", "release"],
+        &["--force", "list"],
+        &["--force"],
+    ] {
+        assert_eq!(parse(bad).unwrap_err().exit_code(), 2, "{bad:?}");
+    }
+}
+
 /// #29: help and version flags parse only when given alone. #287: help has
 /// only its long flag, so `-h` alone is a usage error (2).
 #[test]
@@ -359,12 +487,13 @@ fn issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow()
 }
 
 /// #287: each command and its single-letter shortcut, as the spec lists them.
-const SHORTCUTS: [(&str, &str); 5] = [
+const SHORTCUTS: [(&str, &str); 6] = [
     ("exec", "x"),
     ("attach", "a"),
     ("kill", "k"),
     ("list", "l"),
     ("monitor", "m"),
+    ("home", "h"),
 ];
 
 /// #287: every command's single-letter shortcut is a pure synonym: given any
@@ -372,7 +501,7 @@ const SHORTCUTS: [(&str, &str); 5] = [
 #[test]
 fn shortcuts_parse_exactly_as_their_full_commands() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
-    let tails: [&[&str]; 18] = [
+    let tails: [&[&str]; 25] = [
         &[],
         &["cmd", "--flag", ""],
         &["--", "-cmd"],
@@ -391,6 +520,13 @@ fn shortcuts_parse_exactly_as_their_full_commands() {
         &[""],
         &["--help"],
         &["extra"],
+        &["release"],
+        &["release", "extra"],
+        &["release", "--force"],
+        &["--force"],
+        &["--force", "--json"],
+        &["--force", "01234567"],
+        &["--force", "--headless", "make"],
     ];
     for (full, shortcut) in SHORTCUTS {
         let mut accepted = 0;

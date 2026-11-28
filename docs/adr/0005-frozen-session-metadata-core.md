@@ -54,8 +54,45 @@ but does not use it to authorize stale deletion: `/proc/stat`'s boot epoch can
 change after a wall-clock adjustment. If stable identity is missing, Linux
 can still probe, display and attach to the session, but refuses stale cleanup,
 warns, and retains metadata. Old readers continue to ignore the optional field.
-Shared metadata across PID namespaces is unsupported (ADR 0003).
+A climon2 home shared across PID namespaces or machines is refused (ADR 0011).
 
+## Optional session origin
+
+Decided in [Keep sessions created in another PID namespace or on another
+machine](https://github.com/jackgeek/climon2/issues/133). Writers on every
+platform add `daemon_origin`, where the daemon runs, for diagnostics, without
+changing the frozen fields or requiring a higher `format_version`. It may be
+absent or null in older metadata, and is omitted when the writer cannot read
+where it runs. When present, it is an object with two optional members, each
+omitted when absent:
+
+```json
+{
+  "machine_id": "8f2c4d1e9a7b4c3d8e6f5a4b3c2d1e0f",
+  "pid_namespace": 4026531836
+}
+```
+
+- `machine_id` is the machine's stable identity: on Linux the contents of
+  systemd's `/etc/machine-id`, absent when there is none (as in many
+  container images) or when it is the transient one systemd mounts from
+  `/run/machine-id`; on macOS the hardware UUID (`IOPlatformUUID`, from
+  `gethostuuid`) as 32 lowercase hex digits; on Windows the `MachineGuid`
+  value under `HKLM\SOFTWARE\Microsoft\Cryptography`. Readers accept any
+  non-empty string of ASCII letters, digits and hyphens and only compare it.
+- `pid_namespace` is Linux only: an unsigned 64-bit integer, the inode of the
+  daemon's `/proc/self/ns/pid`. macOS and Windows have no PID namespaces.
+- A malformed origin makes the record unreadable, with the same
+  warning-and-retention behavior as malformed frozen fields.
+
+**Superseded in part:** sharing one climon2 home across machines or PID
+namespaces is refused before any discovery runs ([ADR 0011](0011-one-home-one-host.md)),
+so a reader sees records written by its own host, or, after `c2 home release
+--force`, by the host it took the home from. A reader uses `daemon_origin`
+only to keep the latter: a session whose origin is another host's is uncertain,
+created elsewhere, and never cleaned up. A record without an origin is judged
+by the identity check above, as before. climon2's own machine ID for a
+transient Linux one was dropped with that decision.
 ## Considered options
 
 - **Readers reject a `format_version` they don't know:** rejected. After an upgrade, `list` would hide live sessions from the other version.
@@ -66,8 +103,9 @@ Shared metadata across PID namespaces is unsupported (ADR 0003).
 
 - A metadata file that can't be read (bad JSON, a frozen field missing or of the wrong type, or a session ID that doesn't match the filename) is hidden from `list`, logged as a warning, and never deleted.
 - The stale check compares native process identity, so PID reuse cannot keep
-  stale metadata on disk forever. macOS compares `daemon_start_time`; Linux
-  requires the optional stable identity above. Only a refused socket connection
-  plus proven dead identity permits cleanup, and a non-socket path is never
+  stale metadata on disk forever. macOS and Windows compare
+  `daemon_start_time`; Linux requires the optional stable identity above.
+  Only a refused socket connection plus proven dead identity permits cleanup,
+  and a non-socket path is never
   unlinked as a socket. This is the tenth platform seam (ADR 0003).
 - Golden metadata fixtures in `climon2-core` can only be added to, never edited. The current reader must parse all of them, which is a release gate. From the second release onwards, a packaged end-to-end gate installs the previous release next to the new one and checks that each lists the other's sessions.

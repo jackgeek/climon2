@@ -156,6 +156,7 @@ fn metadata(options: &Options) -> io::Result<SessionMetadata> {
         daemon_pid: std::process::id(),
         daemon_start_time,
         daemon_linux_identity,
+        daemon_origin: daemon_origin(),
         command: display.command,
         args: display.args,
         cwd: display.cwd,
@@ -172,11 +173,44 @@ fn daemon_identity() -> io::Result<(u64, Option<climon2_core::metadata::LinuxPro
     Ok((start_time, process::linux_identity(pid)?))
 }
 
+/// Optional and for diagnostics only (#133, ADR 0011), so a failed read is only
+/// a warning.
+fn daemon_origin() -> Option<climon2_core::metadata::SessionOrigin> {
+    climon2_platform::origin::current()
+        .inspect_err(|error| {
+            tracing::warn!(
+                %error,
+                errno = error.raw_os_error(),
+                "session origin unavailable; the metadata records none"
+            )
+        })
+        .ok()
+}
+
 fn inherited_depth() -> NonZeroU32 {
     std::env::var("CLIMON2_SESSION_DEPTH")
         .ok()
         .and_then(|depth| depth.parse().ok())
         .unwrap_or(NonZeroU32::MIN)
+}
+
+/// The climon2 home must belong to this host (ADR 0011), unless `exec --force`
+/// forced it. The CLI checked it before starting this daemon; the daemon checks
+/// again before anything else, logging why it refuses or what it skips.
+pub fn owned(options: &Options) -> Result<(), Failure> {
+    let checked = climon2_platform::owner::check(&options.home);
+    climon2_core::owner::forgive(checked, options.force)
+        .map(|skipped| {
+            if let Some(refusal) = skipped {
+                tracing::warn!(%refusal, "--force uses this climon2 home without claiming it");
+            }
+        })
+        .map_err(|refusal| refused(&refusal))
+}
+
+fn refused(refusal: &climon2_core::owner::Refusal) -> Failure {
+    tracing::error!(%refusal, "climon2 home refused");
+    Failure::own("this climon2 home belongs to another machine or container, or cannot be checked")
 }
 
 pub fn fault(_log: &logging::LogFile) -> Result<(), Failure> {
