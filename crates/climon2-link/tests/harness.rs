@@ -71,7 +71,7 @@ impl End for Recorder {
 fn send(bytes: &[u8]) -> Output {
     Output {
         bytes: bytes.to_vec(),
-        close: false,
+        ..Output::default()
     }
 }
 
@@ -127,6 +127,48 @@ fn one_02_the_test_supplies_the_time_of_every_step() {
         ]
     );
     assert_eq!(harness.now(), Time::since_start(later));
+}
+
+/// An end that names the same deadline at every step.
+fn due_at(deadline: Duration) -> Recorder {
+    Recorder::new(move |_, _| Output {
+        deadline: Some(Time::since_start(deadline)),
+        ..Output::default()
+    })
+}
+
+/// An end that names a deadline is stepped at exactly that moment, as its
+/// caller must, when the test moves the time past it; the harness shows the
+/// deadline each end named last.
+#[test]
+fn an_end_is_stepped_at_each_deadline_it_names() {
+    let mut harness = Harness::new(due_at(7 * SECOND), due_at(3 * SECOND));
+
+    harness.run();
+    assert_eq!(harness.hub_deadline(), Some(Time::since_start(7 * SECOND)));
+    assert_eq!(
+        harness.relay_deadline(),
+        Some(Time::since_start(3 * SECOND))
+    );
+    harness.advance(10 * SECOND);
+
+    let ticks = [0, 3, 7, 10].map(|seconds| (seconds * SECOND, Seen::Tick));
+    assert_eq!(harness.hub.seen, ticks);
+    assert_eq!(harness.relay.seen, ticks);
+    assert_eq!(harness.now(), Time::since_start(10 * SECOND));
+}
+
+/// An end that names no deadline is stepped only when the test says so.
+#[test]
+fn an_end_with_no_deadline_names_none() {
+    let mut harness = Harness::new(Recorder::silent(), Recorder::silent());
+
+    harness.run();
+    harness.advance(SECOND);
+
+    assert_eq!(harness.hub_deadline(), None);
+    assert_eq!(harness.relay_deadline(), None);
+    assert_eq!(harness.hub.seen.len(), 2);
 }
 
 /// An end that sends eight bytes of the randomness it is handed, once.
@@ -198,6 +240,7 @@ fn a_close_reaches_the_other_end_after_the_last_bytes() {
     let hub = Recorder::new(|seen, _| Output {
         bytes: b"last words".to_vec(),
         close: *seen == Seen::Tick,
+        deadline: None,
     });
     // The relay tries to answer everything, the close too.
     let relay = Recorder::new(|seen, _| match seen {

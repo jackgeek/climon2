@@ -57,6 +57,10 @@ pub struct Output {
     /// Whether to close the byte stream once `bytes` are sent. A caller
     /// never steps an end again after it asks this.
     pub close: bool,
+    /// The moment the end has a deadline, if it has one. When nothing
+    /// arrives sooner, the caller steps the end with [`Input::Tick`] at this
+    /// moment and not later. Each step's answer replaces the one before.
+    pub deadline: Option<Time>,
 }
 
 /// One end of one byte stream between a hub monitor and a relay.
