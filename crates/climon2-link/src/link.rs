@@ -115,6 +115,9 @@ struct Conversation<Ours: Voice, Theirs> {
     inbox: Vec<Ours::Hears>,
     /// When this end last sent a unit and last heard one.
     liveness: Liveness,
+    /// The session streams the other end has broken a rule of, not yet
+    /// taken by the caller.
+    violations: Vec<u32>,
 }
 
 impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
@@ -128,6 +131,7 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
             rules: Rules::default(),
             inbox: Vec::new(),
             liveness: Liveness::new(),
+            violations: Vec::new(),
         };
         if matches!(conversation.role, Role::Hub) {
             conversation.say(conversation.own.encode());
@@ -298,10 +302,24 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
         };
         match heard.judge(record.len(), &mut self.rules) {
             Verdict::Accept => self.inbox.push(heard),
-            Verdict::Broken | Verdict::OutOfOrder | Verdict::Overdrawn => {
-                self.leave(Ours::VIOLATION)
-            }
+            Verdict::Broken => self.leave(Ours::VIOLATION),
+            Verdict::OutOfOrder | Verdict::Overdrawn => self.violated(stream),
             Verdict::Crossed | Verdict::Discarded => {}
+        }
+    }
+
+    /// The other end broke a rule of the live session stream `stream`:
+    /// that stream ends, and the link carries on. The caller is told once,
+    /// and the hub monitor sends Close stream unless it already has.
+    fn violated(&mut self, stream: u32) {
+        let Some(open) = self.rules.violate(stream) else {
+            return;
+        };
+        self.violations.push(stream);
+        let ending = Ours::ending(stream).filter(|_| open);
+        if let Some(ending) = ending {
+            let (stream, bytes) = ending.encode();
+            self.units.send(stream, bytes);
         }
     }
 
@@ -633,6 +651,13 @@ impl HubRun {
             _ => Vec::new(),
         }
     }
+
+    pub(crate) fn violations(&mut self) -> Vec<u32> {
+        match &mut self.stage {
+            HubStage::Talking(conversation) => std::mem::take(&mut conversation.violations),
+            _ => Vec::new(),
+        }
+    }
 }
 
 impl Run for HubRun {
@@ -821,6 +846,13 @@ impl RelayRun {
     pub(crate) fn records(&mut self) -> Vec<HubRecord> {
         match &mut self.stage {
             RelayStage::Talking(conversation) => std::mem::take(&mut conversation.inbox),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn violations(&mut self) -> Vec<u32> {
+        match &mut self.stage {
+            RelayStage::Talking(conversation) => std::mem::take(&mut conversation.violations),
             _ => Vec::new(),
         }
     }

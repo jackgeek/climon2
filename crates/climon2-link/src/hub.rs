@@ -81,6 +81,19 @@ impl HubEnd {
         self.link.as_mut().map(HubRun::records).unwrap_or_default()
     }
 
+    /// Takes the session streams the relay has broken a rule of since the
+    /// last call, in the order it broke them. Each has ended as a stream
+    /// violation and the link carries on: the hub monitor has sent Close
+    /// stream on it, unless it already had, sends nothing more there, and
+    /// discards what the relay sends on it except the Stream ended or
+    /// Stream refused that ends it.
+    pub fn violations(&mut self) -> Vec<u32> {
+        self.link
+            .as_mut()
+            .map(HubRun::violations)
+            .unwrap_or_default()
+    }
+
     /// How far the opening exchange has got, and how it ended.
     pub fn opening(&self) -> &Opening {
         &self.opening

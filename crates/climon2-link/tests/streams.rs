@@ -170,6 +170,20 @@ fn hub_violated(records: &[RelayRecord]) -> bool {
     sent == [VIOLATION] && closed && hub.link() == &left
 }
 
+/// Whether the relay ends only stream 1, as a stream violation, when the
+/// stand-in sends `records`: it sends nothing itself, keeps the link and
+/// tells its caller.
+fn relay_stream_violated(records: &[HubRecord]) -> bool {
+    let (mut relay, sent, closed) = relay_hears(records);
+    sent.is_empty() && !closed && relay.violations() == [1]
+}
+
+/// The same for the hub monitor, which sends Close stream.
+fn hub_stream_violated(records: &[RelayRecord]) -> bool {
+    let (mut hub, sent, closed) = hub_hears(records);
+    sent == [on(1, &[0x23])] && !closed && hub.violations() == [1]
+}
+
 /// STR-02: the hub monitor numbers streams from 1, each the previous plus
 /// one, and never uses a number twice. An end asked to break the rule
 /// refuses, and a relay that receives a broken number ends the link.
@@ -211,8 +225,9 @@ fn str_02_a_reconnect_numbers_its_streams_from_1_again() {
 /// STR-02: the relay answers Open stream with Stream opened or Stream
 /// refused before anything else, sends nothing after Stream ended or Stream
 /// refused, and sends nothing on a stream the hub monitor never opened. An
-/// end asked to break the order refuses; a hub monitor that receives it
-/// ends the link.
+/// end asked to break the order refuses. A hub monitor that receives a
+/// record out of turn on a live stream ends that stream; one on a stream
+/// that has ended or never began ends the link.
 #[test]
 fn str_02_the_relay_answers_first_and_stream_ended_is_last() {
     let (mut relay, _, _) = relay_hears(&[]);
@@ -252,7 +267,11 @@ fn str_02_the_relay_answers_first_and_stream_ended_is_last() {
         &[ended(1)],
         &[opened(1), opened(1)],
         &[opened(1), refused(1)],
-        &[refused(1), event(1)],
+    ] {
+        assert!(hub_stream_violated(out_of_turn), "{out_of_turn:?}");
+    }
+    for out_of_turn in [
+        &[refused(1), event(1)][..],
         &[opened(1), ended(1), event(1)],
         &[opened(1), ended(1), ended(1)],
         &[opened(3)],
@@ -263,7 +282,9 @@ fn str_02_the_relay_answers_first_and_stream_ended_is_last() {
 
 /// STR-02: the hub monitor sends requests only after Stream opened and
 /// before its own Close stream, and nothing after Close stream. Close
-/// stream may come before the relay answers.
+/// stream may come before the relay answers. A relay that receives a
+/// record out of turn on a live stream ends that stream; one on a stream
+/// never opened ends the link.
 #[test]
 fn str_02_the_hub_monitor_sends_in_turn() {
     let (mut hub, mut stand_in) = linked_hub();
@@ -288,26 +309,13 @@ fn str_02_the_hub_monitor_sends_in_turn() {
     assert!(relay_violated(&[request(1)]), "not opened");
     assert!(relay_violated(&[close(1)]), "not opened");
     assert!(
-        relay_violated(&[open(1), close(1), close(1)]),
+        relay_stream_violated(&[open(1), close(1), close(1)]),
         "closed twice"
     );
     assert!(
-        relay_violated(&[open(1), close(1), request(1)]),
+        relay_stream_violated(&[open(1), close(1), request(1)]),
         "after Close"
     );
-}
-
-/// A Request before the relay has answered is out of turn too.
-#[test]
-fn a_request_before_the_relays_answer_ends_the_link() {
-    let (mut relay, mut stand_in) = linked_relay();
-    let bytes = [
-        units_of(&mut stand_in, 1, &samples::open_stream_record()),
-        units_of(&mut stand_in, 1, &hub_bytes(&request(1))),
-    ]
-    .concat();
-    let output = step(&mut relay, LATER, Input::Bytes(&bytes));
-    assert_eq!(stand_in.open(&output.bytes), [VIOLATION]);
 }
 
 /// A hub monitor's record on a stream that has ended may have crossed the

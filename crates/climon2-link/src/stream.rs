@@ -317,14 +317,32 @@ pub(crate) trait Voice {
     type Says: Spoken;
     /// The records the other end sends.
     type Hears: Spoken;
+
+    /// What this end sends itself when the other end breaks a rule of the
+    /// session stream `stream`.
+    fn ending(stream: u32) -> Option<Self::Says>;
 }
 
+/// The hub monitor ends a stream the relay broke with Close stream.
 impl Voice for HubClose {
     type Says = HubRecord;
     type Hears = RelayRecord;
+
+    fn ending(stream: u32) -> Option<HubRecord> {
+        Some(HubRecord {
+            stream,
+            record: HubStream::Close,
+        })
+    }
 }
 
+/// The relay sends nothing itself when the hub monitor breaks a stream:
+/// its caller shuts the stream's client down and sends Stream ended.
 impl Voice for RelayClose {
     type Says = RelayRecord;
     type Hears = HubRecord;
+
+    fn ending(_: u32) -> Option<RelayRecord> {
+        None
+    }
 }

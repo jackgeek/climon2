@@ -64,6 +64,8 @@ struct Lane {
     /// The bytes of events the hub monitor has granted and the relay has
     /// not yet sent.
     credit: u64,
+    /// The other end has broken a rule of the stream.
+    violated: bool,
 }
 
 impl Lane {
@@ -148,18 +150,26 @@ struct Step {
 impl Step {
     /// The step of `record`, which is `length` bytes long, tag included.
     fn of(record: &RelayStream, length: usize) -> Self {
-        let (after_answer, ends, cost) = match record {
-            RelayStream::Opened(_) => (false, false, 0),
-            RelayStream::Refused(_) => (false, true, 0),
-            RelayStream::Ended(_) => (true, true, 0),
-            RelayStream::Event(_) => (true, false, length as u64),
-            RelayStream::RequestRefused(_) => (true, false, 0),
+        let (after_answer, ends) = match record {
+            RelayStream::Opened(_) => (false, false),
+            RelayStream::Refused(_) => (false, true),
+            RelayStream::Ended(_) => (true, true),
+            _ => (true, false),
         };
         Self {
             after_answer,
             ends,
-            cost,
+            cost: cost(record, length),
         }
+    }
+}
+
+/// The credit a relay's record `length` bytes long uses: all of it for an
+/// Event, and none for any other.
+fn cost(record: &RelayStream, length: usize) -> u64 {
+    match record {
+        RelayStream::Event(_) => length as u64,
+        _ => 0,
     }
 }
 
@@ -230,6 +240,20 @@ impl Rules {
             self.live.remove(&stream);
         }
         verdict
+    }
+
+    /// Marks the live `stream`, whose record just broke one of its rules,
+    /// as broken by the other end. From now on it is as if the hub monitor
+    /// had sent Close stream: the hub monitor sends nothing more on it and
+    /// the relay may still answer and end it. Gives nothing when the
+    /// stream was already marked, and otherwise whether the hub monitor
+    /// had yet to send Close stream.
+    pub(crate) fn violate(&mut self, stream: u32) -> Option<bool> {
+        let lane = self.live.get_mut(&stream)?;
+        if std::mem::replace(&mut lane.violated, true) {
+            return None;
+        }
+        Some(!std::mem::replace(&mut lane.closed, true))
     }
 
     /// Judges an advertisement.
