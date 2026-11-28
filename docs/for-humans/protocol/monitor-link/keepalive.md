@@ -1,6 +1,6 @@
 # Keepalive
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements it and the silence threshold; no released program speaks it yet.**
 Either end of a [monitor link](../../../../GLOSSARY.md#monitor-links) sends a
 keepalive to show it is alive when it has nothing else to send. See the
 [overview](../README.md), [glossary](../../../../GLOSSARY.md),

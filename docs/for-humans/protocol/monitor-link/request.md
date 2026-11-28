@@ -1,6 +1,6 @@
 # Request — `0x41` to `0x4b`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements the encoding of every request and its order; no released program speaks it yet, and a broken stream rule still ends the whole link rather than the one stream.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements the encoding of every request and its order; no released program speaks it yet.**
 The [hub monitor](../../../../GLOSSARY.md#monitor-links) sends one client
 interface [request](../TERMS.md#request) on a
 [session stream](../../../../GLOSSARY.md#monitor-links). The

@@ -1,6 +1,6 @@
 # Credit — `0x25`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and its rules; no released program speaks it yet.**
 The [hub monitor](../../../../GLOSSARY.md#monitor-links) grants a
 [session stream](../../../../GLOSSARY.md#monitor-links) more
 [bytes](../TERMS.md#byte) of events. See the [overview](../README.md),

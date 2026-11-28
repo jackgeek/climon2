@@ -3,7 +3,9 @@
 //! half and the relay's half differ up to the two Hellos and share the
 //! conversation that follows.
 
+use crate::backlog::Backlog;
 use crate::keys::{KEY_SIZE, PublicKey, StaticKey};
+use crate::liveness::Liveness;
 use crate::noise::{self, Initiator, Transport};
 use crate::opening::{Opening, Transcript};
 use crate::record::{CLOSE, HELLO, HELLO_MOST, Hello, HubClose, Reason, RelayClose};
@@ -83,6 +85,10 @@ pub enum Refused {
     /// record on a stream that has not begun, has ended or may not carry it
     /// yet, or an advertisement the relay may not make.
     OutOfTurn,
+    /// The record breaks a credit rule: an Event longer than the credit its
+    /// stream holds, or a Credit of nothing or one that would take the
+    /// stream past 4,294,967,295 bytes.
+    Credit,
 }
 
 /// What an end does when the other end's Hello arrives.
@@ -108,6 +114,13 @@ struct Conversation<Ours: Voice, Theirs> {
     rules: Rules,
     /// Records received and not yet taken by the caller.
     inbox: Vec<Ours::Hears>,
+    /// The stream-0 records among them.
+    backlog: Backlog,
+    /// When this end last sent a unit and last heard one.
+    liveness: Liveness,
+    /// The session streams the other end has broken a rule of, not yet
+    /// taken by the caller.
+    violations: Vec<u32>,
 }
 
 impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
@@ -120,6 +133,9 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
             link: Link::Pending,
             rules: Rules::default(),
             inbox: Vec::new(),
+            backlog: Backlog::default(),
+            liveness: Liveness::new(),
+            violations: Vec::new(),
         };
         if matches!(conversation.role, Role::Hub) {
             conversation.say(conversation.own.encode());
@@ -175,44 +191,109 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
 
     /// Takes one input at `now` and gives what to send. The output closes
     /// the byte stream once the connection is over, after everything stream
-    /// 0 has still to send.
+    /// 0 has still to send, or at once, sending nothing, when the link is
+    /// lost to silence.
     fn step(&mut self, now: Time, input: Input<'_>) -> Output {
+        self.take(now, input);
+        if self.silent(now) {
+            return silent_close();
+        }
+        let bytes = self.flush(now);
+        Output {
+            bytes,
+            close: self.over(),
+            deadline: self.deadline(now),
+        }
+    }
+
+    /// Takes one step's input, at `now`.
+    fn take(&mut self, now: Time, input: Input<'_>) {
         match input {
             Input::Tick => {}
             Input::Closed => self.cut_off(),
             Input::Bytes(bytes) => {
                 self.units.receive(bytes);
-                self.read();
+                self.read(now);
             }
         }
+    }
+
+    /// Whether the established link has heard no unit for too long at
+    /// `now`, which ends it as lost.
+    fn silent(&mut self, now: Time) -> bool {
+        let silent = self.established() && self.liveness.silent(now);
+        if silent {
+            self.end(Ended::Lost);
+        }
+        silent
+    }
+
+    /// The units to send at `now`: up to 8 of what is queued, everything
+    /// stream 0 holds once the connection is over, or a keepalive when an
+    /// established end has nothing to send and has sent nothing for long
+    /// enough.
+    fn flush(&mut self, now: Time) -> Vec<u8> {
         let most = if self.over() {
             usize::MAX
         } else {
             UNITS_PER_STEP
         };
-        Output {
-            bytes: self.units.flush(most),
-            close: self.over(),
-            deadline: self.units.pending().then_some(now),
+        let mut bytes = self.units.flush(most);
+        if bytes.is_empty() {
+            bytes = self.keepalive(now);
+        }
+        if !bytes.is_empty() {
+            self.liveness.sent(now);
+        }
+        bytes
+    }
+
+    /// A keepalive, when the link is established and this end has sent
+    /// nothing for long enough at `now`; otherwise nothing.
+    fn keepalive(&mut self, now: Time) -> Vec<u8> {
+        match self.established() && self.liveness.keepalive_due(now) {
+            true => self.units.keepalive_unit(),
+            false => Vec::new(),
         }
     }
 
-    /// Handles every whole record received, until the connection is over.
-    fn read(&mut self) {
+    /// The deadline at `now`: the present moment while units are queued,
+    /// and otherwise the next keepalive or the silence limit of an
+    /// established link.
+    fn deadline(&self, now: Time) -> Option<Time> {
+        if self.units.pending() {
+            return Some(now);
+        }
+        self.established().then(|| self.liveness.deadline())
+    }
+
+    /// Handles every whole unit received at `now`, until the connection
+    /// is over.
+    fn read(&mut self, now: Time) {
         while !self.over() {
             let Some(next) = self.units.next(self.allowed()) else {
                 return;
             };
-            self.take(next);
+            self.handle(now, next);
         }
     }
 
-    /// Handles one whole record, or the fault that came in its place.
-    fn take(&mut self, next: Result<Received, Fault>) {
+    /// Handles one whole unit, which arrived at `now`, or the fault that
+    /// came in its place.
+    fn handle(&mut self, now: Time, next: Result<Option<Received>, Fault>) {
         match next {
-            Ok((stream, record)) => self.record(stream, &record),
+            Ok(ended) => self.heard(now, ended),
             Err(Fault::Undecryptable) => self.cut_off(),
             Err(Fault::Violation) => self.leave(Ours::VIOLATION),
+        }
+    }
+
+    /// A unit that decrypted arrived at `now`, ending a whole record if
+    /// `ended` holds one.
+    fn heard(&mut self, now: Time, ended: Option<Received>) {
+        self.liveness.heard(now);
+        if let Some((stream, record)) = ended {
+            self.record(stream, &record);
         }
     }
 
@@ -240,10 +321,42 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
         let Some(heard) = heard else {
             return self.leave(Ours::VIOLATION);
         };
-        match heard.judge(&mut self.rules) {
-            Verdict::Accept => self.inbox.push(heard),
+        match heard.judge(record.len(), &mut self.rules) {
+            Verdict::Accept => self.deliver(stream, record.len(), heard),
             Verdict::Broken => self.leave(Ours::VIOLATION),
+            Verdict::OutOfOrder | Verdict::Overdrawn => self.violated(stream),
             Verdict::Crossed | Verdict::Discarded => {}
+        }
+    }
+
+    /// Keeps `heard`, a record `length` bytes long on `stream`, for the
+    /// caller. A stream-0 record that would take the queue of those not
+    /// yet taken past its bound is a protocol violation.
+    fn deliver(&mut self, stream: u32, length: usize, heard: Ours::Hears) {
+        if stream == CONTROL && !self.backlog.admit(length) {
+            return self.leave(Ours::VIOLATION);
+        }
+        self.inbox.push(heard);
+    }
+
+    /// Gives the caller the records received since it last took them.
+    fn take_records(&mut self) -> Vec<Ours::Hears> {
+        self.backlog = Backlog::default();
+        std::mem::take(&mut self.inbox)
+    }
+
+    /// The other end broke a rule of the live session stream `stream`:
+    /// that stream ends, and the link carries on. The caller is told once,
+    /// and the hub monitor sends Close stream unless it already has.
+    fn violated(&mut self, stream: u32) {
+        let Some(open) = self.rules.violate(stream) else {
+            return;
+        };
+        self.violations.push(stream);
+        let ending = Ours::ending(stream).filter(|_| open);
+        if let Some(ending) = ending {
+            let (stream, bytes) = ending.encode();
+            self.units.send(stream, bytes);
         }
     }
 
@@ -292,9 +405,7 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
         if bytes.len() > peer.hello.largest_record() as usize {
             return Err(Refused::TooLong);
         }
-        if !record.judge(&mut self.rules).sendable() {
-            return Err(Refused::OutOfTurn);
-        }
+        record.judge(bytes.len(), &mut self.rules).sent()?;
         self.units.send(stream, bytes);
         Ok(())
     }
@@ -573,7 +684,14 @@ impl HubRun {
 
     pub(crate) fn records(&mut self) -> Vec<RelayRecord> {
         match &mut self.stage {
-            HubStage::Talking(conversation) => std::mem::take(&mut conversation.inbox),
+            HubStage::Talking(conversation) => conversation.take_records(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn violations(&mut self) -> Vec<u32> {
+        match &mut self.stage {
+            HubStage::Talking(conversation) => std::mem::take(&mut conversation.violations),
             _ => Vec::new(),
         }
     }
@@ -762,7 +880,14 @@ impl RelayRun {
 
     pub(crate) fn records(&mut self) -> Vec<HubRecord> {
         match &mut self.stage {
-            RelayStage::Talking(conversation) => std::mem::take(&mut conversation.inbox),
+            RelayStage::Talking(conversation) => conversation.take_records(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn violations(&mut self) -> Vec<u32> {
+        match &mut self.stage {
+            RelayStage::Talking(conversation) => std::mem::take(&mut conversation.violations),
             _ => Vec::new(),
         }
     }

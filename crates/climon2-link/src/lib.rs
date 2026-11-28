@@ -8,12 +8,14 @@
 //! lets a test supply the time and the randomness (ONE-01, ONE-02 of the
 //! monitor-link acceptance criteria).
 
+mod backlog;
 pub mod client;
 mod drive;
 mod hub;
 mod keys;
 mod layout;
 mod link;
+mod liveness;
 mod name;
 mod noise;
 mod opening;
@@ -55,6 +57,11 @@ impl Time {
     /// How long after the caller's start this moment is.
     pub const fn elapsed(self) -> Duration {
         self.0
+    }
+
+    /// The moment `by` after this one.
+    pub(crate) fn after(self, by: Duration) -> Self {
+        Self(self.0.saturating_add(by))
     }
 }
 

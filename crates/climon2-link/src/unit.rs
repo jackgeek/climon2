@@ -97,6 +97,12 @@ impl Units {
         bytes
     }
 
+    /// A keepalive, as bytes to send: a unit on stream 0 with no flags and
+    /// an empty fragment.
+    pub(crate) fn keepalive_unit(&mut self) -> Vec<u8> {
+        seal(&mut self.transport, CONTROL, false, &[])
+    }
+
     /// Whether anything queued is still to send.
     pub(crate) fn pending(&self) -> bool {
         !self.queued.is_empty()
@@ -145,20 +151,11 @@ impl Units {
         self.arrived.extend(bytes);
     }
 
-    /// The next whole record the bytes received so far hold: its stream and
-    /// the record. Nothing when more bytes are needed. After a fault the
-    /// connection is over and this is not called again.
-    pub(crate) fn next(&mut self, allowed: Allowed) -> Option<Result<Received, Fault>> {
-        loop {
-            if let Some(found) = self.next_unit(allowed)?.transpose() {
-                return Some(found);
-            }
-        }
-    }
-
-    /// Takes the next whole unit: the record it ends, if it ends one.
-    /// Nothing when the unit is not whole yet.
-    fn next_unit(&mut self, allowed: Allowed) -> Option<Result<Option<Received>, Fault>> {
+    /// Takes the next whole unit the bytes received so far hold: the record
+    /// it ends, its stream and the record, if it ends one. Nothing when the
+    /// unit is not whole yet. Every unit that gives no fault decrypted.
+    /// After a fault the connection is over and this is not called again.
+    pub(crate) fn next(&mut self, allowed: Allowed) -> Option<Result<Option<Received>, Fault>> {
         let ciphertext = self.unit()?;
         let plaintext = ciphertext.and_then(|ciphertext| self.open(&ciphertext));
         Some(plaintext.and_then(|plaintext| self.fragment(&plaintext, allowed)))

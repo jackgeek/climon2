@@ -337,21 +337,28 @@ fn a_handshake_message_of_another_length_ends_the_connection_at_once() {
 }
 
 /// A Hello that arrives at the very moment of the deadline is in time, at
-/// either end, and once the link is established no deadline is named.
+/// either end. Once the link is established the deadline named is the next
+/// keepalive's, 5 seconds after the end last sent: the relay sent its
+/// Hello now, and the hub monitor, silent since its own Hello, sends a
+/// keepalive now.
 #[test]
 fn a_hello_at_the_deadline_is_in_time() {
+    let keepalive_due = Some(Time::since_start(35 * SECOND));
     let mut relay = relay_end(relay_key(), &[hub_key().public()]);
     let mut stand_in = StandIn::dial(&mut relay, [0x11; 32], relay_key().public());
     let hello = stand_in.record(&wire::HELLO);
     let output = step(&mut relay, 30 * SECOND, Input::Bytes(&hello));
-    assert!(!output.close && output.deadline.is_none());
+    assert!(!output.close);
+    assert_eq!(output.deadline, keepalive_due);
     assert!(matches!(relay.link(), Link::Established(_)));
 
     let mut hub = hub_end(hub_key(), relay_key().public());
     let mut stand_in = StandIn::answer(&mut hub, [0x22; 32]);
     let hello = stand_in.record(&wire::relay_hello_record());
     let output = step(&mut hub, 30 * SECOND, Input::Bytes(&hello));
-    assert!(!output.close && output.deadline.is_none());
+    assert!(!output.close);
+    assert_eq!(output.deadline, keepalive_due);
+    assert_eq!(stand_in.open(&output.bytes), [[0; 5]], "a keepalive");
     assert!(matches!(hub.link(), Link::Established(_)));
 }
 

@@ -1,6 +1,6 @@
 # Close stream — `0x23`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and its order; no released program speaks it yet, and a broken stream rule still ends the whole link rather than the one stream.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and its order; no released program speaks it yet.**
 The [hub monitor](../../../../GLOSSARY.md#monitor-links) asks the
 [relay](../../../../GLOSSARY.md#monitor-links) to stop a stream's client. See
 the [overview](../README.md), [glossary](../../../../GLOSSARY.md),
