@@ -97,6 +97,7 @@ link code uses none of them: its callers do, and pass time and randomness in.
   `LinkStream::read(&mut [u8], deadline)` reads what has arrived, `Ok(0)` at
   the end of the stream; `write_all` sends. Every expired deadline is
   `TimedOut`, and `dial` and `read` refuse a zero deadline as `InvalidInput`.
+  Unix only: monitor links on Windows are not yet specified.
 - `key_storage::KeyStore::open(&Path)` is the owner-only `links/` folder,
   through `private::private_directory`. `store(name, contents)` writes a new
   owner-only temporary file beside the target, flushes it and renames it into

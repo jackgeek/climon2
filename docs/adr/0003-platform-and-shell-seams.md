@@ -37,8 +37,8 @@ Seams 11 to 14 serve monitor links
 ([#488](https://github.com/jackgeek/climon2/issues/488)). The link code
 reaches none of them: its callers do, and pass time and randomness in. Each
 has one contract suite, `tests/seam_*.rs` in `climon2-platform`, that every
-platform's implementation passes by itself. Key storage is Unix-only until
-monitor links on Windows are specified.
+platform's implementation passes by itself. Sockets and key storage are
+Unix-only until monitor links on Windows are specified.
 
 More seams may emerge after the first release. Everything else counts as platform-neutral.
 

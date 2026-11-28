@@ -10,11 +10,15 @@
 //!
 //! Every expired deadline is a `TimedOut` error, and a zero deadline is
 //! refused as `InvalidInput` by `dial` and `read`.
+//!
+//! Unix only: monitor links on Windows are not yet specified, and Windows
+//! code belongs in a registered Windows file with tests that run there.
 
 use crate::waiting::{self, Interest, Watch};
 use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    os::fd::AsFd,
     time::Duration,
 };
 
@@ -94,14 +98,6 @@ fn expired(error: io::Error) -> io::Error {
     }
 }
 
-#[cfg(unix)]
 fn watch(listener: &TcpListener) -> Watch<'_> {
-    use std::os::fd::AsFd;
     Watch::new(listener.as_fd(), Interest::Read)
-}
-
-#[cfg(windows)]
-fn watch(listener: &TcpListener) -> Watch<'_> {
-    use std::os::windows::io::AsSocket;
-    Watch::new(listener.as_socket(), Interest::Read)
 }
