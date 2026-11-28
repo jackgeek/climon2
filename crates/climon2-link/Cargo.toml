@@ -7,3 +7,14 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# The Noise framework for the pinned-key handshake and the units. Pinned to
+# one exact version and unaudited: an accepted risk (README.md). No default
+# features: only X25519, ChaCha20-Poly1305 and SHA-256 are built, and the
+# crate's own source of randomness is not.
+snow = { version = "=0.10.0", default-features = false, features = [
+    "use-chacha20poly1305",
+    "use-curve25519",
+    "use-sha2",
+] }
