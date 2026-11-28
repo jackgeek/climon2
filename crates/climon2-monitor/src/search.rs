@@ -3,7 +3,8 @@
 //! End edit, and that a bracketed paste fills as one line. It holds at most
 //! `ui.search_bytes` UTF-8 bytes: an edit that would exceed them is refused
 //! whole. A row matches when every search character occurs, in order and
-//! ignoring case, in its displayed status, a space and its label, as
+//! ignoring case, in its displayed status, a space, its machine and a
+//! space when there is a machine column, and its label, as
 //! `fuzzy-matcher`'s `SkimMatcherV2` finds them; scores are never used.
 use crate::registry::{View, clip};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -130,9 +131,12 @@ impl Search {
     }
 
     /// Whether `row` matches: every search character in order, ignoring
-    /// case, in its displayed status, a space, then its label.
+    /// case, in its displayed status, a space, its machine and a space when
+    /// there is a machine column (#199, item 1), then its label.
     pub fn matches(&self, row: &View) -> bool {
-        let choice = format!("{} {}", row.status, row.label).to_lowercase();
+        let machine = row.machine.as_ref().map(|machine| format!("{machine} "));
+        let machine = machine.unwrap_or_default();
+        let choice = format!("{} {machine}{}", row.status, row.label).to_lowercase();
         let pattern = self.text.to_lowercase();
         self.matcher.fuzzy_match(&choice, &pattern).is_some()
     }
@@ -223,12 +227,14 @@ fn in_line(character: char, after_carriage_return: bool) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::SessionAt;
     use std::time::SystemTime;
 
     fn row(status: &str, label: &str) -> View {
         View {
-            id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
+            id: SessionAt::local("00000000-0000-4000-8000-000000000001".parse().unwrap()),
             status: status.to_owned(),
+            machine: None,
             label: label.to_owned(),
             since: SystemTime::UNIX_EPOCH,
         }
@@ -308,6 +314,35 @@ mod tests {
                 "{query:?} in {label:?}"
             );
         }
+    }
+
+    /// SEL-01 (pure supplement; #199, item 1): with a machine column, the
+    /// search covers status, a space, the machine, a space, then the
+    /// label, in that order; without one, the machine is not there to
+    /// match.
+    #[test]
+    fn sel_01_search_covers_status_machine_and_title() {
+        let on = |machine: &str| View {
+            machine: Some(machine.to_owned()),
+            ..row("Running", "vim notes")
+        };
+        let cases = [
+            ("buildbox", "buildbox", true),
+            ("local", "local", true),
+            ("local", "buildbox", false),
+            ("run build vim", "buildbox", true),
+            ("running local vim", "local", true),
+            ("vim build", "buildbox", false),
+            ("box vim", "buildbox", true),
+        ];
+        for (query, machine, expected) in cases {
+            assert_eq!(
+                searching(query).matches(&on(machine)),
+                expected,
+                "{query:?} on {machine:?}"
+            );
+        }
+        assert!(!searching("local").matches(&row("Running", "vim notes")));
     }
 
     /// SEL-02 (pure supplement, editing): typed characters insert at the

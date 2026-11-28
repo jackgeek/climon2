@@ -44,13 +44,14 @@ flowchart TB
         client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
         library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
         monitor -->|"monitor pair: pairing and the first monitor link over TCP/IP"| relay
-        monitor -.->|"hub monitor: monitor links carrying sessions; planned"| relay
+        monitor -->|"hub monitor: monitor links carrying advertisement over TCP/IP"| relay
+        monitor -.->|"hub monitor: session streams over monitor links; planned"| relay
         web -.->|"hub monitor: monitor link over TCP/IP; planned"| relay
         cli -.->|"web: execs own version; planned"| web
         cli -->|"relay / r: execs own version"| relay
         web -.->|"hello probes for discovery; planned"| daemon
         web -.->|"loads session-version library, as the monitor does; planned"| library
-        relay -.->|"hello probes for discovery on its own machine; planned"| daemon
+        relay -->|"hello probes for discovery on its own machine, only while linked"| daemon
         relay -.->|"loads session-version library on its own machine; planned"| library
         browser -.->|"web view over WebSocket; planned"| web
     end

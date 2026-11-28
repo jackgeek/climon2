@@ -107,8 +107,14 @@ fn allowed_internal_dependencies(name: &str) -> &[&str] {
             &["climon2-core", "climon2-platform"]
         }
         // ADR 0011: the relay side of monitor links is built on the link
-        // code (#501), and the relay never depends on the monitor library.
-        "climon2-relay" => &["climon2-core", "climon2-platform", "climon2-link"],
+        // code (#501), it discovers the sessions it advertises (#502), and
+        // the relay never depends on the monitor library.
+        "climon2-relay" => &[
+            "climon2-core",
+            "climon2-platform",
+            "climon2-link",
+            "climon2-discovery",
+        ],
         "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
         "climon2-monitor" => &[
@@ -418,6 +424,7 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-relay", "climon2-platform", None),
         ("climon2-relay", "climon2-test-term", Some("dev")),
         ("climon2-relay", "climon2-link", None),
+        ("climon2-relay", "climon2-discovery", None),
         ("climon2-monitor", "climon2-link", None),
     ] {
         package.name = from.to_owned();

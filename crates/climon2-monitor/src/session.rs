@@ -2,11 +2,11 @@
 //! status, control and error, and what its canvas shows, as read-only
 //! views of its terminal's model. What each looks like on a device is the
 //! consumer's.
+use crate::machine::SessionAt;
 use crate::{
     registry::{self, Kind, Recovery, Registry},
     terminal::{Control, Terminal},
 };
-use climon2_core::SessionId;
 use climon2_vt::view as vt;
 
 /// What a row's recovery says once its daemon is gone (owner decision on
@@ -15,7 +15,7 @@ pub const GONE: &str = "Session no longer exists";
 
 /// The selected session as the top row and canvas show it.
 pub struct Session<'a> {
-    pub id: &'a SessionId,
+    pub id: &'a SessionAt,
     pub label: &'a str,
     pub status: &'a str,
     pub control: &'a str,
@@ -80,7 +80,7 @@ pub fn diagnostic(recovery: &Recovery) -> &str {
 }
 
 /// What `registry` says of `id`'s row beyond its view, if it has one.
-pub(crate) fn shown<'a>(registry: &'a Registry, id: &SessionId) -> Option<Shown<'a>> {
+pub(crate) fn shown<'a>(registry: &'a Registry, id: &SessionAt) -> Option<Shown<'a>> {
     Some(Shown {
         kind: registry.kind(id)?,
         finished: registry.finished(id),
@@ -402,8 +402,9 @@ mod tests {
     #[test]
     fn a_gone_session_says_so_in_its_error_slot_over_a_cancelled_request() {
         let row = View {
-            id: SessionId::from_bytes([1; 16]),
+            id: SessionAt::local(climon2_core::SessionId::from_bytes([1; 16])),
             status: "Unavailable".into(),
+            machine: None,
             label: "Lost".into(),
             since: std::time::SystemTime::UNIX_EPOCH,
         };

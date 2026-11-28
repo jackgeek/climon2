@@ -8,7 +8,7 @@
 //! nothing else it receives, pastes and mouse reports included, does
 //! anything, so no input reaches a session.
 use crate::router::{Key, Routed};
-use climon2_core::SessionId;
+use climon2_monitor::SessionAt;
 use climon2_monitor::{Offer, View, truncate};
 use ratatui::{
     buffer::Buffer,
@@ -24,12 +24,12 @@ pub(crate) enum Decision {
     /// Nothing is sent and nothing changes.
     Cancel,
     /// The offer, as it stands now, is confirmed for this session.
-    Confirm(SessionId),
+    Confirm(SessionAt),
 }
 
 /// The open confirmation: its session and which button has the focus.
 pub(crate) struct Confirmation {
-    target: SessionId,
+    target: SessionAt,
     /// The confirming button has the focus; Cancel has it at first.
     confirming: bool,
 }
@@ -63,14 +63,14 @@ pub(crate) fn requested(input: &Routed) -> bool {
 }
 
 impl Confirmation {
-    pub(crate) fn new(target: SessionId) -> Self {
+    pub(crate) fn new(target: SessionAt) -> Self {
         Self {
             target,
             confirming: false,
         }
     }
 
-    pub(crate) fn target(&self) -> &SessionId {
+    pub(crate) fn target(&self) -> &SessionAt {
         &self.target
     }
 
@@ -174,8 +174,8 @@ mod tests {
     use std::time::SystemTime;
     use unicode_width::UnicodeWidthStr;
 
-    fn id() -> SessionId {
-        "00000000-0000-4000-8000-0000000000d1".parse().unwrap()
+    fn id() -> SessionAt {
+        SessionAt::local("00000000-0000-4000-8000-0000000000d1".parse().unwrap())
     }
 
     fn key(bytes: &[u8]) -> Routed {
@@ -186,6 +186,7 @@ mod tests {
         View {
             id: id(),
             status: status.to_owned(),
+            machine: None,
             label: label.to_owned(),
             since: SystemTime::UNIX_EPOCH,
         }

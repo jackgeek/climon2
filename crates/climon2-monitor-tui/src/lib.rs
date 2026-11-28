@@ -27,7 +27,7 @@ mod screen;
 mod selector;
 mod toast;
 
-use climon2_core::{SessionId, exit::CLIMON2_ERROR, monitor::MonitorArgs, protocol::TerminalSize};
+use climon2_core::{exit::CLIMON2_ERROR, monitor::MonitorArgs, protocol::TerminalSize};
 use climon2_monitor::{
     self as library, Choice, Consumer, Drive, Inputs, Look, Monitor, Startup, System, TICK, Target,
     Verdict, View,
@@ -269,7 +269,7 @@ struct Interface {
 /// The selected session, whether a modal covers it, and the authority its
 /// control period and restoration hold, if any: any change is a target
 /// change (spec #73, "Target changes").
-type InputContext = (Option<SessionId>, bool, Option<library::Authority>);
+type InputContext = (Option<library::SessionAt>, bool, Option<library::Authority>);
 
 impl Interface {
     fn start(size: TerminalSize, started: Started) -> io::Result<Self> {

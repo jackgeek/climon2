@@ -7,7 +7,8 @@ use crate::{
     selector::Selector,
     toast::{self, LANE},
 };
-use climon2_core::{SessionId, keys::ControlKey, protocol::TerminalSize};
+use climon2_core::{keys::ControlKey, protocol::TerminalSize};
+use climon2_monitor::SessionAt;
 use climon2_monitor::view::{self as vt, Content, CursorShape, Modes, MouseReporting, Underline};
 pub(crate) use climon2_monitor::{Canvas, Placeholder, Session};
 use climon2_monitor::{GONE, Recovery, View, toast::Toasts, truncate};
@@ -157,7 +158,7 @@ pub(crate) struct Screen {
 
 /// A session's canvas as painted from a coherent view, at one host size.
 struct Coherent {
-    id: SessionId,
+    id: SessionAt,
     /// The whole frame's buffer; only the rows below the top row are the
     /// canvas.
     buffer: Buffer,
@@ -384,7 +385,7 @@ impl Screen {
     /// cursor its view shows, if any.
     fn canvas(
         &mut self,
-        id: &SessionId,
+        id: &SessionAt,
         canvas: &Canvas<'_>,
         (buffer, underlines): (&mut Buffer, &mut Underlines),
         below: Rect,
@@ -448,7 +449,7 @@ impl Screen {
     /// any overlay are drawn as ever.
     fn view(
         &mut self,
-        id: &SessionId,
+        id: &SessionAt,
         view: &vt::View<'_>,
         buffer: &mut Buffer,
         underlines: &mut Underlines,
@@ -835,8 +836,8 @@ mod tests {
 
     const HINT: &str = "Ctrl+] then s: sessions";
 
-    fn id() -> SessionId {
-        "00000000-0000-4000-8000-000000000001".parse().unwrap()
+    fn id() -> SessionAt {
+        SessionAt::local("00000000-0000-4000-8000-000000000001".parse().unwrap())
     }
 
     /// The top row of a selected session `width` cells wide, as text.
@@ -1198,8 +1199,9 @@ mod tests {
     #[test]
     fn the_body_says_the_startup_progress_or_the_state_and_any_incompleteness() {
         let row = View {
-            id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
+            id: id(),
             status: "Idle".into(),
+            machine: None,
             label: "Row".into(),
             since: std::time::SystemTime::UNIX_EPOCH,
         };
@@ -1581,7 +1583,7 @@ mod tests {
         let mut model = model(6, 2, b"\x1b[4:3mold\x1b[0m");
         let mut parser = Parser::new();
         let calls = std::cell::Cell::new(0);
-        let view = |screen: &mut Screen, model: &Model, id: &SessionId, cols| {
+        let view = |screen: &mut Screen, model: &Model, id: &SessionAt, cols| {
             let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 3));
             // Each frame's top row is its own.
             calls.set(calls.get() + 1);
@@ -1609,7 +1611,7 @@ mod tests {
             .feed(&mut parser, b"\x1b[?2026h\x1b[2J\x1b[Hne")
             .unwrap();
         assert_eq!(view(&mut screen, &model, &id(), 6), old);
-        let other: SessionId = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+        let other = SessionAt::local("00000000-0000-4000-8000-000000000002".parse().unwrap());
         let half = (
             vec!["ne".to_owned(), String::new()],
             Underlines::new(),

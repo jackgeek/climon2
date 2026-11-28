@@ -48,6 +48,7 @@ flowchart TB
     monitor --> platform
     monitor --> vt
     relay --> core
+    relay --> discovery
     relay --> link
     relay --> platform
     tui --> core
@@ -66,11 +67,11 @@ flowchart TB
 | `climon2-platform` | The shared platform seams of [ADR 0003](../../adr/0003-platform-and-shell-seams.md): connections, processes, PTYs, terminals, the runtime directory and logging. |
 | `climon2-core` | Platform-neutral session contracts, such as identity, configuration, the hello, metadata and exit status. It parses and applies policy, never performs platform I/O. |
 | `climon2-vt` | The virtual terminal of the session daemon and of the monitor library's per-session models: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
-| `climon2-discovery` | Session discovery shared by the CLI, which runs whole passes, and the [monitor](../../../GLOSSARY.md#sessions), which runs incremental, bounded passes. |
+| `climon2-discovery` | Session discovery shared by the CLI, which runs whole passes, and the [monitor](../../../GLOSSARY.md#sessions) and the relay, which run incremental, bounded passes. |
 | `climon2-monitor-tui` | The monitor's terminal interface, with the `climon2-monitor` binary that `c2 monitor` starts: it owns the host terminal, decodes its input into the monitor library's actions and paints what the library offers with Ratatui. |
 | `climon2-monitor` | The [monitor library](../../../GLOSSARY.md#sessions): a whole monitor with no interface of its own, which tracks every live session and decides what each action does. One consumer thread steps it; the terminal interface is its one consumer today. |
 | `climon2-embed` | [Client embedding](../../../GLOSSARY.md#sessions): loading a release's client library and running one client instance for one session. The monitor uses it; the relay will. |
-| `climon2-relay` | The [relay](../../../GLOSSARY.md#monitor-links) that `c2 relay` runs on macOS and Linux, with a terminal interface of its own. It binds its listener, mints link invitations, pairs with hub monitors and accepts their links. It never depends on the monitor library. |
+| `climon2-relay` | The [relay](../../../GLOSSARY.md#monitor-links) that `c2 relay` runs on macOS and Linux, with a terminal interface of its own. It binds its listener, mints link invitations, pairs with hub monitors, accepts their links and, while linked, advertises its home's sessions. It never depends on the monitor library. |
 | `climon2-link` | The link code of [monitor links](../../../GLOSSARY.md#monitor-links): what a hub monitor and a relay say to each other over a plain byte stream. It performs no input or output and takes the time and its randomness from its caller. It holds the opening exchange, the pinned-key handshake, framing and pairing, which the monitor library and the relay run over their TCP connections. |
 
 ## Planned crates
@@ -79,9 +80,9 @@ Only the crates that [ADR 0011](../../adr/0011-monitor-library-and-client-embedd
 plans, and the normal dependencies planned between them and the shipped
 crates. None of these edges exists yet, so every arrow is dashed. Crates that
 exist today are marked `(exists)`; the edges between them, including the
-relay's edges to `core`, `platform` and `climon2-link` and the monitor
-library's edge to `climon2-link`, are in the diagram above and are not
-repeated here.
+relay's edges to `core`, `platform`, `climon2-discovery` and `climon2-link`
+and the monitor library's edge to `climon2-link`, are in the diagram above
+and are not repeated here.
 
 ```mermaid
 flowchart TB
@@ -99,7 +100,6 @@ flowchart TB
     web -.-> platform
     web -.-> core
     relay -.-> embed
-    relay -.-> discovery
     link -.-> core
 ```
 
@@ -252,11 +252,13 @@ unchanged.
 
 **Current (#499):** the [relay](../../../GLOSSARY.md#monitor-links) is its own
 shipped crate, `climon2-relay`, with a library and the `climon2-relay` binary.
-It consumes only `core` and `platform` so far; the architecture guard rejects
-any other workspace edge, including one to `climon2-monitor`
+It consumes `core`, `platform`, `climon2-link` (#501) and
+`climon2-discovery` (#502), which finds the sessions it advertises while a
+link is established; the architecture guard rejects any other workspace edge,
+including one to `climon2-monitor`
 ([ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md), rule 2)
-and to `climon2-vt` (rule 4). Its edges to `climon2-embed` and
-`climon2-discovery` stay planned until the relay serves sessions. Its
+and to `climon2-vt` (rule 4). Its edge to `climon2-embed` stays planned until
+the relay opens session streams. Its
 real-terminal tests consume `climon2-test-term` on Unix, and the harness
 consumes it only to unify `test-hooks` into the test build. Ratatui is a
 dependency of this crate as well as of the monitor's terminal interface.
@@ -273,7 +275,8 @@ to `core` is under [Planned crates](#planned-crates).
 **Current (#501):** the monitor library and the relay each consume
 `climon2-link`, the only two crates the architecture guard lets depend on
 it: the library holds the hub monitor's side of pairing, which
-`c2 monitor pair` runs, and the relay holds its own side. The terminal
+`c2 monitor pair` runs, and of the links that bring each relay's
+advertised sessions into its rows (#502), and the relay holds its own side. The terminal
 interface and the CLI reach the link code only through them. The test-only
 `climon2-e2e` consumes it as a dev-dependency for the
 [link peer stand-in](../../../GLOSSARY.md#testing), which speaks the link's

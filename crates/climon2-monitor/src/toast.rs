@@ -10,8 +10,8 @@
 //! title has been written to the consumer's device (owner decision on #115,
 //! 2026-11-17). Where a toast sits, whether it fits and what it covers are
 //! its consumer's to say (ADR 0011): the queue asks, and never places one.
+use crate::machine::SessionAt;
 use crate::registry::News;
-use climon2_core::SessionId;
 use std::{
     collections::{BTreeSet, VecDeque},
     time::{Duration, Instant},
@@ -52,7 +52,7 @@ pub struct Toasts {
     hint: Option<String>,
     /// What each session already announced: toasted, or a final outcome
     /// first learned while viewed.
-    ledger: BTreeSet<(SessionId, News)>,
+    ledger: BTreeSet<(SessionAt, News)>,
     waiting: VecDeque<Toast>,
     /// The [`MORE`] toast follows the waiting ones.
     more: bool,
@@ -84,7 +84,7 @@ impl Toasts {
     /// learned while viewed is never toasted; an episode first seen while
     /// viewed stays eligible, to be announced again unviewed once a menu
     /// opens.
-    pub fn announce(&mut self, id: &SessionId, news: News, label: String, viewed: bool) {
+    pub fn announce(&mut self, id: &SessionAt, news: News, label: String, viewed: bool) {
         let attention = matches!(news, News::Attention(_));
         let key = (id.clone(), news);
         if (viewed && attention) || self.ledger.contains(&key) {
@@ -270,10 +270,9 @@ pub fn text(elapsed: Duration, schedule: &Schedule) -> Text {
 mod tests {
     use super::*;
 
-    fn id(suffix: u8) -> SessionId {
-        format!("00000000-0000-4000-8000-0000000000{suffix:02x}")
-            .parse()
-            .unwrap()
+    fn id(suffix: u8) -> SessionAt {
+        let id = format!("00000000-0000-4000-8000-0000000000{suffix:02x}");
+        SessionAt::local(id.parse().unwrap())
     }
 
     fn ms(millis: u64) -> Duration {
@@ -327,7 +326,7 @@ mod tests {
     fn each_episode_and_final_outcome_toasts_once_unless_viewed() {
         let mut toasts = Toasts::new(Some(HINT.to_owned()));
         let (alpha, beta) = (id(1), id(2));
-        let announce = |toasts: &mut Toasts, id: &SessionId, news, viewed| {
+        let announce = |toasts: &mut Toasts, id: &SessionAt, news, viewed| {
             toasts.announce(id, news, format!("{news:?} {id}"), viewed);
         };
         announce(&mut toasts, &alpha, News::Attention(1), false);

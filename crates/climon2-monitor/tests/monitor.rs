@@ -11,7 +11,7 @@ use climon2_core::{
 };
 use climon2_monitor::{
     Action, Canvas, Choice, Consumer, Drive, Event, Inputs, Look, Monitor, NO_ATTENTION, Paste,
-    System, Verdict, load, toast::Toast,
+    SessionAt, System, Verdict, load, toast::Toast,
 };
 use std::{
     fs,
@@ -147,8 +147,9 @@ fn uncertain(home: &Path, id: &SessionId) {
 #[test]
 fn a_discovered_session_is_listed_and_selected_through_the_library() {
     let (_directory, root) = home();
-    let id: SessionId = "0d5c0000-0000-4000-8000-0000000004a0".parse().unwrap();
-    uncertain(&root, &id);
+    let session: SessionId = "0d5c0000-0000-4000-8000-0000000004a0".parse().unwrap();
+    uncertain(&root, &session);
+    let id = SessionAt::local(session);
     let mut monitor = started(&root);
     let consumer = Fake::default();
     until(&mut monitor, &consumer, |monitor| monitor.listed(&id));
@@ -186,8 +187,9 @@ fn a_discovered_session_is_listed_and_selected_through_the_library() {
 #[test]
 fn an_uncontrolled_session_takes_no_input_and_its_delete_goes_under_way() {
     let (_directory, root) = home();
-    let id: SessionId = "0d5c0000-0000-4000-8000-0000000004a1".parse().unwrap();
-    uncertain(&root, &id);
+    let session: SessionId = "0d5c0000-0000-4000-8000-0000000004a1".parse().unwrap();
+    uncertain(&root, &session);
+    let id = SessionAt::local(session);
     let mut monitor = started(&root);
     let consumer = Fake::default();
     until(&mut monitor, &consumer, |monitor| monitor.listed(&id));

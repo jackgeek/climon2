@@ -48,6 +48,7 @@ mod queue;
 
 use crate::registry::{Answer, Final, Outcome, Report, Termination, Verdict};
 use crate::{
+    machine::SessionAt,
     registry::ClientEvent,
     shutdown::{self, Evidence},
     terminal::{Presentation, Request},
@@ -239,6 +240,15 @@ impl Supervisor {
     /// not be submitted, is reported as [`Presentation::Answered`].
     pub(crate) fn request(&self, id: SessionId, request: Request) {
         let _ = self.commands.send(Command::Request(id, request));
+    }
+
+    /// Submits `request` to `id`'s client when it is a local session's. A
+    /// remote session's client is reached through its session stream
+    /// (#503), never through this supervisor.
+    pub(crate) fn route(&self, id: &SessionAt, request: Request) {
+        if let Some(local) = id.local_id() {
+            self.request(local.clone(), request);
+        }
     }
 
     /// Discovery proved `id`'s daemon gone: nothing retries it any more
@@ -3770,6 +3780,29 @@ mod tests {
             supervisor.reports.try_iter().collect::<Vec<_>>(),
             [(id, ClientEvent::Ended)]
         );
+    }
+
+    /// #502: a request for a local session reaches the supervisor, which
+    /// refuses it at once while no client is open; one for a remote session
+    /// never does.
+    #[test]
+    fn only_a_local_sessions_requests_are_routed_to_its_client() {
+        let id = session(6, 1);
+        let Supervised {
+            supervisor,
+            directory: _home,
+            ..
+        } = supervisor(1, 20_000, fake_library());
+        let relay = climon2_link::PublicKey::from_bytes([1; 32]);
+        supervisor.route(&SessionAt::remote(relay, id.clone()), Asked::Acquire);
+        supervisor.route(&SessionAt::local(id.clone()), Asked::Acquire);
+        let refused = presented(Presentation::Answered(
+            Asked::Acquire,
+            Err("the session's client is not connected".into()),
+        ));
+        assert_eq!(next(&supervisor), (id, refused));
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(supervisor.reports.try_iter().count(), 0);
     }
 
     /// Client supervisor (#108): Acquire, Ready and Resize are submitted with

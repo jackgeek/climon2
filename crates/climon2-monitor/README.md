@@ -49,7 +49,7 @@ monitor on a home of their own with no terminal.
 
 | Crate | Modules |
 | --- | --- |
-| `climon2-monitor` (this crate) | `monitor` (the stepped monitor and its shutdown rounds), `action`, `consumer`, `session` (what the top row and canvas show of the selected session), `registry`, `discovery`, `initial`, `supervisor`, `terminal`, `pressure`, `cadence` (the work quanta), `attention` (deferred acknowledgement, the jump's notice, which attention state the host last heard), `toast` (the queue, its ledger and timing), `search`, `delete` (where a Delete leaves the selection), `shutdown`, `startup` (the home, the install layout and the configuration), `links` (the hub monitor's side of monitor links: pairing, #501) |
+| `climon2-monitor` (this crate) | `monitor` (the stepped monitor and its shutdown rounds), `action`, `consumer`, `session` (what the top row and canvas show of the selected session), `registry`, `discovery`, `initial`, `supervisor`, `terminal`, `pressure`, `cadence` (the work quanta), `attention` (deferred acknowledgement, the jump's notice, which attention state the host last heard), `toast` (the queue, its ledger and timing), `search`, `delete` (where a Delete leaves the selection), `shutdown`, `startup` (the home, the install layout and the configuration), `links` (the hub monitor's side of monitor links: pairing, #501), `remote` (its links to the relays it remembers, #502), `machine` (a session by its machine and session ID, #502) |
 | [`climon2-monitor-tui`](../climon2-monitor-tui/README.md) | `lib` (the host loop, which steps the monitor and delivers its events), `host`, `router`, `keys`, `mouse`, `selector` (navigation, its search box and drawing), `introduction`, `preference`, `screen`, `paint`, `frames` (the render cadence), `toast` (placement, hit-testing and drawing), `delete` (the confirmation), `attention` (the host attention reports' bytes), `failstop` |
 
 ## Startup, before the host terminal changes
@@ -234,7 +234,7 @@ Windows; the CLI's `tests/monitor_windows.rs` drives the packaged monitor.
   pass cannot be interrupted, and it changes nothing; only shutdown joins
   the thread, once its current pass ends (#118).
 - **The registry** (`registry.rs`) is pure and the single owner of row state,
-  keyed by full session ID: the discovery outcome and metadata, the connection
+  keyed by machine and full session ID ([remote sessions](#remote-sessions-in-the-selector-502)): the discovery outcome and metadata, the connection
   status with the time the monitor entered it, the latest nonempty daemon
   title, and from its client the latest daemon status (`status-v1`: state
   and the daemon's stored change time) and the final outcome (exit code or
@@ -1122,6 +1122,7 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Host too small | `Terminal too small` | `screen.rs` |
 | Placeholder | `This session is being viewed elsewhere.` (taken over) or `This session is not controlled here.` (#400), then `Press <key> to take control` | `screen.rs` |
 | Selected without a connected client | `No terminal content is available.`, then the row status | `screen.rs` |
+| Selector machine column, while the monitor remembers a relay (#502; #199, item 1) | `local`, otherwise the relay's name as the monitor remembers it | `registry.rs` |
 | Row and top-row statuses (#107; `Awaiting resources` #120) | `Needs attention`, `Acknowledged`, `Running`, `Idle`, `Succeeded`, `Failed (exit <code>)`, `Failed (signal <number>)`, `Starting`, `Awaiting resources`, `Unavailable`, `Disconnected` | `registry.rs` |
 | Top-row control (#108) | `Acquiring`, `Restoring`, `Controlling`, `Not controlling`, `Ended` | `terminal.rs` |
 | Top-row control slot while the canvas is scrolled back into history (#112, owner decision 2026-11-16) | `History` | `screen.rs` |
@@ -1176,6 +1177,45 @@ invitation open, pairing failed (wrong PIN or interference), no shared link
 revision, or a first link that did not succeed (P25). Nothing is recorded of
 a relay that was not paired with. `tests/pair.rs` drives it against a relay
 built from the link code on loopback.
+
+## Remote sessions in the selector (#502)
+
+A hub monitor lists the sessions each relay advertises beside its local
+ones ([ADR 0011](../../docs/adr/0011-monitor-library-and-client-embedding.md);
+the advertisement resolution of #195; the selector resolution of #199).
+Unix only, like the link seams.
+
+- **Identity** (`machine.rs`). A row is a `SessionAt`: `Machine::Local` and
+  the session ID, or `Machine::Relay(key)`, the relay's pinned public key,
+  and the session ID on that relay. The two are never compared, so one
+  session ID on three machines is three rows. Rows, the selection,
+  terminals and toasts are keyed by it, and so are `View::id`,
+  `Choice::Select`, `Choice::Delete` and `Event::Removed`.
+- **Links** (`remote.rs`). At start the monitor reads `links/relays.json`,
+  if `links/` exists; a damaged store fails the start. Each relay that is
+  not disconnected gets a thread that dials it within 10 seconds, holds
+  the link and hands the monitor `Linked` and each advertisement. A link
+  that ends is dialled again after `monitor.limits.retry.initial_ms`;
+  backoff, its reset and the slower redial against a refusing relay are
+  #504's. Each dial reads the relay's record afresh, so a changed address
+  is dialled and a relay forgotten or disconnected meanwhile is not.
+  Shutdown closes every link with "hub monitor stopped".
+- **Rows** (`registry.rs`). A Session record adds a remote row or replaces
+  what it lists; Withdrawn applies the local rule (a row never connected is
+  dropped, one that was stays Disconnected); a new link connection discards
+  what the relay held before its fresh snapshot. Every advertised field is
+  shown literally. A remote row waits as `Unavailable` with no content until
+  its session stream exists (#503): Enter selects it without acquiring, and
+  it offers no Delete. `Supervisor::route` sends a request to a local
+  session's client only.
+- **Machine column.** While the monitor remembers at least one relay, each
+  row's `View::machine` is `local` or the relay's name, the selector draws it
+  between status and title, as wide as the widest, and search matches the
+  status, the machine, then the title. A monitor that remembers no relay
+  has no column, so its selector is unchanged.
+
+`tests/remote.rs` drives the library against relays made from the link code
+on loopback; the Pair layer is in `climon2-e2e/tests/remote.rs`.
 
 ## Specification mapping
 
