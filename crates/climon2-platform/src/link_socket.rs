@@ -35,8 +35,9 @@ pub struct LinkStream(TcpStream);
 /// [`LinkListener::local_address`] then reports.
 pub fn listen(address: SocketAddr) -> io::Result<LinkListener> {
     let listener = TcpListener::bind(address)?;
-    // A connection that is reset between becoming ready and being accepted
-    // must not leave `accept` waiting past its deadline.
+    // A connection that is reset, or taken by another caller, between
+    // becoming ready and being accepted must not leave `accept` waiting
+    // past its deadline.
     listener.set_nonblocking(true)?;
     Ok(LinkListener(listener))
 }

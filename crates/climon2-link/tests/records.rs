@@ -187,7 +187,8 @@ fn a_malformed_close_is_a_protocol_violation() {
 }
 
 /// A Hello that breaks its layout or a limit, a second Hello, and any
-/// record before Hello are protocol violations.
+/// record before Hello are protocol violations. So is the first unit of a
+/// session stream's record before Hello, though the record is not whole.
 #[test]
 fn a_bad_hello_or_a_record_out_of_turn_is_a_protocol_violation() {
     relay_refuses("a second Hello", |stand_in| stand_in.record(&wire::HELLO));
@@ -203,13 +204,14 @@ fn a_bad_hello_or_a_record_out_of_turn_is_a_protocol_violation() {
     );
     assert!(output.close);
 
-    for (what, stream, record) in [
-        ("a Close before Hello", 0, &[0x02, 0x00, 0x20][..]),
-        ("a session stream before Hello", 1, &wire::HELLO[..]),
+    for (what, stream, flags, record) in [
+        ("a Close before Hello", 0, 0, &[0x02, 0x00, 0x20][..]),
+        ("a session stream before Hello", 1, 0, &wire::HELLO[..]),
+        ("a session stream's unit before Hello", 1, 1, &[0x41][..]),
     ] {
         let mut relay = relay_end(relay_key(), &[hub_key().public()]);
         let mut stand_in = StandIn::dial(&mut relay, [0x11; 32], relay_key().public());
-        let early = stand_in.unit(stream, 0, record);
+        let early = stand_in.unit(stream, flags, record);
         let output = step(&mut relay, SECOND, Input::Bytes(&early));
         assert_eq!(stand_in.open(&output.bytes), [close_unit(8)], "{what}");
     }
@@ -392,6 +394,9 @@ fn a_unit_that_breaks_the_framing_is_a_protocol_violation() {
     relay_refuses("a length over 16,384", |_| vec![0x40, 0x01]);
     relay_refuses("a flag other than bit 0", |stand_in| {
         stand_in.unit(0, 0x02, b"\x41")
+    });
+    relay_refuses("a flag other than bit 0 beside it", |stand_in| {
+        stand_in.unit(0, 0x03, b"\x41")
     });
     relay_refuses("an empty fragment that is no keepalive", |stand_in| {
         stand_in.unit(1, 0, b"")

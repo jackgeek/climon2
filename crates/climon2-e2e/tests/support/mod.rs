@@ -59,7 +59,20 @@ impl Installed {
         } else {
             let binary = bin_path("c2");
             let payload = Payload::from_siblings(binary.parent().unwrap(), VERSION).unwrap();
-            install(&payload, &installed.home()).unwrap();
+            // The installer writes every file itself, and a child forked by
+            // another test thread holds each descriptor it inherited until
+            // it execs: Linux refuses to execute a file any process holds
+            // open for writing (ETXTBSY). So it installs where nothing is
+            // run, and only an external `cp` writes the executable home.
+            let staged = installed.directory.path().join("staged");
+            install(&payload, &staged).unwrap();
+            let copied = Command::new("cp")
+                .arg("-a")
+                .arg(&staged)
+                .arg(installed.home())
+                .status()
+                .unwrap();
+            assert!(copied.success(), "cp -a {}: {copied}", staged.display());
         }
         assert_eq!(
             fs::read_to_string(installed.home().join("current")).unwrap(),

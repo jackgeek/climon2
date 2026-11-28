@@ -18,6 +18,25 @@ const MARKER: [u8; 8] = *b"c2link\r\n";
 const SLOTS: usize = 8;
 /// The size of a revision list on the wire: its count, then every slot.
 const LIST_SIZE: usize = 1 + 2 * SLOTS;
+/// The size of an opening request before its revision list: the marker,
+/// then the purpose.
+const REQUEST_HEAD_SIZE: usize = MARKER.len() + 1;
+
+/// `head`, then `tail`, as one array. That `N` is their sizes together is
+/// checked when this is compiled, so every byte comes from one or the other.
+fn joined<const A: usize, const B: usize, const N: usize>(
+    head: &[u8; A],
+    tail: &[u8; B],
+) -> [u8; N] {
+    const { assert!(A + B == N, "the parts fill the array exactly") };
+    std::array::from_fn(|index| {
+        if index < A {
+            head[index]
+        } else {
+            tail[index - A]
+        }
+    })
+}
 
 /// Why a hub monitor connects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,11 +116,8 @@ impl Request {
             Purpose::Pair => 1,
             Purpose::Link => 2,
         };
-        let mut bytes = [0; REQUEST_SIZE];
-        bytes[..8].copy_from_slice(&MARKER);
-        bytes[8] = purpose;
-        bytes[9..].copy_from_slice(&self.revisions.encode());
-        bytes
+        let head: [u8; REQUEST_HEAD_SIZE] = joined(&MARKER, &[purpose]);
+        joined(&head, &self.revisions.encode())
     }
 
     /// The request in `bytes`, or nothing when they break the layout in any
@@ -142,11 +158,8 @@ impl Reply {
             Answer::NoSharedRevision => (2, 0),
             Answer::PairingUnavailable => (3, 0),
         };
-        let mut bytes = [0; REPLY_SIZE];
-        bytes[0] = result;
-        bytes[1..3].copy_from_slice(&chosen.to_be_bytes());
-        bytes[3..].copy_from_slice(&self.revisions.encode());
-        bytes
+        let [high, low] = chosen.to_be_bytes();
+        joined(&[result, high, low], &self.revisions.encode())
     }
 
     /// The reply in `bytes`, or nothing when they break the layout: an
@@ -180,10 +193,7 @@ pub struct Transcript([u8; REQUEST_SIZE + REPLY_SIZE]);
 
 impl Transcript {
     pub(crate) fn new(request: &[u8; REQUEST_SIZE], reply: &[u8; REPLY_SIZE]) -> Self {
-        let mut bytes = [0; REQUEST_SIZE + REPLY_SIZE];
-        bytes[..REQUEST_SIZE].copy_from_slice(request);
-        bytes[REQUEST_SIZE..].copy_from_slice(reply);
-        Self(bytes)
+        Self(joined(request, reply))
     }
 
     /// The request's bytes, then the reply's.

@@ -11,6 +11,7 @@ use climon2_platform::link_socket::{self, LinkListener, LinkStream};
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -229,6 +230,49 @@ fn an_accept_returns_as_soon_as_a_connection_arrives() {
             .expect("the late connection is accepted");
         assert!(started.elapsed() < GENEROUS / 2);
     });
+}
+
+/// One connection to a listener several callers wait on wakes them all, but
+/// only one can take it. Every other caller then finds nothing to accept,
+/// as a caller does whose connection was reset between becoming ready and
+/// being accepted. It must give up by its deadline, not wait for a later
+/// connection. Whether a woken caller loses that race is up to the
+/// scheduler, so the test runs several rounds.
+#[test]
+fn an_accept_that_finds_its_connection_gone_still_gives_up_by_its_deadline() {
+    const CALLERS: usize = 4;
+    let (listener, address) = listener();
+    let listener = Arc::new(listener);
+    for round in 0..4 {
+        let (report, reports) = mpsc::channel();
+        for _ in 0..CALLERS {
+            let (listener, report) = (Arc::clone(&listener), report.clone());
+            thread::spawn(move || {
+                let accepted = listener.accept(SHORT * 5).map(drop);
+                let _ = report.send(accepted.map_err(|error| error.kind()));
+            });
+        }
+        // Every caller is waiting before the connection arrives.
+        thread::sleep(SHORT / 2);
+        let _dialled = TcpStream::connect(address).expect("the dial connects");
+
+        let outcomes: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                reports.recv_timeout(GENEROUS).unwrap_or_else(|_| {
+                    panic!("round {round}: a caller waited long past its deadline")
+                })
+            })
+            .collect();
+        let accepted = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+        let expired = outcomes
+            .iter()
+            .filter(|outcome| **outcome == Err(io::ErrorKind::TimedOut));
+        assert_eq!(
+            (accepted, expired.count()),
+            (1, CALLERS - 1),
+            "round {round}: {outcomes:?}"
+        );
+    }
 }
 
 #[test]
