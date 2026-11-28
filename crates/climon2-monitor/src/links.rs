@@ -11,7 +11,7 @@ use climon2_core::{
 };
 use climon2_link::{
     Carrier, Ended, Hello, HubClose, HubEnd, Introduction, Link, Next, Opening, PairingRun,
-    PublicKey, Randomness, Revisions, StaticKey, Time, drive,
+    PublicKey, Randomness, Revisions, StaticKey, Time, display_name, drive,
 };
 use climon2_platform::{
     clock, host_name,
@@ -28,8 +28,6 @@ pub use climon2_link::Pin;
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 /// How long one wait for bytes lasts when the link code names no deadline.
 const IDLE_WAIT: Duration = Duration::from_secs(60);
-/// The longest name this side suggests, in bytes.
-const NAME_MOST: usize = 64;
 
 /// A relay this hub monitor has just paired with, as its user sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,7 +116,7 @@ pub fn pair(
     )?;
     let now = clock::wall().as_secs();
     let record = Relay {
-        name: printable(relay.name()),
+        name: display_name(relay.name()),
         address: address.to_owned(),
         relay_public_key: StoredKey::new(*relay_key.as_bytes()),
         public_key: StoredKey::new(*own.public().as_bytes()),
@@ -150,25 +148,9 @@ fn fresh_key() -> (StaticKey, PrivateKey) {
     (StaticKey::from_private(private), PrivateKey::new(private))
 }
 
-/// The name this hub monitor suggests: its host name, cut to 64 bytes.
+/// The name this hub monitor suggests: its host name.
 fn own_name() -> String {
-    cut(host_name::get().unwrap_or_default())
-}
-
-/// `name`, cut at a character boundary to at most 64 bytes.
-fn cut(mut name: String) -> String {
-    while name.len() > NAME_MOST {
-        name.pop();
-    }
-    name
-}
-
-/// `name` without its control characters: a name the other side suggested
-/// is hostile text.
-fn printable(name: &str) -> String {
-    name.chars()
-        .filter(|character| !character.is_control())
-        .collect()
+    display_name(&host_name::get().unwrap_or_default())
 }
 
 /// Runs the pairing connection to its end, and gives the relay's
@@ -241,19 +223,5 @@ struct System;
 impl Randomness for System {
     fn fill(&mut self, bytes: &mut [u8]) {
         randomness::fill(bytes).expect("the operating system's generator gives bytes");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_name_is_cut_to_64_bytes_at_a_character_boundary() {
-        assert_eq!(cut("a".repeat(64)), "a".repeat(64));
-        assert_eq!(cut("a".repeat(65)), "a".repeat(64));
-        let wide = format!("{}é", "a".repeat(63));
-        assert_eq!(cut(wide), "a".repeat(63));
-        assert_eq!(cut("buildbox".to_owned()), "buildbox");
     }
 }
