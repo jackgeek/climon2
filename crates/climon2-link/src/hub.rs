@@ -86,6 +86,44 @@ impl HubEnd {
         }
     }
 
+    /// One step while the opening exchange runs, and the step that ends it.
+    fn step_opening(
+        &mut self,
+        now: Time,
+        input: Input<'_>,
+        randomness: &mut dyn Randomness,
+    ) -> Output {
+        if self.opening != Opening::Pending {
+            return Output::default();
+        }
+        let Some((request, reply)) = &mut self.sent else {
+            return self.open(now);
+        };
+        let request = *request;
+        self.opening = match reply.step(now, input) {
+            Arrival::Waiting(deadline) => {
+                return Output {
+                    deadline: Some(deadline),
+                    ..Output::default()
+                };
+            }
+            Arrival::Whole(bytes) => self.judge(&request, &bytes),
+            Arrival::Never => Opening::Failed,
+        };
+        self.opened(now, randomness)
+    }
+
+    /// The output of the step that ended the opening exchange: an end made
+    /// to pair starts its run when a revision was chosen, and every other
+    /// outcome but `Opened` closes.
+    fn opened(&mut self, now: Time, randomness: &mut dyn Randomness) -> Output {
+        self.start_pairing(now, randomness)
+            .unwrap_or_else(|| Output {
+                close: !matches!(self.opening, Opening::Opened(_)),
+                ..Output::default()
+            })
+    }
+
     /// Starts the pairing run of an end made to pair, once the opening
     /// exchange has chosen a link revision: the hub monitor's share goes
     /// out, and the run must end 30 seconds after this end's first step.
@@ -135,32 +173,9 @@ impl HubEnd {
 
 impl End for HubEnd {
     fn step(&mut self, now: Time, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
-        if let Some(run) = &mut self.run {
-            return run.step(now, input);
-        }
-        if self.opening != Opening::Pending {
-            return Output::default();
-        }
-        let Some((request, reply)) = &mut self.sent else {
-            return self.open(now);
-        };
-        let request = *request;
-        self.opening = match reply.step(now, input) {
-            Arrival::Waiting(deadline) => {
-                return Output {
-                    deadline: Some(deadline),
-                    ..Output::default()
-                };
-            }
-            Arrival::Whole(bytes) => self.judge(&request, &bytes),
-            Arrival::Never => Opening::Failed,
-        };
-        if let Some(output) = self.start_pairing(now, randomness) {
-            return output;
-        }
-        Output {
-            close: !matches!(self.opening, Opening::Opened(_)),
-            ..Output::default()
+        match &mut self.run {
+            Some(run) => run.step(now, input),
+            None => self.step_opening(now, input, randomness),
         }
     }
 }
