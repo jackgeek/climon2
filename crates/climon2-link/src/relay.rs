@@ -1,7 +1,7 @@
 //! The relay's end of a byte stream: the listener.
 
 use crate::keys::{PublicKey, StaticKey};
-use crate::link::{HELLO_WAIT, Link, Record, Refused, RelayLink, RelayRun};
+use crate::link::{Link, Record, Refused, RelayLink, RelayRun};
 use crate::opening::{
     Answer, Arrival, Awaited, Opened, Opening, Pairing, Purpose, REQUEST_SIZE, Reply, Request,
     Revisions, Transcript,
@@ -128,9 +128,16 @@ impl RelayEnd {
 
 impl End for RelayEnd {
     fn step(&mut self, now: Time, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
-        if let Some(link) = self.link.as_mut().filter(|link| link.begun()) {
-            return link.step(now, input, randomness);
+        match self.link.as_mut().filter(|link| link.begun()) {
+            Some(link) => link.step(now, input, randomness),
+            None => self.opening_step(now, input),
         }
+    }
+}
+
+impl RelayEnd {
+    /// One step of the opening exchange, and the start of what follows it.
+    fn opening_step(&mut self, now: Time, input: Input<'_>) -> Output {
         if self.opening != Opening::Pending {
             return Output::default();
         }
@@ -149,27 +156,15 @@ impl End for RelayEnd {
             Arrival::Never => (Opening::Failed, Vec::new()),
         };
         self.opening = opening;
-        if let Some(link) = &mut self.link {
-            match &self.opening {
-                Opening::Opened(opened) if opened.purpose == Purpose::Link => {
-                    let deadline = Time::since_start(accepted.elapsed().saturating_add(HELLO_WAIT));
-                    link.begin(opened.transcript.clone(), deadline);
-                    return Output {
-                        bytes,
-                        close: false,
-                        deadline: Some(deadline),
-                    };
-                }
-                Opening::Opened(_) => {}
-                _ => {
-                    link.fail();
-                }
-            }
-        }
+        let opening = &self.opening;
+        let deadline = self
+            .link
+            .as_mut()
+            .and_then(|link| link.follow(opening, accepted));
         Output {
             bytes,
             close: !matches!(self.opening, Opening::Opened(_)),
-            deadline: None,
+            deadline,
         }
     }
 }

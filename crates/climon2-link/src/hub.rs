@@ -1,7 +1,7 @@
 //! The hub monitor's end of a byte stream: the dialler.
 
 use crate::keys::{PublicKey, StaticKey};
-use crate::link::{HELLO_WAIT, HubLink, HubRun, Link, Record, Refused};
+use crate::link::{HubLink, HubRun, Link, Record, Refused};
 use crate::opening::{
     Answer, Arrival, Awaited, Opened, Opening, Purpose, REPLY_SIZE, REQUEST_SIZE, Reply, Request,
     Revisions, Transcript,
@@ -133,9 +133,21 @@ impl HubEnd {
 
 impl End for HubEnd {
     fn step(&mut self, now: Time, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
-        if let Some(link) = self.link.as_mut().filter(|link| link.begun()) {
-            return link.step(now, input);
+        match self.link.as_mut().filter(|link| link.begun()) {
+            Some(link) => link.step(now, input),
+            None => self.opening_step(now, input, randomness),
         }
+    }
+}
+
+impl HubEnd {
+    /// One step of the opening exchange, and the start of what follows it.
+    fn opening_step(
+        &mut self,
+        now: Time,
+        input: Input<'_>,
+        randomness: &mut dyn Randomness,
+    ) -> Output {
         if self.opening != Opening::Pending {
             return Output::default();
         }
@@ -153,19 +165,16 @@ impl End for HubEnd {
             Arrival::Whole(bytes) => self.judge(&request, &bytes),
             Arrival::Never => Opening::Failed,
         };
-        let opened = match &self.opening {
-            Opening::Opened(opened) => Some(opened),
-            _ => None,
-        };
-        match (opened, &mut self.link) {
-            (Some(opened), Some(link)) => {
-                let dialled = self.dialled.unwrap_or(now).elapsed();
-                let deadline = Time::since_start(dialled.saturating_add(HELLO_WAIT));
-                link.begin(&opened.transcript, deadline, randomness)
-            }
-            (None, Some(link)) => link.fail(),
-            (opened, None) => Output {
-                close: opened.is_none(),
+        self.follow(now, randomness)
+    }
+
+    /// What follows the opening exchange once it has ended.
+    fn follow(&mut self, now: Time, randomness: &mut dyn Randomness) -> Output {
+        let dialled = self.dialled.unwrap_or(now);
+        match &mut self.link {
+            Some(link) => link.follow(&self.opening, dialled, randomness),
+            None => Output {
+                close: !matches!(self.opening, Opening::Opened(_)),
                 ..Output::default()
             },
         }

@@ -5,9 +5,9 @@
 
 use crate::keys::{KEY_SIZE, PublicKey, StaticKey};
 use crate::noise::{self, Initiator, Transport};
-use crate::opening::Transcript;
+use crate::opening::{Opening, Purpose, Transcript};
 use crate::record::{CLOSE, HELLO, HELLO_MOST, Hello, HubClose, Reason, RelayClose};
-use crate::unit::{Allowed, CONTROL, Fault, Units};
+use crate::unit::{Allowed, CONTROL, Fault, Received, Units};
 use crate::{Input, Output, Randomness, Time};
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ const REPLY_SIZE: usize = 48;
 /// How long a relay allows from accepting a connection to receiving the hub
 /// monitor's Hello, and a hub monitor from dialling to receiving the
 /// relay's Hello or Close.
-pub(crate) const HELLO_WAIT: Duration = Duration::from_secs(30);
+const HELLO_WAIT: Duration = Duration::from_secs(30);
 
 /// The other end of an established link.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,8 +148,7 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
 
     /// Ends a connection that the other end cut off without a Close.
     fn cut_off(&mut self) {
-        let established = matches!(self.link, Link::Established(_));
-        self.end(if established {
+        self.end(if self.established() {
             Ended::Lost
         } else {
             Ended::Failed
@@ -196,38 +195,61 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
     /// Handles every whole record received, until the connection is over.
     fn read(&mut self) {
         while !self.over() {
-            match self.units.next(self.allowed()) {
-                None => return,
-                Some(Ok((stream, record))) => self.record(stream, &record),
-                Some(Err(Fault::Undecryptable)) => self.cut_off(),
-                Some(Err(Fault::Violation)) => self.leave(Ours::VIOLATION),
-            }
+            let Some(next) = self.units.next(self.allowed()) else {
+                return;
+            };
+            self.take(next);
         }
+    }
+
+    /// Handles one whole record, or the fault that came in its place.
+    fn take(&mut self, next: Result<Received, Fault>) {
+        match next {
+            Ok((stream, record)) => self.record(stream, &record),
+            Err(Fault::Undecryptable) => self.cut_off(),
+            Err(Fault::Violation) => self.leave(Ours::VIOLATION),
+        }
+    }
+
+    fn established(&self) -> bool {
+        matches!(self.link, Link::Established(_))
     }
 
     fn record(&mut self, stream: u32, record: &[u8]) {
         // A record holds at least its tag: no unit that ends one is empty.
         let (tag, body) = (record[0], &record[1..]);
-        let established = matches!(self.link, Link::Established(_));
-        let hub = matches!(self.role, Role::Hub);
         match (stream, tag) {
-            (CONTROL, HELLO) if !established => self.hello(body),
-            (CONTROL, CLOSE) if established || hub => self.closed(body),
-            (CONTROL, HELLO) => self.leave(Ours::VIOLATION),
-            _ if established => self.inbox.push(Record {
+            (CONTROL, HELLO) => self.hello(body),
+            (CONTROL, CLOSE) => self.closed(body),
+            _ => self.other(Record {
                 stream,
                 tag,
                 body: body.to_vec(),
             }),
-            _ => self.leave(Ours::VIOLATION),
         }
     }
 
-    /// The other end's Hello arrived before any other record.
+    /// Any record but Hello and Close: the caller's, once the link is
+    /// established, and a protocol violation before.
+    fn other(&mut self, record: Record) {
+        match self.established() {
+            true => self.inbox.push(record),
+            false => self.leave(Ours::VIOLATION),
+        }
+    }
+
+    /// The other end's Hello arrived. Only the first record may be one.
     fn hello(&mut self, body: &[u8]) {
-        let Some(hello) = Hello::decode(body) else {
+        let first = !self.established();
+        let Some(hello) = Hello::decode(body).filter(|_| first) else {
             return self.leave(Ours::VIOLATION);
         };
+        self.answer(hello);
+    }
+
+    /// Answers the other end's valid Hello and establishes the link, or
+    /// refuses it with Close.
+    fn answer(&mut self, hello: Hello) {
         match self.role {
             Role::Relay {
                 refusal: Some(reason),
@@ -241,9 +263,11 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
         });
     }
 
-    /// The other end's Close arrived.
+    /// The other end's Close arrived. A relay may send it in place of its
+    /// Hello; a hub monitor sends its Hello first.
     fn closed(&mut self, body: &[u8]) {
-        match Theirs::decode(body) {
+        let in_turn = self.established() || matches!(self.role, Role::Hub);
+        match Theirs::decode(body).filter(|_| in_turn) {
             Some(reason) => self.end(Ended::Closed(reason)),
             None => self.leave(Ours::VIOLATION),
         }
@@ -267,7 +291,7 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
     }
 
     fn close(&mut self, reason: Ours) -> Result<(), Refused> {
-        if !matches!(self.link, Link::Established(_)) {
+        if !self.established() {
             return Err(Refused::NotLinked);
         }
         self.leave(reason);
@@ -280,29 +304,46 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
 /// answered.
 struct Message<const N: usize>(Vec<u8>);
 
-/// What became of a handshake message after more bytes.
+/// What became of a handshake message after a step.
 enum Arrived<'a> {
     /// Part of it is still to come.
     Partial,
     /// All of it is here: the bytes behind the length.
     Whole(&'a [u8]),
-    /// It states another length, or bytes follow it out of turn.
+    /// It never will be: it states another length, bytes follow it out of
+    /// turn, or the byte stream closed.
     Broken,
 }
 
+/// The length field of every handshake message.
+const LENGTH_SIZE: usize = 2;
+
 impl<const N: usize> Message<N> {
-    fn take(&mut self, bytes: &[u8]) -> Arrived<'_> {
-        self.0.extend(bytes);
-        let length = (N as u16).to_be_bytes();
-        let stated = self.0.len().min(length.len());
-        let whole = length.len() + N;
-        if self.0[..stated] != length[..stated] || self.0.len() > whole {
+    /// Takes one step's input.
+    fn take(&mut self, input: Input<'_>) -> Arrived<'_> {
+        match input {
+            Input::Bytes(bytes) => self.0.extend(bytes),
+            Input::Closed => return Arrived::Broken,
+            Input::Tick => {}
+        }
+        self.arrived()
+    }
+
+    fn arrived(&self) -> Arrived<'_> {
+        if self.broken() {
             return Arrived::Broken;
         }
-        match self.0.len() == whole {
-            true => Arrived::Whole(&self.0[length.len()..]),
+        match self.0.len() == LENGTH_SIZE + N {
+            true => Arrived::Whole(&self.0[LENGTH_SIZE..]),
             false => Arrived::Partial,
         }
+    }
+
+    /// Whether the bytes so far state another length or run past the end.
+    fn broken(&self) -> bool {
+        let length = (N as u16).to_be_bytes();
+        let stated = self.0.len().min(LENGTH_SIZE);
+        self.0[..stated] != length[..stated] || self.0.len() > LENGTH_SIZE + N
     }
 }
 
@@ -415,15 +456,30 @@ impl HubRun {
         Run::fail(self)
     }
 
-    /// Sends the handshake initiation, bound to the opening exchange that
-    /// `transcript` records. The relay's Hello or Close is due by
-    /// `deadline`.
-    pub(crate) fn begin(
+    /// What follows the opening exchange `opening` of a dial made at
+    /// `dialled`: the handshake, or nothing when no revision was chosen.
+    pub(crate) fn follow(
         &mut self,
-        transcript: &Transcript,
-        deadline: Time,
+        opening: &Opening,
+        dialled: Time,
         randomness: &mut dyn Randomness,
     ) -> Output {
+        match opening {
+            Opening::Opened(opened) => self.begin(&opened.transcript, dialled, randomness),
+            _ => self.fail(),
+        }
+    }
+
+    /// Sends the handshake initiation, bound to the opening exchange that
+    /// `transcript` records. The relay's Hello or Close is due 30 seconds
+    /// after `dialled`.
+    fn begin(
+        &mut self,
+        transcript: &Transcript,
+        dialled: Time,
+        randomness: &mut dyn Randomness,
+    ) -> Output {
+        let deadline = Time::since_start(dialled.elapsed().saturating_add(HELLO_WAIT));
         self.deadline = deadline;
         let begun = Initiator::begin(
             transcript.as_bytes(),
@@ -448,25 +504,32 @@ impl HubRun {
     }
 
     fn advance(&mut self, input: Input<'_>) -> Output {
-        match (std::mem::replace(&mut self.stage, HubStage::Over), input) {
-            (HubStage::Replying(initiator, mut message), Input::Bytes(bytes)) => {
-                match message.take(bytes) {
-                    Arrived::Whole(reply) => self.finish(*initiator, reply),
-                    Arrived::Broken => self.fail(),
-                    Arrived::Partial => {
-                        self.stage = HubStage::Replying(initiator, message);
-                        Output::default()
-                    }
-                }
-            }
-            (HubStage::Replying(..), Input::Closed) => self.fail(),
-            (HubStage::Talking(mut conversation), input) => {
+        match std::mem::replace(&mut self.stage, HubStage::Over) {
+            HubStage::Replying(initiator, message) => self.replying(initiator, message, input),
+            HubStage::Talking(mut conversation) => {
                 let output = conversation.step(input);
                 self.stage = HubStage::Talking(conversation);
                 output
             }
-            (stage, _) => {
+            stage => {
                 self.stage = stage;
+                Output::default()
+            }
+        }
+    }
+
+    /// Takes one step's input while the handshake reply is awaited.
+    fn replying(
+        &mut self,
+        initiator: Box<Initiator>,
+        mut message: Message<REPLY_SIZE>,
+        input: Input<'_>,
+    ) -> Output {
+        match message.take(input) {
+            Arrived::Whole(reply) => self.finish(*initiator, reply),
+            Arrived::Broken => self.fail(),
+            Arrived::Partial => {
+                self.stage = HubStage::Replying(initiator, message);
                 Output::default()
             }
         }
@@ -569,12 +632,30 @@ impl RelayRun {
         Run::fail(self)
     }
 
+    /// What follows the opening exchange `opening` of a connection
+    /// accepted at `accepted`: the wait for the handshake on a link
+    /// connection, nothing on a pairing connection, and no link when no
+    /// revision was chosen. Gives the deadline the wait names.
+    pub(crate) fn follow(&mut self, opening: &Opening, accepted: Time) -> Option<Time> {
+        match opening {
+            Opening::Opened(opened) if opened.purpose == Purpose::Link => {
+                Some(self.begin(opened.transcript.clone(), accepted))
+            }
+            Opening::Opened(_) => None,
+            _ => {
+                self.fail();
+                None
+            }
+        }
+    }
+
     /// Starts the wait for the handshake initiation, bound to the opening
     /// exchange that `transcript` records. The hub monitor's Hello is due
-    /// by `deadline`.
-    pub(crate) fn begin(&mut self, transcript: Transcript, deadline: Time) {
+    /// 30 seconds after `accepted`.
+    fn begin(&mut self, transcript: Transcript, accepted: Time) -> Time {
         self.stage = RelayStage::Initiating(transcript, Message(Vec::new()));
-        self.deadline = deadline;
+        self.deadline = Time::since_start(accepted.elapsed().saturating_add(HELLO_WAIT));
+        self.deadline
     }
 
     pub(crate) fn step(
@@ -589,25 +670,35 @@ impl RelayRun {
     }
 
     fn advance(&mut self, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
-        match (std::mem::replace(&mut self.stage, RelayStage::Over), input) {
-            (RelayStage::Initiating(transcript, mut message), Input::Bytes(bytes)) => {
-                match message.take(bytes) {
-                    Arrived::Whole(initiation) => self.answer(&transcript, initiation, randomness),
-                    Arrived::Broken => self.fail(),
-                    Arrived::Partial => {
-                        self.stage = RelayStage::Initiating(transcript, message);
-                        Output::default()
-                    }
-                }
+        match std::mem::replace(&mut self.stage, RelayStage::Over) {
+            RelayStage::Initiating(transcript, message) => {
+                self.initiating(transcript, message, input, randomness)
             }
-            (RelayStage::Initiating(..), Input::Closed) => self.fail(),
-            (RelayStage::Talking(mut conversation), input) => {
+            RelayStage::Talking(mut conversation) => {
                 let output = conversation.step(input);
                 self.stage = RelayStage::Talking(conversation);
                 output
             }
-            (stage, _) => {
+            stage => {
                 self.stage = stage;
+                Output::default()
+            }
+        }
+    }
+
+    /// Takes one step's input while the handshake initiation is awaited.
+    fn initiating(
+        &mut self,
+        transcript: Transcript,
+        mut message: Message<INITIATION_SIZE>,
+        input: Input<'_>,
+        randomness: &mut dyn Randomness,
+    ) -> Output {
+        match message.take(input) {
+            Arrived::Whole(initiation) => self.answer(&transcript, initiation, randomness),
+            Arrived::Broken => self.fail(),
+            Arrived::Partial => {
+                self.stage = RelayStage::Initiating(transcript, message);
                 Output::default()
             }
         }

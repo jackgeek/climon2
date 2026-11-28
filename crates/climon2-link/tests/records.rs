@@ -5,9 +5,11 @@
 mod support;
 mod wire;
 
+use climon2_link::Output;
 use climon2_link::{
     Ended, Hello, HubClose, HubEnd, Input, Link, Record, Refused, RelayClose, RelayEnd,
 };
+use std::time::Duration;
 use support::Harness;
 use wire::{SECOND, StandIn, hub_end, hub_key, paired, relay_end, relay_key, step};
 
@@ -309,8 +311,10 @@ fn a_hello_is_held_to_the_published_limits() {
     for (what, hello) in refused {
         assert!(!relay_accepts_hello(&hello), "{what}");
     }
-    let whole = hello_body(b"2", b"atlas", &[], 4_096);
-    assert!(!relay_accepts_hello(&whole[..whole.len() - 1]), "short");
+    let whole = hello_body(b"2", b"atlas", &[&b"t"[..]], 4_096);
+    for cut in 1..whole.len() {
+        assert!(!relay_accepts_hello(&whole[..cut]), "cut to {cut} bytes");
+    }
     assert!(!relay_accepts_hello(&[&whole[..], &[0]].concat()), "long");
     let mut lying = whole.clone();
     lying[4] = 2;
@@ -484,5 +488,25 @@ fn a_closed_byte_stream_fails_or_loses_the_link() {
     StandIn::dial(&mut relay, [0x11; 32], relay_key().public());
     let output = step(&mut relay, SECOND, Input::Closed);
     assert!(output.close && output.bytes.is_empty());
+    assert_eq!(relay.link(), &Link::Ended(Ended::Failed));
+}
+
+/// An end whose connection has failed does nothing more, whatever it is
+/// handed.
+#[test]
+fn a_failed_end_does_nothing_more() {
+    let mut hub = hub_end(hub_key(), relay_key().public());
+    step(&mut hub, Duration::ZERO, Input::Tick);
+    step(&mut hub, Duration::ZERO, Input::Bytes(&wire::REPLY));
+    step(&mut hub, SECOND, Input::Closed);
+    let mut relay = relay_end(relay_key(), &[hub_key().public()]);
+    step(&mut relay, Duration::ZERO, Input::Bytes(&wire::REQUEST));
+    step(&mut relay, SECOND, Input::Closed);
+
+    for input in [Input::Tick, Input::Bytes(b"more"), Input::Closed] {
+        assert_eq!(step(&mut hub, 2 * SECOND, input), Output::default());
+        assert_eq!(step(&mut relay, 2 * SECOND, input), Output::default());
+    }
+    assert_eq!(hub.link(), &Link::Ended(Ended::Failed));
     assert_eq!(relay.link(), &Link::Ended(Ended::Failed));
 }

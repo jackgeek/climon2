@@ -41,6 +41,9 @@ pub(crate) struct Allowed {
     pub(crate) streams: bool,
 }
 
+/// A whole record as it arrived: its stream and the record, tag included.
+pub(crate) type Received = (u32, Vec<u8>);
+
 /// The units of one connection, both directions.
 pub(crate) struct Units {
     transport: Transport,
@@ -87,21 +90,20 @@ impl Units {
     /// The next whole record the bytes received so far hold: its stream and
     /// the record. Nothing when more bytes are needed. After a fault the
     /// connection is over and this is not called again.
-    pub(crate) fn next(&mut self, allowed: Allowed) -> Option<Result<(u32, Vec<u8>), Fault>> {
+    pub(crate) fn next(&mut self, allowed: Allowed) -> Option<Result<Received, Fault>> {
         loop {
-            let ciphertext = match self.unit()? {
-                Ok(ciphertext) => ciphertext,
-                Err(fault) => return Some(Err(fault)),
-            };
-            let Some(plaintext) = self.transport.open(&ciphertext) else {
-                return Some(Err(Fault::Undecryptable));
-            };
-            match self.fragment(&plaintext, allowed) {
-                Ok(None) => {}
-                Ok(Some(record)) => return Some(Ok(record)),
-                Err(fault) => return Some(Err(fault)),
+            if let Some(found) = self.next_unit(allowed)?.transpose() {
+                return Some(found);
             }
         }
+    }
+
+    /// Takes the next whole unit: the record it ends, if it ends one.
+    /// Nothing when the unit is not whole yet.
+    fn next_unit(&mut self, allowed: Allowed) -> Option<Result<Option<Received>, Fault>> {
+        let ciphertext = self.unit()?;
+        let plaintext = ciphertext.and_then(|ciphertext| self.open(&ciphertext));
+        Some(plaintext.and_then(|plaintext| self.fragment(&plaintext, allowed)))
     }
 
     /// Takes the next whole unit's ciphertext off the bytes received.
@@ -118,33 +120,42 @@ impl Units {
         Some(Ok(ciphertext))
     }
 
+    /// The plaintext of one unit's ciphertext.
+    fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, Fault> {
+        self.transport.open(ciphertext).ok_or(Fault::Undecryptable)
+    }
+
     /// Adds one unit's fragment to its stream's record. Gives the record
     /// when the unit ends it, and nothing for a keepalive or when more of
     /// the record follows.
-    fn fragment(
-        &mut self,
-        plaintext: &[u8],
-        allowed: Allowed,
-    ) -> Result<Option<(u32, Vec<u8>)>, Fault> {
-        let (header, fragment) = plaintext
-            .split_first_chunk::<HEADER_SIZE>()
-            .ok_or(Fault::Violation)?;
-        let [a, b, c, d, flags] = *header;
-        let stream = u32::from_be_bytes([a, b, c, d]);
-        let streams = stream == CONTROL || allowed.streams;
-        if flags & !MORE != 0 || !streams {
-            return Err(Fault::Violation);
-        }
+    fn fragment(&mut self, plaintext: &[u8], allowed: Allowed) -> Result<Option<Received>, Fault> {
+        let (stream, flags, fragment) = header(plaintext, allowed)?;
         if fragment.is_empty() {
-            // Only a keepalive is empty, and it never falls between the
-            // fragments of a stream-0 record.
-            let keepalive = stream == CONTROL && flags == 0;
-            let alone = !self.partial.contains_key(&CONTROL);
-            return (keepalive && alone).then_some(None).ok_or(Fault::Violation);
+            return self.keepalive(stream, flags).map(|()| None);
         }
+        self.append(stream, flags, fragment, allowed.record)
+    }
+
+    /// Checks a unit with an empty fragment: only a keepalive is empty, and
+    /// it never falls between the fragments of a stream-0 record.
+    fn keepalive(&self, stream: u32, flags: u8) -> Result<(), Fault> {
+        let keepalive = stream == CONTROL && flags == 0;
+        let alone = !self.partial.contains_key(&CONTROL);
+        (keepalive && alone).then_some(()).ok_or(Fault::Violation)
+    }
+
+    /// Adds a fragment to the record `stream` is receiving, which may hold
+    /// at most `most` bytes. Gives the record when `flags` end it.
+    fn append(
+        &mut self,
+        stream: u32,
+        flags: u8,
+        fragment: &[u8],
+        most: usize,
+    ) -> Result<Option<Received>, Fault> {
         let record = self.partial.entry(stream).or_default();
         record.extend(fragment);
-        if record.len() > allowed.record {
+        if record.len() > most {
             return Err(Fault::Violation);
         }
         if flags & MORE != 0 {
@@ -152,4 +163,19 @@ impl Units {
         }
         Ok(self.partial.remove(&stream).map(|record| (stream, record)))
     }
+}
+
+/// A unit's plaintext split into its stream, its flags and its fragment,
+/// when the flags are known and the stream may carry something now.
+fn header(plaintext: &[u8], allowed: Allowed) -> Result<(u32, u8, &[u8]), Fault> {
+    let (header, fragment) = plaintext
+        .split_first_chunk::<HEADER_SIZE>()
+        .ok_or(Fault::Violation)?;
+    let [a, b, c, d, flags] = *header;
+    let stream = u32::from_be_bytes([a, b, c, d]);
+    let known = flags & !MORE == 0;
+    let open = stream == CONTROL || allowed.streams;
+    (known && open)
+        .then_some((stream, flags, fragment))
+        .ok_or(Fault::Violation)
 }

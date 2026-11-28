@@ -91,6 +91,21 @@ fn read(handshake: &mut HandshakeState, message: &[u8]) -> Option<Vec<u8>> {
     Some(payload)
 }
 
+/// The hub monitor's handshake with the relay whose pinned key is `relay`,
+/// before its first message.
+fn initiator(
+    prologue: &[u8],
+    own: &StaticKey,
+    relay: &PublicKey,
+    ephemeral: [u8; KEY_SIZE],
+) -> Option<HandshakeState> {
+    builder(prologue, own, ephemeral)?
+        .remote_public_key(relay.as_bytes())
+        .ok()?
+        .build_initiator()
+        .ok()
+}
+
 /// The hub monitor's half of a handshake, between its two messages.
 pub(crate) struct Initiator(HandshakeState);
 
@@ -104,11 +119,7 @@ impl Initiator {
         ephemeral: [u8; KEY_SIZE],
         payload: &[u8],
     ) -> Option<(Self, Vec<u8>)> {
-        let mut handshake = builder(prologue, own, ephemeral)?
-            .remote_public_key(relay.as_bytes())
-            .ok()?
-            .build_initiator()
-            .ok()?;
+        let mut handshake = initiator(prologue, own, relay, ephemeral)?;
         let message = write(&mut handshake, payload)?;
         Some((Self(handshake), message))
     }
@@ -141,17 +152,41 @@ pub(crate) fn answer(
     initiation: &[u8],
     payload: &[u8],
 ) -> Option<(Vec<u8>, Answered)> {
-    let mut handshake = builder(prologue, own, ephemeral)?.build_responder().ok()?;
-    let received = read(&mut handshake, initiation)?;
-    let hub = PublicKey::from_bytes(handshake.get_remote_static()?.try_into().ok()?);
-    let reply = write(&mut handshake, payload)?;
-    let transport = Transport(handshake.into_transport_mode().ok()?);
+    let (handshake, received) = responder(prologue, own, ephemeral, initiation)?;
+    let hub = remote_static(&handshake)?;
+    let (reply, transport) = reply(handshake, payload)?;
     let answered = Answered {
         hub,
         reply,
         transport,
     };
     Some((received, answered))
+}
+
+/// The relay's handshake once it has read `initiation`, and the payload it
+/// held.
+fn responder(
+    prologue: &[u8],
+    own: &StaticKey,
+    ephemeral: [u8; KEY_SIZE],
+    initiation: &[u8],
+) -> Option<(HandshakeState, Vec<u8>)> {
+    let mut handshake = builder(prologue, own, ephemeral)?.build_responder().ok()?;
+    let received = read(&mut handshake, initiation)?;
+    Some((handshake, received))
+}
+
+/// The static public key the other end proved it holds.
+fn remote_static(handshake: &HandshakeState) -> Option<PublicKey> {
+    let key = handshake.get_remote_static()?.try_into().ok()?;
+    Some(PublicKey::from_bytes(key))
+}
+
+/// The relay's reply holding `payload`, and the transport it completes.
+fn reply(mut handshake: HandshakeState, payload: &[u8]) -> Option<(Vec<u8>, Transport)> {
+    let reply = write(&mut handshake, payload)?;
+    let transport = Transport(handshake.into_transport_mode().ok()?);
+    Some((reply, transport))
 }
 
 /// The two cipher states of an established connection, one for each

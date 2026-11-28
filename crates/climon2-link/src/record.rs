@@ -71,18 +71,8 @@ impl Hello {
     /// layout or a limit in any way.
     pub(crate) fn decode(body: &[u8]) -> Option<Self> {
         let mut body = Body(body);
-        let release = body.text()?;
-        let name = body.text()?;
-        let tokens = body.u32()?;
-        if tokens > TOKENS_MOST {
-            return None;
-        }
-        for _ in 0..tokens {
-            body.text()?;
-        }
-        let largest_record = body.u32()?;
-        body.0.is_empty().then_some(())?;
-        Self::new(release, name, largest_record)
+        let hello = body.hello()?;
+        body.0.is_empty().then_some(hello)
     }
 }
 
@@ -90,6 +80,25 @@ impl Hello {
 struct Body<'a>(&'a [u8]);
 
 impl<'a> Body<'a> {
+    /// The fields of a Hello, up to the end of its layout.
+    fn hello(&mut self) -> Option<Hello> {
+        let (release, name) = self.names()?;
+        let largest_record = self.tokens().and_then(|()| self.u32())?;
+        Hello::new(release, name, largest_record)
+    }
+
+    /// The release and the name.
+    fn names(&mut self) -> Option<(&'a str, &'a str)> {
+        Some((self.text()?, self.text()?))
+    }
+
+    /// The next `tokens`: at most 64, each read and ignored.
+    fn tokens(&mut self) -> Option<()> {
+        let count = self.u32()?;
+        (count <= TOKENS_MOST).then_some(())?;
+        (0..count).try_for_each(|_| self.text().map(drop))
+    }
+
     /// The next `u32`.
     fn u32(&mut self) -> Option<u32> {
         let (value, rest) = self.0.split_first_chunk()?;
@@ -99,27 +108,38 @@ impl<'a> Body<'a> {
 
     /// The next `text` of at most 64 bytes.
     fn text(&mut self) -> Option<&'a str> {
-        let size = usize::try_from(self.u32()?).ok()?;
-        if size > TEXT_MOST {
-            return None;
-        }
+        let size = self.size()?;
         let (text, rest) = self.0.split_at_checked(size)?;
         self.0 = rest;
         std::str::from_utf8(text).ok()
     }
+
+    /// The length of the next `text`, when it is at most 64 bytes.
+    fn size(&mut self) -> Option<usize> {
+        let size = usize::try_from(self.u32()?).ok()?;
+        (size <= TEXT_MOST).then_some(size)
+    }
 }
 
 /// The reason in a Close record, as one end may send it.
-pub(crate) trait Reason: Copy {
+pub(crate) trait Reason: Copy + 'static {
     /// "Protocol violation", which either end sends, and which stands for
     /// every code this end's peer may not send.
     const VIOLATION: Self;
+
+    /// Every reason this end may send.
+    const ALL: &'static [Self];
 
     /// The reason's code on the wire.
     fn code(self) -> u16;
 
     /// The reason with this code, when the end may send it.
-    fn from_code(code: u16) -> Option<Self>;
+    fn from_code(code: u16) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|reason| reason.code() == code)
+    }
 
     /// The Close record that gives this reason: its tag, then its body.
     fn encode(self) -> Vec<u8> {
@@ -136,94 +156,77 @@ pub(crate) trait Reason: Copy {
     }
 }
 
-/// Why a relay ends or refuses a link.
+/// Why a relay ends or refuses a link. Each reason's value is its code on
+/// the wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
 pub enum RelayClose {
     /// Cut by the relay's user.
-    Cut,
+    Cut = 1,
     /// The relay is stopping.
-    Stopping,
+    Stopping = 2,
     /// The relay is restarting for an upgrade.
-    Restarting,
+    Restarting = 3,
     /// The relay does not remember the hub monitor's key.
-    NotPaired,
+    NotPaired = 4,
     /// The relay is on hold.
-    OnHold,
+    OnHold = 5,
     /// The relay is busy with another hub monitor.
-    Busy,
+    Busy = 6,
     /// A newly paired hub monitor replaced this one.
-    Replaced,
+    Replaced = 7,
     /// The other end broke the protocol.
-    ProtocolViolation,
+    ProtocolViolation = 8,
     /// The hub monitor's own newer connection is the link now.
-    Superseded,
+    Superseded = 9,
 }
 
 impl Reason for RelayClose {
     const VIOLATION: Self = Self::ProtocolViolation;
 
-    fn code(self) -> u16 {
-        match self {
-            Self::Cut => 1,
-            Self::Stopping => 2,
-            Self::Restarting => 3,
-            Self::NotPaired => 4,
-            Self::OnHold => 5,
-            Self::Busy => 6,
-            Self::Replaced => 7,
-            Self::ProtocolViolation => 8,
-            Self::Superseded => 9,
-        }
-    }
+    const ALL: &'static [Self] = &[
+        Self::Cut,
+        Self::Stopping,
+        Self::Restarting,
+        Self::NotPaired,
+        Self::OnHold,
+        Self::Busy,
+        Self::Replaced,
+        Self::ProtocolViolation,
+        Self::Superseded,
+    ];
 
-    fn from_code(code: u16) -> Option<Self> {
-        Some(match code {
-            1 => Self::Cut,
-            2 => Self::Stopping,
-            3 => Self::Restarting,
-            4 => Self::NotPaired,
-            5 => Self::OnHold,
-            6 => Self::Busy,
-            7 => Self::Replaced,
-            8 => Self::ProtocolViolation,
-            9 => Self::Superseded,
-            _ => return None,
-        })
+    fn code(self) -> u16 {
+        self as u16
     }
 }
 
-/// Why a hub monitor ends a link.
+/// Why a hub monitor ends a link. Each reason's value is its code on the
+/// wire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
 pub enum HubClose {
     /// The other end broke the protocol.
-    ProtocolViolation,
+    ProtocolViolation = 8,
     /// The hub monitor's user disconnected the relay.
-    Disconnected,
+    Disconnected = 32,
     /// The hub monitor forgot the relay.
-    Forgotten,
+    Forgotten = 33,
     /// The hub monitor stopped.
-    Stopped,
+    Stopped = 34,
 }
 
 impl Reason for HubClose {
     const VIOLATION: Self = Self::ProtocolViolation;
 
-    fn code(self) -> u16 {
-        match self {
-            Self::ProtocolViolation => 8,
-            Self::Disconnected => 32,
-            Self::Forgotten => 33,
-            Self::Stopped => 34,
-        }
-    }
+    const ALL: &'static [Self] = &[
+        Self::ProtocolViolation,
+        Self::Disconnected,
+        Self::Forgotten,
+        Self::Stopped,
+    ];
 
-    fn from_code(code: u16) -> Option<Self> {
-        Some(match code {
-            8 => Self::ProtocolViolation,
-            32 => Self::Disconnected,
-            33 => Self::Forgotten,
-            34 => Self::Stopped,
-            _ => return None,
-        })
+    fn code(self) -> u16 {
+        self as u16
     }
 }
