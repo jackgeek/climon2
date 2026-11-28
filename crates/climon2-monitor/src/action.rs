@@ -3,7 +3,7 @@
 //! keeps the rules that belong to no device. The set has no wildcard
 //! member and is not `non_exhaustive`, so a consumer that matches on it
 //! fails its build when a member is added.
-use climon2_core::SessionId;
+use crate::machine::SessionAt;
 
 /// One action, by what it acts on: which row is chosen, what drives the
 /// selected session, or what the user looks at.
@@ -19,12 +19,12 @@ pub enum Action {
 pub enum Choice {
     /// Enter on a row (spec #73, "Enter"): selects it, and takes control
     /// of a connected one.
-    Select(SessionId),
+    Select(SessionAt),
     /// The attention jump (spec #73, "Attention jump target").
     Jump,
     /// A confirmed Delete (#117): kills the session first while its row
     /// offers that, then removes it.
-    Delete(SessionId),
+    Delete(SessionAt),
 }
 
 /// What drives the selected session: its control, its application's

@@ -6,8 +6,8 @@
 //! once (owner decision, 2026-11-16). Any selection, automatic or explicit,
 //! ends it: nothing is ever chosen automatically again.
 
+use crate::machine::SessionAt;
 use crate::registry::Registry;
-use climon2_core::SessionId;
 use std::{
     collections::BTreeMap,
     fmt,
@@ -22,7 +22,7 @@ pub(crate) struct Initial {
     phase: Phase,
     /// The first pass's clients that were still starting when collection
     /// ended at their deadlines.
-    late: Vec<SessionId>,
+    late: Vec<SessionAt>,
 }
 
 enum Phase {
@@ -30,7 +30,7 @@ enum Phase {
     /// it is ready or past its deadline.
     Collecting {
         passed: bool,
-        deadlines: BTreeMap<SessionId, Instant>,
+        deadlines: BTreeMap<SessionAt, Instant>,
     },
     /// Collection found nothing eligible: the first row to become eligible
     /// is taken.
@@ -67,7 +67,7 @@ impl Initial {
 
     /// The monitor started `id`'s client at `now`: collection waits for it
     /// while the first pass runs.
-    pub(crate) fn started(&mut self, id: SessionId, now: Instant) {
+    pub(crate) fn started(&mut self, id: SessionAt, now: Instant) {
         if let Phase::Collecting {
             passed: false,
             deadlines,
@@ -91,7 +91,7 @@ impl Initial {
 
     /// The row to select and acquire now, if any: the first eligible row
     /// once collection has ended, then never again.
-    pub(crate) fn choose(&mut self, registry: &Registry, now: Instant) -> Option<SessionId> {
+    pub(crate) fn choose(&mut self, registry: &Registry, now: Instant) -> Option<SessionAt> {
         self.collect(registry, now);
         let waiting = matches!(self.phase, Phase::Waiting);
         let chosen = waiting.then(|| registry.eligible()).flatten()?;
@@ -107,7 +107,7 @@ impl Initial {
             return;
         };
         let holding =
-            |(id, deadline): (&SessionId, &Instant)| now < *deadline && registry.starting(id);
+            |(id, deadline): (&SessionAt, &Instant)| now < *deadline && registry.starting(id);
         if *passed && !deadlines.iter().any(holding) {
             self.late = starting(deadlines.keys(), registry);
             self.phase = Phase::Waiting;
@@ -133,9 +133,9 @@ impl Initial {
 
 /// Those of `ids` whose rows still await their clients.
 fn starting<'a>(
-    ids: impl IntoIterator<Item = &'a SessionId>,
+    ids: impl IntoIterator<Item = &'a SessionAt>,
     registry: &Registry,
-) -> Vec<SessionId> {
+) -> Vec<SessionAt> {
     ids.into_iter()
         .filter(|id| registry.starting(id))
         .cloned()
@@ -168,9 +168,9 @@ mod tests {
         initial: &mut Initial,
         suffix: u8,
         now: Instant,
-    ) -> SessionId {
+    ) -> SessionAt {
         let session = metadata(suffix);
-        let id = session.session_id.clone();
+        let id = SessionAt::local(session.session_id.clone());
         registry.discovered(session, Found::Live, SystemTime::UNIX_EPOCH);
         initial.started(id.clone(), now);
         id
@@ -178,7 +178,7 @@ mod tests {
 
     /// `id`'s client opens with `status-v1` and reports `state`, changed
     /// `changed` seconds after the epoch.
-    fn reports(registry: &mut Registry, id: &SessionId, state: State, changed: u64) {
+    fn reports(registry: &mut Registry, id: &SessionAt, state: State, changed: u64) {
         let now = SystemTime::UNIX_EPOCH;
         registry.client(id, ClientEvent::Opened { status: true }, now);
         let status = Status {

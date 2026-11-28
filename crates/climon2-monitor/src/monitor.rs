@@ -13,8 +13,10 @@ use crate::{
     delete,
     discovery::{Discovery, Found},
     initial::Initial,
+    machine::SessionAt,
     pressure,
     registry::{self, ClientEvent, Kind, Offer, Registry, Report, View},
+    remote::{Dialling, Heard, Remote},
     session::{Session, control, placeholder, retained, selected, shown},
     shutdown::{self, Verdict},
     supervisor::{self, Context, Supervisor},
@@ -28,6 +30,7 @@ use climon2_core::{
 };
 use climon2_discovery::{Batch, Incomplete, Outcome, Progress};
 use climon2_embed::load::Load;
+use climon2_link::{Advertisement, PublicKey};
 use climon2_vt::{
     Limits, Parser,
     view::{self as vt, Modes},
@@ -92,7 +95,7 @@ pub enum Event {
     /// A confirmed Delete removed this row: the rows before and after it
     /// went, for a consumer to move its own highlight.
     Removed {
-        id: SessionId,
+        id: SessionAt,
         before: Vec<View>,
         after: Vec<View>,
     },
@@ -117,14 +120,16 @@ const HANDOVER: Duration = Duration::from_millis(200);
 pub struct Monitor {
     registry: Registry,
     discovery: Discovery,
+    /// The links to the relays this hub monitor remembers (#502).
+    remote: Remote,
     supervisor: Supervisor,
     /// The selected session: none until initial selection or the user
     /// selects one, and no arrival ever moves it.
-    selected: Option<SessionId>,
+    selected: Option<SessionAt>,
     /// Initial selection, until a selection exists.
     initial: Initial,
     /// One terminal per session ID, kept for the whole run.
-    terminals: BTreeMap<SessionId, Terminal>,
+    terminals: BTreeMap<SessionAt, Terminal>,
     /// What bounds each terminal's model.
     model: Limits,
     /// The one vte parser every terminal's model is fed through (#166),
@@ -149,7 +154,7 @@ pub struct Monitor {
     /// The memory budgets history is kept within (#119).
     memory: MemoryLimits,
     /// When each session was last inspected: painted selected.
-    inspected: BTreeMap<SessionId, Instant>,
+    inspected: BTreeMap<SessionAt, Instant>,
     /// What its consumer has yet to deliver.
     events: Vec<Event>,
     /// The shutdown under way.
@@ -157,7 +162,7 @@ pub struct Monitor {
 }
 
 /// A session under the authority it takes input with.
-pub type Target = (SessionId, Authority);
+pub type Target = (SessionAt, Authority);
 
 /// A paste going to its target.
 struct Pasting {
@@ -202,12 +207,19 @@ impl Monitor {
         let jump = hints.then(|| format!("{prefix} then j: jump to attention"));
         let supervisor = Supervisor::start(context(&home, load, &config, filter)?, dispatch)?;
         let limits = &config.settings().limits;
+        let dialling = Dialling {
+            largest_record: limits.library().wire_frame_bytes,
+            redial: Duration::from_millis(limits.retry().initial_ms.into()),
+        };
+        let remote = Remote::start(&home, dialling)?;
+        let registry = registry(own, &remote);
         let discovery = Discovery::start(home, limits.discovery())?;
         let model = limits.model();
         let start = Duration::from_millis(limits.library().start_ms.into());
         Ok(Self {
-            registry: Registry::new(own),
+            registry,
             discovery,
+            remote,
             supervisor,
             selected: None,
             initial: Initial::new(start),
@@ -328,7 +340,7 @@ impl Monitor {
 
     /// Hands `id`'s `news` to the toasts, with its label and whether this
     /// monitor viewed it when it arrived.
-    fn announce(&mut self, id: &SessionId, news: registry::News, viewed: bool) {
+    fn announce(&mut self, id: &SessionAt, news: registry::News, viewed: bool) {
         let label = self.registry.label(id).unwrap_or_default();
         self.toasts.announce(id, news, label, viewed);
     }
@@ -356,7 +368,7 @@ impl Monitor {
         let viewed = self.viewed(consumer).cloned();
         for (id, terminal) in &mut self.terminals {
             if let Some(request) = terminal.viewing(viewed.as_ref() == Some(id)) {
-                self.supervisor.request(id.clone(), request);
+                self.supervisor.route(id, request);
             }
         }
         let reported = viewed.and_then(|id| self.terminals.get(&id));
@@ -387,7 +399,7 @@ impl Monitor {
     /// input (controlling, ready, painted uncovered with room, not ended),
     /// its view is live, its consumer's window has focus (assumed until it
     /// reports otherwise) and no toast covers its canvas.
-    fn viewed(&self, consumer: &dyn Consumer) -> Option<&SessionId> {
+    fn viewed(&self, consumer: &dyn Consumer) -> Option<&SessionAt> {
         let (id, terminal, _) = self.target(consumer)?;
         let live = terminal.view().is_some_and(|view| view.scrolled() == 0);
         let covered = self.obscured(id, consumer);
@@ -396,7 +408,7 @@ impl Monitor {
 
     /// Whether the shown toast covers `id`'s canvas, as its consumer
     /// places both.
-    fn obscured(&self, id: &SessionId, consumer: &dyn Consumer) -> bool {
+    fn obscured(&self, id: &SessionAt, consumer: &dyn Consumer) -> bool {
         let terminal = self.terminals.get(id);
         let geometry = terminal.and_then(Terminal::geometry);
         let geometry = geometry.map(|geometry| (geometry.cols(), geometry.rows()));
@@ -406,7 +418,7 @@ impl Monitor {
 
     /// The attention jump and Enter dismiss a toast covering their
     /// target's canvas (owner decision on #114).
-    fn dismiss_toast(&mut self, id: &SessionId, now: Instant, consumer: &dyn Consumer) {
+    fn dismiss_toast(&mut self, id: &SessionAt, now: Instant, consumer: &dyn Consumer) {
         if self.obscured(id, consumer) {
             self.toasts.dismiss(now);
         }
@@ -422,7 +434,7 @@ impl Monitor {
         match deferred.next(&self.attended(viewing, consumer)) {
             Next::Wait(deferred) => self.acknowledging = Some(deferred),
             Next::Submit(id, authority) => {
-                self.supervisor.request(id, Request::Acknowledge(authority));
+                self.supervisor.route(&id, Request::Acknowledge(authority));
             }
             Next::Cancel => {}
         }
@@ -460,7 +472,7 @@ impl Monitor {
             let desired = focused && self.selected.as_ref() == Some(id);
             let owed = terminal.paste_end();
             for request in owed.into_iter().chain(terminal.focus(desired)) {
-                self.supervisor.request(id.clone(), request);
+                self.supervisor.route(id, request);
             }
         }
     }
@@ -475,20 +487,20 @@ impl Monitor {
 
     /// The selected session while its consumer shows its canvas: nothing
     /// covers it and the consumer has room for it.
-    fn shown(&self, consumer: &dyn Consumer) -> Option<&SessionId> {
+    fn shown(&self, consumer: &dyn Consumer) -> Option<&SessionAt> {
         let shows = !consumer.covered() && consumer.size().is_some();
         self.selected.as_ref().filter(|_| shows)
     }
 
     /// `id`'s terminal, created the first time it is needed.
-    fn terminal(&mut self, id: &SessionId) -> &mut Terminal {
+    fn terminal(&mut self, id: &SessionAt) -> &mut Terminal {
         terminal(&mut self.terminals, self.model, id)
     }
 
     /// Submits `request` through `id`'s client, if there is one.
-    fn request(&self, id: &SessionId, request: Option<Request>) {
+    fn request(&self, id: &SessionAt, request: Option<Request>) {
         if let Some(request) = request {
-            self.supervisor.request(id.clone(), request);
+            self.supervisor.route(id, request);
         }
     }
 
@@ -520,7 +532,7 @@ impl Monitor {
     /// #110).
     /// Enter on a connected row also dismisses a toast covering it and
     /// acknowledges its attention once viewed (#114).
-    fn enter(&mut self, id: SessionId, now: Instant, consumer: &dyn Consumer) {
+    fn enter(&mut self, id: SessionAt, now: Instant, consumer: &dyn Consumer) {
         match self.registry.kind(&id) {
             Some(Kind::Connected) => {
                 self.dismiss_toast(&id, now, consumer);
@@ -536,7 +548,7 @@ impl Monitor {
     /// Selects `id`, which its consumer hears. A session selected before
     /// keeps any control in the background, and nothing is selected
     /// automatically any more.
-    fn choose(&mut self, id: SessionId) {
+    fn choose(&mut self, id: SessionAt) {
         self.events.push(Event::Selected);
         self.initial.selected();
         self.selected = Some(id);
@@ -554,7 +566,7 @@ impl Monitor {
 
     /// Takes control of `id` explicitly, then keeps the selected
     /// controller's size.
-    fn acquire(&mut self, id: &SessionId, consumer: &dyn Consumer) {
+    fn acquire(&mut self, id: &SessionAt, consumer: &dyn Consumer) {
         let request = self.terminal(id).acquire();
         self.request(id, Some(request));
         self.resize(consumer);
@@ -575,7 +587,7 @@ impl Monitor {
     }
 
     /// The control the monitor holds over `id`.
-    fn control(&self, id: &SessionId) -> Control {
+    fn control(&self, id: &SessionAt) -> Control {
         control(self.terminals.get(id))
     }
 
@@ -584,11 +596,13 @@ impl Monitor {
     /// keeps the selected controller's size. An update the terminal's model
     /// refused drops the session's client, to be retried passively, while
     /// its last safe content stays read-only (#119).
-    fn present(&mut self, id: &SessionId, presentation: Presentation, consumer: &dyn Consumer) {
+    fn present(&mut self, id: &SessionAt, presentation: Presentation, consumer: &dyn Consumer) {
         let terminal = terminal(&mut self.terminals, self.model, id);
         let ready = terminal.present(&mut self.parser, presentation);
-        if let Some(why) = terminal.take_rejection() {
-            self.supervisor.drop_client(id.clone(), why);
+        if let Some(why) = terminal.take_rejection()
+            && let Some(local) = id.local_id()
+        {
+            self.supervisor.drop_client(local.clone(), why);
         }
         self.request(id, ready);
         self.resize(consumer);
@@ -617,9 +631,9 @@ impl Monitor {
     }
 
     /// Every terminal's cache as the pressure policy sees it.
-    fn caches(&self) -> Vec<pressure::Cache<SessionId>> {
+    fn caches(&self) -> Vec<pressure::Cache<SessionAt>> {
         let selected = self.selected.as_ref();
-        let cache = |id: &SessionId| {
+        let cache = |id: &SessionAt| {
             let inspected = self.inspected.get(id).copied();
             cache(id, self.registry.kind(id), selected, inspected)
         };
@@ -635,13 +649,14 @@ impl Monitor {
     fn collect(&mut self, clock: &dyn Clock, consumer: &dyn Consumer) {
         let now = clock.wall();
         self.discover(now, clock);
+        self.hear(now);
         while let Ok((id, event)) = self.supervisor.reports.try_recv() {
             self.work.push(id, event);
         }
         self.work.begin(clock.now());
         while let Some((id, event)) = self.work.next(clock.now()) {
             let bytes = supervisor::footprint(&id, &event);
-            self.report(&id, event, now, consumer);
+            self.report(&SessionAt::local(id.clone()), event, now, consumer);
             self.supervisor.processed(&id, bytes);
         }
         self.initialise(clock.now(), consumer);
@@ -661,12 +676,36 @@ impl Monitor {
         }
     }
 
+    /// What the relays' links heard since the last step: a new link
+    /// connection discards what its relay advertised before, and each
+    /// advertisement adds, replaces or withdraws a remote row.
+    fn hear(&mut self, now: SystemTime) {
+        for heard in self.remote.heard() {
+            match heard {
+                Heard::Linked(relay) => self.registry.relinked(relay),
+                Heard::Advertised(relay, advertisement) => {
+                    self.advertised(relay, advertisement, now);
+                }
+            }
+        }
+    }
+
+    /// Applies one advertisement from `relay`. Until a relay's snapshot
+    /// completes its list may be incomplete; nothing shows that yet (#511).
+    fn advertised(&mut self, relay: PublicKey, advertisement: Advertisement, now: SystemTime) {
+        match advertisement {
+            Advertisement::Session(session) => self.registry.advertised(relay, session, now),
+            Advertisement::Withdrawn(id) => self.registry.withdrawn(relay, id),
+            Advertisement::SnapshotComplete => {}
+        }
+    }
+
     /// Control and display go to the session's terminal, a confirmed
     /// Delete's end dismisses its row (#117), and every other event goes to
     /// [`Monitor::client`].
     fn report(
         &mut self,
-        id: &SessionId,
+        id: &SessionAt,
         event: ClientEvent,
         now: SystemTime,
         consumer: &dyn Consumer,
@@ -684,7 +723,7 @@ impl Monitor {
     /// viewed the session before the event changed it.
     fn client(
         &mut self,
-        id: &SessionId,
+        id: &SessionAt,
         event: ClientEvent,
         now: SystemTime,
         consumer: &dyn Consumer,
@@ -703,7 +742,7 @@ impl Monitor {
     /// back to the row now at its place, else the one before it, else none,
     /// and its consumer hears of the removal to move its own highlight;
     /// neither acquires anything.
-    fn dismiss(&mut self, id: &SessionId) {
+    fn dismiss(&mut self, id: &SessionAt) {
         let before = self.registry.rows();
         self.registry.dismiss(id);
         self.terminals.remove(id);
@@ -740,8 +779,8 @@ impl Monitor {
             }
         };
         if let Some(metadata) = self.registry.discovered(metadata, found, now) {
-            self.initial
-                .started(metadata.session_id.clone(), clock.now());
+            let id = SessionAt::local(metadata.session_id.clone());
+            self.initial.started(id, clock.now());
             self.supervisor.start_client(metadata);
         }
     }
@@ -774,7 +813,7 @@ impl Monitor {
                 ends,
             };
             self.supervisor
-                .request(target.0.clone(), Request::Paste(target.1, part));
+                .route(&target.0, Request::Paste(target.1, part));
         }
         self.pasting = self.pasting.take().filter(|_| !ends);
     }
@@ -823,7 +862,7 @@ impl Monitor {
     /// learns of a modal or a small consumer only at the next frame; within
     /// one read of its device, input after a modal opened must already
     /// reach the modal.
-    fn target(&self, consumer: &dyn Consumer) -> Option<(&SessionId, &Terminal, Authority)> {
+    fn target(&self, consumer: &dyn Consumer) -> Option<(&SessionAt, &Terminal, Authority)> {
         let id = self.shown(consumer)?;
         let terminal = self.terminals.get(id)?;
         terminal.input().map(|authority| (id, terminal, authority))
@@ -869,7 +908,7 @@ impl Monitor {
 
     /// A confirmed Delete submits what the row offers now, its row showing
     /// the Delete under way; a row that offers nothing sends nothing.
-    fn delete(&mut self, id: &SessionId) {
+    fn delete(&mut self, id: &SessionAt) {
         if let Some((metadata, offer)) = self.registry.confirm(id) {
             let kill = offer == Offer::TerminateAndRemove;
             self.supervisor.remove(metadata, kill);
@@ -882,7 +921,7 @@ impl Monitor {
     }
 
     /// The selected session.
-    pub fn selected(&self) -> Option<&SessionId> {
+    pub fn selected(&self) -> Option<&SessionAt> {
         self.selected.as_ref()
     }
 
@@ -914,13 +953,13 @@ impl Monitor {
     }
 
     /// Whether `id` has a row.
-    pub fn listed(&self, id: &SessionId) -> bool {
+    pub fn listed(&self, id: &SessionAt) -> bool {
         self.registry.kind(id).is_some()
     }
 
     /// What a Delete of `id`'s row would do now, unless one is already
     /// under way or it has no row.
-    pub fn offer(&self, id: &SessionId) -> Option<Offer> {
+    pub fn offer(&self, id: &SessionAt) -> Option<Offer> {
         self.registry.offer(id)
     }
 
@@ -957,6 +996,7 @@ impl Monitor {
     pub fn shut_down(&mut self) {
         let deadline = self.supervisor.shut_down();
         self.discovery.stop();
+        self.remote.stop();
         self.leaving = Some(Leaving {
             deadline,
             waiting: Vec::new(),
@@ -1005,8 +1045,18 @@ impl Monitor {
     }
 }
 
+/// A registry that names every relay `remote` remembers, and never lists
+/// `own`.
+fn registry(own: Option<SessionId>, remote: &Remote) -> Registry {
+    let mut registry = Registry::new(own);
+    for (relay, name) in remote.relays() {
+        registry.relay(*relay, name.clone());
+    }
+    registry
+}
+
 /// The session IDs of `rows`, in order.
-fn ids(rows: &[View]) -> Vec<&SessionId> {
+fn ids(rows: &[View]) -> Vec<&SessionAt> {
     rows.iter().map(|row| &row.id).collect()
 }
 
@@ -1023,9 +1073,9 @@ fn ending(event: &ClientEvent) -> Option<Presentation> {
 /// `id`'s terminal in `terminals`, created with `model` the first time it
 /// is needed.
 fn terminal<'a>(
-    terminals: &'a mut BTreeMap<SessionId, Terminal>,
+    terminals: &'a mut BTreeMap<SessionAt, Terminal>,
     model: Limits,
-    id: &SessionId,
+    id: &SessionAt,
 ) -> &'a mut Terminal {
     terminals
         .entry(id.clone())
@@ -1095,11 +1145,11 @@ fn first_identifiers() -> supervisor::Identifiers {
 /// with `selected` selected: it yields to other sessions unless its session
 /// is connected, and yields last if it is the selected one.
 fn cache(
-    id: &SessionId,
+    id: &SessionAt,
     kind: Option<Kind>,
-    selected: Option<&SessionId>,
+    selected: Option<&SessionAt>,
     inspected: Option<Instant>,
-) -> pressure::Cache<SessionId> {
+) -> pressure::Cache<SessionAt> {
     pressure::Cache {
         key: id.clone(),
         retained: kind != Some(Kind::Connected),
@@ -1167,8 +1217,8 @@ mod tests {
     /// last only while its session is the selected one.
     #[test]
     fn only_a_disconnected_cache_yields_and_only_the_selected_one_yields_last() {
-        let id: SessionId = "0d5c0000-0000-4000-8000-000000000001".parse().unwrap();
-        let other: SessionId = "0d5c0000-0000-4000-8000-000000000002".parse().unwrap();
+        let id = SessionAt::local("0d5c0000-0000-4000-8000-000000000001".parse().unwrap());
+        let other = SessionAt::local("0d5c0000-0000-4000-8000-000000000002".parse().unwrap());
         let inspected = Some(Instant::now());
         let kinds = [
             (Some(Kind::Connected), false),

@@ -1,10 +1,16 @@
 //! The session registry (spec #73, "Session registry"): pure, and the single
 //! owner of row state. Discovery outcomes and client events are its inputs,
 //! with the time the monitor observed them; it decides which sessions need a
-//! client and what each row shows. Rows are keyed by full session ID, which
-//! is never shown.
-use crate::terminal::Presentation;
+//! client and what each row shows. Rows are keyed by machine and full
+//! session ID, which is never shown. A relay's advertisement adds, replaces
+//! and withdraws its remote rows (#502); they wait for a session stream
+//! (#503) as a local row waits for its client.
+use crate::{
+    machine::{Machine, SessionAt},
+    terminal::Presentation,
+};
 use climon2_core::{SessionId, metadata::SessionMetadata};
+use climon2_link::{PublicKey, Session};
 use std::{
     borrow::Cow,
     cmp::Reverse,
@@ -277,9 +283,35 @@ impl Connection {
     }
 }
 
+/// What a row lists: a local session's metadata, or a relay's
+/// advertisement of one of its sessions, whose every field is hostile
+/// text (#195).
+#[derive(Clone, Debug)]
+enum Listing {
+    Local(SessionMetadata),
+    Remote(Session),
+}
+
+impl Listing {
+    /// The command and its arguments, as text.
+    fn command(&self) -> String {
+        match self {
+            Self::Local(metadata) => std::iter::once(metadata.command.as_str())
+                .chain(metadata.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Self::Remote(session) => std::iter::once(&session.command)
+                .chain(&session.arguments)
+                .map(|bytes| String::from_utf8_lossy(bytes))
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Row {
-    metadata: SessionMetadata,
+    listing: Listing,
     connection: Connection,
     /// When the monitor recorded entering `connection`.
     since: SystemTime,
@@ -306,9 +338,9 @@ struct Row {
 }
 
 impl Row {
-    fn new(metadata: SessionMetadata, connection: Connection, now: SystemTime) -> Self {
+    fn new(listing: Listing, connection: Connection, now: SystemTime) -> Self {
         Self {
-            metadata,
+            listing,
             connection,
             since: now,
             connected: false,
@@ -356,13 +388,7 @@ impl Row {
 
     /// The latest nonempty title, otherwise command plus arguments.
     fn label(&self) -> String {
-        let fallback = || {
-            std::iter::once(self.metadata.command.as_str())
-                .chain(self.metadata.args.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        literal(&self.title.clone().unwrap_or_else(fallback))
+        literal(&self.title.clone().unwrap_or_else(|| self.listing.command()))
     }
 
     /// A new connection ends recovery and drops the old connection's stale
@@ -480,11 +506,13 @@ impl Row {
     }
 
     /// What Delete offers, unless a Delete is already under way: Remove
-    /// alone once the session is final or proven gone.
+    /// alone once the session is final or proven gone. A remote row offers
+    /// nothing until its Kill can cross a session stream (#503).
     fn offer(&self) -> Option<Offer> {
         let over = self.ended.is_some() || self.recovery == Some(Recovery::Gone);
         let offer = [Offer::TerminateAndRemove, Offer::Remove][usize::from(over)];
-        self.deleting.is_none().then_some(offer)
+        let local = matches!(self.listing, Listing::Local(_));
+        (self.deleting.is_none() && local).then_some(offer)
     }
 
     fn recover(&mut self, recovery: Recovery) {
@@ -525,24 +553,34 @@ pub(crate) enum Kind {
     Retained,
 }
 
-/// One row as the selector shows it. The session ID identifies it and is
-/// never displayed.
+/// One row as the selector shows it. The machine and session ID identify
+/// it and are never displayed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct View {
-    pub id: SessionId,
+    pub id: SessionAt,
     pub status: String,
+    /// The machine column (#199, item 1): `local`, or the relay's name, the
+    /// one this hub monitor remembers it by. None while the monitor
+    /// remembers no relay, so it has no machine column.
+    pub machine: Option<String>,
     /// Literal: control characters escaped, never interpreted.
     pub label: String,
     /// When the monitor recorded the row's current connection status.
     pub since: SystemTime,
 }
 
+/// The machine column's name for this machine's sessions.
+pub const LOCAL: &str = "local";
+
 pub(crate) struct Registry {
     own: Option<SessionId>,
-    rows: BTreeMap<SessionId, Row>,
+    rows: BTreeMap<SessionAt, Row>,
     /// Sessions a confirmed Delete removed: run-local dismissal, never
     /// listed again in this run and never persisted (#117).
-    dismissed: BTreeSet<SessionId>,
+    dismissed: BTreeSet<SessionAt>,
+    /// The name of each relay this monitor remembers, for the machine
+    /// column.
+    relays: BTreeMap<PublicKey, String>,
     /// Why the latest discovery pass was incomplete, if it was.
     incomplete: Option<String>,
 }
@@ -554,6 +592,7 @@ impl Registry {
             own,
             rows: BTreeMap::new(),
             dismissed: BTreeSet::new(),
+            relays: BTreeMap::new(),
             incomplete: None,
         }
     }
@@ -571,19 +610,20 @@ impl Registry {
         found: Found,
         now: SystemTime,
     ) -> Option<SessionMetadata> {
-        let id = metadata.session_id.clone();
+        let own = self.own.as_ref() == Some(&metadata.session_id);
+        let id = SessionAt::local(metadata.session_id.clone());
         if self.dismissed.contains(&id) {
             return None;
         }
-        let own = self.own.as_ref() == Some(&id);
         if own || matches!(found, Found::Stale) {
             self.gone(&id);
             return None;
         }
+        let listing = Listing::Local(metadata.clone());
         let row = self
             .rows
             .entry(id)
-            .or_insert_with(|| Row::new(metadata.clone(), Connection::None, now));
+            .or_insert_with(|| Row::new(listing, Connection::None, now));
         let wanted = matches!(found, Found::Live) && row.connection == Connection::None;
         wanted.then(|| {
             row.connect(Connection::Starting, now);
@@ -591,9 +631,48 @@ impl Registry {
         })
     }
 
+    /// Remembers `name` as the name of the relay with `relay`'s key, which
+    /// makes this a hub monitor with a machine column.
+    pub(crate) fn relay(&mut self, relay: PublicKey, name: String) {
+        self.relays.insert(relay, name);
+    }
+
+    /// A new link connection to `relay` starts with nothing held: what the
+    /// previous one advertised is discarded as if withdrawn, before its
+    /// fresh snapshot arrives (#195).
+    pub(crate) fn relinked(&mut self, relay: PublicKey) {
+        let held: Vec<_> = self
+            .rows
+            .keys()
+            .filter(|id| id.machine == Machine::Relay(relay))
+            .cloned()
+            .collect();
+        held.iter().for_each(|id| self.gone(id));
+    }
+
+    /// `relay` advertised `session`, new or changed: its row lists what
+    /// was advertised last.
+    pub(crate) fn advertised(&mut self, relay: PublicKey, session: Session, now: SystemTime) {
+        let id = SessionAt::remote(relay, SessionId::from_bytes(session.id));
+        let listing = Listing::Remote(session);
+        match self.rows.get_mut(&id) {
+            Some(row) => row.listing = listing,
+            None => {
+                self.rows
+                    .insert(id, Row::new(listing, Connection::None, now));
+            }
+        }
+    }
+
+    /// `relay` withdrew the session `id`: discovery on its machine proved it
+    /// stale, and the local row rule applies.
+    pub(crate) fn withdrawn(&mut self, relay: PublicKey, id: [u8; 16]) {
+        self.gone(&SessionAt::remote(relay, SessionId::from_bytes(id)));
+    }
+
     /// `id`'s session is proven gone, or is this monitor's own: a row never
     /// connected is dropped, and one that was stops recovering.
-    fn gone(&mut self, id: &SessionId) {
+    fn gone(&mut self, id: &SessionAt) {
         self.rows.retain(|key, row| key != id || row.connected);
         if let Some(row) = self.rows.get_mut(id) {
             row.gone();
@@ -604,7 +683,7 @@ impl Registry {
     /// to toasts (#115).
     pub(crate) fn client(
         &mut self,
-        id: &SessionId,
+        id: &SessionAt,
         event: ClientEvent,
         now: SystemTime,
     ) -> Option<News> {
@@ -612,13 +691,13 @@ impl Registry {
     }
 
     /// `id`'s label, if it has a row.
-    pub(crate) fn label(&self, id: &SessionId) -> Option<String> {
+    pub(crate) fn label(&self, id: &SessionAt) -> Option<String> {
         self.rows.get(id).map(Row::label)
     }
 
     /// The attention episodes still pending: of connected rows that are not
     /// final and need attention.
-    pub(crate) fn pending(&self) -> Vec<(SessionId, News)> {
+    pub(crate) fn pending(&self) -> Vec<(SessionAt, News)> {
         self.rows
             .iter()
             .filter_map(|(id, row)| Some((id.clone(), News::Attention(row.pending()?))))
@@ -626,31 +705,31 @@ impl Registry {
     }
 
     /// What Enter does on `id`'s row, if there is one.
-    pub(crate) fn kind(&self, id: &SessionId) -> Option<Kind> {
+    pub(crate) fn kind(&self, id: &SessionAt) -> Option<Kind> {
         self.rows.get(id).map(Row::kind)
     }
 
     /// Whether `id`'s final outcome is known.
-    pub(crate) fn finished(&self, id: &SessionId) -> bool {
+    pub(crate) fn finished(&self, id: &SessionAt) -> bool {
         self.rows.get(id).is_some_and(|row| row.ended.is_some())
     }
 
     /// Where recovery of `id`'s client stands, if it lost or failed one.
     /// [`Recovery::Gone`] is also #117's seam: Delete offers Remove alone
     /// for such a row, as for a final one (owner decision on #116).
-    pub(crate) fn recovery(&self, id: &SessionId) -> Option<&Recovery> {
+    pub(crate) fn recovery(&self, id: &SessionAt) -> Option<&Recovery> {
         self.rows.get(id)?.recovery.as_ref()
     }
 
     /// Why `id`'s row waits for its client, if it is resource-blocked or
     /// its release is loading slowly (#120).
-    pub(crate) fn condition(&self, id: &SessionId) -> Option<&str> {
+    pub(crate) fn condition(&self, id: &SessionAt) -> Option<&str> {
         self.rows.get(id)?.condition()
     }
 
     /// What Delete offers on `id`'s row: none without a row, or while a
     /// Delete is under way, so repeated Delete never sends another Kill.
-    pub(crate) fn offer(&self, id: &SessionId) -> Option<Offer> {
+    pub(crate) fn offer(&self, id: &SessionAt) -> Option<Offer> {
         self.rows.get(id)?.offer()
     }
 
@@ -658,26 +737,30 @@ impl Registry {
     /// so a session that became final meanwhile is only removed: the row
     /// shows the Delete under way. Returns its metadata and the offer
     /// confirmed, unless nothing was offered.
-    pub(crate) fn confirm(&mut self, id: &SessionId) -> Option<(SessionMetadata, Offer)> {
+    pub(crate) fn confirm(&mut self, id: &SessionAt) -> Option<(SessionMetadata, Offer)> {
         let row = self.rows.get_mut(id)?;
         let offer = row.offer()?;
+        let Listing::Local(metadata) = &row.listing else {
+            return None;
+        };
+        let metadata = metadata.clone();
         let deleting = match offer {
             Offer::TerminateAndRemove => Deleting::Terminating,
             Offer::Remove => Deleting::Removing,
         };
         row.deleting = Some(deleting);
         row.kill_error = None;
-        Some((row.metadata.clone(), offer))
+        Some((metadata, offer))
     }
 
     /// Why a confirmed Delete's Kill on `id` was refused or is unconfirmed.
-    pub(crate) fn error(&self, id: &SessionId) -> Option<&str> {
+    pub(crate) fn error(&self, id: &SessionAt) -> Option<&str> {
         self.rows.get(id)?.kill_error.as_deref()
     }
 
     /// Dismisses `id` for the rest of this run: its row goes, and
     /// discovery never adds it again (#117).
-    pub(crate) fn dismiss(&mut self, id: &SessionId) {
+    pub(crate) fn dismiss(&mut self, id: &SessionAt) {
         self.rows.remove(id);
         self.dismissed.insert(id.clone());
     }
@@ -700,7 +783,7 @@ impl Registry {
     /// The first row in row order that initial selection may take (spec
     /// #73, "Initial selection"): connected, its status known and not
     /// final. The own session has no row.
-    pub(crate) fn eligible(&self) -> Option<SessionId> {
+    pub(crate) fn eligible(&self) -> Option<SessionAt> {
         self.ordered()
             .into_iter()
             .find(|(group, _)| matches!(group, Group::Status(_)))
@@ -713,7 +796,7 @@ impl Registry {
     /// connected row that is not final shows its status, so acknowledged,
     /// final, disconnected and not-connected rows never qualify. Whether
     /// there is one is the host attention state.
-    pub(crate) fn attention(&self) -> Option<SessionId> {
+    pub(crate) fn attention(&self) -> Option<SessionAt> {
         self.ordered()
             .into_iter()
             .find(|(group, _)| *group == Group::Status(State::NeedsAttention))
@@ -722,7 +805,7 @@ impl Registry {
 
     /// Whether `id`'s row still awaits its client: Starting, also once
     /// opened with `status-v1` until its status arrives.
-    pub(crate) fn starting(&self, id: &SessionId) -> bool {
+    pub(crate) fn starting(&self, id: &SessionAt) -> bool {
         self.rows.get(id).is_some_and(Row::starting)
     }
 
@@ -730,12 +813,13 @@ impl Registry {
     fn ordered(&self) -> Vec<(Group, View)> {
         let mut rows: Vec<_> = self
             .rows
-            .values()
-            .map(|row| {
+            .iter()
+            .map(|(id, row)| {
                 let (group, at, status) = row.standing();
                 let view = View {
-                    id: row.metadata.session_id.clone(),
+                    id: id.clone(),
                     status,
+                    machine: self.machine(id.machine),
                     label: row.label(),
                     since: row.since,
                 };
@@ -746,6 +830,19 @@ impl Registry {
         rows.into_iter()
             .map(|((group, _), view)| (group, view))
             .collect()
+    }
+}
+
+impl Registry {
+    /// The machine column's text for `machine`, while there is a column.
+    fn machine(&self, machine: Machine) -> Option<String> {
+        if self.relays.is_empty() {
+            return None;
+        }
+        Some(match machine {
+            Machine::Local => LOCAL.to_owned(),
+            Machine::Relay(relay) => literal(self.relays.get(&relay).map_or("", String::as_str)),
+        })
     }
 }
 
@@ -829,6 +926,11 @@ mod tests {
         .unwrap()
     }
 
+    /// The local session `metadata` lists.
+    fn local(metadata: &SessionMetadata) -> SessionAt {
+        SessionAt::local(metadata.session_id.clone())
+    }
+
     fn id(suffix: u8) -> String {
         format!("00000000-0000-4000-8000-0000000000{suffix:02x}")
     }
@@ -853,9 +955,9 @@ mod tests {
         (suffix, command): (u8, &str),
         status: bool,
         second: u64,
-    ) -> SessionId {
+    ) -> SessionAt {
         let session = metadata(&id(suffix), "2026-11-13T10:00:00.000Z", command, &[]);
-        let key = session.session_id.clone();
+        let key = SessionAt::local(session.session_id.clone());
         registry.discovered(session, Found::Live, at(second));
         registry.client(&key, ClientEvent::Opened { status }, at(second));
         key
@@ -1052,7 +1154,10 @@ mod tests {
         registry.client(&lost, episode(State::NeedsAttention, 2), at(9));
         registry.client(&lost, ClientEvent::Ended, at(10));
         assert_eq!(registry.pending(), []);
-        assert_eq!(registry.label(&id(9).parse().unwrap()), None);
+        assert_eq!(
+            registry.label(&SessionAt::local(id(9).parse().unwrap())),
+            None
+        );
     }
 
     /// COM-06 (Monitor labels, pure supplement) and final rows (derived):
@@ -1143,7 +1248,7 @@ mod tests {
             None
         );
         assert!(shown(&registry).is_empty());
-        assert_eq!(registry.kind(&own.session_id), None);
+        assert_eq!(registry.kind(&local(&own)), None);
         let other = metadata(&id(1), "2026-11-13T10:00:00.000Z", "other", &[]);
         assert_eq!(
             registry.discovered(other.clone(), Found::Live, at(3)),
@@ -1162,11 +1267,7 @@ mod tests {
         let unsure = metadata(&id(2), "2026-11-13T09:00:00.000Z", "unsure", &[]);
         let gone = metadata(&id(3), "2026-11-13T08:00:00.000Z", "gone", &[]);
         registry.discovered(live.clone(), Found::Live, at(1));
-        registry.client(
-            &live.session_id,
-            ClientEvent::Opened { status: true },
-            at(2),
-        );
+        registry.client(&local(&live), ClientEvent::Opened { status: true }, at(2));
         assert_eq!(
             registry.discovered(unsure.clone(), Found::Uncertain, at(2)),
             None
@@ -1202,17 +1303,17 @@ mod tests {
             registry.discovered(live.clone(), Found::Live, at(1));
         }
         registry.client(
-            &failed.session_id,
+            &local(failed),
             ClientEvent::Unavailable("refused".into()),
             at(2),
         );
         registry.client(
-            &connected.session_id,
+            &local(connected),
             ClientEvent::Opened { status: false },
             at(2),
         );
         registry.client(
-            &connected.session_id,
+            &local(connected),
             ClientEvent::Unavailable("lost".into()),
             at(3),
         );
@@ -1223,8 +1324,8 @@ mod tests {
             );
         }
         assert_eq!(shown(&registry), ["Unavailable|s4"]);
-        registry.client(&connected.session_id, ClientEvent::Ended, at(5));
-        registry.client(&starting.session_id, ClientEvent::Ended, at(5));
+        registry.client(&local(connected), ClientEvent::Ended, at(5));
+        registry.client(&local(starting), ClientEvent::Ended, at(5));
         assert_eq!(shown(&registry), ["Disconnected|s4"]);
         assert_eq!(registry.rows()[0].since, at(5));
     }
@@ -1237,7 +1338,7 @@ mod tests {
     fn connection_statuses_are_labelled_as_specified() {
         let mut registry = Registry::new(None);
         let session = metadata(&id(1), "2026-11-13T10:00:00.000Z", "cmd", &[]);
-        let key = session.session_id.clone();
+        let key = local(&session);
         registry.discovered(session, Found::Live, at(1));
         let steps = [
             (ClientEvent::Opened { status: false }, "Unavailable"),
@@ -1272,10 +1373,10 @@ mod tests {
         registry.client(&blocked, ClientEvent::Ended, at(3));
         let slow = metadata(&id(2), "2026-11-13T10:00:00.000Z", "slow", &[]);
         let slow = registry.discovered(slow, Found::Live, at(3)).unwrap();
-        let slow = slow.session_id;
+        let slow = local(&slow);
         let later = metadata(&id(3), "2026-11-13T10:00:00.000Z", "later", &[]);
         let later = registry.discovered(later, Found::Live, at(3)).unwrap();
-        let later = later.session_id;
+        let later = local(&later);
         let short = |why: &str| ClientEvent::AwaitingResources(why.into());
         registry.client(&blocked, ClientEvent::Starting, at(4));
         registry.client(&blocked, short("not enough memory: 2 bytes needed"), at(5));
@@ -1360,7 +1461,7 @@ mod tests {
         registry.client(&finished, ClientEvent::Ended, at(3));
         let unopened = metadata(&id(4), "2026-11-13T10:00:00.000Z", "unopened", &[]);
         let unopened = registry.discovered(unopened, Found::Live, at(1)).unwrap();
-        registry.client(&unopened.session_id, retrying("missing"), at(2));
+        registry.client(&local(&unopened), retrying("missing"), at(2));
         for (suffix, command) in [(2, "connected"), (3, "finished"), (4, "unopened")] {
             gone(&mut registry, suffix, command);
         }
@@ -1368,7 +1469,7 @@ mod tests {
         assert_eq!(registry.recovery(&finished), None);
         assert!(registry.finished(&finished));
         assert!(!registry.finished(&lost) && !registry.finished(&connected));
-        assert_eq!(registry.kind(&unopened.session_id), None);
+        assert_eq!(registry.kind(&local(&unopened)), None);
         assert_eq!(
             shown(&registry),
             [
@@ -1398,7 +1499,7 @@ mod tests {
         }
         let uncertain = metadata(&id(8), "2026-11-13T10:00:08.000Z", "cmd", &[]);
         registry.discovered(uncertain, Found::Uncertain, at(1));
-        let key = |index: usize| sessions[index].session_id.clone();
+        let key = |index: usize| local(&sessions[index]);
         registry.client(&key(0), ClientEvent::Opened { status: false }, at(2));
         registry.client(&key(1), ClientEvent::Opened { status: true }, at(2));
         registry.client(&key(2), ClientEvent::Opened { status: true }, at(2));
@@ -1431,10 +1532,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            registry.kind(&id(8).parse().unwrap()),
+            registry.kind(&SessionAt::local(id(8).parse().unwrap())),
             Some(Kind::Unconnected)
         );
-        assert_eq!(registry.kind(&id(7).parse().unwrap()), None);
+        assert_eq!(
+            registry.kind(&SessionAt::local(id(7).parse().unwrap())),
+            None
+        );
         let first = registry.rows().into_iter().find(|row| row.id == key(0));
         assert_eq!(first.map(|row| row.since), Some(at(2)));
     }
@@ -1460,7 +1564,7 @@ mod tests {
         let failed = opened(&mut registry, (6, "failed"), true, 1);
         registry.client(&failed, ended(Outcome::Exit(1), Some(95)), at(2));
         assert_eq!(registry.eligible(), None);
-        let starts: Vec<_> = [&starting.session_id, &unsure.session_id, &awaiting]
+        let starts: Vec<_> = [&local(&starting), &local(&unsure), &awaiting]
             .into_iter()
             .chain([&without, &lost, &failed])
             .map(|key| registry.starting(key))
@@ -1472,7 +1576,7 @@ mod tests {
         registry.client(&awaiting, status(State::Running, 10), at(5));
         assert!(!registry.starting(&awaiting));
         assert_eq!(registry.eligible(), Some(awaiting));
-        assert!(!registry.starting(&id(9).parse().unwrap()));
+        assert!(!registry.starting(&SessionAt::local(id(9).parse().unwrap())));
     }
 
     /// DEL-01 and DEL-02 (pure supplement, #117): Delete offers Terminate
@@ -1510,7 +1614,7 @@ mod tests {
         );
         let confirmed = registry
             .confirm(&live)
-            .map(|(metadata, offer)| (metadata.session_id, offer));
+            .map(|(metadata, offer)| (SessionAt::local(metadata.session_id), offer));
         assert_eq!(confirmed, Some((live.clone(), Offer::TerminateAndRemove)));
         assert_eq!(registry.offer(&live), None);
         assert_eq!(registry.confirm(&live), None);
@@ -1562,7 +1666,7 @@ mod tests {
             "/bin/bash",
             &["-c", "echo\thi\x1b[2J"],
         );
-        let key = session.session_id.clone();
+        let key = local(&session);
         registry.discovered(session, Found::Live, at(1));
         assert_eq!(registry.rows()[0].label, "/bin/bash -c echo\\thi\\u{1b}[2J");
         for (title, expected) in [
@@ -1574,7 +1678,7 @@ mod tests {
             registry.client(&key, titled(title), at(2));
             assert_eq!(registry.rows()[0].label, expected);
         }
-        assert!(!registry.rows()[0].label.contains(key.as_str()));
+        assert!(!registry.rows()[0].label.contains(key.id.as_str()));
     }
 
     /// TRM-06 / SEL-01 (cell-safe truncation; owner decision on #112,
@@ -1595,5 +1699,140 @@ mod tests {
         assert_eq!(truncate("ab", 1), "…");
         assert_eq!(truncate("ab", 0), "");
         assert_eq!(truncate("", 0), "");
+    }
+
+    const FIRST: PublicKey = PublicKey::from_bytes([1; 32]);
+    const SECOND: PublicKey = PublicKey::from_bytes([2; 32]);
+
+    /// A session a relay advertises, with `id`'s session ID, running
+    /// `command` with `arguments`.
+    fn advertisement(suffix: u8, command: &[u8], arguments: &[&[u8]]) -> Session {
+        let id: SessionId = id(suffix).parse().unwrap();
+        Session {
+            id: id.bytes(),
+            encoding: 1,
+            command: command.to_vec(),
+            arguments: arguments.iter().map(|argument| argument.to_vec()).collect(),
+            working_directory: b"/home/sam".to_vec(),
+            depth: 1,
+            created_at: *b"2026-11-27T09:30:00.000Z",
+            release: "2.4.0".to_owned(),
+        }
+    }
+
+    fn remote(relay: PublicKey, suffix: u8) -> SessionAt {
+        SessionAt::remote(relay, id(suffix).parse().unwrap())
+    }
+
+    /// Each row as `status|machine|label`, in order.
+    fn machines(registry: &Registry) -> Vec<String> {
+        let rows = registry.rows().into_iter();
+        let row = |row: View| format!("{}|{}|{}", row.status, row.machine.unwrap(), row.label);
+        rows.map(row).collect()
+    }
+
+    /// ADV-05 and SEL-01 (pure supplement): a local session and sessions
+    /// on two relays with one session ID are three rows, in the existing
+    /// order, each with its machine: `local` or the relay's name.
+    #[test]
+    fn adv_05_one_session_id_on_three_machines_is_three_rows() {
+        let mut registry = Registry::new(None);
+        registry.relay(FIRST, "buildbox".to_owned());
+        registry.relay(SECOND, "laptop".to_owned());
+        let local = metadata(&id(1), "2026-11-13T10:00:00.000Z", "top", &[]);
+        registry.discovered(local, Found::Uncertain, at(3));
+        registry.advertised(FIRST, advertisement(1, b"vim", &[b"notes.txt"]), at(1));
+        registry.advertised(SECOND, advertisement(1, b"htop", &[]), at(2));
+        assert_eq!(
+            machines(&registry),
+            [
+                "Unavailable|local|top",
+                "Unavailable|laptop|htop",
+                "Unavailable|buildbox|vim notes.txt"
+            ]
+        );
+        let ids: Vec<_> = registry.rows().into_iter().map(|row| row.id).collect();
+        assert_eq!(
+            ids,
+            [
+                SessionAt::local(id(1).parse().unwrap()),
+                remote(SECOND, 1),
+                remote(FIRST, 1)
+            ]
+        );
+    }
+
+    /// SEL-01 (#199, item 1): a monitor that remembers no relay has no
+    /// machine column.
+    #[test]
+    fn a_monitor_that_remembers_no_relay_has_no_machine_column() {
+        let mut registry = Registry::new(None);
+        let local = metadata(&id(1), "2026-11-13T10:00:00.000Z", "top", &[]);
+        registry.discovered(local, Found::Uncertain, at(1));
+        assert_eq!(registry.rows()[0].machine, None);
+    }
+
+    /// ADV-01 and ADV-04 (pure supplement; #195): an advertisement adds a
+    /// row and a later one replaces what it lists; a withdrawal applies the
+    /// local row rule, so a row never connected is dropped and a connected
+    /// one stays Disconnected. A remote row needs no local client and
+    /// offers no Delete until its session stream exists (#503).
+    #[test]
+    fn adv_04_advertisements_add_and_replace_rows_and_withdrawals_follow_the_local_rule() {
+        let mut registry = Registry::new(None);
+        registry.relay(FIRST, "buildbox".to_owned());
+        registry.advertised(FIRST, advertisement(1, b"vim", &[]), at(1));
+        registry.advertised(FIRST, advertisement(2, b"top", &[]), at(1));
+        registry.advertised(FIRST, advertisement(1, b"nvim", &[]), at(2));
+        assert_eq!(
+            machines(&registry),
+            ["Unavailable|buildbox|nvim", "Unavailable|buildbox|top"]
+        );
+        assert_eq!(registry.rows()[0].since, at(1), "a change keeps its row");
+        assert_eq!(registry.kind(&remote(FIRST, 1)), Some(Kind::Unconnected));
+        assert_eq!(registry.offer(&remote(FIRST, 1)), None);
+        assert_eq!(registry.confirm(&remote(FIRST, 1)), None);
+
+        let opened = ClientEvent::Opened { status: false };
+        registry.client(&remote(FIRST, 2), opened, at(3));
+        registry.client(&remote(FIRST, 2), ClientEvent::Ended, at(4));
+        registry.withdrawn(FIRST, remote(FIRST, 1).id.bytes());
+        registry.withdrawn(FIRST, remote(FIRST, 2).id.bytes());
+        assert_eq!(machines(&registry), ["Disconnected|buildbox|top"]);
+        assert_eq!(registry.recovery(&remote(FIRST, 2)), Some(&Recovery::Gone));
+    }
+
+    /// ADV-04 (#195): a new link connection to a relay discards what the
+    /// previous one advertised, and only that relay's.
+    #[test]
+    fn adv_04_a_new_link_connection_discards_what_its_relay_advertised() {
+        let mut registry = Registry::new(None);
+        registry.relay(FIRST, "buildbox".to_owned());
+        registry.relay(SECOND, "laptop".to_owned());
+        registry.advertised(FIRST, advertisement(1, b"vim", &[]), at(1));
+        registry.advertised(FIRST, advertisement(2, b"top", &[]), at(1));
+        registry.advertised(SECOND, advertisement(1, b"htop", &[]), at(1));
+        let local = metadata(&id(1), "2026-11-13T10:00:00.000Z", "bash", &[]);
+        registry.discovered(local, Found::Uncertain, at(1));
+        registry.relinked(FIRST);
+        assert_eq!(
+            machines(&registry),
+            ["Unavailable|local|bash", "Unavailable|laptop|htop"]
+        );
+        registry.advertised(FIRST, advertisement(2, b"top", &[]), at(2));
+        assert_eq!(machines(&registry).len(), 3);
+    }
+
+    /// #195: every advertised field is hostile text: control characters
+    /// are escaped and bytes that are not UTF-8 are replaced, in the label
+    /// and in the relay's name alike.
+    #[test]
+    fn advertised_text_and_relay_names_are_shown_literally() {
+        let mut registry = Registry::new(None);
+        registry.relay(FIRST, "box\x1b[2J".to_owned());
+        registry.advertised(FIRST, advertisement(1, b"vi\x1b[2J", &[b"\xff"]), at(1));
+        let [row] = registry.rows().try_into().unwrap();
+        assert_eq!(row.label, "vi\\u{1b}[2J \u{fffd}");
+        assert_eq!(row.machine.as_deref(), Some("box\\u{1b}[2J"));
     }
 }

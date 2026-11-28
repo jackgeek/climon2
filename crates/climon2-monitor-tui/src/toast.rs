@@ -226,14 +226,13 @@ fn write(toast: &Toast, rect: Rect, style: Style, buffer: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use climon2_core::SessionId;
+    use climon2_monitor::SessionAt;
     use climon2_monitor::{News, toast::schedule};
     use std::time::Instant;
 
-    fn id(suffix: u8) -> SessionId {
-        format!("00000000-0000-4000-8000-0000000000{suffix:02x}")
-            .parse()
-            .unwrap()
+    fn id(suffix: u8) -> SessionAt {
+        let id = format!("00000000-0000-4000-8000-0000000000{suffix:02x}");
+        SessionAt::local(id.parse().unwrap())
     }
 
     fn ms(millis: u64) -> Duration {
