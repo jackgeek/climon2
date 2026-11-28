@@ -156,14 +156,22 @@ impl Reply {
     /// The reply in `bytes`, or nothing when they break the layout: an
     /// unknown result, a refusal that names a revision, or a bad list.
     pub(crate) fn decode(bytes: &[u8; REPLY_SIZE]) -> Option<Self> {
-        let answer = match (bytes[0], u16::from_be_bytes([bytes[1], bytes[2]])) {
-            (1, revision) => Answer::Chosen(revision),
-            (2, 0) => Answer::NoSharedRevision,
-            (3, 0) => Answer::PairingUnavailable,
-            _ => return None,
-        };
+        let answer = Answer::decode(bytes[0], u16::from_be_bytes([bytes[1], bytes[2]]))?;
         let revisions = Revisions::decode(&bytes[3..])?;
         Some(Self { answer, revisions })
+    }
+}
+
+impl Answer {
+    /// The answer an opening reply's result byte and chosen revision give,
+    /// or nothing for an unknown result or a refusal that names a revision.
+    fn decode(result: u8, chosen: u16) -> Option<Self> {
+        match (result, chosen) {
+            (1, revision) => Some(Self::Chosen(revision)),
+            (2, 0) => Some(Self::NoSharedRevision),
+            (3, 0) => Some(Self::PairingUnavailable),
+            _ => None,
+        }
     }
 }
 
@@ -256,9 +264,20 @@ impl<const N: usize> Awaited<N> {
         if now > self.deadline || input == Input::Closed {
             return Arrival::Never;
         }
+        self.take(input);
+        self.arrival(now)
+    }
+
+    /// Keeps the bytes `input` brings, if any.
+    fn take(&mut self, input: Input<'_>) {
         if let Input::Bytes(bytes) = input {
             self.arrived.extend(bytes);
         }
+    }
+
+    /// What the bytes kept so far make of the message at `now`, which is
+    /// not past the deadline.
+    fn arrival(&self, now: Time) -> Arrival<N> {
         if self.arrived.len() > N {
             return Arrival::Never;
         }

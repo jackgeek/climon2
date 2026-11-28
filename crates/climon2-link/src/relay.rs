@@ -99,30 +99,46 @@ impl RelayEnd {
         let Some(request) = Request::decode(bytes) else {
             return (Opening::Failed, Vec::new());
         };
-        let pairing_refused =
-            request.purpose == Purpose::Pair && self.pairing == Pairing::Unavailable;
-        let answer = match self.revisions.highest_shared(&request.revisions) {
-            None => Answer::NoSharedRevision,
-            Some(_) if pairing_refused => Answer::PairingUnavailable,
-            Some(revision) => Answer::Chosen(revision),
-        };
+        let answer = self.choose(&request);
         let reply = Reply {
             answer,
             revisions: self.revisions.clone(),
         }
         .encode();
-        let opening = match answer {
-            Answer::Chosen(revision) => Opening::Opened(Opened {
-                purpose: request.purpose,
-                revision,
-                transcript: Transcript::new(bytes, &reply),
-            }),
-            Answer::NoSharedRevision => Opening::Incompatible {
-                theirs: request.revisions,
-            },
-            Answer::PairingUnavailable => Opening::PairingUnavailable,
-        };
+        let opening = outcome(request, answer, Transcript::new(bytes, &reply));
         (opening, reply.to_vec())
+    }
+
+    /// What the reply to `request` says: the highest shared revision, or
+    /// why there is none to use.
+    fn choose(&self, request: &Request) -> Answer {
+        match self.revisions.highest_shared(&request.revisions) {
+            None => Answer::NoSharedRevision,
+            Some(_) if self.refuses(request.purpose) => Answer::PairingUnavailable,
+            Some(revision) => Answer::Chosen(revision),
+        }
+    }
+
+    /// Whether a hub monitor that comes for `purpose` is refused a pairing
+    /// run.
+    fn refuses(&self, purpose: Purpose) -> bool {
+        purpose == Purpose::Pair && self.pairing == Pairing::Unavailable
+    }
+}
+
+/// How this end's opening ended once it answered `request` with `answer`;
+/// `transcript` is kept only when a revision was chosen.
+fn outcome(request: Request, answer: Answer, transcript: Transcript) -> Opening {
+    match answer {
+        Answer::Chosen(revision) => Opening::Opened(Opened {
+            purpose: request.purpose,
+            revision,
+            transcript,
+        }),
+        Answer::NoSharedRevision => Opening::Incompatible {
+            theirs: request.revisions,
+        },
+        Answer::PairingUnavailable => Opening::PairingUnavailable,
     }
 }
 
