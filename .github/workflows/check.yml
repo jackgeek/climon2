@@ -32,7 +32,12 @@ permissions:
 # on Linux and Windows, and macOS only builds its release artifact.
 #
 # A pull request into the monitor links feature branch or one of its ticket
-# branches runs Linux only, whatever the switches below say (the platforms job).
+# branches runs no macOS job, whatever the switches below say. It runs every
+# Windows job, the neutral job's Windows leg, Windows Scope (forced to test),
+# Test, Dist and Archive but not Windows Quality, when its head is a Stack W
+# ticket branch or when it changes Windows-only code, and none otherwise. The
+# platforms job asks tools/check-platforms.sh, which names the branches
+# (docs/for-humans/quality-runners.md, "The monitor links feature's branches").
 #
 # The Windows Test, Quality and Archive jobs run unless the repository variable
 # CLIMON2_WINDOWS_TESTS is "off" (docs/for-humans/windows/quality.md). Off, they still run
@@ -53,20 +58,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # A pull request into the monitor links feature branch, or into a ticket
-  # branch stacked on it, runs Linux only: every platform runs on the feature's
-  # one pull request into main (#488; owner decision, 2026-11-27). Every job
-  # with a macOS or Windows leg asks this job, so the rule is written once.
+  # Whether this run's macOS and Windows jobs run: `switch` leaves it to the
+  # repository variables, `on` (Windows only) runs every Windows job, `off`
+  # none. Only a pull request into the monitor links feature's branches gets
+  # anything but `switch` (#488, #544). Every job with a macOS or Windows leg
+  # asks this job, so the rule is written once.
   platforms:
     name: Platforms
     runs-on: ubuntu-24.04
     outputs:
-      linux_only: ${{ steps.decide.outputs.linux_only }}
+      macos: ${{ steps.decide.outputs.macos }}
+      windows: ${{ steps.decide.outputs.windows }}
     steps:
+      # The full history lets `cargo xtask windows-changed` diff against the base.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: decide
         env:
-          LINUX_ONLY: ${{ github.event_name == 'pull_request' && (github.base_ref == 'feature/monitor-links' || startsWith(github.base_ref, 'monitor-links/')) }}
-        run: echo "linux_only=$LINUX_ONLY" | tee -a "$GITHUB_OUTPUT"
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: bash tools/check-platforms.sh | tee -a "$GITHUB_OUTPUT"
   macos:
     name: ${{ matrix.runner }} / bash 5
     needs: platforms
@@ -74,7 +88,7 @@ jobs:
       fail-fast: false
       matrix:
         runner: >-
-          ${{ fromJSON(needs.platforms.outputs.linux_only == 'true' && '["ubuntu-24.04"]' || vars.CLIMON2_MACOS_TESTS == 'on' && '["macos-15", "macos-15-intel", "ubuntu-24.04"]' || '["ubuntu-24.04"]') }}
+          ${{ fromJSON(needs.platforms.outputs.macos == 'off' && '["ubuntu-24.04"]' || vars.CLIMON2_MACOS_TESTS == 'on' && '["macos-15", "macos-15-intel", "ubuntu-24.04"]' || '["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -127,7 +141,7 @@ jobs:
       fail-fast: false
       matrix:
         os: >-
-          ${{ fromJSON(needs.platforms.outputs.linux_only == 'true' && '["ubuntu-24.04"]' || '["ubuntu-24.04", "windows-latest"]') }}
+          ${{ fromJSON(needs.platforms.outputs.windows == 'off' && '["ubuntu-24.04"]' || '["ubuntu-24.04", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -144,22 +158,23 @@ jobs:
   windows-scope:
     name: Windows scope
     needs: platforms
-    if: needs.platforms.outputs.linux_only != 'true'
+    if: needs.platforms.outputs.windows != 'off'
     runs-on: ubuntu-24.04
     outputs:
       test: ${{ steps.scope.outputs.test }}
     env:
+      WINDOWS: ${{ needs.platforms.outputs.windows }}
       SWITCH: ${{ vars.CLIMON2_WINDOWS_TESTS }}
       REF_TYPE: ${{ github.ref_type }}
       BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@v4
-        if: env.SWITCH == 'off' && env.REF_TYPE != 'tag'
+        if: env.WINDOWS != 'on' && env.SWITCH == 'off' && env.REF_TYPE != 'tag'
         with:
           fetch-depth: 0
       - id: scope
         run: |
-          if [[ "$SWITCH" != off || "$REF_TYPE" == tag \
+          if [[ "$WINDOWS" == on || "$SWITCH" != off || "$REF_TYPE" == tag \
             || -z "$BASE" || "$BASE" == 0000000000000000000000000000000000000000 ]]; then
             echo test=true >> "$GITHUB_OUTPUT"
           else
@@ -252,12 +267,14 @@ jobs:
         run: cargo test --locked -p climon2-install
   windows-quality:
     name: Windows-only CRAP and mutation / windows-2025
-    needs: windows-scope
+    needs: [platforms, windows-scope]
     # As the macOS job: a draft feature/* -> main integration PR waits until ready.
     # Off by default during development (see the top of this file); release
-    # qualification (mutate_all) and tags always run it.
+    # qualification (mutate_all) and tags always run it. A monitor links pull
+    # request never does: the owner's machines gate its stack (quality.yml).
     if: >-
-      needs.windows-scope.outputs.test == 'true'
+      needs.platforms.outputs.windows == 'switch'
+      && needs.windows-scope.outputs.test == 'true'
       && (vars.CLIMON2_WINDOWS_QUALITY == 'on'
         || inputs.mutate_all
         || startsWith(github.ref, 'refs/tags/'))
@@ -350,7 +367,7 @@ jobs:
     # own. Run it once the integration PR is marked ready, and on every update after.
     needs: platforms
     if: >-
-      needs.platforms.outputs.linux_only != 'true'
+      needs.platforms.outputs.macos != 'off'
       && vars.CLIMON2_MACOS_TESTS == 'on'
       && !(github.event_name == 'pull_request'
         && github.event.pull_request.draft
@@ -414,7 +431,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(needs.platforms.outputs.linux_only == 'true' && '[{"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]' || '[{"runner": "macos-15", "platform": "macos-universal"}, {"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]') }}
+          ${{ fromJSON(needs.platforms.outputs.macos == 'off' && '[{"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]' || '[{"runner": "macos-15", "platform": "macos-universal"}, {"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -447,7 +464,7 @@ jobs:
   windows-dist:
     name: Windows dist / windows-2025
     needs: platforms
-    if: needs.platforms.outputs.linux_only != 'true'
+    if: needs.platforms.outputs.windows != 'off'
     runs-on: windows-2025
     defaults:
       run:
@@ -525,7 +542,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(needs.platforms.outputs.linux_only == 'true' && '[{"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]' || vars.CLIMON2_MACOS_TESTS == 'on' && '[{"runner": "macos-15", "platform": "macos-universal"}, {"runner": "macos-15-intel", "platform": "macos-universal"}, {"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]' || '[{"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]') }}
+          ${{ fromJSON(needs.platforms.outputs.macos == 'off' && '[{"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]' || vars.CLIMON2_MACOS_TESTS == 'on' && '[{"runner": "macos-15", "platform": "macos-universal"}, {"runner": "macos-15-intel", "platform": "macos-universal"}, {"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]' || '[{"runner": "ubuntu-24.04", "platform": "linux-x86_64-gnu"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
