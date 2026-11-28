@@ -121,16 +121,21 @@ fn a_monitor_with_no_session_reports_no_attention_and_leaves_cleanly() {
     assert_eq!(leave(&mut monitor), Verdict::Clean);
 }
 
-/// Session metadata in `home` that discovery cannot judge: its daemon's
-/// process is unknown, so the session is uncertain and its row
-/// unavailable, and no client starts for it.
+/// Session metadata in `home` that discovery cannot judge: nothing listens
+/// on its socket, but its daemon cannot be proved dead, so the session is
+/// uncertain and its row unavailable, and no client starts for it. Its
+/// daemon is this test's own process, which is alive, and on Linux has no
+/// Linux identity, so is unknown. A PID of 0 would not do: Windows reports
+/// no such process, which proves the session stale.
 fn uncertain(home: &Path, id: &SessionId) {
     let sessions = home.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let socket = home.join("absent.sock");
+    let pid = std::process::id();
+    let started = climon2_platform::process::start_time(pid).unwrap().unwrap();
     let metadata: SessionMetadata = serde_json::from_value(serde_json::json!({
         "format_version": 1, "session_id": id.as_str(), "socket_path": socket,
-        "daemon_pid": 0, "daemon_start_time": 0, "command": "bash", "args": [],
+        "daemon_pid": pid, "daemon_start_time": started, "command": "bash", "args": [],
         "cwd": home, "depth": 1, "created_at": "2026-11-28T10:00:00.000Z",
         "climon2_version": "0.1.0"
     }))
