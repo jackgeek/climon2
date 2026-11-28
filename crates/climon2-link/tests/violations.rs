@@ -326,3 +326,90 @@ fn lim_06_a_relays_link_breach_closes_the_link() {
         assert!(hub.violations().is_empty(), "{what}");
     }
 }
+
+/// The Session page's example with a command of `size` bytes in place of
+/// `vim`, which makes its record 92 bytes and the command.
+fn session_record_with(size: usize) -> Vec<u8> {
+    let sample = samples::session_record();
+    let command = [&(size as u32).to_be_bytes()[..], &vec![b'x'; size]].concat();
+    [&sample[..21], &command, &sample[28..]].concat()
+}
+
+/// What a linked hub monitor does when the stand-in sends `records` on
+/// stream 0 in one batch, taking none of them until all have arrived:
+/// whether it closes the link with "protocol violation".
+fn hub_overflows(records: &[Vec<u8>]) -> bool {
+    let (mut hub, mut stand_in) = samples::linked_hub();
+    let units = records.iter().map(|r| stand_in.fragmented(0, r));
+    let units = units.collect::<Vec<_>>().concat();
+    let output = step(&mut hub, LATER, Input::Bytes(&units));
+    let sent = stand_in.open(&output.bytes);
+    match sent.as_slice() {
+        [] => false,
+        [close] if *close == VIOLATION && output.close => true,
+        other => panic!("unexpected units {other:02x?}"),
+    }
+}
+
+/// LIM-06: the hub monitor holds at most 1,024 stream-0 records that its
+/// caller has not yet taken. The 1,025th closes the link.
+#[test]
+fn lim_06_more_than_1024_unprocessed_control_records_close_the_link() {
+    let session = samples::session_record();
+    assert!(!hub_overflows(&vec![session.clone(); 1_024]));
+    assert!(hub_overflows(&vec![session; 1_025]));
+}
+
+/// LIM-06: the same records hold at most 1,048,576 bytes, tags included.
+/// One byte more closes the link.
+#[test]
+fn lim_06_more_than_1048576_unprocessed_control_bytes_close_the_link() {
+    let half = session_record_with(524_288 - 92);
+    assert_eq!(half.len(), 524_288);
+    let longer = session_record_with(524_288 - 92 + 1);
+    assert!(!hub_overflows(&[half.clone(), half.clone()]));
+    assert!(hub_overflows(&[half.clone(), longer]));
+    assert!(hub_overflows(&[half.clone(), half.clone(), vec![0x12]]));
+}
+
+/// Records the caller has taken leave the queue: the same flood taken in
+/// two parts is within the bound.
+#[test]
+fn taken_control_records_free_the_queue() {
+    let (mut hub, mut stand_in) = samples::linked_hub();
+    let session = samples::session_record();
+    for _ in 0..2 {
+        let units = (0..1_000).map(|_| stand_in.unit(0, 0, &session));
+        let units = units.collect::<Vec<_>>().concat();
+        let output = step(&mut hub, LATER, Input::Bytes(&units));
+        assert!(output.bytes.is_empty() && !output.close);
+        assert_eq!(hub.records().len(), 1_000);
+    }
+}
+
+/// What a hub monitor whose stream 1 is answered does when the stand-in
+/// sends `units`: whether it closes the link with "protocol violation".
+fn hub_closes_on(units: impl FnOnce(&mut StandIn) -> Vec<u8>) -> bool {
+    let (mut hub, mut stand_in) = samples::hub_streaming();
+    let units = units(&mut stand_in);
+    let output = step(&mut hub, LATER, Input::Bytes(&units));
+    stand_in.open(&output.bytes) == [VIOLATION] && output.close && hub.violations().is_empty()
+}
+
+/// LIM-06: an oversized unit, a record above the hub monitor's stated
+/// ceiling of 1,048,576 bytes, even on a session stream, and an
+/// advertisement flood past 128 sessions each close the link.
+#[test]
+fn lim_06_an_oversized_unit_record_or_flood_closes_the_link() {
+    assert!(hub_closes_on(|_| [&[0x40, 0x01][..], &[0; 16_385]].concat()));
+    let past_ceiling = [&event()[..1], &vec![0; 1_048_576]].concat();
+    assert!(hub_closes_on(
+        |stand_in| stand_in.fragmented(1, &past_ceiling)
+    ));
+    let flood = |stand_in: &mut StandIn| {
+        let session = |id: u8| [&[0x10][..], &[id; 16], &samples::session_record()[17..]].concat();
+        let units = (0..=128).map(|id| stand_in.unit(0, 0, &session(id)));
+        units.collect::<Vec<_>>().concat()
+    };
+    assert!(hub_closes_on(flood));
+}

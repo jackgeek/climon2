@@ -8,6 +8,7 @@
 //! lets a test supply the time and the randomness (ONE-01, ONE-02 of the
 //! monitor-link acceptance criteria).
 
+mod backlog;
 pub mod client;
 mod hub;
 mod keys;

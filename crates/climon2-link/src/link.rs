@@ -3,6 +3,7 @@
 //! half and the relay's half differ up to the two Hellos and share the
 //! conversation that follows.
 
+use crate::backlog::Backlog;
 use crate::keys::{KEY_SIZE, PublicKey, StaticKey};
 use crate::liveness::Liveness;
 use crate::noise::{self, Initiator, Transport};
@@ -113,6 +114,8 @@ struct Conversation<Ours: Voice, Theirs> {
     rules: Rules,
     /// Records received and not yet taken by the caller.
     inbox: Vec<Ours::Hears>,
+    /// The stream-0 records among them.
+    backlog: Backlog,
     /// When this end last sent a unit and last heard one.
     liveness: Liveness,
     /// The session streams the other end has broken a rule of, not yet
@@ -130,6 +133,7 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
             link: Link::Pending,
             rules: Rules::default(),
             inbox: Vec::new(),
+            backlog: Backlog::default(),
             liveness: Liveness::new(),
             violations: Vec::new(),
         };
@@ -301,11 +305,27 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
             return self.leave(Ours::VIOLATION);
         };
         match heard.judge(record.len(), &mut self.rules) {
-            Verdict::Accept => self.inbox.push(heard),
+            Verdict::Accept => self.deliver(stream, record.len(), heard),
             Verdict::Broken => self.leave(Ours::VIOLATION),
             Verdict::OutOfOrder | Verdict::Overdrawn => self.violated(stream),
             Verdict::Crossed | Verdict::Discarded => {}
         }
+    }
+
+    /// Keeps `heard`, a record `length` bytes long on `stream`, for the
+    /// caller. A stream-0 record that would take the queue of those not
+    /// yet taken past its bound is a protocol violation.
+    fn deliver(&mut self, stream: u32, length: usize, heard: Ours::Hears) {
+        if stream == CONTROL && !self.backlog.admit(length) {
+            return self.leave(Ours::VIOLATION);
+        }
+        self.inbox.push(heard);
+    }
+
+    /// Gives the caller the records received since it last took them.
+    fn take_records(&mut self) -> Vec<Ours::Hears> {
+        self.backlog = Backlog::default();
+        std::mem::take(&mut self.inbox)
     }
 
     /// The other end broke a rule of the live session stream `stream`:
@@ -647,7 +667,7 @@ impl HubRun {
 
     pub(crate) fn records(&mut self) -> Vec<RelayRecord> {
         match &mut self.stage {
-            HubStage::Talking(conversation) => std::mem::take(&mut conversation.inbox),
+            HubStage::Talking(conversation) => conversation.take_records(),
             _ => Vec::new(),
         }
     }
@@ -845,7 +865,7 @@ impl RelayRun {
 
     pub(crate) fn records(&mut self) -> Vec<HubRecord> {
         match &mut self.stage {
-            RelayStage::Talking(conversation) => std::mem::take(&mut conversation.inbox),
+            RelayStage::Talking(conversation) => conversation.take_records(),
             _ => Vec::new(),
         }
     }
