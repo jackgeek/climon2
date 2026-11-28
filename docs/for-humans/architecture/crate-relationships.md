@@ -56,7 +56,7 @@ flowchart TB
 | `climon2-vt` | The virtual terminal of the session daemon and of the monitor's per-session models: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
 | `climon2-discovery` | Session discovery shared by the CLI, which runs whole passes, and the [monitor](../../../GLOSSARY.md#sessions), which runs incremental, bounded passes. |
 | `climon2-monitor` | The monitor: one terminal that tracks every live session, with the `climon2-monitor` binary that `c2 monitor` starts. |
-| `climon2-link` | The link code of planned [monitor links](../../../GLOSSARY.md#monitor-links): what a hub monitor and a relay say to each other over a plain byte stream. It performs no input or output and takes the time and its randomness from its caller. So far it holds only that interface, and no executable links it. |
+| `climon2-link` | The link code of planned [monitor links](../../../GLOSSARY.md#monitor-links): what a hub monitor and a relay say to each other over a plain byte stream. It performs no input or output and takes the time and its randomness from its caller. So far it holds that interface, the opening exchange and pairing, and no executable links it. |
 
 ## Planned crates
 
@@ -212,9 +212,10 @@ Windows host (#320) is described in
 On Windows, `platform`'s tests consume the harness too, to host commands in
 its pinned ConPTY (#317).
 
-**Current (#492):** `climon2-link` exists, with no dependency and no
-consumer. The workspace test that reads `cargo metadata` holds it to an
-allowlist of dependencies, empty today, and scans its sources so that it can
+**Current (#492, #495):** `climon2-link` exists, with no workspace crate
+on either side of it. The workspace test that reads `cargo metadata` holds it
+to an allowlist of dependencies, which holds only the third-party
+cryptography of pairing today, and scans its sources so that it can
 never gain a platform dependency, a per-platform condition, a clock or
 randomness of its own
 ([crate README](../../../crates/climon2-link/README.md)). Its planned edges,

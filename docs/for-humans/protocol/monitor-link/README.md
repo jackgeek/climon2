@@ -8,9 +8,9 @@ pairing, the pinned-key handshake and the records of
 
 **Status: developer-agreed specification in
 [#480](https://github.com/jackgeek/climon2/issues/480). Only the opening
-exchange is implemented, in the `climon2-link` crate and in no released program.** No
-climon2 release contains a relay or speaks any part of this protocol. One
-detail is still open and is marked [below](#unresolved-details). The
+exchange and pairing are implemented, in the `climon2-link` crate and in no
+released program.** No climon2 release contains a relay or speaks any part of
+this protocol. The
 [acceptance criteria](../../behaviour/monitor-link/acceptance.md) say what
 automated evidence shows the protocol is met.
 
@@ -128,7 +128,7 @@ revision.
 
 | Job | Choice |
 |---|---|
-| PIN key exchange | [CPace](../TERMS.md#cpace) on ristretto255 with SHA-512 |
+| PIN key exchange | [CPace](../TERMS.md#cpace) on ristretto255 with SHA-512, as [`draft-irtf-cfrg-cpace-21`](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-cpace-21) specifies it |
 | Pairing key derivation and confirmation | [HKDF](../TERMS.md#hkdf) and [HMAC](../TERMS.md#hmac) with SHA-512 |
 | Pinned-key handshake | [Noise](../TERMS.md#noise) pattern `IK`, named `Noise_IK_25519_ChaChaPoly_SHA256` |
 | Units | Noise transport messages, ChaCha20-Poly1305 [AEAD](../TERMS.md#aead) |
@@ -278,13 +278,6 @@ none.
 
 Link capabilities are separate from the client library's capabilities, which
 [Stream opened](stream-opened.md) passes through for each session.
-
-## Unresolved details
-
-- **The CPace document.** The exact edition of the CPace specification that
-  link revision 1 follows is fixed when the implementation chooses its crate,
-  and is recorded on the [pairing share](pairing-share.md) page before the
-  revision ships.
 
 ## Owning decisions
 
