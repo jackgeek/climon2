@@ -8,6 +8,7 @@
 //! lets a test supply the time and the randomness (ONE-01, ONE-02 of the
 //! monitor-link acceptance criteria).
 
+mod drive;
 mod hub;
 mod keys;
 mod link;
@@ -18,6 +19,7 @@ mod record;
 mod relay;
 mod unit;
 
+pub use drive::{Carrier, Next, drive};
 pub use hub::HubEnd;
 pub use keys::{PublicKey, StaticKey};
 pub use link::{Ended, HubLink, Link, Peer, Record, Refused, RelayLink};
