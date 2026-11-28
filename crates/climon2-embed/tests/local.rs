@@ -181,6 +181,12 @@ fn copied(bytes: Bytes) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(bytes.data, bytes.length as usize) }.to_vec()
 }
 
+/// Whether counted bytes are described as the header requires: an empty
+/// buffer as a null pointer and zero length, any other with its pointer.
+fn described(bytes: Bytes) -> bool {
+    bytes.data.is_null() == (bytes.length == 0)
+}
+
 fn tokens(tokens: native::Tokens) -> Vec<String> {
     // SAFETY: the caller's tokens outlive the call.
     let tokens = unsafe { std::slice::from_raw_parts(tokens.data, tokens.count as usize) };
@@ -195,6 +201,21 @@ extern "C" fn create(startup: *const native::Startup, out: *mut Created) -> Call
     let script = world().scripts.get(&id).copied().unwrap_or_default();
     if let Some(code) = script.create_fails {
         return failure(code, b"refused", b"create refused");
+    }
+    let buffers = [
+        startup.expected_release,
+        startup.metadata_path.bytes,
+        startup.home_path.bytes,
+        startup.runtime_path.bytes,
+        startup.diagnostics.log_path.value.bytes,
+        startup.diagnostics.filter,
+    ];
+    if !buffers.into_iter().all(described) {
+        return failure(
+            native::INVALID_ARGUMENT,
+            b"invalid_argument",
+            b"an empty buffer is not null and zero",
+        );
     }
     let path = |path: native::Path| (path.encoding, copied(path.bytes));
     let settings = startup.settings;
@@ -888,17 +909,17 @@ fn failed_calls_are_reported_as_their_code_and_message() {
     assert_eq!(local.release(&running.id), Err("busy: still in use".into()));
 }
 
-/// A configured take-control key is enabled with its byte; the library
-/// log's directory that cannot be created is the startup's error.
-#[test]
-fn a_startup_carries_the_take_control_key_and_fails_without_its_log_directory() {
-    let id = session(13);
+/// What create was given for session `index`'s startup in connection 1,
+/// with `take_control` and the library log's `filter` in a fresh home.
+fn started(index: u8, take_control: Option<ControlKey>, filter: &str) -> Started {
+    let id = session(index);
     world().scripts.insert(guid(&id), Script::default());
     let home = tempfile::tempdir().unwrap();
     let layout = layout(home.path());
     let runtime = home.path().join("run");
     let environment = Environment {
-        take_control: ControlKey::from_byte(0x14),
+        take_control,
+        filter,
         ..environment(&layout, &runtime)
     };
     let startup = Startup::new(&environment, &metadata(&id), 1).unwrap();
@@ -916,17 +937,33 @@ fn a_startup_carries_the_take_control_key_and_fails_without_its_log_directory() 
         tell,
     );
     let Ok(Signal::Published(local, None)) = signals.recv_timeout(WAIT) else {
-        panic!("published handles");
+        panic!("create accepted the startup and the handles were published");
     };
-    let started = &world().fakes[&guid(&id)].started;
-    assert_eq!(started.settings, (1, 0x1d, 1, 0x14));
-    assert_eq!(started.generation, 1);
     local.shutdown();
     drop(owner);
+    world().fakes[&guid(&id)].started.clone()
+}
 
+/// A configured take-control key is enabled with its byte; the library
+/// log's directory that cannot be created is the startup's error.
+#[test]
+fn a_startup_carries_the_take_control_key_and_fails_without_its_log_directory() {
+    let started = started(13, ControlKey::from_byte(0x14), "debug");
+    assert_eq!(started.settings, (1, 0x1d, 1, 0x14));
+    assert_eq!(started.generation, 1);
+
+    let home = tempfile::tempdir().unwrap();
     let blocked = home.path().join("blocked");
     std::fs::write(&blocked, b"a file where a home is wanted").unwrap();
-    let nowhere = self::layout(&blocked);
-    let environment = self::environment(&nowhere, &runtime);
-    assert!(Startup::new(&environment, &metadata(&id), 1).is_err());
+    let nowhere = layout(&blocked);
+    let runtime = home.path().join("run");
+    let environment = environment(&nowhere, &runtime);
+    assert!(Startup::new(&environment, &metadata(&session(13)), 1).is_err());
+}
+
+/// An empty library log filter reaches create as the header's empty
+/// buffer, a null pointer and zero length, which create accepts.
+#[test]
+fn an_empty_log_filter_reaches_create_as_an_empty_buffer() {
+    assert_eq!(started(15, None, "").filter, b"");
 }
