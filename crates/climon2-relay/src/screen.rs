@@ -46,25 +46,28 @@ fn area(size: TerminalSize) -> Rect {
 pub(crate) struct Screen(Terminal<CrosstermBackend<File>>);
 
 impl Screen {
-    /// A screen of `size`, drawn to the process's terminal output.
-    pub(crate) fn new(size: TerminalSize) -> io::Result<Self> {
+    /// A screen of `size` on the process's terminal output, showing `view`.
+    pub(crate) fn drawn(size: TerminalSize, view: &View) -> io::Result<Self> {
         let backend = CrosstermBackend::new(climon2_platform::terminal::output()?);
         let options = TerminalOptions {
             viewport: Viewport::Fixed(area(size)),
         };
-        Terminal::with_options(backend, options).map(Self)
+        let mut screen = Terminal::with_options(backend, options).map(Self)?;
+        screen.draw(view)?;
+        Ok(screen)
     }
 
-    pub(crate) fn draw(&mut self, view: &View) -> io::Result<()> {
+    fn draw(&mut self, view: &View) -> io::Result<()> {
         self.0
             .draw(|frame| render(view, frame.area(), frame.buffer_mut()))
             .map(|_| ())
     }
 
     /// The terminal is `size` now: everything is drawn again.
-    pub(crate) fn resize(&mut self, size: TerminalSize) -> io::Result<()> {
+    pub(crate) fn redraw(&mut self, size: TerminalSize, view: &View) -> io::Result<()> {
         self.0.resize(area(size))?;
-        self.0.clear()
+        self.0.clear()?;
+        self.draw(view)
     }
 }
 

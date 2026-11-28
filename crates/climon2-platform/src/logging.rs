@@ -33,14 +33,11 @@ pub enum Role {
 }
 
 impl Role {
+    /// Each role's name, in declaration order.
+    const NAMES: [&'static str; 5] = ["cli", "daemon", "client", "monitor", "relay"];
+
     fn name(self) -> &'static str {
-        match self {
-            Self::Cli => "cli",
-            Self::Daemon => "daemon",
-            Self::Client => "client",
-            Self::Monitor => "monitor",
-            Self::Relay => "relay",
-        }
+        Self::NAMES[self as usize]
     }
 
     /// The log of one process in this role: its role, UTC second and pid, so

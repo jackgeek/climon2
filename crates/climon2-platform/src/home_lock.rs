@@ -46,17 +46,26 @@ pub fn take(path: &Path) -> io::Result<Taken> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)?;
     if !lock(&file)? {
-        let mut note = String::new();
-        // A note that cannot be read as text is no note: a failed read
-        // leaves the string empty.
-        let _ = file.read_to_string(&mut note);
-        return Ok(Taken::Busy(note));
+        return Ok(Taken::Busy(note(&mut file)));
     }
-    file.set_len(0)?;
-    Ok(Taken::Held(Held(file)))
+    Held::emptied(file).map(Taken::Held)
+}
+
+/// The note in `file`. A note that cannot be read as text is no note: a
+/// failed read leaves it empty.
+fn note(file: &mut File) -> String {
+    let mut note = String::new();
+    let _ = file.read_to_string(&mut note);
+    note
 }
 
 impl Held {
+    /// The lock on `file`, with no note yet.
+    fn emptied(file: File) -> io::Result<Self> {
+        file.set_len(0)?;
+        Ok(Self(file))
+    }
+
     /// Replaces the note a later taker is given.
     pub fn note(&mut self, text: &str) -> io::Result<()> {
         self.0.set_len(0)?;
@@ -69,14 +78,45 @@ impl Held {
 /// holder has the lock.
 fn lock(file: &File) -> io::Result<bool> {
     loop {
-        // flock only reads the descriptor `file` owns.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(true);
+        if let Some(locked) = try_lock(file)? {
+            return Ok(locked);
         }
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::WouldBlock {
-            return Ok(false);
-        }
-        crate::syscall::retry_if_interrupted(error)?;
+    }
+}
+
+/// One attempt at the lock: whether this open of `file` now holds it, or
+/// `None` when a signal interrupted the attempt.
+fn try_lock(file: &File) -> io::Result<Option<bool>> {
+    // flock only reads the descriptor `file` owns.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(true));
+    }
+    refused(io::Error::last_os_error())
+}
+
+/// What a refused attempt means: another holder has the lock, the attempt
+/// was interrupted, or it failed.
+fn refused(error: io::Error) -> io::Result<Option<bool>> {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return Ok(Some(false));
+    }
+    crate::syscall::retry_if_interrupted(error).map(|()| None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_is_busy_interrupted_or_a_failure() {
+        let busy = io::Error::from(io::ErrorKind::WouldBlock);
+        assert_eq!(refused(busy).unwrap(), Some(false));
+        let interrupted = io::Error::from(io::ErrorKind::Interrupted);
+        assert_eq!(refused(interrupted).unwrap(), None);
+        let failed = io::Error::from_raw_os_error(libc::EBADF);
+        assert_eq!(
+            refused(failed).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
     }
 }

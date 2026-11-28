@@ -74,10 +74,19 @@ fn work(arguments: CliArgs) -> Result<Work, String> {
     }
 }
 
+/// The client's subcommands; the rest go to [`sibling`].
 fn handoff(arguments: CliArgs) -> Result<Handoff, String> {
     match arguments {
         CliArgs::Attach(selector) => Ok(Handoff::Attach(selector)),
         CliArgs::Kill(selector) => Ok(Handoff::Kill(selector)),
+        other => sibling(other),
+    }
+}
+
+/// The subcommands this version's own monitor and relay carry out; the rest
+/// only present something.
+fn sibling(arguments: CliArgs) -> Result<Handoff, String> {
+    match arguments {
         CliArgs::Monitor => Ok(Handoff::Monitor),
         CliArgs::Relay(arguments) => Ok(Handoff::Relay(arguments)),
         other => Err(presentation(&other)),

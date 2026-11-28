@@ -65,6 +65,11 @@ impl Host {
     pub(crate) fn enter() -> io::Result<(Self, TerminalSize)> {
         let input = terminal::input()?;
         let size = terminal::size(&input)?;
+        Ok((Self::raw(input)?, size))
+    }
+
+    /// Owns `input` in raw mode, on the relay's own screen.
+    fn raw(input: File) -> io::Result<Self> {
         let signals = Signals::client()?;
         let raw = RawModeGuard::new(&input)?;
         let host = Self {
@@ -74,18 +79,31 @@ impl Host {
             buffer: [0; READ_BYTES],
         };
         write(ENTER)?;
-        Ok((host, size))
+        Ok(host)
     }
 
     /// The next thing to act on: a termination signal, then a resize, then
     /// input, waiting one tick for it.
     pub(crate) fn next(&mut self) -> io::Result<Event<'_>> {
+        match self.signalled()? {
+            Some(event) => Ok(event),
+            None => self.input(),
+        }
+    }
+
+    /// A termination signal, then a resize, if either came.
+    fn signalled(&mut self) -> io::Result<Option<Event<'static>>> {
         if let Some(signal) = self.signals.termination_signal() {
-            return Ok(Event::End(Ending::Signal(signal)));
+            return Ok(Some(Event::End(Ending::Signal(signal))));
         }
-        if self.signals.take_resize() {
-            return terminal::size(&self.input).map(Event::Resize);
+        if !self.signals.take_resize() {
+            return Ok(None);
         }
+        terminal::size(&self.input).map(|size| Some(Event::Resize(size)))
+    }
+
+    /// Input, waiting one tick for it.
+    fn input(&mut self) -> io::Result<Event<'_>> {
         if !self.readable()? {
             return Ok(Event::Idle);
         }

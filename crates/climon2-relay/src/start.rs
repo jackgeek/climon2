@@ -38,8 +38,13 @@ impl Startup {
     fn in_home(arguments: RelayArgs, home: &Path) -> io::Result<Self> {
         let home = HomeLayout::at(home).map_err(io::Error::other)?;
         let config = configuration(&home)?;
-        let mut lock = lock(&home)?;
-        let (listener, address) = listen(arguments.listen(&config))?;
+        Self::bound(lock(&home)?, arguments.listen(&config))
+    }
+
+    /// The start once the home is this relay's: it binds `address`, then
+    /// notes on the lock what a second start names.
+    fn bound(mut lock: Held, address: SocketAddr) -> io::Result<Self> {
+        let (listener, address) = listen(address)?;
         lock.note(&running(std::process::id(), address))?;
         Ok(Self {
             _listener: listener,
@@ -68,7 +73,11 @@ fn configuration(home: &HomeLayout) -> io::Result<RelayConfig> {
 fn lock(home: &HomeLayout) -> io::Result<Held> {
     let links = home.links();
     private::private_directory(&links)?;
-    match home_lock::take(&links.join(LOCK))? {
+    home_lock::take(&links.join(LOCK)).and_then(held)
+}
+
+fn held(taken: Taken) -> io::Result<Held> {
+    match taken {
         Taken::Held(held) => Ok(held),
         Taken::Busy(holder) => Err(io::Error::other(already_running(&holder))),
     }

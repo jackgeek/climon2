@@ -82,14 +82,17 @@ pub enum VersionBinary {
 }
 
 impl VersionBinary {
+    /// Each binary's name, in declaration order.
+    const NAMES: [&'static str; 5] = [
+        "climon2-cli",
+        "climon2-daemon",
+        "climon2-client",
+        "climon2-monitor",
+        "climon2-relay",
+    ];
+
     fn name(self) -> &'static str {
-        match self {
-            Self::Cli => "climon2-cli",
-            Self::Daemon => "climon2-daemon",
-            Self::Client => "climon2-client",
-            Self::Monitor => "climon2-monitor",
-            Self::Relay => "climon2-relay",
-        }
+        Self::NAMES[self as usize]
     }
 
     /// The platform suffix of a canonical path to this binary.
