@@ -361,6 +361,37 @@ fn a_port_in_use_is_a_start_failure() {
     assert_stopped(&mut free, 0);
 }
 
+/// ADV-03 (U3): started inside a nested session, the relay refuses to
+/// start, before it binds or touches the terminal; inside a session at
+/// depth 1 it starts.
+#[test]
+fn adv_03_the_relay_refuses_to_start_in_a_nested_session() {
+    let home = Isolation::new();
+    let session = ("CLIMON2_SESSION_ID", "0d5c0000-0000-4000-8000-000000000001");
+    let mut nested = home.command(RELAY);
+    nested.args(["--listen", "127.0.0.1:0"]);
+    nested.env(session.0, session.1);
+    nested.env("CLIMON2_SESSION_DEPTH", "2");
+    let mut terminal = Terminal::spawn(nested, ROWS, COLS).unwrap();
+    assert_eq!(terminal.wait_exit(TIMEOUT).unwrap(), 125);
+    let screen = terminal.screen().replace('\n', "");
+    let reason =
+        "climon2: error: c2 relay cannot start in a nested session (this one is at depth 2)";
+    assert!(screen.contains(reason), "{}", terminal.screen());
+    assert!(!screen.contains("Listening"), "{}", terminal.screen());
+    assert_eq!(terminal.modes(), Modes::BASELINE);
+    fs::remove_file(relay_log(&home)).unwrap();
+
+    let mut inside = home.command(RELAY);
+    inside.args(["--listen", "127.0.0.1:0"]);
+    inside.env(session.0, session.1);
+    inside.env("CLIMON2_SESSION_DEPTH", "1");
+    let mut terminal = Terminal::spawn(inside, ROWS, COLS).unwrap();
+    listening(&mut terminal);
+    terminal.send("s").unwrap();
+    assert_stopped(&mut terminal, 0);
+}
+
 fn configure(home: &Isolation, text: &str) {
     fs::write(home.climon2_home().join("config.jsonc"), text).unwrap();
 }

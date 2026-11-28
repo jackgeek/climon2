@@ -33,24 +33,46 @@ impl RelayHome {
     /// Starts a headless session, then `c2 relay` on any loopback port, and
     /// waits until the relay shows the address it listens on.
     pub fn start() -> Self {
+        Self::started(&["relay", "--listen", "127.0.0.1:0"])
+    }
+
+    /// As [`RelayHome::start`], but the relay runs inside a session of its
+    /// own at depth 1, as `c2 exec c2 relay` starts it.
+    pub fn start_in_session() -> Self {
+        Self::started(&["exec", "c2", "relay", "--listen", "127.0.0.1:0"])
+    }
+
+    fn started(args: &[&str]) -> Self {
         let package = Package::new();
         let session = headless_session(&package);
         let mut relay = package.command("c2");
-        relay.args(["relay", "--listen", "127.0.0.1:0"]);
+        relay.args(args);
         let mut terminal = Terminal::spawn(relay, ROWS, COLS).unwrap();
-        terminal
-            .wait_for_screen(TIMEOUT, |screen| {
-                let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
-                rows.first() == Some(&" Listening") && rows.last() == Some(&" p Pair  s Stop")
-            })
-            .unwrap();
-        let listen = terminal.row(1).trim().parse().unwrap();
+        let listen = listening(&mut terminal);
         Self {
             package,
             terminal,
             listen,
             session,
         }
+    }
+
+    /// The headless session the home started with.
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    /// Stops the relay from its menu and starts it again on the address it
+    /// listened on: every link to it drops, and its hub monitors redial.
+    /// `between` runs while it is stopped.
+    pub fn restart(&mut self, between: impl FnOnce(&Package)) {
+        self.terminal.send("s").unwrap();
+        assert_eq!(self.terminal.wait_exit(TIMEOUT).unwrap(), 0);
+        between(&self.package);
+        let mut relay = self.package.command("c2");
+        relay.args(["relay", "--listen", &self.listen.to_string()]);
+        self.terminal = Terminal::spawn(relay, ROWS, COLS).unwrap();
+        assert_eq!(listening(&mut self.terminal), self.listen);
     }
 
     /// The address the relay listens on, as its screen shows it.
@@ -90,15 +112,29 @@ impl RelayHome {
     }
 }
 
+/// Waits until a relay shows the address it listens on, and gives it.
+fn listening(terminal: &mut Terminal) -> SocketAddr {
+    terminal
+        .wait_for_screen(TIMEOUT, |screen| {
+            let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
+            rows.first() == Some(&" Listening") && rows.last() == Some(&" p Pair  s Stop")
+        })
+        .unwrap();
+    terminal.row(1).trim().parse().unwrap()
+}
+
 /// A headless session that runs for at most two minutes: a real session
 /// daemon in `package`'s home.
 fn headless_session(package: &Package) -> String {
     let script = r#"until [ "$SECONDS" -ge 120 ]; do sleep 0.1; done"#;
-    let output = scripted(
-        package,
-        "c2",
-        &["exec", "--headless", "/bin/bash", "-c", script],
-    );
+    headless(package, &["/bin/bash", "-c", script])
+}
+
+/// A headless session running `command` in `package`'s home, by its ID.
+pub fn headless(package: &Package, command: &[&str]) -> String {
+    let mut args = vec!["exec", "--headless"];
+    args.extend_from_slice(command);
+    let output = scripted(package, "c2", &args);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     String::from_utf8(output.stdout)
         .unwrap()

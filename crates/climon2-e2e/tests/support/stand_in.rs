@@ -5,12 +5,16 @@
 //! terminal, no store and no sessions.
 
 use climon2_link::{
-    Carrier, Hello, Introduction, Invitation, Invitations, Next, PublicKey, Randomness, RelayEnd,
-    Revisions, StaticKey, Time, drive,
+    Advertisement, Carrier, Hello, Introduction, Invitation, Invitations, Link, Next, PublicKey,
+    Randomness, RelayEnd, RelayRecord, Revisions, StaticKey, Time, drive,
 };
 use std::{
     io::{self, ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -28,12 +32,13 @@ pub enum Defect {
 }
 
 /// A stand-in relay serving one pairing connection and the link connection
-/// after it.
+/// after it, or, advertising, every link connection until it finishes.
 pub struct StandInRelay {
     address: SocketAddr,
     pin: String,
     identity: StaticKey,
     served: Option<JoinHandle<()>>,
+    finishing: Arc<AtomicBool>,
 }
 
 impl StandInRelay {
@@ -58,6 +63,39 @@ impl StandInRelay {
             pin: pin.to_string(),
             identity,
             served: Some(served),
+            finishing: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// An exact stand-in that pairs once, then serves link connections from
+    /// the hub monitor it paired with until it finishes, advertising
+    /// `advertised` on each once it is established. Each link stays up
+    /// until the hub monitor ends it.
+    pub fn advertising(advertised: Vec<Advertisement>) -> Self {
+        let mut randomness = Seeded::now();
+        let identity = key(&mut randomness);
+        let introduction = Introduction::new(*identity.public().as_bytes(), "stand-in").unwrap();
+        let invitations = Invitations::new(introduction);
+        let started = Instant::now();
+        let pin = invitations.mint(Time::since_start(started.elapsed()), &mut randomness);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let finishing = Arc::new(AtomicBool::new(false));
+        let advertiser = Advertiser {
+            listener,
+            invitations,
+            identity: identity.clone(),
+            advertised,
+            started,
+            finishing: Arc::clone(&finishing),
+        };
+        let served = thread::spawn(move || advertiser.serve(&mut randomness));
+        Self {
+            address,
+            pin: pin.to_string(),
+            identity,
+            served: Some(served),
+            finishing,
         }
     }
 
@@ -76,10 +114,70 @@ impl StandInRelay {
     }
 
     /// Waits until it has served both connections, or the first alone when
-    /// no pairing came of it.
+    /// no pairing came of it; an advertising stand-in stops serving once
+    /// its current connection ends.
     pub fn finish(mut self) {
+        self.finishing.store(true, Ordering::Relaxed);
         self.served.take().unwrap().join().unwrap();
     }
+}
+
+/// What an advertising stand-in serves.
+struct Advertiser {
+    listener: TcpListener,
+    invitations: Invitations,
+    identity: StaticKey,
+    advertised: Vec<Advertisement>,
+    started: Instant,
+    finishing: Arc<AtomicBool>,
+}
+
+impl Advertiser {
+    fn serve(&self, randomness: &mut Seeded) {
+        let mut pairing = RelayEnd::new(Revisions::published(), self.invitations.clone());
+        run(&mut pairing, &self.listener, self.started, randomness);
+        let now = Time::since_start(self.started.elapsed());
+        let Invitation::Paired(hub) = self.invitations.invitation(now) else {
+            return;
+        };
+        let remembered = vec![PublicKey::from_bytes(*hub.key())];
+        self.listener.set_nonblocking(true).unwrap();
+        while !self.finishing.load(Ordering::Relaxed) {
+            let Ok((stream, _)) = self.listener.accept() else {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            let hello = Hello::new("0.0.0-stand-in", "stand-in", 1_048_576).unwrap();
+            let mut link = RelayEnd::new(Revisions::published(), self.invitations.clone()).linking(
+                self.identity.clone(),
+                remembered.clone(),
+                hello,
+            );
+            let mut wire = Wire {
+                stream,
+                started: self.started,
+            };
+            let mut unsaid = Some(self.advertised.clone());
+            let between = |end: &mut RelayEnd| Ok(advertise(end, &mut unsaid));
+            drive(&mut link, &mut wire, randomness, between).unwrap();
+        }
+    }
+}
+
+/// Once the link is established, sends what is still unsaid.
+fn advertise(end: &mut RelayEnd, unsaid: &mut Option<Vec<Advertisement>>) -> Next {
+    if !matches!(end.link(), Link::Established(_)) {
+        return Next::Wait;
+    }
+    let Some(advertised) = unsaid.take() else {
+        return Next::Wait;
+    };
+    for advertisement in advertised {
+        end.send(&RelayRecord::Advertisement(advertisement))
+            .unwrap();
+    }
+    Next::Step
 }
 
 fn serve(
