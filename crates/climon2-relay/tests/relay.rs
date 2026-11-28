@@ -22,7 +22,7 @@ const RELAY: &str = env!("CARGO_BIN_EXE_climon2-relay");
 const TIMEOUT: Duration = Duration::from_secs(20);
 const ROWS: u16 = 10;
 const COLS: u16 = 60;
-const USAGE: &str = "climon2: error: usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | relay|r [--listen <ip>:<port>]\n";
+const USAGE: &str = "climon2: error: usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m [pair|p <host:port>] | relay|r [--listen <ip>:<port>]\n";
 
 /// The relay in a terminal of its own, in `home`'s climon2 home.
 fn start(home: &Isolation, args: &[&str]) -> Terminal {

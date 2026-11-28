@@ -43,7 +43,7 @@ fn run_handoff(handoff: Handoff) -> Result<u32, Error> {
     match handoff {
         Handoff::Attach(selector) => crate::logged(|home, _, _| crate::attach::run(home, selector)),
         Handoff::Kill(selector) => crate::logged(|home, _, _| kill(home, &selector)),
-        Handoff::Monitor => crate::logged(|_, _, _| crate::sibling::monitor()),
+        Handoff::Monitor(arguments) => crate::logged(|_, _, _| crate::sibling::monitor(&arguments)),
         Handoff::Relay(arguments) => crate::logged(|_, _, _| crate::sibling::relay(&arguments)),
     }
 }

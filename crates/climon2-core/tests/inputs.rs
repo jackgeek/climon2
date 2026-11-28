@@ -2,6 +2,7 @@
 use climon2_core::{
     cli::{self, CliArgs, CommandArgs},
     lifetime::Lifetime,
+    monitor::MonitorArgs,
     selector::Selector,
     session::*,
 };
@@ -175,15 +176,16 @@ fn attach_and_kill_accept_short_selectors_but_not_empty_or_extra_arguments() {
     }
 }
 
-/// #74 (INP-01 derived refusal): `monitor` and its shortcut `m` take no
-/// arguments; anything after either is a usage error (2). #287: the old alias
-/// `mon` is gone and is a usage error too.
+/// #74 (INP-01 derived refusal): bare `monitor`, or its shortcut `m`, starts
+/// the monitor. #501 (CM6): it gains the verb `pair`, or `p`, and every other
+/// argument after it is a usage error (2). #287: the old alias `mon` is gone
+/// and is a usage error too.
 #[test]
-fn issue74_monitor_and_m_take_no_arguments_and_mon_is_gone() {
+fn issue74_monitor_and_m_start_the_monitor_and_mon_is_gone() {
     for monitor in ["monitor", "m"] {
         assert_eq!(
             CliArgs::parse([monitor].map(OsString::from)).unwrap(),
-            CliArgs::Monitor
+            CliArgs::Monitor(MonitorArgs::Start)
         );
     }
     for bad in [
@@ -200,6 +202,57 @@ fn issue74_monitor_and_m_take_no_arguments_and_mon_is_gone() {
             "{bad:?}"
         );
     }
+}
+
+/// #501 (CM6, CM10, PAIR-10): `c2 monitor pair <host:port>`, or `c2 m p`,
+/// takes the address as typed and nothing else: no flag carries a PIN.
+#[test]
+fn issue501_monitor_pair_takes_one_address_and_no_pin() {
+    for (monitor, pair) in [
+        ("monitor", "pair"),
+        ("m", "p"),
+        ("monitor", "p"),
+        ("m", "pair"),
+    ] {
+        let parsed = CliArgs::parse([monitor, pair, "buildbox:7222"].map(OsString::from));
+        assert_eq!(
+            parsed.unwrap(),
+            CliArgs::Monitor(MonitorArgs::Pair {
+                address: "buildbox:7222".to_owned()
+            })
+        );
+    }
+    for bad in [
+        &["monitor", "pair"][..],
+        &["m", "p", "a:1", "b:2"],
+        &["m", "p", "a:1", "--pin", "12345678"],
+        &["m", "p", "--pin", "12345678", "a:1"],
+        &["m", "p", "--pin=12345678"],
+        &["m", "p", ""],
+        &["m", "pear", "a:1"],
+        &["m", "P", "a:1"],
+    ] {
+        assert_eq!(
+            CliArgs::parse(bad.iter().map(OsString::from))
+                .unwrap_err()
+                .exit_code(),
+            2,
+            "{bad:?}"
+        );
+    }
+}
+
+/// #501: the CLI hands the monitor exactly the arguments the monitor's own
+/// parser reads back.
+#[test]
+fn issue501_monitor_arguments_read_back_as_they_were_given() {
+    let pair = MonitorArgs::Pair {
+        address: "[::1]:7222".to_owned(),
+    };
+    assert_eq!(pair.arguments(), ["pair", "[::1]:7222"].map(OsString::from));
+    assert_eq!(MonitorArgs::parse(pair.arguments()).unwrap(), pair);
+    assert!(MonitorArgs::Start.arguments().is_empty());
+    assert_eq!(MonitorArgs::parse(Vec::new()).unwrap(), MonitorArgs::Start);
 }
 
 /// #29: help and version flags parse only when given alone. #287: help has

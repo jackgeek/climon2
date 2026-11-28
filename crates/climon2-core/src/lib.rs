@@ -12,6 +12,7 @@ pub mod keys;
 pub mod layout;
 pub mod lifetime;
 pub mod metadata;
+pub mod monitor;
 mod names;
 pub mod native;
 pub mod pairing;

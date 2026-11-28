@@ -297,9 +297,15 @@ fn the_links_folder_is_in_the_climon2_home() {
     assert_eq!(HomeLayout::at(&home).unwrap().links(), home.join("links"));
 }
 
-/// CM1: the usage line shows the relay command with its one flag.
+/// CM1, CM6: the usage line shows the monitor's pair verb and the relay
+/// command with its one flag.
 #[test]
 fn the_usage_line_shows_relay_and_its_flag() {
+    assert!(
+        cli::USAGE.contains(" | monitor|m [pair|p <host:port>] | "),
+        "{}",
+        cli::USAGE
+    );
     assert!(
         cli::USAGE.ends_with(" | relay|r [--listen <ip>:<port>]"),
         "{}",

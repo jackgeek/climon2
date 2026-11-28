@@ -1,12 +1,13 @@
 //! `c2 monitor` and `c2 relay`: hand off to an executable of the CLI's own
 //! version.
 use crate::Error;
-use climon2_core::{layout::VersionBinary, relay::RelayArgs};
+use climon2_core::{layout::VersionBinary, monitor::MonitorArgs, relay::RelayArgs};
 use std::{ffi::OsString, process::Command};
 
-/// `c2 monitor` and `c2 m`: this version's monitor, which takes no arguments.
-pub fn monitor() -> Result<u32, Error> {
-    run(VersionBinary::Monitor, "monitor", Vec::new())
+/// `c2 monitor` and `c2 m`: this version's monitor, given the verb and its
+/// arguments, if any.
+pub fn monitor(arguments: &MonitorArgs) -> Result<u32, Error> {
+    run(VersionBinary::Monitor, "monitor", arguments.arguments())
 }
 
 /// `c2 relay` and `c2 r`: this version's relay, given the arguments the CLI

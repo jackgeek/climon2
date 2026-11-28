@@ -32,7 +32,7 @@ impl Handoff {
         match self {
             Self::Attach(selector) => attach::run(home, selector),
             Self::Kill(selector) => kill::run(home, &selector),
-            Self::Monitor => sibling::monitor(),
+            Self::Monitor(arguments) => sibling::monitor(&arguments),
             Self::Relay(arguments) => sibling::relay(&arguments),
         }
     }

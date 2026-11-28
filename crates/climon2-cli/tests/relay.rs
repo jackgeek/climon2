@@ -1,6 +1,8 @@
 //! #499 (spec #488, RLY-01, X1-2): `c2 relay` and `c2 r` hand off to the
 //! relay executable of the CLI's own version, with the arguments they were
-//! given. The relay here is a script that records how it was started.
+//! given. The relay here is a script that records how it was started. #501
+//! (CM6): `c2 monitor pair` hands its verb and address to the monitor the
+//! same way.
 #![cfg(unix)]
 
 use climon2_test_term::copy_executable;
@@ -24,7 +26,13 @@ fn executable_home(root: &Path) -> PathBuf {
 
 /// A relay that writes its arguments, one per line, and exits 7.
 fn recording_relay(cli: &Path, record: &Path) {
-    let relay = cli.with_file_name("climon2-relay");
+    recording(cli, "climon2-relay", record);
+}
+
+/// A version executable `name` that writes its arguments, one per line, and
+/// exits 7.
+fn recording(cli: &Path, name: &str, record: &Path) {
+    let relay = cli.with_file_name(name);
     let script = format!(
         "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > '{}'\nexit 7\n",
         record.display()
@@ -119,4 +127,27 @@ fn a_relay_usage_error_starts_nothing_and_touches_no_home() {
     }
     assert!(!record.exists());
     assert!(!home.exists());
+}
+
+#[test]
+fn monitor_pair_runs_the_versions_monitor_with_the_verb_and_the_address() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().canonicalize().unwrap();
+    let cli = executable_home(&root_path);
+    let record = root_path.join("started");
+    recording(&cli, "climon2-monitor", &record);
+    let monitor = cli.with_file_name("climon2-monitor");
+    for (args, passed) in [
+        (&["monitor"][..], &[][..]),
+        (&["m", "p", "buildbox:7222"], &["pair", "buildbox:7222"]),
+        (&["monitor", "pair", "[::1]:9"], &["pair", "[::1]:9"]),
+    ] {
+        let _ = fs::remove_file(&record);
+        let output = run(&cli, &root_path.join("home"), args);
+        assert_eq!(output.status.code(), Some(7), "{args:?}: {output:?}");
+        let started = fs::read_to_string(&record).unwrap();
+        let mut expected = vec![monitor.to_str().unwrap()];
+        expected.extend(passed);
+        assert_eq!(started.lines().collect::<Vec<_>>(), expected, "{args:?}");
+    }
 }

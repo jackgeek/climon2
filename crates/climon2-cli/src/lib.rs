@@ -17,6 +17,7 @@ use climon2_core::{
     cli::{CliArgs, CommandArgs},
     layout::{ExecutableLayout, VersionBinary},
     lifetime::Lifetime,
+    monitor::MonitorArgs,
     relay::RelayArgs,
     selector::Selector,
     session::NestedStart,
@@ -58,7 +59,7 @@ enum Work {
 enum Handoff {
     Attach(Selector),
     Kill(Selector),
-    Monitor,
+    Monitor(MonitorArgs),
     Relay(RelayArgs),
 }
 
@@ -87,7 +88,7 @@ fn handoff(arguments: CliArgs) -> Result<Handoff, String> {
 /// only present something.
 fn sibling(arguments: CliArgs) -> Result<Handoff, String> {
     match arguments {
-        CliArgs::Monitor => Ok(Handoff::Monitor),
+        CliArgs::Monitor(arguments) => Ok(Handoff::Monitor(arguments)),
         CliArgs::Relay(arguments) => Ok(Handoff::Relay(arguments)),
         other => Err(presentation(&other)),
     }
