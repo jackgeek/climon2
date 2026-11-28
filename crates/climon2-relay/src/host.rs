@@ -115,14 +115,21 @@ impl Host {
     /// waiting again.
     fn readable(&self) -> io::Result<bool> {
         let mut watches = [Watch::new(self.input.as_fd(), Interest::Read)];
-        match waiting::wait(&mut watches, TICK) {
-            Ok(_) => Ok(watches[0].ready()),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(false),
-            Err(error) => Err(io::Error::new(
-                error.kind(),
-                format!("cannot wait for terminal input: {error}"),
-            )),
-        }
+        let wait = waiting::wait(&mut watches, TICK);
+        waited(wait.map(|_| watches[0].ready()))
+    }
+}
+
+/// What one tick's wait for input means: whether input is ready, with an
+/// interrupted wait finding none.
+fn waited(ready: io::Result<bool>) -> io::Result<bool> {
+    match ready {
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(false),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("cannot wait for terminal input: {error}"),
+        )),
+        ready => ready,
     }
 }
 
@@ -195,6 +202,30 @@ mod tests {
         assert_eq!(
             ended(read(Err(lost), &buffer)),
             Some(Ending::TerminalClosed)
+        );
+    }
+
+    #[test]
+    fn a_wait_says_whether_input_is_ready() {
+        assert!(waited(Ok(true)).unwrap());
+        assert!(!waited(Ok(false)).unwrap());
+    }
+
+    #[test]
+    fn an_interrupted_wait_finds_no_input() {
+        let interrupted = io::Error::from(io::ErrorKind::Interrupted);
+        assert!(!waited(Err(interrupted)).unwrap());
+    }
+
+    #[test]
+    fn a_failed_wait_is_reported_with_its_kind() {
+        let failed = waited(Err(io::Error::from_raw_os_error(9))).unwrap_err();
+        let expected = io::Error::from_raw_os_error(9).kind();
+        assert_eq!(failed.kind(), expected);
+        assert!(
+            failed
+                .to_string()
+                .starts_with("cannot wait for terminal input: ")
         );
     }
 

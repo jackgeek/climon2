@@ -119,6 +119,14 @@ enum Deleting {
 }
 
 impl Deleting {
+    /// The Delete under way once `offer` is confirmed.
+    fn of(offer: Offer) -> Self {
+        match offer {
+            Offer::TerminateAndRemove => Deleting::Terminating,
+            Offer::Remove => Deleting::Removing,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Terminating => "Terminating",
@@ -509,10 +517,18 @@ impl Row {
     /// alone once the session is final or proven gone. A remote row offers
     /// nothing until its Kill can cross a session stream (#503).
     fn offer(&self) -> Option<Offer> {
+        self.deletable().map(|(_, offer)| offer)
+    }
+
+    /// A local session's metadata and the Delete its row offers, unless
+    /// none is offered.
+    fn deletable(&self) -> Option<(&SessionMetadata, Offer)> {
+        let Listing::Local(metadata) = &self.listing else {
+            return None;
+        };
         let over = self.ended.is_some() || self.recovery == Some(Recovery::Gone);
         let offer = [Offer::TerminateAndRemove, Offer::Remove][usize::from(over)];
-        let local = matches!(self.listing, Listing::Local(_));
-        (self.deleting.is_none() && local).then_some(offer)
+        self.deleting.is_none().then_some((metadata, offer))
     }
 
     fn recover(&mut self, recovery: Recovery) {
@@ -739,16 +755,10 @@ impl Registry {
     /// confirmed, unless nothing was offered.
     pub(crate) fn confirm(&mut self, id: &SessionAt) -> Option<(SessionMetadata, Offer)> {
         let row = self.rows.get_mut(id)?;
-        let offer = row.offer()?;
-        let Listing::Local(metadata) = &row.listing else {
-            return None;
-        };
-        let metadata = metadata.clone();
-        let deleting = match offer {
-            Offer::TerminateAndRemove => Deleting::Terminating,
-            Offer::Remove => Deleting::Removing,
-        };
-        row.deleting = Some(deleting);
+        let (metadata, offer) = row
+            .deletable()
+            .map(|(metadata, offer)| (metadata.clone(), offer))?;
+        row.deleting = Some(Deleting::of(offer));
         row.kill_error = None;
         Some((metadata, offer))
     }
