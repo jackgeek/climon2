@@ -175,18 +175,18 @@ fn pull_requests_never_qualify() {
     assert!(!workflow("measure.yml").contains("qualify"));
 }
 
-/// #319: the Windows Dist job builds the zip on `windows-2025` on every run.
-/// Unlike the Windows Test and Quality jobs it does not wait for the Windows
-/// scope, so `CLIMON2_WINDOWS_TESTS=off` never skips it.
+/// #319: the Windows Dist job builds the zip on `windows-2025`. Unlike the
+/// Windows Test and Quality jobs it does not wait for the Windows scope, so
+/// `CLIMON2_WINDOWS_TESTS=off` never skips it. Only a Linux-only pull request
+/// (#488) does.
 #[test]
 fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
     let check = workflow("check.yml");
     let dist = job(&check, "windows-dist");
     assert!(dist.contains(&"    runs-on: windows-2025"), "{dist:#?}");
+    assert!(dist.contains(&"    needs: platforms"), "{dist:#?}");
     assert!(
-        !dist
-            .iter()
-            .any(|line| line.starts_with("    needs:") || line.starts_with("    if:")),
+        dist.contains(&"    if: needs.platforms.outputs.linux_only != 'true'"),
         "{dist:#?}"
     );
     assert!(dist.contains(&"        run: cargo xtask dist"), "{dist:#?}");
@@ -194,6 +194,72 @@ fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
         dist.contains(&"          name: release-dist-windows-x86_64-msvc"),
         "{dist:#?}"
     );
+}
+
+/// #488 (owner decision, 2026-11-27): a pull request into the monitor links
+/// feature branch, or into a ticket branch stacked on it, runs Linux only.
+/// One job decides that, and every job with a macOS or Windows leg asks it.
+/// Any other run, release qualification included, is never Linux-only.
+#[test]
+fn monitor_links_pull_requests_run_linux_only() {
+    let check = workflow("check.yml");
+    let platforms = job(&check, "platforms");
+    assert!(platforms.contains(&"      linux_only: ${{ steps.decide.outputs.linux_only }}"));
+    assert!(
+        platforms
+            .contains(&"        run: echo \"linux_only=$LINUX_ONLY\" | tee -a \"$GITHUB_OUTPUT\""),
+        "{platforms:#?}"
+    );
+    assert!(
+        platforms.contains(
+            &"          LINUX_ONLY: ${{ github.event_name == 'pull_request' && (github.base_ref == 'feature/monitor-links' || startsWith(github.base_ref, 'monitor-links/')) }}"
+        ),
+        "{platforms:#?}"
+    );
+    assert_eq!(
+        check.matches("monitor-links").count(),
+        2,
+        "the platforms job alone names the feature's branches"
+    );
+    // The Windows Test, Quality and Archive jobs need the scope, so they skip with it.
+    for name in ["windows-scope", "windows-dist"] {
+        let lines = job(&check, name);
+        assert!(
+            lines.contains(&"    if: needs.platforms.outputs.linux_only != 'true'"),
+            "{name}: {lines:#?}"
+        );
+    }
+    assert!(
+        condition(&job(&check, "quality"))
+            .starts_with("needs.platforms.outputs.linux_only != 'true' && "),
+    );
+    let linux = "'[\"ubuntu-24.04\"]'";
+    let linux_dist = "'[{\"runner\": \"ubuntu-24.04\", \"platform\": \"linux-x86_64-gnu\"}]'";
+    for (name, key, only) in [
+        ("macos", "runner", linux),
+        ("neutral", "os", linux),
+        ("dist", "include", linux_dist),
+        ("archive", "include", linux_dist),
+    ] {
+        let lines = job(&check, name);
+        let at = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with(&format!("{key}:")))
+            .unwrap_or_else(|| panic!("{name} has no {key}"));
+        let matrix = lines[at..at + 2].join(" ");
+        assert!(
+            matrix.contains(&format!(
+                "fromJSON(needs.platforms.outputs.linux_only == 'true' && {only} || "
+            )),
+            "{name}: {matrix}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("    needs:") && line.contains("platforms")),
+            "{name}: {lines:#?}"
+        );
+    }
 }
 
 /// #321: the Windows Test job runs the smoke test against the zip the Dist
@@ -578,12 +644,36 @@ fn gates_skip_only_when_main_found_a_passed_run_of_its_tree() {
             condition(&lines),
             format!(
                 "!cancelled() && needs.base.result == 'success' \
+                 && contains(needs.base.outputs.gates, '{name}') \
                  && contains(vars.CLIMON2_OWN_RUNNERS, '{name}') \
                  && needs.prior.outputs.run == ''"
             ),
             "{name}"
         );
     }
+}
+
+/// #488: one script decides which gates a run has and what they mutate
+/// against (xtask/tests/quality_scope.rs), and the base job hands its
+/// answers to the gates.
+#[test]
+fn the_base_job_asks_the_scope_script() {
+    let quality = workflow("quality.yml");
+    let base = job(&quality, "base");
+    for line in [
+        "      sha: ${{ steps.base.outputs.sha }}",
+        "      gates: ${{ steps.base.outputs.gates }}",
+        "          EVENT: ${{ github.event_name }}",
+        "          REF: ${{ github.ref }}",
+        "          BEFORE: ${{ github.event.before }}",
+        "        run: bash tools/quality-scope.sh >> \"$GITHUB_OUTPUT\"",
+    ] {
+        assert!(base.contains(&line), "{line}: {base:#?}");
+    }
+    assert!(
+        !quality.contains("monitor-links"),
+        "the script alone names the feature's branches"
+    );
 }
 
 /// #442: the look-up requires every gate job by the name quality.yml gives it,
