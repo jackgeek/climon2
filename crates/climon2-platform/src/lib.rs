@@ -1,4 +1,5 @@
 //! Shared platform seams from ADR 0003.
+pub mod clock;
 #[cfg(windows)]
 #[path = "command/windows.rs"]
 pub mod command;
@@ -17,6 +18,7 @@ pub mod presentation;
 pub mod private;
 pub mod process;
 pub mod pty;
+pub mod randomness;
 pub mod runtime;
 #[cfg(unix)]
 mod syscall;
