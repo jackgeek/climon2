@@ -64,6 +64,12 @@ impl HomeLayout {
     pub fn general_logs(&self) -> PathBuf {
         self.0.join("logs/general")
     }
+
+    /// The owner-only folder that holds this home's monitor link records,
+    /// keys and locks.
+    pub fn links(&self) -> PathBuf {
+        self.0.join("links")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,16 +78,21 @@ pub enum VersionBinary {
     Daemon,
     Client,
     Monitor,
+    Relay,
 }
 
 impl VersionBinary {
+    /// Each binary's name, in declaration order.
+    const NAMES: [&'static str; 5] = [
+        "climon2-cli",
+        "climon2-daemon",
+        "climon2-client",
+        "climon2-monitor",
+        "climon2-relay",
+    ];
+
     fn name(self) -> &'static str {
-        match self {
-            Self::Cli => "climon2-cli",
-            Self::Daemon => "climon2-daemon",
-            Self::Client => "climon2-client",
-            Self::Monitor => "climon2-monitor",
-        }
+        Self::NAMES[self as usize]
     }
 
     /// The platform suffix of a canonical path to this binary.

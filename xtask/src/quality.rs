@@ -81,6 +81,7 @@ pub(crate) const SHIPPED: &[&str] = &[
     "crates/climon2-monitor/src",
     "crates/climon2-monitor-tui/src",
     "crates/climon2-embed/src",
+    "crates/climon2-relay/src",
     "crates/climon2-vt/src",
 ];
 /// The test runs that make up the workspace suite on Windows, where only part of the
@@ -135,6 +136,7 @@ pub(crate) const WINDOWS_SUITE: &[&[&str]] = &[
         "-p",
         "climon2-embed",
     ],
+    &["-p", "climon2-relay"],
     &["-p", "climon2-launcher"],
     // The CLI's tests but the end-to-end scenarios #328 ported
     // (docs/for-humans/windows/qualification.md), which the Windows Test job
@@ -915,7 +917,8 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/native_path/windows.rs")
         | Some("crates/climon2-platform/src/handoff/windows.rs")
         | Some("crates/climon2-install/src/windows.rs")
-        | Some("crates/climon2-install/src/user_path/windows.rs") => Some("windows"),
+        | Some("crates/climon2-install/src/user_path/windows.rs")
+        | Some("crates/climon2-relay/src/windows.rs") => Some("windows"),
         _ => None,
     }
 }

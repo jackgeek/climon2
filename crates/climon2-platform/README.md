@@ -85,6 +85,37 @@ dispatch or shell-specific logic.
 - Linux authenticates with `SO_PEERCRED`; macOS uses `getpeereid`. Both require
   the effective user's UID.
 
+## Monitor links
+
+Five seams for monitor links (#491, #499), each with one contract suite that every
+platform's implementation passes by itself (`tests/seam_*.rs`, ONE-03). The
+link code uses none of them: its callers do, and pass time and randomness in.
+
+- `link_socket::listen(SocketAddr)` binds a `LinkListener`;
+  `accept(deadline)` returns the next connection as a `LinkStream`.
+  `link_socket::dial(SocketAddr, deadline)` connects one.
+  `LinkStream::read(&mut [u8], deadline)` reads what has arrived, `Ok(0)` at
+  the end of the stream; `write_all` sends. Every expired deadline is
+  `TimedOut`, and `dial` and `read` refuse a zero deadline as `InvalidInput`.
+  Unix only: monitor links on Windows are not yet specified.
+- `key_storage::KeyStore::open(&Path)` is the owner-only `links/` folder,
+  through `private::private_directory`. `store(name, contents)` writes a new
+  owner-only temporary file beside the target, flushes it and renames it into
+  place, and refuses empty contents. `load(name)` is `Ok(None)` only for a
+  missing file; a link, a special file, a file another user owns or can reach,
+  an unreadable file and an empty file are each `InvalidData`. A name is one
+  plain file name. Unix only: Windows storage is not yet specified.
+- `randomness::fill(&mut [u8])` fills from the operating system's generator
+  through the `getrandom` crate, with no fallback.
+- `clock::monotonic()` is the time since the process first asked, for
+  deadlines; `clock::wall()` is the time since the Unix epoch, for dates.
+- `home_lock::take(&Path)` takes a lock one process at a time holds (`flock`),
+  creating its owner-only file when missing and never opening it through a
+  link. It returns `Taken::Held`, or `Taken::Busy` with the note the holder
+  left through `Held::note`. Dropping the `Held` frees the lock, and the
+  operating system frees it for a holder that dies. The relay holds
+  `links/relay.lock` this way. Unix only.
+
 ## Processes and startup
 
 - `process::start_time(pid) -> io::Result<Option<u64>>` uses `proc_pidinfo` on

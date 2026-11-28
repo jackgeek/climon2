@@ -329,6 +329,7 @@ dependencies = [
  "climon2-fixtures",
  "climon2-test-term",
  "filetime",
+ "getrandom",
  "libc",
  "portable-pty",
  "serde_json",
@@ -338,6 +339,19 @@ dependencies = [
  "time",
  "tracing",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "climon2-relay"
+version = "0.1.0-rc.1"
+dependencies = [
+ "climon2-core",
+ "climon2-platform",
+ "climon2-test-term",
+ "nix 0.31.3",
+ "ratatui",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -363,6 +377,7 @@ dependencies = [
  "climon2-install",
  "climon2-monitor-tui",
  "climon2-platform",
+ "climon2-relay",
  "nix 0.31.3",
  "portable-pty",
  "sha2",

@@ -359,12 +359,13 @@ fn issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow()
 }
 
 /// #287: each command and its single-letter shortcut, as the spec lists them.
-const SHORTCUTS: [(&str, &str); 5] = [
+const SHORTCUTS: [(&str, &str); 6] = [
     ("exec", "x"),
     ("attach", "a"),
     ("kill", "k"),
     ("list", "l"),
     ("monitor", "m"),
+    ("relay", "r"),
 ];
 
 /// #287: every command's single-letter shortcut is a pure synonym: given any
@@ -372,8 +373,10 @@ const SHORTCUTS: [(&str, &str); 5] = [
 #[test]
 fn shortcuts_parse_exactly_as_their_full_commands() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
-    let tails: [&[&str]; 18] = [
+    let tails: [&[&str]; 20] = [
         &[],
+        &["--listen", "127.0.0.1:7222"],
+        &["--listen", "localhost:7222"],
         &["cmd", "--flag", ""],
         &["--", "-cmd"],
         &["--headless"],
@@ -448,8 +451,8 @@ fn exec_dash_h_is_headless_only_as_the_first_argument() {
 }
 
 /// #287: every command has exactly one single-letter shortcut, no two
-/// commands share one, no shortcut is another command's name, and `r` stays
-/// reserved for `relay`.
+/// commands share one, and no shortcut is another command's name. #499: `r`,
+/// once reserved, is `relay`'s.
 #[test]
 fn every_command_has_its_own_single_letter_shortcut() {
     let commands: Vec<_> = cli::commands().collect();
@@ -468,7 +471,6 @@ fn every_command_has_its_own_single_letter_shortcut() {
     );
     for (full, shortcut) in &commands {
         assert_eq!(shortcut.chars().count(), 1, "{full}");
-        assert_ne!(*shortcut, "r", "{full} takes relay's reserved shortcut");
     }
     // The usage line names exactly these commands, each beside its shortcut.
     let named: Vec<_> = cli::USAGE
@@ -482,13 +484,6 @@ fn every_command_has_its_own_single_letter_shortcut() {
         .collect();
     assert_eq!(named, expected, "{}", cli::USAGE);
     assert!(cli::USAGE.contains("[--headless|-h]"), "{}", cli::USAGE);
-    assert_eq!(
-        CliArgs::parse(["r"].map(OsString::from))
-            .unwrap_err()
-            .exit_code(),
-        2,
-        "r is reserved, not a command"
-    );
 }
 
 /// #139: `--nested`, or `-n`, starts a nested session deliberately. exec's

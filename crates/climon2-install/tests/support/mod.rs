@@ -5,11 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Every executable a release places in its version folder.
-pub const COMPANIONS: [&str; 4] = [
+pub const COMPANIONS: [&str; 5] = [
     "climon2-cli",
     "climon2-daemon",
     "climon2-client",
     "climon2-monitor",
+    "climon2-relay",
 ];
 /// The client library every version folder holds beside its executables.
 #[cfg(target_os = "macos")]

@@ -35,7 +35,7 @@ need no shared library beyond glibc's. Outputs go to `target/dist`:
 - `SHA256SUMS`, covering both files.
 
 Each archive contains the installer `install`, launcher `c2`, license,
-README and `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}`
+README and `<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor,climon2-relay}`
 plus the client library, `libclimon2_client.dylib` on macOS or
 `libclimon2_client.so` on Linux.
 There are no test fixtures or Cargo dependencies inside the archive.
