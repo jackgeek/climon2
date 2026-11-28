@@ -49,7 +49,7 @@ fn scripted(home: &Isolation, args: &[&str]) -> Output {
 /// first row and the key bar, drawn last, on the last.
 fn drawn(screen: &str) -> bool {
     let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
-    rows.first() == Some(&" Listening") && rows.last() == Some(&" s Stop")
+    rows.first() == Some(&" Listening") && rows.last() == Some(&" p Pair  s Stop")
 }
 
 /// Waits for the listening screen and returns the address its detail row
@@ -129,9 +129,20 @@ fn the_relay_listens_shows_the_bound_address_and_stops_from_its_menu() {
         0,
         "the screen shows the port actually bound"
     );
-    assert_eq!(terminal.row(ROWS as usize - 1).trim_end(), " s Stop");
+    assert_eq!(
+        terminal.row(ROWS as usize - 1).trim_end(),
+        " p Pair  s Stop"
+    );
     assert!(terminal.modes().alternate_screen);
-    assert!(!terminal.modes().cursor_visible);
+    // The cursor is hidden just after the frame is drawn.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while terminal.modes().cursor_visible {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the cursor stays shown"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     TcpStream::connect_timeout(&address, TIMEOUT).expect("the listener is bound");
     terminal.send("s").unwrap();
     assert_stopped(&mut terminal, 0);
@@ -139,6 +150,39 @@ fn the_relay_listens_shows_the_bound_address_and_stops_from_its_menu() {
         TcpStream::connect_timeout(&address, TIMEOUT).is_err(),
         "a stopped relay listens no more"
     );
+    home.assert_clean();
+}
+
+/// #501 (X6, P4-5, ST5): the pair key mints a link invitation, whose PIN
+/// and listen address the screen shows; the relay's identity was made at
+/// its start and the PIN is written to no file.
+#[test]
+fn the_pair_key_shows_a_pin_and_the_address_to_pair_with() {
+    let home = Isolation::new();
+    let mut terminal = start(&home, &["--listen", "127.0.0.1:0"]);
+    let address = listening(&mut terminal);
+    let links = home.climon2_home().canonicalize().unwrap().join("links");
+    assert!(links.join("relay-identity.json").is_file());
+    terminal.send("p").unwrap();
+    let hint = format!(" Pair with: c2 monitor pair {address}");
+    terminal.wait_for_text(&hint, TIMEOUT).unwrap();
+    let pin = terminal.row(3).trim().trim_start_matches("PIN ").to_owned();
+    assert_eq!(pin.len(), 9, "{}", terminal.screen());
+    assert!(
+        pin[..4]
+            .bytes()
+            .chain(pin[5..].bytes())
+            .all(|b| b.is_ascii_digit())
+    );
+    assert_eq!(&pin[4..5], "-");
+    assert_eq!(terminal.row(4).trim_end(), hint);
+    for entry in fs::read_dir(&links).unwrap() {
+        let text = fs::read(entry.unwrap().path()).unwrap();
+        let text = String::from_utf8_lossy(&text);
+        assert!(!text.contains(&pin) && !text.contains(&pin.replace('-', "")));
+    }
+    terminal.send("s").unwrap();
+    assert_stopped(&mut terminal, 0);
     home.assert_clean();
 }
 
@@ -211,7 +255,7 @@ fn the_relay_redraws_when_its_terminal_is_resized() {
     terminal.resize(6, 40).unwrap();
     let redrawn = |screen: &str| {
         let rows: Vec<_> = screen.lines().collect();
-        rows.len() == 6 && rows[5].trim_end() == " s Stop" && rows[4].trim().is_empty()
+        rows.len() == 6 && rows[5].trim_end() == " p Pair  s Stop" && rows[4].trim().is_empty()
     };
     terminal.wait_for_screen(TIMEOUT, redrawn).unwrap();
     assert_eq!(listening(&mut terminal), address);

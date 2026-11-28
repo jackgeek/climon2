@@ -1,12 +1,14 @@
 //! The relay on macOS and Linux: its start, its screen and how it stops.
 use crate::{
     Error,
+    desk::Desk,
     host::{Ending, Event, Host},
-    keys, screen, start,
+    keys::{self, Key},
+    links, screen, start,
 };
 use climon2_core::{cli::UsageError, relay::RelayArgs};
 use climon2_platform::{home, logging::LogFile};
-use std::{ffi::OsString, io, path::Path};
+use std::{ffi::OsString, io, net::SocketAddr, path::Path};
 
 /// Runs a relay until it is stopped. Arguments exclude argv[0]: the CLI
 /// passes on what `c2 relay` was given. Returns the exit status of a clean
@@ -43,7 +45,7 @@ fn relay(arguments: RelayArgs, home: &Path) -> io::Result<u32> {
             listen = %startup.address(),
             "relay started"
         );
-        serve(&startup)
+        serve(startup)
     });
     let status = served
         .inspect_err(|error| tracing::error!(%error, "relay failed"))?
@@ -52,16 +54,35 @@ fn relay(arguments: RelayArgs, home: &Path) -> io::Result<u32> {
     Ok(status)
 }
 
-/// Owns the terminal until an ending. The terminal is released when this
-/// returns, before any diagnostic is printed, and the listener and the home's
-/// lock go with `startup` after it.
-fn serve(startup: &start::Startup) -> io::Result<Ending> {
+/// Owns the terminal until an ending, accepting connections meanwhile. The
+/// terminal is released when this returns, before any diagnostic is
+/// printed, and the listener and the home's lock go with the relay after
+/// it.
+fn serve(startup: start::Startup) -> io::Result<Ending> {
+    let serving = startup.serve();
     let (mut host, size) = Host::enter()?;
-    let view = screen::View {
-        address: startup.address(),
+    let mut relay = Relay {
+        address: serving.address,
+        desk: Desk::new(serving.links.invitations().clone()),
     };
-    let mut screen = screen::Screen::drawn(size, &view)?;
-    until_ending(|| step(&mut host, &mut screen, &view))
+    let mut shown = relay.view();
+    let mut screen = screen::Screen::drawn(size, &shown)?;
+    until_ending(|| step(&mut host, &mut screen, &mut relay, &mut shown))
+}
+
+/// What the screen is drawn from.
+struct Relay {
+    address: SocketAddr,
+    desk: Desk,
+}
+
+impl Relay {
+    fn view(&self) -> screen::View {
+        screen::View {
+            address: self.address,
+            invitation: self.desk.shown(links::now()),
+        }
+    }
 }
 
 /// Takes `step` until one ends the relay.
@@ -73,33 +94,82 @@ fn until_ending(mut step: impl FnMut() -> io::Result<Option<Ending>>) -> io::Res
     }
 }
 
-/// Acts on the terminal's next event.
+/// Acts on the terminal's next event, then draws the screen again if what
+/// it shows has changed.
 fn step(
     host: &mut Host,
     screen: &mut screen::Screen,
-    view: &screen::View,
+    relay: &mut Relay,
+    shown: &mut screen::View,
 ) -> io::Result<Option<Ending>> {
     let event = host.next()?;
-    act(event, screen, view)
+    let ending = act(event, screen, relay, shown)?;
+    let view = relay.view();
+    if view != *shown {
+        screen.draw(&view)?;
+        *shown = view;
+    }
+    Ok(ending)
 }
 
-/// An ending ends the relay, a resize draws `view` again, and only the stop
-/// key among the input does anything.
+/// An ending ends the relay, a resize draws the screen again, the pair key
+/// mints an invitation and the stop key stops.
 fn act(
     event: Event<'_>,
     screen: &mut screen::Screen,
-    view: &screen::View,
+    relay: &mut Relay,
+    shown: &screen::View,
 ) -> io::Result<Option<Ending>> {
     match event {
         Event::End(ending) => Ok(Some(ending)),
-        Event::Resize(size) => screen.redraw(size, view).map(|()| None),
-        other => Ok(stopped(&other)),
+        Event::Resize(size) => screen.redraw(size, shown).map(|()| None),
+        Event::Input(input) => Ok(pressed(keys::action(input), relay)),
+        Event::Idle => Ok(None),
     }
 }
 
-fn stopped(event: &Event<'_>) -> Option<Ending> {
-    match event {
-        Event::Input(input) if keys::stops(input) => Some(Ending::Stopped),
-        _ => None,
+/// What an action key does.
+fn pressed(key: Option<Key>, relay: &mut Relay) -> Option<Ending> {
+    match key {
+        Some(Key::Stop) => Some(Ending::Stopped),
+        Some(Key::Pair) => {
+            relay.desk.mint(links::now());
+            None
+        }
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::desk::Shown;
+    use climon2_link::{Introduction, Invitations};
+    use std::net::Ipv4Addr;
+
+    fn relay() -> Relay {
+        let introduction = Introduction::new([7; 32], "buildbox").unwrap();
+        Relay {
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 7222)),
+            desk: Desk::new(Invitations::new(introduction)),
+        }
+    }
+
+    #[test]
+    fn the_view_shows_the_address_and_the_invitation() {
+        let relay = relay();
+        let view = relay.view();
+        assert_eq!(view.address, relay.address);
+        assert_eq!(view.invitation, Shown::Nothing);
+    }
+
+    #[test]
+    fn the_pair_key_mints_and_the_stop_key_stops() {
+        let mut relay = relay();
+        assert_eq!(pressed(None, &mut relay), None);
+        assert_eq!(relay.view().invitation, Shown::Nothing);
+        assert_eq!(pressed(Some(Key::Pair), &mut relay), None);
+        assert!(matches!(relay.view().invitation, Shown::Live { .. }));
+        assert_eq!(pressed(Some(Key::Stop), &mut relay), Some(Ending::Stopped));
     }
 }

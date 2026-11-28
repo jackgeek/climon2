@@ -1,16 +1,21 @@
 //! Everything that can refuse the relay, checked in order before the
 //! terminal changes: a terminal to own, the one configuration snapshot, the
-//! home's lock and the listener. A relay that started holds the lock and the
-//! bound listener until it ends.
+//! home's lock, the pairing store and the listener. A relay that started
+//! holds the lock and the bound listener until it ends.
+use crate::links::{Links, Remembered};
 use climon2_core::{
     config::{ConfigSource, RelayConfig},
     layout::HomeLayout,
+    pairing::{self, Keypair, PrivateKey, PublicKey as StoredKey},
     relay::RelayArgs,
 };
+use climon2_link::{StaticKey, display_name};
 use climon2_platform::{
     home_lock::{self, Held, Taken},
+    host_name,
+    key_storage::KeyStore,
     link_socket::{self, LinkListener},
-    private, terminal,
+    private, randomness, terminal,
 };
 use std::{io, net::SocketAddr, path::Path};
 
@@ -19,11 +24,22 @@ const LOCK: &str = "relay.lock";
 
 /// A validated start: nothing has touched the terminal yet.
 pub(crate) struct Startup {
-    /// Bound once, for the relay's whole life. Nothing accepts from it yet:
-    /// connections are taken when pairing and links exist.
-    _listener: LinkListener,
+    /// Bound once, for the relay's whole life.
+    listener: LinkListener,
     address: SocketAddr,
     /// One relay per climon2 home.
+    lock: Held,
+    /// The relay's one identity key (P16, ST5).
+    identity: StaticKey,
+    /// The hub monitors it remembers.
+    remembered: Remembered,
+}
+
+/// A relay that has started: it accepts connections, and holds its home's
+/// lock, until this is dropped.
+pub(crate) struct Serving {
+    pub(crate) links: Links,
+    pub(crate) address: SocketAddr,
     _lock: Held,
 }
 
@@ -38,19 +54,34 @@ impl Startup {
     fn in_home(arguments: RelayArgs, home: &Path) -> io::Result<Self> {
         let home = HomeLayout::at(home).map_err(io::Error::other)?;
         let config = configuration(&home)?;
-        Self::bound(lock(&home)?, arguments.listen(&config))
+        let lock = lock(&home)?;
+        let (identity, remembered) = keys(&home)?;
+        let (listener, address) = listen(arguments.listen(&config))?;
+        Self {
+            listener,
+            address,
+            lock,
+            identity,
+            remembered,
+        }
+        .noted()
     }
 
-    /// The start once the home is this relay's: it binds `address`, then
-    /// notes on the lock what a second start names.
-    fn bound(mut lock: Held, address: SocketAddr) -> io::Result<Self> {
-        let (listener, address) = listen(address)?;
-        lock.note(&running(std::process::id(), address))?;
-        Ok(Self {
-            _listener: listener,
-            address,
-            _lock: lock,
-        })
+    /// Notes on the lock, once the listener is bound, what a second start
+    /// names.
+    fn noted(mut self) -> io::Result<Self> {
+        self.lock.note(&running(std::process::id(), self.address))?;
+        Ok(self)
+    }
+
+    /// Starts accepting connections, as the relay serves until it ends.
+    pub(crate) fn serve(self) -> Serving {
+        let name = display_name(&host_name::get().unwrap_or_default());
+        Serving {
+            links: Links::start(self.listener, self.identity, &name, self.remembered),
+            address: self.address,
+            _lock: self.lock,
+        }
     }
 
     /// The address the listener is bound to: with port 0 asked for, the port
@@ -74,6 +105,27 @@ fn lock(home: &HomeLayout) -> io::Result<Held> {
     let links = home.links();
     private::private_directory(&links)?;
     home_lock::take(&links.join(LOCK)).and_then(held)
+}
+
+/// The relay's identity, made on its first start (ST5), and the hub
+/// monitors it remembers. A damaged store refuses the start.
+fn keys(home: &HomeLayout) -> io::Result<(StaticKey, Remembered)> {
+    let files = KeyStore::open(&home.links())?;
+    let identity = pairing::relay_identity_at_start(&files, new_identity)?;
+    let remembered = pairing::load_hub_monitors(&files)?;
+    let identity = StaticKey::from_private(*identity.private_key.expose());
+    Ok((identity, Remembered::new(files, remembered)))
+}
+
+/// A new identity keypair, from the operating system's generator.
+fn new_identity() -> io::Result<Keypair> {
+    let mut private = [0; 32];
+    randomness::fill(&mut private)?;
+    let public = StaticKey::from_private(private).public();
+    Ok(Keypair {
+        public_key: StoredKey::new(*public.as_bytes()),
+        private_key: PrivateKey::new(private),
+    })
 }
 
 fn held(taken: Taken) -> io::Result<Held> {
@@ -241,6 +293,57 @@ mod tests {
             running(7, SocketAddr::from((Ipv4Addr::LOCALHOST, 7222))),
             "pid 7, listening on 127.0.0.1:7222"
         );
+    }
+
+    fn identity(home: &Path) -> Keypair {
+        let files = KeyStore::open(&home.join("links")).unwrap();
+        pairing::relay_identity_at_start(&files, || panic!("an identity exists")).unwrap()
+    }
+
+    /// ST5, P16: the first start makes the relay's one identity, and every
+    /// later start keeps it.
+    #[test]
+    fn the_first_start_makes_the_identity_and_later_starts_keep_it() {
+        let home = home();
+        drop(Startup::in_home(any_port(), home.path()).unwrap());
+        let first = identity(home.path());
+        let public = StaticKey::from_private(*first.private_key.expose()).public();
+        assert_eq!(
+            public.as_bytes(),
+            first.public_key.as_bytes(),
+            "a whole keypair"
+        );
+        let startup = Startup::in_home(any_port(), home.path()).unwrap();
+        assert_eq!(
+            startup.identity.public().as_bytes(),
+            first.public_key.as_bytes()
+        );
+        drop(startup);
+        assert_eq!(identity(home.path()).public_key, first.public_key);
+        let elsewhere = self::home();
+        drop(Startup::in_home(any_port(), elsewhere.path()).unwrap());
+        assert_ne!(identity(elsewhere.path()).public_key, first.public_key);
+    }
+
+    /// ST5, STO-02: a damaged store refuses the start and is never
+    /// replaced, and the refused start leaves the home free.
+    #[test]
+    fn a_damaged_store_refuses_the_start() {
+        for file in ["relay-identity.json", "hub-monitors.json"] {
+            let home = home();
+            drop(Startup::in_home(any_port(), home.path()).unwrap());
+            let path = home.path().join("links").join(file);
+            fs::write(&path, "{").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let text = refusal(Startup::in_home(any_port(), home.path()));
+            assert!(
+                text.starts_with(&format!("damaged pairing file {file}")),
+                "{text}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), "{");
+            fs::remove_file(&path).unwrap();
+            Startup::in_home(any_port(), home.path()).expect("the refused start left no lock");
+        }
     }
 
     /// The test harness runs with no terminal on its standard input.
