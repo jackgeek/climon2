@@ -10,23 +10,29 @@
 
 mod backlog;
 pub mod client;
+mod drive;
 mod hub;
 mod keys;
 mod layout;
 mod link;
 mod liveness;
+mod name;
 mod noise;
 mod opening;
+mod pairing;
 mod record;
 mod relay;
 mod rules;
 mod stream;
 mod unit;
 
+pub use drive::{Carrier, Next, drive};
 pub use hub::HubEnd;
 pub use keys::{PublicKey, StaticKey};
 pub use link::{Ended, HubLink, Link, Peer, Refused, RelayLink};
-pub use opening::{Opened, Opening, Pairing, Purpose, Revisions, Transcript};
+pub use name::display_name;
+pub use opening::{Opened, Opening, Purpose, Revisions, Transcript};
+pub use pairing::{Introduction, Invitation, Invitations, PairingRun, Pin};
 pub use record::{Hello, HubClose, RelayClose};
 pub use relay::RelayEnd;
 pub use stream::{

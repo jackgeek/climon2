@@ -47,16 +47,6 @@ pub enum Purpose {
     Link,
 }
 
-/// Whether a relay can start a pairing run on a new connection. Its caller
-/// knows: a run needs a live link invitation and no other run in flight.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pairing {
-    /// A pairing run can start.
-    Available,
-    /// No pairing run can start now.
-    Unavailable,
-}
-
 /// The link revisions one end supports: one to eight of them, ascending,
 /// with no zero and no repeat.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +59,12 @@ impl Revisions {
         let ascending = revisions.windows(2).all(|pair| pair[0] < pair[1]);
         let valid = revisions.len() <= SLOTS && revisions.first()? != &0 && ascending;
         valid.then(|| Self(revisions.to_vec()))
+    }
+
+    /// The link revisions this release supports: every published one, so
+    /// far only link revision 1 (ADR 0010).
+    pub fn published() -> Self {
+        Self(vec![1])
     }
 
     /// The revisions, ascending.

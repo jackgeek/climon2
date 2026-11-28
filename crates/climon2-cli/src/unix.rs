@@ -1,6 +1,6 @@
 //! The subcommands, each run inside the invocation's climon2 home with its
 //! general log.
-use crate::{Error, Handoff, Work, attach, exec, kill, monitor};
+use crate::{Error, Handoff, Work, attach, exec, kill, sibling};
 use climon2_platform::{
     logging::LogFile,
     process::{self, Signal},
@@ -32,7 +32,8 @@ impl Handoff {
         match self {
             Self::Attach(selector) => attach::run(home, selector),
             Self::Kill(selector) => kill::run(home, &selector),
-            Self::Monitor => monitor::run(),
+            Self::Monitor(arguments) => sibling::monitor(&arguments),
+            Self::Relay(arguments) => sibling::relay(&arguments),
         }
     }
 }

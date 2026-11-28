@@ -3,7 +3,8 @@
 //! End edit, and that a bracketed paste fills as one line. It holds at most
 //! `ui.search_bytes` UTF-8 bytes: an edit that would exceed them is refused
 //! whole. A row matches when every search character occurs, in order and
-//! ignoring case, in its displayed status, a space and its label, as
+//! ignoring case, in its displayed status, a space, its machine and a
+//! space when there is a machine column, and its label, as
 //! `fuzzy-matcher`'s `SkimMatcherV2` finds them; scores are never used.
 use crate::registry::{View, clip};
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
@@ -11,14 +12,14 @@ use unicode_width::UnicodeWidthChar;
 
 /// What an edit did to the search text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Edit {
+pub enum Edit {
     Changed,
     Unchanged,
     /// Refused: the text would exceed its limit.
     Refused,
 }
 
-pub(crate) struct Search {
+pub struct Search {
     text: String,
     /// The cursor's byte offset in `text`, on a character boundary.
     cursor: usize,
@@ -32,7 +33,7 @@ pub(crate) struct Search {
 }
 
 impl Search {
-    pub(crate) fn new(limit: usize) -> Self {
+    pub fn new(limit: usize) -> Self {
         Self {
             text: String::new(),
             cursor: 0,
@@ -44,14 +45,14 @@ impl Search {
     }
 
     /// `ui.search_bytes`.
-    pub(crate) fn limit(&self) -> usize {
+    pub fn limit(&self) -> usize {
         self.limit
     }
 
     /// One typed byte: a character is inserted once its UTF-8 bytes are
     /// complete, unless it is a control character; invalid bytes are
     /// discarded.
-    pub(crate) fn typed(&mut self, byte: u8) -> Edit {
+    pub fn typed(&mut self, byte: u8) -> Edit {
         match self.typed.push(byte) {
             Some(character) if !character.is_control() => self.insert(&character.to_string()),
             _ => Edit::Unchanged,
@@ -70,7 +71,7 @@ impl Search {
     }
 
     /// Deletes the character before the cursor.
-    pub(crate) fn backspace(&mut self) -> Edit {
+    pub fn backspace(&mut self) -> Edit {
         let Some(previous) = self.previous() else {
             return Edit::Unchanged;
         };
@@ -79,23 +80,23 @@ impl Search {
         Edit::Changed
     }
 
-    pub(crate) fn left(&mut self) -> Edit {
+    pub fn left(&mut self) -> Edit {
         self.cursor = self.previous().unwrap_or(self.cursor);
         Edit::Unchanged
     }
 
-    pub(crate) fn right(&mut self) -> Edit {
+    pub fn right(&mut self) -> Edit {
         let next = self.text[self.cursor..].chars().next();
         self.cursor += next.map_or(0, char::len_utf8);
         Edit::Unchanged
     }
 
-    pub(crate) fn home(&mut self) -> Edit {
+    pub fn home(&mut self) -> Edit {
         self.cursor = 0;
         Edit::Unchanged
     }
 
-    pub(crate) fn end(&mut self) -> Edit {
+    pub fn end(&mut self) -> Edit {
         self.cursor = self.text.len();
         Edit::Unchanged
     }
@@ -109,12 +110,12 @@ impl Search {
     }
 
     /// A bracketed paste begins.
-    pub(crate) fn paste_start(&mut self) {
+    pub fn paste_start(&mut self) {
         self.pasting = Some(Pasting::default());
     }
 
     /// Bytes of the paste under way, if one is.
-    pub(crate) fn paste_data(&mut self, bytes: &[u8]) {
+    pub fn paste_data(&mut self, bytes: &[u8]) {
         let limit = self.limit;
         if let Some(pasting) = &mut self.pasting {
             for &byte in bytes {
@@ -124,15 +125,18 @@ impl Search {
     }
 
     /// The paste ends: its one line is inserted whole, or refused.
-    pub(crate) fn paste_end(&mut self) -> Edit {
+    pub fn paste_end(&mut self) -> Edit {
         let pasted = self.pasting.take().unwrap_or_default();
         self.insert(&pasted.line)
     }
 
     /// Whether `row` matches: every search character in order, ignoring
-    /// case, in its displayed status, a space, then its label.
-    pub(crate) fn matches(&self, row: &View) -> bool {
-        let choice = format!("{} {}", row.status, row.label).to_lowercase();
+    /// case, in its displayed status, a space, its machine and a space when
+    /// there is a machine column (#199, item 1), then its label.
+    pub fn matches(&self, row: &View) -> bool {
+        let machine = row.machine.as_ref().map(|machine| format!("{machine} "));
+        let machine = machine.unwrap_or_default();
+        let choice = format!("{} {machine}{}", row.status, row.label).to_lowercase();
         let pattern = self.text.to_lowercase();
         self.matcher.fuzzy_match(&choice, &pattern).is_some()
     }
@@ -140,7 +144,7 @@ impl Search {
     /// The part of the text shown in `cells` display cells, and the
     /// cursor's cell in it: the text from its start while the cursor fits,
     /// otherwise from where the cursor is the last cell.
-    pub(crate) fn shown(&self, cells: usize) -> (&str, usize) {
+    pub fn shown(&self, cells: usize) -> (&str, usize) {
         let room = cells.saturating_sub(1);
         let mut start = self.cursor;
         let mut used = 0;
@@ -223,12 +227,14 @@ fn in_line(character: char, after_carriage_return: bool) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::SessionAt;
     use std::time::SystemTime;
 
     fn row(status: &str, label: &str) -> View {
         View {
-            id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
+            id: SessionAt::local("00000000-0000-4000-8000-000000000001".parse().unwrap()),
             status: status.to_owned(),
+            machine: None,
             label: label.to_owned(),
             since: SystemTime::UNIX_EPOCH,
         }
@@ -308,6 +314,35 @@ mod tests {
                 "{query:?} in {label:?}"
             );
         }
+    }
+
+    /// SEL-01 (pure supplement; #199, item 1): with a machine column, the
+    /// search covers status, a space, the machine, a space, then the
+    /// label, in that order; without one, the machine is not there to
+    /// match.
+    #[test]
+    fn sel_01_search_covers_status_machine_and_title() {
+        let on = |machine: &str| View {
+            machine: Some(machine.to_owned()),
+            ..row("Running", "vim notes")
+        };
+        let cases = [
+            ("buildbox", "buildbox", true),
+            ("local", "local", true),
+            ("local", "buildbox", false),
+            ("run build vim", "buildbox", true),
+            ("running local vim", "local", true),
+            ("vim build", "buildbox", false),
+            ("box vim", "buildbox", true),
+        ];
+        for (query, machine, expected) in cases {
+            assert_eq!(
+                searching(query).matches(&on(machine)),
+                expected,
+                "{query:?} on {machine:?}"
+            );
+        }
+        assert!(!searching("local").matches(&row("Running", "vim notes")));
     }
 
     /// SEL-02 (pure supplement, editing): typed characters insert at the

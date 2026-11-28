@@ -2,8 +2,10 @@
 
 **Status: developer-confirmed specification for
 [Define the automated acceptance criteria for monitor links](https://github.com/jackgeek/climon2/issues/481),
-not implementation or executed acceptance evidence.** Monitor links are
-planned. Nothing here is implemented, and no fixture named here exists yet.
+not executed acceptance evidence.** No release contains monitor links.
+They are being built ticket by ticket on a feature branch of
+[#488](https://github.com/jackgeek/climon2/issues/488), whose pull requests
+name the scenarios they prove.
 
 This document says what automated evidence shows that monitor links meet the
 decisions recorded on
@@ -381,17 +383,18 @@ Windows can later be recorded from a Windows session without a Windows relay.
 
 ## Missing capabilities
 
-None of the following exists. Each must be built before the scenarios that
-need it can run:
+Each of the following must be built before the scenarios that need it can
+run. Struck through are those that exist:
 
-- the Link layer's harness, which supplies time and randomness;
-- the on-path proxy and the link peer stand-in;
-- a harness that runs two climon2 homes on one host and joins them over
-  loopback;
+- ~~the Link layer's harness, which supplies time and randomness~~ (#492);
+- ~~the on-path proxy and the link peer stand-in~~ (#501, test-only, in
+  `climon2-e2e`'s test support);
+- ~~a harness that runs two climon2 homes on one host and joins them over
+  loopback~~ (#501, likewise);
 - the test-build clock hook for the relay, and the same for the monitor's
   redial timer;
 - the capture command for content fixtures;
-- the extension of the `cargo metadata` workspace test.
+- ~~the extension of the `cargo metadata` workspace test~~ (#492).
 
 The monitor's
 [existing fixtures](../monitor/acceptance.md#existing-fixtures-and-missing-capabilities)

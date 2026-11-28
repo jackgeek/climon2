@@ -74,10 +74,13 @@ matter most:
   `crates/climon2-launcher/src/handoff/windows.rs`, the launcher's
   hand-off; `crates/climon2-install/src/windows.rs` and
   `crates/climon2-install/src/user_path/windows.rs`, the installer and its
-  user PATH edit ([#329](https://github.com/jackgeek/climon2/issues/329)); and
+  user PATH edit ([#329](https://github.com/jackgeek/climon2/issues/329));
   `crates/climon2-cli/src/windows.rs`, which runs `list`, `exec`, `attach`
   and `kill` and hands `monitor` to the monitor program
-  ([#327](https://github.com/jackgeek/climon2/issues/327)).
+  ([#327](https://github.com/jackgeek/climon2/issues/327)); and
+  `crates/climon2-relay/src/windows.rs`, the relay's refusal to start on
+  Windows, where monitor links are not specified
+  ([#499](https://github.com/jackgeek/climon2/issues/499)).
 - **CRAP** is a score combining a function's complexity with how little of it
   tests cover; climon2 requires 5 or less. **Mutation testing** changes the
   code in small ways (each change is a **mutant**) and reruns the tests: a

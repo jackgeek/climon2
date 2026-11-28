@@ -37,7 +37,7 @@ A program that lets the user interact with one session at a time and switch betw
 _Avoid_: Dashboard, multiplexer, switcher
 
 **Monitor library**:
-The planned reusable form of a monitor, with no interface of its own, on which the monitor's terminal interface and the web monitor are both built.
+The reusable form of a monitor, with no interface of its own, on which the monitor's terminal interface is built and the planned web monitor will be.
 _Avoid_: Monitor core, monitor backend, engine
 
 **Virtual terminal**:
@@ -326,6 +326,10 @@ _Avoid_: Link version, protocol version
 **Pairing**:
 The remembered trust between one hub monitor and one relay, created by a link invitation and ended when either side forgets the other.
 _Avoid_: Trusted device, known host, bond
+
+**Key fingerprint**:
+The short form of a static public key that each side of a pairing shows its user, so the users of both machines can compare their screens.
+_Avoid_: Key hash, thumbprint, key ID
 
 **Remote session**:
 A session that a hub monitor reaches through a monitor link.

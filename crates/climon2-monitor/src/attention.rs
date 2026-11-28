@@ -3,22 +3,14 @@
 //! acknowledgement waits until its target is viewed, the host hears whether
 //! any connected session needs attention, and prefix+j that finds nothing
 //! says so for a while.
+use crate::machine::SessionAt;
 use crate::terminal::{Authority, Control};
-use climon2_core::SessionId;
 use std::time::{Duration, Instant};
 
 /// What prefix+j says when no session qualifies.
-pub(crate) const NO_ATTENTION: &str = "No sessions need attention";
+pub const NO_ATTENTION: &str = "No sessions need attention";
 /// How long [`NO_ATTENTION`] shows (owner decision on #114, 2026-11-16).
 const NOTICE_FOR: Duration = Duration::from_secs(3);
-
-/// The monitor's root OSC 7501 reports to its host
-/// (docs/for-humans/protocol/monitor-host): pending attention, monitoring without it,
-/// and the root clear on orderly exit.
-pub(crate) const BLOCKED: &[u8] =
-    b"\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x1b\\";
-pub(crate) const WORKING: &[u8] = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
-pub(crate) const CLEAR: &[u8] = b"\x1b]7501;state=clear\x1b\\";
 
 /// What the host was last told: nothing yet, or whether attention was
 /// pending.
@@ -28,11 +20,11 @@ pub(crate) struct HostReport {
 }
 
 impl HostReport {
-    /// The report to write now that attention is `pending` or not: the
-    /// initial state, then only changes. There is no heartbeat.
-    pub(crate) fn report(&mut self, pending: bool) -> Option<&'static [u8]> {
+    /// What the host is to hear now that attention is `pending` or not:
+    /// the initial state, then only changes. There is no heartbeat.
+    pub(crate) fn report(&mut self, pending: bool) -> Option<bool> {
         let changed = self.pending.replace(pending) != Some(pending);
-        changed.then_some([WORKING, BLOCKED][usize::from(pending)])
+        changed.then_some(pending)
     }
 }
 
@@ -66,7 +58,7 @@ impl Notice {
 /// selector back to the session), deferred until its target is viewed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Deferred {
-    id: SessionId,
+    id: SessionAt,
     /// The generation and control period the target held when the
     /// acknowledgement first saw it held.
     period: Option<(u64, u64)>,
@@ -74,7 +66,7 @@ pub(crate) struct Deferred {
 
 /// The selected target as one painted frame left it.
 pub(crate) struct Target<'a> {
-    pub(crate) id: Option<&'a SessionId>,
+    pub(crate) id: Option<&'a SessionAt>,
     /// A modal covers it.
     pub(crate) covered: bool,
     pub(crate) control: Control,
@@ -91,13 +83,13 @@ pub(crate) enum Next {
     /// unfocused, its view is scrolled back, it is too small or not ready.
     Wait(Deferred),
     /// Its target is viewed: acknowledge it under this authority, once.
-    Submit(SessionId, Authority),
+    Submit(SessionAt, Authority),
     /// The target context changed first: it is cancelled.
     Cancel,
 }
 
 impl Deferred {
-    pub(crate) fn new(id: SessionId) -> Self {
+    pub(crate) fn new(id: SessionAt) -> Self {
         Self { id, period: None }
     }
 
@@ -143,10 +135,9 @@ fn period(authority: Authority) -> (u64, u64) {
 mod tests {
     use super::*;
 
-    fn id(suffix: u8) -> SessionId {
-        format!("00000000-0000-4000-8000-0000000000{suffix:02x}")
-            .parse()
-            .unwrap()
+    fn id(suffix: u8) -> SessionAt {
+        let id = format!("00000000-0000-4000-8000-0000000000{suffix:02x}");
+        SessionAt::local(id.parse().unwrap())
     }
 
     fn authority(period: u64, restoration: u64) -> Authority {
@@ -158,7 +149,7 @@ mod tests {
     }
 
     fn target(
-        id: &SessionId,
+        id: &SessionAt,
         control: Control,
         authority: Option<Authority>,
         viewing: bool,
@@ -173,7 +164,7 @@ mod tests {
     }
 
     /// NOT-04 (pure supplement): the host hears the initial state, then each
-    /// change once, with the exact bytes; repeats send nothing.
+    /// change once; repeats send nothing.
     #[test]
     fn the_host_hears_the_initial_attention_state_and_changes_only() {
         let mut host = HostReport::default();
@@ -181,21 +172,11 @@ mod tests {
             .into_iter()
             .map(|pending| host.report(pending))
             .collect();
-        let working = b"\x1b]7501;state=working:app=climon2-monitor\x1b\\";
-        let blocked = b"\x1b]7501;state=blocked:kind=question:app=climon2-monitor\x1b\\";
         assert_eq!(
             reports,
-            [
-                Some(&working[..]),
-                None,
-                Some(&blocked[..]),
-                None,
-                Some(&working[..]),
-                Some(&blocked[..])
-            ]
+            [Some(false), None, Some(true), None, Some(false), Some(true)]
         );
-        assert_eq!(HostReport::default().report(true), Some(&blocked[..]));
-        assert_eq!(CLEAR, b"\x1b]7501;state=clear\x1b\\");
+        assert_eq!(HostReport::default().report(true), Some(true));
     }
 
     /// NOT-03 (pure supplement; owner decision on #114): `No sessions need

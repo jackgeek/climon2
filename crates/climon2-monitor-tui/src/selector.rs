@@ -15,11 +15,15 @@
 use crate::{
     mouse::{Gesture, Mouse},
     paint::HostCursor,
-    registry::{View, truncate},
     router::{Begin, Key, Pasted, Routed},
-    search::{Edit, Search},
 };
-use climon2_core::{SessionId, keys::ControlKey};
+use climon2_core::keys::ControlKey;
+use climon2_monitor::SessionAt;
+use climon2_monitor::{
+    View,
+    search::{Edit, Search},
+    truncate,
+};
 use ratatui::{
     buffer::Buffer,
     layout::{Margin, Position, Rect},
@@ -32,7 +36,7 @@ const ESC: u8 = 0x1b;
 const ENTER: u8 = b'\r';
 
 /// What a selector key does.
-type Handler = fn(&mut Selector, &[View], Rect) -> Option<SessionId>;
+type Handler = fn(&mut Selector, &[View], Rect) -> Option<SessionAt>;
 
 /// A key the selector acts on.
 enum Command {
@@ -67,7 +71,7 @@ pub(crate) struct Selector {
     open: bool,
     search: Search,
     /// The highlighted row's identity, kept while rows reorder.
-    highlight: Option<SessionId>,
+    highlight: Option<SessionAt>,
     /// The first matching row in view, as far as the list allows.
     top: usize,
     /// The footer's key hints, unless key hints are off.
@@ -112,7 +116,7 @@ impl Selector {
     /// Opens with an empty search, highlighting `selected` when it is
     /// listed and otherwise the first row; opening an open selector is a
     /// no-op.
-    pub(crate) fn open(&mut self, rows: &[View], selected: Option<&SessionId>, area: Rect) {
+    pub(crate) fn open(&mut self, rows: &[View], selected: Option<&SessionAt>, area: Rect) {
         if self.open {
             return;
         }
@@ -139,7 +143,7 @@ impl Selector {
     /// Acts on input for the selector drawn in `area`: keys, pastes and
     /// mouse reports. Enter returns the highlighted row's identity for the
     /// caller to select.
-    pub(crate) fn input(&mut self, input: &Routed, rows: &[View], area: Rect) -> Option<SessionId> {
+    pub(crate) fn input(&mut self, input: &Routed, rows: &[View], area: Rect) -> Option<SessionAt> {
         match input {
             Routed::Key(key) => self.key(key, rows, area),
             Routed::Paste(paste) => self.paste(paste, rows, area),
@@ -148,7 +152,7 @@ impl Selector {
         }
     }
 
-    fn key(&mut self, key: &Key, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn key(&mut self, key: &Key, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.refused = false;
         match decode(key)? {
             Command::Run(handler) => handler(self, rows, area),
@@ -160,7 +164,7 @@ impl Selector {
     }
 
     /// A bracketed paste fills the search as one line once it ends.
-    fn paste(&mut self, pasted: &Pasted, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn paste(&mut self, pasted: &Pasted, rows: &[View], area: Rect) -> Option<SessionAt> {
         if pasted.begin != Begin::Continued {
             self.search.paste_start();
         }
@@ -175,7 +179,7 @@ impl Selector {
 
     /// A click on a row highlights it and one outside the box cancels; the
     /// wheel scrolls the list.
-    fn mouse(&mut self, mouse: &Mouse, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn mouse(&mut self, mouse: &Mouse, rows: &[View], area: Rect) -> Option<SessionAt> {
         match mouse.gesture() {
             Gesture::Click => self.click(mouse, rows, area),
             Gesture::WheelUp => self.scroll(rows, area, back),
@@ -205,12 +209,12 @@ impl Selector {
         matching.iter().position(|row| &row.id == id)
     }
 
-    fn choose(&mut self, rows: &[View], _: Rect) -> Option<SessionId> {
+    fn choose(&mut self, rows: &[View], _: Rect) -> Option<SessionAt> {
         self.highlighted(rows)
     }
 
     /// The highlighted row's identity, while it matches.
-    pub(crate) fn highlighted(&self, rows: &[View]) -> Option<SessionId> {
+    pub(crate) fn highlighted(&self, rows: &[View]) -> Option<SessionAt> {
         let matching = self.matching(rows);
         self.index(&matching)
             .map(|index| matching[index].id.clone())
@@ -219,7 +223,7 @@ impl Selector {
     /// A confirmed Delete removed `id` (#117): a highlight on it falls back
     /// to the matching row now at its place, else the one before it, and
     /// is otherwise kept.
-    pub(crate) fn dismissed(&mut self, id: &SessionId, before: &[View], after: &[View]) {
+    pub(crate) fn dismissed(&mut self, id: &SessionAt, before: &[View], after: &[View]) {
         if self.highlight.as_ref() == Some(id) {
             let ids = |rows| {
                 self.matching(rows)
@@ -227,35 +231,35 @@ impl Selector {
                     .map(|row| &row.id)
                     .collect::<Vec<_>>()
             };
-            self.highlight = crate::delete::fallback(id, &ids(before), &ids(after));
+            self.highlight = climon2_monitor::fallback(id, &ids(before), &ids(after));
         }
     }
 
-    fn cancel(&mut self, _: &[View], _: Rect) -> Option<SessionId> {
+    fn cancel(&mut self, _: &[View], _: Rect) -> Option<SessionAt> {
         self.open = false;
         None
     }
 
-    fn up(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn up(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.navigate(rows, area, back, 1)
     }
 
-    fn down(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn down(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.navigate(rows, area, forth, 1)
     }
 
-    fn page_up(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn page_up(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.navigate(rows, area, back, visible(&self.parts(area)))
     }
 
-    fn page_down(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn page_down(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.navigate(rows, area, forth, visible(&self.parts(area)))
     }
 
     /// Moves the highlight `by` rows with `step`, stopping at either end,
     /// and keeps it in view; with nothing highlighted, highlights the first
     /// matching row.
-    fn navigate(&mut self, rows: &[View], area: Rect, step: Step, by: usize) -> Option<SessionId> {
+    fn navigate(&mut self, rows: &[View], area: Rect, step: Step, by: usize) -> Option<SessionAt> {
         let matching = self.matching(rows);
         let last = matching.len().checked_sub(1)?;
         let target = self
@@ -266,23 +270,23 @@ impl Selector {
         None
     }
 
-    fn backspace(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn backspace(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.edit(Search::backspace, rows, area)
     }
 
-    fn left(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn left(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.edit(Search::left, rows, area)
     }
 
-    fn right(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn right(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.edit(Search::right, rows, area)
     }
 
-    fn home(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn home(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.edit(Search::home, rows, area)
     }
 
-    fn end(&mut self, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn end(&mut self, rows: &[View], area: Rect) -> Option<SessionAt> {
         self.edit(Search::end, rows, area)
     }
 
@@ -291,14 +295,14 @@ impl Selector {
         edit: fn(&mut Search) -> Edit,
         rows: &[View],
         area: Rect,
-    ) -> Option<SessionId> {
+    ) -> Option<SessionAt> {
         let edit = edit(&mut self.search);
         self.edited(edit, rows, area)
     }
 
     /// A changed search keeps a highlight that still matches, otherwise
     /// highlights the first match; a refused edit shows why.
-    fn edited(&mut self, edit: Edit, rows: &[View], area: Rect) -> Option<SessionId> {
+    fn edited(&mut self, edit: Edit, rows: &[View], area: Rect) -> Option<SessionAt> {
         match edit {
             Edit::Changed => self.refilter(rows, area),
             Edit::Refused => self.refused = true,
@@ -426,20 +430,24 @@ impl Selector {
     }
 
     /// The matching rows in view: a status column as wide as the widest
-    /// status, a space, then the label; the highlighted row reversed across
-    /// the list.
+    /// status, a space, a hub monitor's machine column as wide as the widest
+    /// machine and a space (#199, item 1), then the label; the highlighted
+    /// row reversed across the list.
     fn list(&self, rows: &[View], area: Rect, buffer: &mut Buffer) {
-        let status = rows
-            .iter()
-            .map(|row| row.status.width())
-            .max()
-            .unwrap_or_default();
+        let status = widest(rows.iter().map(|row| row.status.as_str()));
+        let machine = widest(rows.iter().filter_map(|row| row.machine.as_deref()));
         let matching = self.matching(rows);
         let highlighted = self.index(&matching);
         let first = self.first(matching.len(), usize::from(area.height));
         let shown = matching.iter().enumerate().skip(first);
         for (line, (index, row)) in area.rows().zip(shown) {
-            let text = format!("{:status$} {}", row.status, row.label);
+            let machine = row.machine.as_deref().map(|name| padded(name, machine));
+            let text = format!(
+                "{}{}{}",
+                padded(&row.status, status),
+                machine.unwrap_or_default(),
+                row.label
+            );
             let style =
                 [Style::new(), Style::new().reversed()][usize::from(Some(index) == highlighted)];
             buffer.set_style(line, style);
@@ -465,6 +473,17 @@ impl Selector {
 
 /// Moves an index `by` rows, stopping at 0 or `last`.
 type Step = fn(usize, usize, usize) -> usize;
+
+/// The display cells of the widest of `texts`.
+fn widest<'a>(texts: impl Iterator<Item = &'a str>) -> usize {
+    texts.map(UnicodeWidthStr::width).max().unwrap_or_default()
+}
+
+/// `text` padded with spaces to `cells` display cells, then a space.
+fn padded(text: &str, cells: usize) -> String {
+    let pad = cells.saturating_sub(text.width());
+    format!("{text}{} ", " ".repeat(pad))
+}
 
 fn back(index: usize, by: usize, _: usize) -> usize {
     index.saturating_sub(by)
@@ -593,10 +612,13 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, (status, label))| View {
-                id: format!("00000000-0000-4000-8000-0000000000{index:02x}")
-                    .parse()
-                    .unwrap(),
+                id: SessionAt::local(
+                    format!("00000000-0000-4000-8000-0000000000{index:02x}")
+                        .parse()
+                        .unwrap(),
+                ),
                 status: (*status).to_owned(),
+                machine: None,
                 label: (*label).to_owned(),
                 since: SystemTime::UNIX_EPOCH,
             })
@@ -673,7 +695,7 @@ mod tests {
         keys: &[Key],
         rows: &[View],
         area: Rect,
-    ) -> Vec<Option<SessionId>> {
+    ) -> Vec<Option<SessionAt>> {
         keys.iter()
             .map(|key| selector.key(key, rows, area))
             .collect()
@@ -742,6 +764,29 @@ mod tests {
         );
         assert_eq!(highlighted, [4]);
         assert_eq!(cursor, super::tests::cursor(2, 2));
+    }
+
+    /// SEL-01 (pure supplement; #199, item 1): a hub monitor's list has a
+    /// machine column between status and title, as wide as the widest
+    /// machine in display cells, `local` or the relay's name.
+    #[test]
+    fn sel_01_a_hub_monitor_lists_a_machine_column_between_status_and_title() {
+        let mut rows = rows(&[("Idle", "vim"), ("Unavailable", "top"), ("Idle", "htop")]);
+        for (row, machine) in rows.iter_mut().zip(["local", "ビルド", "laptop"]) {
+            row.machine = Some(machine.to_owned());
+        }
+        let mut selector = selector("Ctrl+]", false);
+        let area = Rect::new(0, 0, 32, 9);
+        selector.open(&rows, None, area);
+        let (lines, _, _) = drawn(&selector, &rows, area);
+        assert_eq!(
+            lines[4..7],
+            [
+                " ║Idle        local  vim      ║ ",
+                " ║Unavailable ビルド top      ║ ",
+                " ║Idle        laptop htop     ║ ",
+            ]
+        );
     }
 
     /// SEL-01 (pure supplement, footer): with key hints on, the footer at the

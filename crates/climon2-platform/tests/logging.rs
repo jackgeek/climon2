@@ -78,6 +78,8 @@ fn general_logs_are_named_and_headed_by_their_roles() {
             "monitor",
             "monitor-",
         ),
+        // #499: the relay, exec'd by the CLI as the monitor is.
+        (LogFile::relay(home.path()).unwrap(), "relay", "relay-"),
     ] {
         let name = log.path().file_name().unwrap().to_str().unwrap();
         let stamp = name
@@ -211,6 +213,7 @@ fn general_logs_are_pruned_only_after_exactly_seven_days() {
     let logs = [
         LogFile::general(home.path()).unwrap(),
         LogFile::monitor(home.path()).unwrap(),
+        LogFile::relay(home.path()).unwrap(),
     ];
     let written = SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_232_245);
     for log in &logs {

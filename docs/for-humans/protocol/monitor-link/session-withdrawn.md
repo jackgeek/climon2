@@ -1,6 +1,6 @@
 # Session withdrawn — `0x11`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and the rule that it names a session advertised on this connection; no released program speaks it yet.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and the rule that it names a session advertised on this connection; the relay and the hub monitor use it (#502); no released program speaks it yet.**
 The [relay](../../../../GLOSSARY.md#monitor-links) withdraws a
 [session](../../../../GLOSSARY.md#sessions) it advertised, on stream 0. See
 the [overview](../README.md), [glossary](../../../../GLOSSARY.md),
@@ -23,6 +23,9 @@ ef
 
 - The relay withdraws a session only when discovery proves it stale. A
   session that ended a moment ago and is still listed is not withdrawn.
+  A session that a complete discovery pass no longer lists counts as
+  proven: its metadata is removed when it ends. A pass that stopped early
+  proves nothing.
 - The [hub monitor](../../../../GLOSSARY.md#monitor-links) applies its local
   rule: a row that never connected is dropped, and one that was connected
   stays `Disconnected` with its history.

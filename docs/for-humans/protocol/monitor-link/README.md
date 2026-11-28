@@ -8,12 +8,14 @@ pairing, the pinned-key handshake and the records of
 
 **Status: developer-agreed specification in
 [#480](https://github.com/jackgeek/climon2/issues/480). The opening exchange,
-the pinned-key handshake, Hello, Close, the framing of units, keepalives,
-the records of advertisement and session streams, credit, the record and
-queue limits and stream violations are implemented, in the `climon2-link`
-crate and in no released program.** No
-climon2 release contains a relay or speaks any part of this protocol. One
-detail is still open and is marked [below](#unresolved-details). The
+pairing, the pinned-key handshake, Hello, Close, the framing of units,
+keepalives, the records of advertisement and session streams, credit, the
+record and queue limits and stream violations are implemented in the
+`climon2-link` crate. The relay and `c2 monitor pair` run pairing and the
+first link over it. A running hub monitor links to each relay it remembers,
+and the relay advertises its sessions over that link (#502); nothing yet
+opens a session stream.** No climon2 release
+contains a relay or speaks any part of this protocol. The
 [acceptance criteria](../../behaviour/monitor-link/acceptance.md) say what
 automated evidence shows the protocol is met.
 
@@ -131,7 +133,7 @@ revision.
 
 | Job | Choice |
 |---|---|
-| PIN key exchange | [CPace](../TERMS.md#cpace) on ristretto255 with SHA-512 |
+| PIN key exchange | [CPace](../TERMS.md#cpace) on ristretto255 with SHA-512, as [`draft-irtf-cfrg-cpace-21`](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-cpace-21) specifies it |
 | Pairing key derivation and confirmation | [HKDF](../TERMS.md#hkdf) and [HMAC](../TERMS.md#hmac) with SHA-512 |
 | Pinned-key handshake | [Noise](../TERMS.md#noise) pattern `IK`, named `Noise_IK_25519_ChaChaPoly_SHA256` |
 | Units | Noise transport messages, ChaCha20-Poly1305 [AEAD](../TERMS.md#aead) |
@@ -148,6 +150,17 @@ The `climon2-link` crate builds the handshake and the units on the `snow`
 crate, pinned to one exact version. `snow` has had no formal audit; using it
 is an accepted risk, recorded with the known-answer tests that guard it in
 the [crate's README](../../../../crates/climon2-link/README.md#cryptography).
+
+### Key fingerprints
+
+Each end shows its user the other end's static public key as a
+[key fingerprint](../../../../GLOSSARY.md#monitor-links), so that the two
+users can compare their screens. It never crosses the link. A fingerprint is
+the first 16 [bytes](../TERMS.md#byte) of the SHA-256 of the key's 32 bytes,
+written as eight groups of four lowercase hexadecimal digits joined by
+colons. The key whose 32 bytes are `00` to `1f` has the fingerprint
+`630d:cd29:66c4:3366:9112:5448:bbb2:5b4f`. Every release computes it the same
+way, so two releases show the same fingerprint for one key.
 
 ## Integers and byte strings
 
@@ -286,13 +299,6 @@ none.
 
 Link capabilities are separate from the client library's capabilities, which
 [Stream opened](stream-opened.md) passes through for each session.
-
-## Unresolved details
-
-- **The CPace document.** The exact edition of the CPace specification that
-  link revision 1 follows is fixed when the implementation chooses its crate,
-  and is recorded on the [pairing share](pairing-share.md) page before the
-  revision ships.
 
 ## Owning decisions
 

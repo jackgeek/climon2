@@ -87,13 +87,17 @@ dispatch or shell-specific logic.
 
 ## Monitor links
 
-Four seams for monitor links (#491), each with one contract suite that every
+Six seams for monitor links (#491, #499, #501), each with one contract suite that every
 platform's implementation passes by itself (`tests/seam_*.rs`, ONE-03). The
 link code uses none of them: its callers do, and pass time and randomness in.
 
 - `link_socket::listen(SocketAddr)` binds a `LinkListener`;
   `accept(deadline)` returns the next connection as a `LinkStream`.
-  `link_socket::dial(SocketAddr, deadline)` connects one.
+  `link_socket::dial(SocketAddr, deadline)` connects one, and
+  `link_socket::dial_named(&str, deadline)` connects to an address as its
+  user typed it: a host name or an IP literal (an IPv6 one bracketed), a
+  colon and a port, resolved at each dial and each result tried in turn. An
+  address with no host or port is `InvalidInput`.
   `LinkStream::read(&mut [u8], deadline)` reads what has arrived, `Ok(0)` at
   the end of the stream; `write_all` sends. Every expired deadline is
   `TimedOut`, and `dial` and `read` refuse a zero deadline as `InvalidInput`.
@@ -114,10 +118,18 @@ link code uses none of them: its callers do, and pass time and randomness in.
   relay's start, and a killed writer's `.<name>.<random>.tmp` file is never
   read as a record, because the store reads its three names and never lists
   the folder.
+- `host_name::get()` is the machine's host name, as `uname -n` gives it,
+  which each side of a pairing suggests as its name. Unix only.
 - `randomness::fill(&mut [u8])` fills from the operating system's generator
   through the `getrandom` crate, with no fallback.
 - `clock::monotonic()` is the time since the process first asked, for
   deadlines; `clock::wall()` is the time since the Unix epoch, for dates.
+- `home_lock::take(&Path)` takes a lock one process at a time holds (`flock`),
+  creating its owner-only file when missing and never opening it through a
+  link. It returns `Taken::Held`, or `Taken::Busy` with the note the holder
+  left through `Held::note`. Dropping the `Held` frees the lock, and the
+  operating system frees it for a holder that dies. The relay holds
+  `links/relay.lock` this way. Unix only.
 
 ## Processes and startup
 

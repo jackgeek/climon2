@@ -4,12 +4,14 @@ use crate::{
     introduction::KeyIntroduction,
     keys::EXIT,
     paint::{ANSI, Frame, HostCursor, Underlines, paint},
-    registry::{Recovery, View, truncate},
     selector::Selector,
-    toast::{LANE, Toasts},
+    toast::{self, LANE},
 };
-use climon2_core::{SessionId, keys::ControlKey, protocol::TerminalSize};
-use climon2_vt::view::{self as vt, Content, CursorShape, Modes, MouseReporting, Underline};
+use climon2_core::{keys::ControlKey, protocol::TerminalSize};
+use climon2_monitor::SessionAt;
+use climon2_monitor::view::{self as vt, Content, CursorShape, Modes, MouseReporting, Underline};
+pub(crate) use climon2_monitor::{Canvas, Placeholder, Session};
+use climon2_monitor::{GONE, Recovery, View, toast::Toasts, truncate};
 use ratatui::{
     buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Rect},
@@ -45,9 +47,6 @@ const NO_CONTENT: &str = "No terminal content is available.";
 /// Over a lost session's retained history while a passive retry is
 /// scheduled or running (spec #73, "Placeholders and states").
 const RECONNECTING: &str = "Reconnecting...";
-/// A lost session's daemon proven gone (owner decision on #116,
-/// 2026-11-16): its error overlay and diagnostic.
-const GONE: &str = "Session no longer exists";
 /// The smallest host that shows a session (owner decision, 2026-11-14):
 /// any host under four rows or five columns is too small.
 const MIN_HOST_ROWS: u16 = 4;
@@ -74,78 +73,11 @@ const UNDERLINES: [(Underline, u8); 4] = [
     (Underline::Dashed, 5),
 ];
 
-/// The selected session as the top row and canvas show it.
-pub(crate) struct Session<'a> {
-    pub(crate) id: &'a SessionId,
-    pub(crate) label: &'a str,
-    pub(crate) status: &'a str,
-    pub(crate) control: &'a str,
-    pub(crate) error: Option<&'a str>,
-    pub(crate) canvas: Canvas<'a>,
-}
-
-/// What the canvas below the top row shows of the selected session.
-pub(crate) enum Canvas<'a> {
-    /// Its live or frozen model.
-    View(vt::View<'a>),
-    /// Connected and not controlled by this monitor: the placeholder,
-    /// never its cached output.
-    Placeholder(Placeholder),
-    /// Not connected, its retained history read-only (#116), under the
-    /// overlay its recovery calls for.
-    Retained(vt::View<'a>, Option<&'a Recovery>),
-    /// Selected without a connected client and with no retained history:
-    /// no terminal content, its condition and the overlay its recovery
-    /// calls for.
-    NoContent(&'a str, Option<&'a Recovery>),
-    /// Nothing to show yet: acquiring, before the first restoration.
-    Nothing,
-}
-
 /// What the non-controller placeholder says of who controls the session.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Placeholder {
-    /// Another client took control from this monitor: viewed elsewhere.
-    TakenOver,
-    /// No other client is known to control it: only that this monitor
-    /// does not (#400).
-    NotControlled,
-}
-
-impl Placeholder {
-    fn says(self) -> &'static str {
-        match self {
-            Self::TakenOver => VIEWED_ELSEWHERE,
-            Self::NotControlled => NOT_CONTROLLED,
-        }
-    }
-}
-
-impl Canvas<'_> {
-    /// The live or frozen view, which the host follows.
-    fn view(&self) -> Option<&vt::View<'_>> {
-        match self {
-            Self::View(view) => Some(view),
-            _ => None,
-        }
-    }
-
-    /// Any view painted, read-only history included.
-    fn painted(&self) -> Option<&vt::View<'_>> {
-        match self {
-            Self::View(view) | Self::Retained(view, _) => Some(view),
-            _ => None,
-        }
-    }
-}
-
-/// What the top row's error slot and the read-only view say of a row's
-/// recovery: its diagnostic, or that its daemon is gone (owner decision on
-/// #116, 2026-11-16).
-pub(crate) fn diagnostic(recovery: &Recovery) -> &str {
-    match recovery {
-        Recovery::Retrying(why) | Recovery::Rejected(why) => why,
-        Recovery::Gone => GONE,
+fn says(placeholder: Placeholder) -> &'static str {
+    match placeholder {
+        Placeholder::TakenOver => VIEWED_ELSEWHERE,
+        Placeholder::NotControlled => NOT_CONTROLLED,
     }
 }
 
@@ -226,7 +158,7 @@ pub(crate) struct Screen {
 
 /// A session's canvas as painted from a coherent view, at one host size.
 struct Coherent {
-    id: SessionId,
+    id: SessionAt,
     /// The whole frame's buffer; only the rows below the top row are the
     /// canvas.
     buffer: Buffer,
@@ -333,7 +265,7 @@ impl Screen {
     /// still waiting, unless it is the one handed to the host last.
     fn present(&mut self, frame: Frame, titling: Option<Instant>) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
-        crate::hooks::fail("draw")?;
+        climon2_monitor::hooks::fail("draw")?;
         self.undrawn = false;
         if frame == self.painted {
             self.next = None;
@@ -410,7 +342,7 @@ impl Screen {
             asking.render(below, &mut buffer);
         }
         scene.introduction.render(below, &mut buffer);
-        scene.toasts.render(scene.now, below, &mut buffer);
+        toast::render(scene.toasts, scene.now, below, &mut buffer);
         let modes = self.followed(scene);
         Frame {
             buffer,
@@ -453,7 +385,7 @@ impl Screen {
     /// cursor its view shows, if any.
     fn canvas(
         &mut self,
-        id: &SessionId,
+        id: &SessionAt,
         canvas: &Canvas<'_>,
         (buffer, underlines): (&mut Buffer, &mut Underlines),
         below: Rect,
@@ -479,7 +411,7 @@ impl Screen {
     /// any takeover hint, or no content, the condition and any overlay.
     fn text(&self, canvas: &Canvas<'_>) -> Vec<String> {
         match canvas {
-            Canvas::Placeholder(placeholder) => std::iter::once(placeholder.says())
+            Canvas::Placeholder(placeholder) => std::iter::once(says(*placeholder))
                 .chain(self.takeover.as_deref())
                 .map(str::to_owned)
                 .collect(),
@@ -517,7 +449,7 @@ impl Screen {
     /// any overlay are drawn as ever.
     fn view(
         &mut self,
-        id: &SessionId,
+        id: &SessionAt,
         view: &vt::View<'_>,
         buffer: &mut Buffer,
         underlines: &mut Underlines,
@@ -843,7 +775,7 @@ fn decscusr(shape: CursorShape, blinking: bool) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::Control;
+    use climon2_monitor::{Control, diagnostic};
     use climon2_vt::{Geometry, Limits, Model, Parser};
 
     /// INP-05 (pure supplement; owner decision on #111): the host's mouse
@@ -904,8 +836,8 @@ mod tests {
 
     const HINT: &str = "Ctrl+] then s: sessions";
 
-    fn id() -> SessionId {
-        "00000000-0000-4000-8000-000000000001".parse().unwrap()
+    fn id() -> SessionAt {
+        SessionAt::local("00000000-0000-4000-8000-000000000001".parse().unwrap())
     }
 
     /// The top row of a selected session `width` cells wide, as text.
@@ -1267,8 +1199,9 @@ mod tests {
     #[test]
     fn the_body_says_the_startup_progress_or_the_state_and_any_incompleteness() {
         let row = View {
-            id: "00000000-0000-4000-8000-000000000001".parse().unwrap(),
+            id: id(),
             status: "Idle".into(),
+            machine: None,
             label: "Row".into(),
             since: std::time::SystemTime::UNIX_EPOCH,
         };
@@ -1650,7 +1583,7 @@ mod tests {
         let mut model = model(6, 2, b"\x1b[4:3mold\x1b[0m");
         let mut parser = Parser::new();
         let calls = std::cell::Cell::new(0);
-        let view = |screen: &mut Screen, model: &Model, id: &SessionId, cols| {
+        let view = |screen: &mut Screen, model: &Model, id: &SessionAt, cols| {
             let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 3));
             // Each frame's top row is its own.
             calls.set(calls.get() + 1);
@@ -1678,7 +1611,7 @@ mod tests {
             .feed(&mut parser, b"\x1b[?2026h\x1b[2J\x1b[Hne")
             .unwrap();
         assert_eq!(view(&mut screen, &model, &id(), 6), old);
-        let other: SessionId = "00000000-0000-4000-8000-000000000002".parse().unwrap();
+        let other = SessionAt::local("00000000-0000-4000-8000-000000000002".parse().unwrap());
         let half = (
             vec!["ne".to_owned(), String::new()],
             Underlines::new(),

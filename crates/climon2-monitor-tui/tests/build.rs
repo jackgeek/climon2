@@ -5,7 +5,7 @@ use std::fs;
 
 const MARKER: &[u8] = b"CLIMON2_TEST_HOOKS_ENABLED";
 
-/// ADR 0004 / #74: alone (`cargo test -p climon2-monitor --test build`, which
+/// ADR 0004 / #74: alone (`cargo test -p climon2-monitor-tui --test build`, which
 /// `cargo xtask test` runs before the workspace tests) Cargo builds the plain
 /// binary; workspace tests unify `test-hooks` through `climon2-test-term`'s
 /// normal dependencies, and the same sibling binary then carries the hooks.

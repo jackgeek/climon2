@@ -24,12 +24,12 @@ flowchart TB
             client["climon2-client<br/>client executable"]
             daemon["climon2-daemon<br/>session daemon executable"]
             monitor["climon2-monitor<br/>monitor executable; Ratatui TUI"]
+            relay["climon2-relay<br/>relay executable; Ratatui TUI; macOS and Linux"]
             library[["libclimon2_client.dylib / .so<br/>Rust cdylib; C ABI bootstrap"]]
         end
         command(["Session command<br/>external executable"])
         subgraph planned["Planned executables of version v"]
             web["climon2-web<br/>web monitor executable; planned"]
-            relay["climon2-relay<br/>relay executable on another machine; planned"]
         end
         browser(["Browser with xterm.js<br/>future external consumer"])
 
@@ -38,24 +38,25 @@ flowchart TB
         cli -->|"exec (not --headless) / attach / kill: session version"| client
         cli -->|"hello probes for discovery"| daemon
         daemon -->|"runs on session PTY"| command
-        cli -->|"monitor / m: execs own version"| monitor
+        cli -->|"monitor / m, and monitor pair: execs own version"| monitor
         monitor -->|"hello probes for discovery"| daemon
         monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
         client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
         library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
-        monitor -.->|"hub monitor: monitor link over TCP/IP; planned"| relay
+        monitor -->|"monitor pair: pairing and the first monitor link over TCP/IP"| relay
+        monitor -->|"hub monitor: monitor links carrying advertisement over TCP/IP"| relay
+        monitor -.->|"hub monitor: session streams over monitor links; planned"| relay
         web -.->|"hub monitor: monitor link over TCP/IP; planned"| relay
         cli -.->|"web: execs own version; planned"| web
-        cli -.->|"relay / r: execs own version; planned"| relay
+        cli -->|"relay / r: execs own version"| relay
         web -.->|"hello probes for discovery; planned"| daemon
         web -.->|"loads session-version library, as the monitor does; planned"| library
-        relay -.->|"hello probes for discovery on its own machine; planned"| daemon
+        relay -->|"hello probes for discovery on its own machine, only while linked"| daemon
         relay -.->|"loads session-version library on its own machine; planned"| library
         browser -.->|"web view over WebSocket; planned"| web
     end
 
     style web stroke-dasharray: 5 5
-    style relay stroke-dasharray: 5 5
     style browser stroke-dasharray: 5 5
 ```
 
@@ -362,6 +363,13 @@ so the monitor is always the current version. That handoff between executables
 of one release is not frozen. Since #106 it discovers sessions and loads their
 libraries.
 
+**Current (#490):** the `climon2-monitor` executable is built from the
+monitor's terminal interface package, `climon2-monitor-tui`, which links the
+[monitor library](../../../GLOSSARY.md#sessions) (`climon2-monitor`) statically
+as an ordinary Rust crate. The executable, its name, its place in the version
+folder and every arrow above are unchanged; no dynamic library is added
+([ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md)).
+
 The agreed [embedding design](../protocol/library-embedding.md) loads
 `<executable home>/<session version>/libclimon2_client.dylib` on macOS, or
 `libclimon2_client.so` on x86-64 GNU/Linux, with no release fallback. It uses a versioned C interface, per-instance client threads,
@@ -388,8 +396,7 @@ it, as the diagram shows, and the monitor consumes it through that library
 (#106).
 
 The wire core is independent of the current private Unix socket carrier.
-Three executables are planned, and none is built. A
-[relay](../../../GLOSSARY.md#monitor-links) serves one machine's sessions to a
+A [relay](../../../GLOSSARY.md#monitor-links) serves one machine's sessions to a
 [hub monitor](../../../GLOSSARY.md#monitor-links) on another over a
 [monitor link](../../../GLOSSARY.md#monitor-links) carried by
 [TCP/IP](../protocol/TERMS.md#tcpip). The relay is an ordinary client of its
@@ -401,16 +408,37 @@ terminal interface that serves a web view to browsers over
 [WebSocket](../protocol/TERMS.md#websocket), where xterm.js shows session
 content. The monitor and the web monitor are built on one monitor library, an
 ordinary Rust crate linked into each, so it adds no dynamic library; the
+monitor already is (#490). The
 relay shares only the code that runs client library instances
 ([ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md)). The
-relay's executable and the monitor's are drawn in one version folder for
-brevity, although a relay runs on another machine, from its own install.
+relay's executable and the monitor's are drawn in one version folder, as
+each machine's install has both, although a hub monitor links to a relay
+running on another machine, from that machine's own install.
 Dashed arrows above point from consumer to provider, not in the direction
 [bytes](../protocol/TERMS.md#byte) happen to flow.
 No native client library is assumed inside a browser. Browser authentication
 and transport security remain unresolved;
 same-[UID](../protocol/TERMS.md#uid)/private-directory local checks do not define
-them. No implementation of a relay or a web monitor is claimed.
+them. No implementation of a web monitor is claimed.
+
+**Current (#499):** every version folder on macOS and x86-64 GNU/Linux ships
+the `climon2-relay` executable. `c2 relay` and `c2 r` reach it through the
+launcher and the current version's CLI, which execs its own version's relay
+with the arguments it was given, as it execs the monitor. The relay binds its
+TCP listener, shows its own screen and stops; it does not yet probe daemons,
+or load the client library, so those arrows stay
+dashed. The Windows release does not ship it: monitor links are specified for
+macOS and Linux only, and a Windows build of `climon2-relay` refuses to
+start.
+
+**Current (#501):** `c2 monitor pair <host:port>`, or `c2 m p`, reaches the
+current version's monitor executable as bare `c2 monitor` does, with the verb
+and the address. That executable reads the PIN of the relay's
+[link invitation](../../../GLOSSARY.md#monitor-links) and dials the relay over TCP twice: a pairing connection, then
+the first monitor link, which it closes at once. Each machine's own
+`links/` folder records the pairing. The relay accepts both on its
+listener. No monitor link carries a session yet, so that arrow stays
+dashed. On Windows `c2 monitor pair` refuses.
 
 `c2 exec --headless` returns after daemon-confirmed creation without
 starting an interactive client: the CLI starts the daemon, passing the headless

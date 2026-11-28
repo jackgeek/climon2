@@ -1,11 +1,13 @@
 //! The hub monitor's end of a byte stream: the dialler.
 
 use crate::keys::{PublicKey, StaticKey};
-use crate::link::{HubLink, HubRun, Link, Refused};
+use crate::link::{HubLink, HubRun as LinkRun, Link, Refused};
 use crate::opening::{
     Answer, Arrival, Awaited, Opened, Opening, Purpose, REPLY_SIZE, REQUEST_SIZE, Reply, Request,
     Revisions, Transcript,
 };
+use crate::pairing::hub::{HubRun as PairingRunAtHub, Offer};
+use crate::pairing::{Introduction, PairingRun, Pin, RUN_WAIT};
 use crate::record::{Hello, HubClose};
 use crate::stream::{HubRecord, RelayRecord};
 use crate::{End, Input, Output, Randomness, Time};
@@ -15,9 +17,9 @@ use std::time::Duration;
 /// its opening request.
 const REPLY_WAIT: Duration = Duration::from_secs(10);
 
-/// The hub monitor's end of one connection. So far it runs the opening
-/// exchange and nothing after it: what arrives once the exchange has ended
-/// is dropped.
+/// The hub monitor's end of one connection. It runs the opening exchange,
+/// and then a pairing run when it was made to pair, or the link when it
+/// holds the keys of a pairing.
 pub struct HubEnd {
     purpose: Purpose,
     revisions: Revisions,
@@ -26,16 +28,22 @@ pub struct HubEnd {
     opening: Opening,
     /// The moment this end dialled: its first step.
     dialled: Option<Time>,
+    /// What this end pairs with, until its pairing run starts.
+    offer: Option<Offer>,
+    /// The pairing run, once the opening exchange has opened for one.
+    run: Option<PairingRunAtHub>,
     /// What follows the opening exchange on a link connection, when this
     /// end holds the keys of a pairing.
-    link: Option<HubRun>,
+    link: Option<LinkRun>,
 }
 
 /// The link of an end that holds no keys: it never starts.
 static NO_LINK: HubLink = Link::Pending;
 
 impl HubEnd {
-    /// An end that connects for `purpose` and supports `revisions`.
+    /// An end that connects for `purpose` and supports `revisions`. It
+    /// runs the opening exchange and nothing after it; `pair` makes the end
+    /// that pairs and `dialling` the end that links.
     pub fn new(purpose: Purpose, revisions: Revisions) -> Self {
         Self {
             purpose,
@@ -43,7 +51,30 @@ impl HubEnd {
             sent: None,
             opening: Opening::Pending,
             dialled: None,
+            offer: None,
+            run: None,
             link: None,
+        }
+    }
+
+    /// An end that connects to pair, with the `pin` of the relay's link
+    /// invitation. Once the relay has proved it holds the same PIN, the
+    /// relay receives `introduction`: the public key of the key pair this
+    /// hub monitor made for this pairing alone, and its name.
+    pub fn pair(revisions: Revisions, pin: Pin, introduction: Introduction) -> Self {
+        Self {
+            offer: Some(Offer { pin, introduction }),
+            ..Self::new(Purpose::Pair, revisions)
+        }
+    }
+
+    /// How far the pairing run on this connection has got, and how it
+    /// ended. `Paired` holds the relay's key and name; the hub monitor
+    /// reports "paired" only once its first link to that key succeeds.
+    pub fn pairing(&self) -> &PairingRun {
+        match &self.run {
+            Some(run) => &run.outcome,
+            None => &PairingRun::Pending,
         }
     }
 
@@ -52,14 +83,14 @@ impl HubEnd {
     /// `hello` what it states once the handshake is done.
     pub fn dialling(revisions: Revisions, own: StaticKey, relay: PublicKey, hello: Hello) -> Self {
         Self {
-            link: Some(HubRun::new(own, relay, hello)),
+            link: Some(LinkRun::new(own, relay, hello)),
             ..Self::new(Purpose::Link, revisions)
         }
     }
 
     /// How far the link has got, and how it ended.
     pub fn link(&self) -> &HubLink {
-        self.link.as_ref().map_or(&NO_LINK, HubRun::link)
+        self.link.as_ref().map_or(&NO_LINK, LinkRun::link)
     }
 
     /// Queues one record for the relay. It is sent from the next step on.
@@ -78,7 +109,7 @@ impl HubEnd {
     /// Takes the records the relay has sent since the last call, in the
     /// order they ended.
     pub fn records(&mut self) -> Vec<RelayRecord> {
-        self.link.as_mut().map(HubRun::records).unwrap_or_default()
+        self.link.as_mut().map(LinkRun::records).unwrap_or_default()
     }
 
     /// Takes the session streams the relay has broken a rule of since the
@@ -90,7 +121,7 @@ impl HubEnd {
     pub fn violations(&mut self) -> Vec<u32> {
         self.link
             .as_mut()
-            .map(HubRun::violations)
+            .map(LinkRun::violations)
             .unwrap_or_default()
     }
 
@@ -146,6 +177,9 @@ impl HubEnd {
 
 impl End for HubEnd {
     fn step(&mut self, now: Time, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
+        if let Some(run) = &mut self.run {
+            return run.step(now, input);
+        }
         match self.link.as_mut().filter(|link| link.begun()) {
             Some(link) => link.step(now, input),
             None => self.opening_step(now, input, randomness),
@@ -184,6 +218,9 @@ impl HubEnd {
     /// What follows the opening exchange once it has ended.
     fn follow(&mut self, now: Time, randomness: &mut dyn Randomness) -> Output {
         let dialled = self.dialled.unwrap_or(now);
+        if let Some(output) = self.start_pairing(dialled, randomness) {
+            return output;
+        }
         match &mut self.link {
             Some(link) => link.follow(&self.opening, dialled, randomness),
             None => Output {
@@ -191,5 +228,24 @@ impl HubEnd {
                 ..Output::default()
             },
         }
+    }
+
+    /// Starts the pairing run of an end made to pair, once the opening
+    /// exchange has chosen a link revision: the hub monitor's share goes
+    /// out, and the run must end 30 seconds after `dialled`.
+    fn start_pairing(&mut self, dialled: Time, randomness: &mut dyn Randomness) -> Option<Output> {
+        let Opening::Opened(opened) = &self.opening else {
+            return None;
+        };
+        let transcript = opened.transcript.clone();
+        let deadline = Time::since_start(dialled.elapsed().saturating_add(RUN_WAIT));
+        let (run, bytes) =
+            PairingRunAtHub::start(self.offer.take()?, transcript, deadline, randomness);
+        self.run = Some(run);
+        Some(Output {
+            bytes,
+            close: false,
+            deadline: Some(deadline),
+        })
     }
 }

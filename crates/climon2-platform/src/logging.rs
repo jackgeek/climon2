@@ -29,16 +29,15 @@ pub enum Role {
     Daemon,
     Client,
     Monitor,
+    Relay,
 }
 
 impl Role {
+    /// Each role's name, in declaration order.
+    const NAMES: [&'static str; 5] = ["cli", "daemon", "client", "monitor", "relay"];
+
     fn name(self) -> &'static str {
-        match self {
-            Self::Cli => "cli",
-            Self::Daemon => "daemon",
-            Self::Client => "client",
-            Self::Monitor => "monitor",
-        }
+        Self::NAMES[self as usize]
     }
 
     /// The log of one process in this role: its role, UTC second and pid, so
@@ -88,7 +87,7 @@ pub fn library_log_name(at: SystemTime, pid: u32) -> io::Result<String> {
 
 fn session_log_name(role: Role) -> io::Result<String> {
     match role {
-        Role::Client | Role::Monitor => {
+        Role::Client | Role::Monitor | Role::Relay => {
             role.process_log_name(SystemTime::now(), std::process::id())
         }
         Role::Cli | Role::Daemon => Ok(format!("{}.log", role.name())),
@@ -96,12 +95,13 @@ fn session_log_name(role: Role) -> io::Result<String> {
 }
 
 /// The CLI's general log is named by its UTC second and pid alone. Any other
-/// role's is a process log: the monitor runs under the pid of the CLI that
-/// exec'd it, possibly within the same second, so its log is named apart.
+/// role's is a process log: the monitor and the relay run under the pid of
+/// the CLI that exec'd them, possibly within the same second, so their logs
+/// are named apart.
 fn general_log_name(role: Role, at: SystemTime, pid: u32) -> io::Result<String> {
     match role {
         Role::Cli => Ok(format!("{}-{pid}.log", file_stamp(at)?)),
-        Role::Daemon | Role::Client | Role::Monitor => role.process_log_name(at, pid),
+        Role::Daemon | Role::Client | Role::Monitor | Role::Relay => role.process_log_name(at, pid),
     }
 }
 
@@ -147,6 +147,11 @@ impl LogFile {
     /// The monitor's general log, named apart from the CLI's.
     pub fn monitor(home: &Path) -> io::Result<Self> {
         Self::general_as(home, Role::Monitor)
+    }
+
+    /// The relay's general log, named apart from the CLI's.
+    pub fn relay(home: &Path) -> io::Result<Self> {
+        Self::general_as(home, Role::Relay)
     }
 
     fn general_as(home: &Path, role: Role) -> io::Result<Self> {

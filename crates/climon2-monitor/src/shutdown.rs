@@ -99,7 +99,7 @@ pub(crate) struct Report {
 
 /// What the exit makes of a shutdown.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum Verdict {
+pub enum Verdict {
     /// Every current Leave is confirmed or not required, and everything is
     /// cleaned up and joined.
     Clean,

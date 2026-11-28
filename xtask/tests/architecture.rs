@@ -16,7 +16,9 @@ const PACKAGES: &[&str] = &[
     "climon2-client",
     "climon2-install",
     "climon2-monitor",
+    "climon2-monitor-tui",
     "climon2-embed",
+    "climon2-relay",
     "climon2-vt",
     "climon2-link",
     "climon2-test-term",
@@ -100,9 +102,19 @@ fn is_test_only(name: &str) -> bool {
 fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
+        // ADR 0011: the relay never depends on the monitor library.
         "climon2-client" | "climon2-discovery" | "climon2-embed" => {
             &["climon2-core", "climon2-platform"]
         }
+        // ADR 0011: the relay side of monitor links is built on the link
+        // code (#501), it discovers the sessions it advertises (#502), and
+        // the relay never depends on the monitor library.
+        "climon2-relay" => &[
+            "climon2-core",
+            "climon2-platform",
+            "climon2-link",
+            "climon2-discovery",
+        ],
         "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
         "climon2-monitor" => &[
@@ -111,7 +123,20 @@ fn allowed_internal_dependencies(name: &str) -> &[&str] {
             "climon2-vt",
             "climon2-discovery",
             "climon2-embed",
+            // ADR 0011: the hub monitor's side of monitor links (#501).
+            "climon2-link",
         ],
+        "climon2-monitor-tui" => &["climon2-core", "climon2-platform", "climon2-monitor"],
+        _ => &[],
+    }
+}
+
+/// The workspace packages `name`'s tests alone may also depend on: the
+/// terminal interface builds the terminal models its tests show (ADR 0011,
+/// rule 4).
+fn allowed_dev_dependencies(name: &str) -> &[&str] {
+    match name {
+        "climon2-monitor-tui" => &["climon2-vt"],
         _ => &[],
     }
 }
@@ -128,6 +153,7 @@ fn dependency_violations(package: &Package) -> Vec<String> {
             is_test_only(&dependency.name)
                 || dependency.name == package.name
                 || allowed_internal_dependencies(&package.name).contains(&dependency.name.as_str())
+                || allowed_dev_dependencies(&package.name).contains(&dependency.name.as_str())
         } else {
             allowed_internal_dependencies(&package.name).contains(&dependency.name.as_str())
         };
@@ -200,7 +226,8 @@ fn shipped_targets_have_the_agreed_names_and_libraries() {
         ("climon2-daemon", "climon2-daemon"),
         ("climon2-client", "climon2-client"),
         ("climon2-install", "climon2-install"),
-        ("climon2-monitor", "climon2-monitor"),
+        ("climon2-monitor-tui", "climon2-monitor"),
+        ("climon2-relay", "climon2-relay"),
     ] {
         let package = metadata.packages.iter().find(|p| p.name == name).unwrap();
         let binaries: Vec<_> = package
@@ -220,6 +247,50 @@ fn shipped_targets_have_the_agreed_names_and_libraries() {
             );
         }
     }
+}
+
+/// ADR 0011 (#490): the monitor library is a library alone; its terminal
+/// interface builds the monitor's binary.
+#[test]
+fn the_monitor_library_has_no_binary() {
+    let metadata = metadata();
+    let library = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == "climon2-monitor")
+        .unwrap();
+    let kinds: Vec<_> = library
+        .targets
+        .iter()
+        .filter(|target| target.name == "climon2_monitor" || target.name == "climon2-monitor")
+        .flat_map(|target| target.kind.iter().map(String::as_str))
+        .collect();
+    assert_eq!(kinds, ["lib"]);
+}
+
+/// ADR 0011, rule 4 (#490): of the shipped packages, only the session
+/// daemon and the monitor library depend on `climon2-vt`; the terminal
+/// interface sees its views through the library, and builds models only in
+/// its tests.
+#[test]
+fn only_the_daemon_and_the_monitor_library_depend_on_the_virtual_terminal() {
+    let metadata = metadata();
+    let dependents: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|package| !is_test_only(&package.name))
+        .filter(|package| {
+            let normal = |dependency: &Dependency| dependency.kind.as_deref() != Some("dev");
+            let vt = |dependency: &&Dependency| dependency.name == "climon2-vt";
+            package.dependencies.iter().filter(vt).any(normal)
+        })
+        .map(|package| package.name.as_str())
+        .collect();
+    let dependents: BTreeSet<_> = dependents.into_iter().collect();
+    assert_eq!(
+        dependents,
+        BTreeSet::from(["climon2-daemon", "climon2-monitor"])
+    );
 }
 
 fn assert_neutral_sources(path: &std::path::Path) {
@@ -288,6 +359,29 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-embed", "climon2-client", None, Some(".")),
         ("climon2-cli", "climon2-embed", None, Some(".")),
         ("climon2-daemon", "climon2-embed", None, Some(".")),
+        ("climon2-monitor", "climon2-monitor-tui", None, Some(".")),
+        ("climon2-monitor-tui", "climon2-vt", None, Some(".")),
+        ("climon2-monitor-tui", "climon2-embed", None, Some(".")),
+        ("climon2-monitor-tui", "climon2-discovery", None, Some(".")),
+        ("climon2-monitor-tui", "climon2-client", None, Some(".")),
+        ("climon2-monitor-tui", "climon2-daemon", None, Some(".")),
+        ("climon2-monitor-tui", "climon2-cli", None, Some(".")),
+        ("climon2-cli", "climon2-monitor-tui", None, Some(".")),
+        // ADR 0011, rule 2: the relay never depends on the monitor library,
+        // and, rule 4, only the daemon and the monitor library on climon2-vt.
+        ("climon2-relay", "climon2-monitor", None, Some(".")),
+        ("climon2-relay", "climon2-monitor", Some("dev"), Some(".")),
+        ("climon2-relay", "climon2-monitor-tui", None, Some(".")),
+        ("climon2-relay", "climon2-vt", None, Some(".")),
+        ("climon2-relay", "climon2-cli", None, Some(".")),
+        ("climon2-relay", "climon2-client", None, Some(".")),
+        ("climon2-relay", "climon2-daemon", None, Some(".")),
+        ("climon2-monitor", "climon2-relay", None, Some(".")),
+        ("climon2-cli", "climon2-relay", None, Some(".")),
+        // ADR 0011: the link code reaches the hub monitor's terminal
+        // interface only through the monitor library.
+        ("climon2-monitor-tui", "climon2-link", None, Some(".")),
+        ("climon2-cli", "climon2-link", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -316,12 +410,22 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-monitor", "climon2-platform", None),
         ("climon2-monitor", "climon2-vt", None),
         ("climon2-monitor", "climon2-discovery", None),
-        ("climon2-test-term", "climon2-monitor", None),
+        ("climon2-test-term", "climon2-monitor-tui", None),
+        ("climon2-monitor-tui", "climon2-monitor", None),
+        ("climon2-monitor-tui", "climon2-core", None),
+        ("climon2-monitor-tui", "climon2-platform", None),
+        ("climon2-monitor-tui", "climon2-vt", Some("dev")),
         ("climon2-cli", "climon2-cli", Some("dev")),
         ("climon2-monitor", "climon2-embed", None),
         ("climon2-embed", "climon2-core", None),
         ("climon2-embed", "climon2-platform", None),
         ("climon2-embed", "climon2-test-term", Some("dev")),
+        ("climon2-relay", "climon2-core", None),
+        ("climon2-relay", "climon2-platform", None),
+        ("climon2-relay", "climon2-test-term", Some("dev")),
+        ("climon2-relay", "climon2-link", None),
+        ("climon2-relay", "climon2-discovery", None),
+        ("climon2-monitor", "climon2-link", None),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -337,9 +441,14 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
 /// ADR 0011, rule 1: the packages that never depend on a terminal, HTTP or
 /// WebSocket crate and never read or write the process's terminal, each
 /// with the only third-party crates it may link. An allowlist, so a crate
-/// nobody thought to forbid is rejected too. The monitor library joins
-/// when it loses its terminal interface (#490).
-const HEADLESS: &[(&str, &[&str])] = &[("climon2-embed", &["tracing"])];
+/// nobody thought to forbid is rejected too.
+const HEADLESS: &[(&str, &[&str])] = &[
+    ("climon2-embed", &["tracing"]),
+    (
+        "climon2-monitor",
+        &["fuzzy-matcher", "time", "tracing", "unicode-width"],
+    ),
+];
 
 /// The third-party crates `package` links that ADR 0011 does not allow it:
 /// none for a package that is not headless. Dev-dependencies link only
@@ -414,11 +523,23 @@ const LINK: &str = "climon2-link";
 /// dependency. It never holds `climon2-platform`, an operating-system or
 /// socket crate, an async runtime or a source of randomness. A ticket that
 /// needs a crate adds it here, where a reviewer sees it.
-///
-/// - `snow` (#494): the Noise framework of the pinned-key handshake and the
-///   units. The link crate builds it without default features, so it brings
-///   no source of randomness: the caller's randomness reaches it.
-const LINK_ALLOWLIST: &[&str] = &["snow"];
+const LINK_ALLOWLIST: &[&str] = &[
+    // Pairing (#495): CPace on ristretto255 with SHA-512, behind `pakery`.
+    "pakery-cpace",
+    "pakery-crypto",
+    // Pairing (#495): the traits `pakery` draws the caller's randomness
+    // through. The crate holds no generator of its own.
+    "rand_core",
+    // Pairing (#495): the key schedule, the confirmation and the box.
+    "chacha20poly1305",
+    "hkdf",
+    "hmac",
+    "sha2",
+    // The pinned-key handshake (#494): the Noise framework of the handshake
+    // and the units. The link crate builds it without default features, so
+    // it brings no source of randomness: the caller's randomness reaches it.
+    "snow",
+];
 
 /// The modules of the standard library the link code never names (ONE-01).
 const PLATFORM_MODULES: &[&str] = &["net", "os", "fs", "process", "env"];
@@ -464,8 +585,9 @@ fn link_violations(package: &Package, allowlist: &[&str]) -> Vec<String> {
     violations
 }
 
-/// ADR 0011, rule 1 (#489): client embedding links no terminal, HTTP or
-/// WebSocket crate, and its sources never touch the process's terminal.
+/// ADR 0011, rule 1 (#489, #490): client embedding and the monitor library
+/// link no terminal, HTTP or WebSocket crate, and their sources never touch
+/// the process's terminal.
 #[test]
 fn headless_packages_have_no_interface_dependency() {
     let metadata = metadata();
@@ -517,6 +639,19 @@ fn interface_guard_rejects_terminal_http_and_websocket_dependencies() {
     ];
     assert!(interface_violations(&package).is_empty());
     package.name = "climon2-monitor".to_owned();
+    package.dependencies = vec![dependency("ratatui", None, None)];
+    assert_eq!(
+        interface_violations(&package),
+        ["climon2-monitor -> ratatui"]
+    );
+    package.dependencies = vec![
+        dependency("fuzzy-matcher", None, None),
+        dependency("time", None, None),
+        dependency("tracing", None, None),
+        dependency("unicode-width", None, None),
+    ];
+    assert!(interface_violations(&package).is_empty());
+    package.name = "climon2-monitor-tui".to_owned();
     package.dependencies = vec![dependency("ratatui", None, None)];
     assert!(interface_violations(&package).is_empty());
 }

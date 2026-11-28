@@ -6,6 +6,8 @@
 // Each test binary compiles this module for itself and uses its own part.
 #![allow(dead_code)]
 
+pub mod pairing;
+
 use climon2_link::{End, Input, Output, Randomness, Time};
 use std::time::Duration;
 

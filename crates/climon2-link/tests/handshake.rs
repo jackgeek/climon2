@@ -9,10 +9,11 @@ mod support;
 mod wire;
 
 use climon2_link::{
-    End, Ended, HubEnd, Input, Link, Opening, Pairing, Peer, Randomness, RelayEnd, Revisions,
+    End, Ended, HubEnd, Input, Link, Opening, PairingRun, Peer, Randomness, RelayEnd, Revisions,
     StaticKey, Time,
 };
 use std::time::Duration;
+use support::pairing::{invited, uninvited};
 use support::{Harness, Seeded};
 use wire::{
     Fixed, HANDSHAKE_REPLY, INITIATION, OnPath, REPLY, REQUEST, SECOND, StandIn, Way, hello, hex,
@@ -221,7 +222,7 @@ fn rev_03_an_edited_revision_list_fails_the_key_exchange() {
         ("reply", Box::new(add_to_reply)),
     ];
     for (edited, edit) in edits {
-        let relay = RelayEnd::new(revisions(&[1, 2]), Pairing::Unavailable).linking(
+        let relay = RelayEnd::new(revisions(&[1, 2]), uninvited()).linking(
             relay_key(),
             vec![hub_key().public()],
             wire::relay_hello(),
@@ -253,7 +254,7 @@ fn rev_03_an_edited_revision_list_fails_the_key_exchange() {
 /// The control: the same ends, with no edit, link.
 #[test]
 fn ends_with_different_revision_lists_link_on_the_highest_shared() {
-    let relay = RelayEnd::new(revisions(&[1, 2]), Pairing::Unavailable).linking(
+    let relay = RelayEnd::new(revisions(&[1, 2]), uninvited()).linking(
         relay_key(),
         vec![hub_key().public()],
         wire::relay_hello(),
@@ -270,7 +271,7 @@ fn ends_with_different_revision_lists_link_on_the_highest_shared() {
 #[test]
 fn an_end_without_keys_has_no_link() {
     let mut hub = HubEnd::new(climon2_link::Purpose::Link, revision_1());
-    let mut relay = RelayEnd::new(revision_1(), Pairing::Unavailable);
+    let mut relay = RelayEnd::new(revision_1(), uninvited());
 
     assert_eq!(hub.link(), &Link::Pending);
     assert_eq!(relay.link(), &Link::Pending);
@@ -398,10 +399,11 @@ fn a_failed_opening_fails_the_link() {
 }
 
 /// A relay holding keys that a hub monitor reaches to pair starts no
-/// handshake: pairing is not this run's to answer.
+/// handshake: the connection carries a pairing run, which reads a handshake
+/// initiation as a malformed share.
 #[test]
 fn a_relay_reached_to_pair_starts_no_handshake() {
-    let mut relay = RelayEnd::new(revision_1(), Pairing::Available).linking(
+    let mut relay = RelayEnd::new(revision_1(), invited().0).linking(
         relay_key(),
         vec![hub_key().public()],
         wire::relay_hello(),
@@ -410,12 +412,14 @@ fn a_relay_reached_to_pair_starts_no_handshake() {
     request[8] = 0x01;
     let output = step(&mut relay, Duration::ZERO, Input::Bytes(&request));
     assert_eq!(output.bytes, REPLY);
-    assert_eq!(output.deadline, None);
+    assert_eq!(relay.pairing(), &PairingRun::Pending);
 
     let mut hub = hub_end(hub_key(), relay_key().public());
     step(&mut hub, Duration::ZERO, Input::Tick);
     let initiation = step(&mut hub, Duration::ZERO, Input::Bytes(&REPLY)).bytes;
     let output = step(&mut relay, SECOND, Input::Bytes(&initiation));
     assert!(output.bytes.is_empty(), "no handshake reply");
+    assert!(output.close);
     assert_eq!(relay.link(), &Link::Pending);
+    assert_eq!(relay.pairing(), &PairingRun::Failed { counted: false });
 }
