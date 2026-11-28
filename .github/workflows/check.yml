@@ -224,6 +224,9 @@ jobs:
       # Also builds the monitor binary, which the CLI's monitor tests start.
       - name: Test the monitor and client embedding on Windows
         run: cargo test --locked -p climon2-monitor -p climon2-embed
+      # Monitor links are macOS and Linux only: the relay refuses on Windows.
+      - name: Test the relay's Windows refusal
+        run: cargo test --locked -p climon2-relay
       # Native revision 1 under the Microsoft x64 convention.
       - name: Check native interface declarations and examples with MSVC
         run: python -I docs/for-humans/protocol/monitor-client/check.py NativeDeclarations.test_msvc_declarations_and_examples

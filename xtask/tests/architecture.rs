@@ -12,6 +12,7 @@ const PACKAGES: &[&str] = &[
     "climon2-install",
     "climon2-monitor",
     "climon2-embed",
+    "climon2-relay",
     "climon2-vt",
     "climon2-test-term",
     "climon2-fixtures",
@@ -87,7 +88,8 @@ fn is_test_only(name: &str) -> bool {
 fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
-        "climon2-client" | "climon2-discovery" | "climon2-embed" => {
+        // ADR 0011: the relay never depends on the monitor library.
+        "climon2-client" | "climon2-discovery" | "climon2-embed" | "climon2-relay" => {
             &["climon2-core", "climon2-platform"]
         }
         "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
@@ -188,6 +190,7 @@ fn shipped_targets_have_the_agreed_names_and_libraries() {
         ("climon2-client", "climon2-client"),
         ("climon2-install", "climon2-install"),
         ("climon2-monitor", "climon2-monitor"),
+        ("climon2-relay", "climon2-relay"),
     ] {
         let package = metadata.packages.iter().find(|p| p.name == name).unwrap();
         let binaries: Vec<_> = package
@@ -275,6 +278,16 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-embed", "climon2-client", None, Some(".")),
         ("climon2-cli", "climon2-embed", None, Some(".")),
         ("climon2-daemon", "climon2-embed", None, Some(".")),
+        // ADR 0011, rule 2: the relay never depends on the monitor library,
+        // and, rule 4, only the daemon and the monitor library on climon2-vt.
+        ("climon2-relay", "climon2-monitor", None, Some(".")),
+        ("climon2-relay", "climon2-monitor", Some("dev"), Some(".")),
+        ("climon2-relay", "climon2-vt", None, Some(".")),
+        ("climon2-relay", "climon2-cli", None, Some(".")),
+        ("climon2-relay", "climon2-client", None, Some(".")),
+        ("climon2-relay", "climon2-daemon", None, Some(".")),
+        ("climon2-monitor", "climon2-relay", None, Some(".")),
+        ("climon2-cli", "climon2-relay", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -308,6 +321,9 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-embed", "climon2-core", None),
         ("climon2-embed", "climon2-platform", None),
         ("climon2-embed", "climon2-test-term", Some("dev")),
+        ("climon2-relay", "climon2-core", None),
+        ("climon2-relay", "climon2-platform", None),
+        ("climon2-relay", "climon2-test-term", Some("dev")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
