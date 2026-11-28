@@ -300,3 +300,62 @@ fn two_listeners_cannot_share_an_address() {
 
     assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
 }
+
+/// CM9: a hub monitor dials the address its user typed, a host name or an
+/// IP literal with a port, resolved at each dial.
+#[test]
+fn a_dial_by_name_resolves_the_host_and_reaches_the_listener() {
+    let (listener, address) = listener();
+    for typed in [
+        format!("localhost:{}", address.port()),
+        format!("127.0.0.1:{}", address.port()),
+    ] {
+        let mut dialled = link_socket::dial_named(&typed, GENEROUS).expect(&typed);
+        let mut accepted = listener.accept(GENEROUS).expect("the dial arrives");
+        dialled.write_all(b"hi").unwrap();
+        assert_eq!(read_exactly(&mut accepted, 2), b"hi", "{typed}");
+    }
+}
+
+#[test]
+fn a_dial_by_name_to_a_port_nobody_listens_on_is_refused() {
+    let (listener, address) = listener();
+    drop(listener);
+    let error = link_socket::dial_named(&format!("127.0.0.1:{}", address.port()), GENEROUS)
+        .expect_err("nobody listens");
+    assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused, "{error}");
+}
+
+#[test]
+fn a_dial_by_name_without_a_port_or_with_an_unknown_host_fails() {
+    for typed in [
+        "localhost",
+        "localhost:",
+        "localhost:70000",
+        ":7222",
+        "[]:7222",
+        "",
+    ] {
+        let error = link_socket::dial_named(typed, GENEROUS).expect_err(typed);
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::InvalidInput,
+            "{typed}: {error}"
+        );
+    }
+    let error = link_socket::dial_named("no-such-host.invalid:7222", GENEROUS)
+        .expect_err("the name resolves to nothing");
+    assert_ne!(error.kind(), io::ErrorKind::InvalidInput, "{error}");
+}
+
+#[test]
+fn a_dial_by_name_takes_a_bracketed_ipv6_literal_when_the_host_has_it() {
+    let Ok(listener) = link_socket::listen(SocketAddr::from((Ipv6Addr::LOCALHOST, 0))) else {
+        return;
+    };
+    let port = listener.local_address().unwrap().port();
+    link_socket::dial_named(&format!("[::1]:{port}"), GENEROUS).expect("the dial connects");
+    listener
+        .accept(GENEROUS)
+        .expect("the connection is accepted");
+}

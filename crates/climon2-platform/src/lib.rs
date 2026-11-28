@@ -12,6 +12,8 @@ pub mod home;
 #[cfg(unix)]
 pub mod home_lock;
 #[cfg(unix)]
+pub mod host_name;
+#[cfg(unix)]
 pub mod key_storage;
 pub mod library;
 #[cfg(unix)]
