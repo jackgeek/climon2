@@ -2,6 +2,10 @@
 //! these by themselves, over loopback, with no link code and no second
 //! machine. A listener honours its deadlines: for a connection to arrive,
 //! for a dial to connect and for bytes to be read.
+//!
+//! Unix only for now: the seam suites on Windows wait until monitor links
+//! on Windows are specified, and a full accept queue refuses there.
+#![cfg(unix)]
 
 use climon2_platform::link_socket::{self, LinkListener, LinkStream};
 use std::{
