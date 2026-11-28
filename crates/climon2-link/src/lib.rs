@@ -8,6 +8,14 @@
 //! lets a test supply the time and the randomness (ONE-01, ONE-02 of the
 //! monitor-link acceptance criteria).
 
+mod hub;
+mod opening;
+mod relay;
+
+pub use hub::HubEnd;
+pub use opening::{Opened, Opening, Pairing, Purpose, Revisions, Transcript};
+pub use relay::RelayEnd;
+
 use std::time::Duration;
 
 /// A moment on the caller's clock: the time elapsed since a start the caller
