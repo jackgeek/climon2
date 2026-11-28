@@ -226,7 +226,7 @@ impl Units {
 /// The unit that carries `fragment` on `stream`, as bytes to send.
 fn seal(transport: &mut Transport, stream: u32, more: bool, fragment: &[u8]) -> Vec<u8> {
     let mut plaintext = stream.to_be_bytes().to_vec();
-    plaintext.push(u8::from(more) * MORE);
+    plaintext.push(if more { MORE } else { 0 });
     plaintext.extend(fragment);
     let ciphertext = transport
         .seal(&plaintext)

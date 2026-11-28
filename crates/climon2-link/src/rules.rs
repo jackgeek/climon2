@@ -107,12 +107,13 @@ impl Rules {
 
     /// Judges a record from the hub monitor on a stream that is not live:
     /// one that begins the next stream, one that crossed the ending of a
-    /// stream, or one out of turn.
+    /// stream, or one out of turn. Stream 0 is never live, and never
+    /// carries a record of the hub monitor's but Hello and Close.
     fn outside(&mut self, stream: u32, record: &HubStream) -> Verdict {
         if let HubStream::Open(_) = record {
             return self.open(stream);
         }
-        match (1..=self.last).contains(&stream) {
+        match stream <= self.last {
             true => Verdict::Crossed,
             false => Verdict::Broken,
         }

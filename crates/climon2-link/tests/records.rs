@@ -459,6 +459,12 @@ fn an_end_refuses_to_send_unless_linked() {
     let mut hub = hub_end(hub_key(), relay_key().public());
     assert_eq!(hub.send(&open), Err(Refused::NotLinked));
     assert_eq!(hub.close(HubClose::Stopped), Err(Refused::NotLinked));
+    assert!(hub.records().is_empty());
+    let snapshot = samples::advertise(Advertisement::SnapshotComplete);
+    let mut relay = relay_end(relay_key(), &[hub_key().public()]);
+    assert_eq!(relay.send(&snapshot), Err(Refused::NotLinked));
+    assert_eq!(relay.close(RelayClose::Stopping), Err(Refused::NotLinked));
+    assert!(relay.records().is_empty());
 
     let (mut hub, _) = linked_hub();
     assert_eq!(hub.send(&open), Ok(()));
