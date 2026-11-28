@@ -1,6 +1,6 @@
 # Opening request
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements it; no released program speaks it yet.**
 The [hub monitor](../../../../GLOSSARY.md#monitor-links) sends this as the
 first [bytes](../TERMS.md#byte) of every connection to a
 [relay](../../../../GLOSSARY.md#monitor-links). It states why the hub monitor
@@ -42,6 +42,14 @@ A hub monitor that wants to link and supports only link revision 1:
   late or breaks the layout in any way. Someone probing the port learns only
   that it is open.
 - A valid request gets an [opening reply](opening-reply.md).
+- The hub monitor sends nothing after the request until it has the whole
+  reply, whatever the purpose. Its next message needs the reply: the
+  [pairing share](pairing-share.md) is keyed by the
+  [opening transcript](README.md#cryptography), and so is the
+  [handshake initiation](handshake-initiation.md). The relay therefore
+  treats bytes that arrive with the request, behind its 26th byte, as
+  breaking the layout. It closes without sending a byte, and on a pairing
+  connection no attempt is counted.
 - The request proves nothing about the sender. It is bound into the key
   exchange that follows as part of the
   [opening transcript](README.md#cryptography).

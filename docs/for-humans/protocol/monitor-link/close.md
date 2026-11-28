@@ -1,6 +1,6 @@
 # Close — `0x02`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout, its codes and "not paired" for a key the relay does not remember; no released program speaks it yet, and nothing yet acts on a reason or sends Leave.**
 Either end ends or refuses a [monitor link](../../../../GLOSSARY.md#monitor-links)
 deliberately, giving the reason. See the [overview](../README.md),
 [glossary](../../../../GLOSSARY.md), [terms](../TERMS.md) and the

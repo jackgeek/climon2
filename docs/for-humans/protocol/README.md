@@ -35,7 +35,7 @@ and daemon wire pages assign exact agreed schemas, separately from implementatio
 | [daemon-client/](daemon-client/README.md) | The frozen hello and wire revision 1 between a client and a session daemon. |
 | [monitor-client/](monitor-client/README.md) | The native revision-1 calls and records between the monitor and a client library. |
 | [monitor-host/](monitor-host/README.md) | The status reports and bell the monitor writes to its host. |
-| [monitor-link/](monitor-link/README.md) | The agreed, unimplemented link revision 1 between a hub monitor and a relay. |
+| [monitor-link/](monitor-link/README.md) | The agreed link revision 1 between a hub monitor and a relay, implemented as far as pairing, the handshake, Hello, Close and units in a crate no release ships. |
 
 ## Status and scope
 
@@ -117,7 +117,7 @@ The [agreed daemon wire](daemon-client/README.md) is portable, independent of
 today's local private sockets, but it never crosses a machine boundary. A
 [hub monitor](../../../GLOSSARY.md#monitor-links) reaches another machine's
 sessions through a [relay](../../../GLOSSARY.md#monitor-links) over
-[TCP/IP](TERMS.md#tcpip), using the agreed and unimplemented
+[TCP/IP](TERMS.md#tcpip), using the agreed and unreleased
 [monitor link protocol](monitor-link/README.md); the relay is an ordinary
 client of its own machine's daemons. Future [WebSocket](TERMS.md#websocket)
 forwarding feeds xterm.js in a browser, not a native library in that
