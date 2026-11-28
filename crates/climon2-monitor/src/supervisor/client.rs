@@ -1,89 +1,22 @@
-//! One instance's caller handles and what draining them reports: the only
-//! place the supervisor reads the client library's records.
+//! What draining a client reports: the only place the supervisor reads
+//! the client library's records. Client embedding takes each delivery and
+//! releases it at once; this is its reader.
 use crate::{
     registry::{Answer, ClientEvent, Final, Outcome, Recovery, Report, State, Status, Verdict},
-    shutdown::{self, Leave},
-    terminal::{Authority, Paste, Presentation, Request, Revocation},
+    terminal::{Authority, Presentation, Revocation},
 };
 use climon2_core::{
     SessionId,
-    native::{self, Bytes, Call, Communication, Control, Drained},
+    native::{self, Bytes},
 };
-use climon2_platform::library::Functions;
+pub(super) use climon2_embed::instance::OPEN_ID;
+use climon2_embed::instance::{self, Retry, slice};
 use climon2_vt::Geometry;
-use std::{mem::MaybeUninit, time::SystemTime};
+use std::time::SystemTime;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-/// Monitor Open's request ID.
-pub(super) const OPEN_ID: u64 = 1;
-/// A Kill-only instance's Kill, its only request (#117): never mistaken for
-/// Open's answer.
-pub(super) const KILL_ID: u64 = OPEN_ID + 1;
 const STATUS: &str = "status-v1";
 const FOCUS: &str = "focus-v1";
-
-/// An instance's caller handles, published by its owner thread, with the
-/// release's calls and the connection generation it was created with.
-#[derive(Clone, Copy)]
-pub(super) struct Client {
-    pub(super) functions: &'static Functions,
-    pub(super) communication: *mut Communication,
-    pub(super) control: *mut Control,
-    pub(super) generation: u64,
-}
-
-/// Whether a client that is over is retried: its terminal evidence's
-/// retry, or the monitor's own when the monitor stopped it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Retry {
-    None,
-    /// Recoverable: a fresh instance after a backoff.
-    Passive,
-    /// Rejected for good: a missing revision-1 interface or capability,
-    /// or invalid configuration.
-    Permanent,
-}
-
-impl Retry {
-    /// The terminal evidence's retry class; anything but passive or
-    /// permanent retries nothing.
-    fn of(evidence: u32) -> Self {
-        match evidence {
-            native::RETRY_PASSIVE => Self::Passive,
-            native::RETRY_PERMANENT => Self::Permanent,
-            _ => Self::None,
-        }
-    }
-
-    /// What the row learns of it after `why`, if it is retried or rejected.
-    pub(super) fn recovery(self, why: String) -> Option<Recovery> {
-        match self {
-            Self::None => None,
-            Self::Passive => Some(Recovery::Retrying(why)),
-            Self::Permanent => Some(Recovery::Rejected(why)),
-        }
-    }
-}
-
-// SAFETY: both handles are documented thread-safe for the calls made on them.
-unsafe impl Send for Client {}
-
-/// What one drain found.
-pub(super) enum Drain {
-    /// A delivery, already released, and what its records report.
-    Events(Vec<ClientEvent>),
-    /// Nothing more for now, or never again.
-    Stop(Stop),
-}
-
-pub(super) enum Stop {
-    Empty,
-    /// Terminal evidence, with its error message (empty when stopped),
-    /// whether it is retried and what it proves of the departure (#118).
-    Terminal(String, Retry, shutdown::Terminal),
-    /// The drain call failed.
-    Failed(String),
-}
 
 /// Reads one record kind; the tag names the active member.
 type Reader = fn(&SessionId, &native::Record) -> Vec<ClientEvent>;
@@ -142,181 +75,12 @@ const READERS: [(u32, Reader); 12] = [
     (native::DIAGNOSTIC, diagnostic),
 ];
 
-impl Client {
-    /// The borrowed notification descriptor.
-    pub(super) fn notification(&self) -> Result<i32, String> {
-        // Output only: the library writes it on success.
-        let mut descriptor = Default::default();
-        // SAFETY: a live communication handle and an output integer.
-        checked(unsafe { (self.functions.notification)(self.communication, &mut descriptor) })
-            .map(|()| descriptor)
-    }
-
-    /// Asks the instance to stop; idempotent and nonblocking.
-    pub(super) fn shutdown(&self) {
-        // SAFETY: a live control handle.
-        unsafe { (self.functions.shutdown)(self.control) };
-    }
-
-    /// Submits `request` as `request_id` under the opened generation.
-    pub(super) fn submit(&self, request_id: u64, request: &Request) -> Result<(), String> {
-        let request = native_request(request_id, request, self.generation);
-        // SAFETY: a live communication handle and a complete request whose
-        // input bytes outlive the call, which copies them.
-        checked(unsafe { (self.functions.submit)(self.communication, &request) })
-    }
-
-    /// Submits a Kill of the instance's session as `request_id`, requiring
-    /// nothing beyond core support, as `c2 kill` does (#117).
-    pub(super) fn kill(&self, request_id: u64) -> Result<(), String> {
-        let request = kill_request(request_id);
-        // SAFETY: a live communication handle and a complete request.
-        checked(unsafe { (self.functions.submit)(self.communication, &request) })
-    }
-
-    /// Takes one delivery, reads it and releases it at once.
-    pub(super) fn drain(&self, id: &SessionId) -> Drain {
-        let mut drained = MaybeUninit::<Drained>::zeroed();
-        // SAFETY: a live communication handle and an output struct.
-        let call = unsafe { (self.functions.drain)(self.communication, drained.as_mut_ptr()) };
-        if let Err(error) = checked(call) {
-            return Drain::Stop(Stop::Failed(error));
-        }
-        // SAFETY: a successful drain initialized the output.
-        let drained = unsafe { drained.assume_init() };
-        match drained.kind {
-            native::DELIVERY => Drain::Events(self.delivery(id, &drained)),
-            native::TERMINAL => {
-                // SAFETY: terminal evidence lives until destroy.
-                let terminal = unsafe { *drained.terminal };
-                let retry = Retry::of(terminal.retry);
-                let message = text(terminal.error.message);
-                Drain::Stop(Stop::Terminal(message, retry, evidence(&terminal)))
-            }
-            _ => Drain::Stop(Stop::Empty),
-        }
-    }
-
-    fn delivery(&self, id: &SessionId, drained: &Drained) -> Vec<ClientEvent> {
-        // SAFETY: a delivery's records live until its release.
-        let records = unsafe { slice(drained.records, drained.count) };
-        let events = records.iter().flat_map(|record| read(id, record)).collect();
-        // SAFETY: released once, through its own library, after reading.
-        let call = unsafe { (self.functions.release_delivery)(drained.delivery) };
-        warn(id, "delivery release failed", checked(call));
-        events
-    }
-
-    /// Releases both caller handles; the stream must be over. Whether both
-    /// were released is evidence of its own (#118).
-    pub(super) fn release(self, id: &SessionId) -> Result<(), String> {
-        // SAFETY: nothing else uses these handles any more.
-        let calls = unsafe {
-            [
-                (self.functions.release_communication)(self.communication),
-                (self.functions.release_control)(self.control),
-            ]
-        };
-        let released = calls.map(checked);
-        for call in released.clone() {
-            warn(id, "handle release failed", call);
-        }
-        released.into_iter().collect()
-    }
-}
-
-fn read(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
+/// What `record`, delivered for `id`, reports.
+pub(super) fn read(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
     READERS
         .iter()
         .find(|(tag, _)| *tag == record.tag)
         .map_or_else(Vec::new, |(_, reader)| reader(id, record))
-}
-
-/// The native request for `request` in `generation`, borrowing its input
-/// bytes.
-fn native_request(request_id: u64, request: &Request, generation: u64) -> native::Request {
-    let (tag, args) = match *request {
-        Request::Acquire => (native::ACQUIRE, native::RequestArgs { generation }),
-        Request::Ready(held)
-        | Request::Acknowledge(held)
-        | Request::Focus(held, _)
-        | Request::Viewing(held, _) => authorized(request, held),
-        Request::Input(held, ref bytes) | Request::Paste(held, Paste { ref bytes, .. }) => (
-            native::INPUT,
-            native::RequestArgs {
-                input: native::Input {
-                    authority: native_authority(held),
-                    bytes: Bytes {
-                        data: bytes.as_ptr(),
-                        length: bytes.len() as u64,
-                    },
-                },
-            },
-        ),
-        Request::Resize(held, size) => (
-            native::RESIZE,
-            native::RequestArgs {
-                resize: native::Resize {
-                    authority: native_authority(held),
-                    geometry: native::Geometry {
-                        cols: size.cols.into(),
-                        rows: size.rows.into(),
-                    },
-                },
-            },
-        ),
-    };
-    native::Request {
-        tag,
-        reserved: 0,
-        request_id,
-        args,
-    }
-}
-
-/// A Kill as `request_id`, with no required family.
-fn kill_request(request_id: u64) -> native::Request {
-    native::Request {
-        tag: native::KILL,
-        reserved: 0,
-        request_id,
-        args: native::RequestArgs {
-            required: native::Tokens {
-                data: std::ptr::null(),
-                count: 0,
-            },
-        },
-    }
-}
-
-/// Ready, Acknowledge, Focus and Set viewing carry their authority, and
-/// Focus and Set viewing their value as a flag.
-fn authorized(request: &Request, held: Authority) -> (u32, native::RequestArgs) {
-    let authority = native_authority(held);
-    match *request {
-        Request::Focus(_, focused) => flag(native::FOCUS, authority, focused),
-        Request::Viewing(_, viewing) => flag(native::VIEWING, authority, viewing),
-        Request::Acknowledge(_) => (native::ACKNOWLEDGE, native::RequestArgs { authority }),
-        _ => (native::READY, native::RequestArgs { authority }),
-    }
-}
-
-/// A request that sets `value` under `authority`.
-fn flag(tag: u32, authority: native::Authority, value: bool) -> (u32, native::RequestArgs) {
-    let flag = native::Flag {
-        authority,
-        value: u8::from(value),
-        reserved: [0; 7],
-    };
-    (tag, native::RequestArgs { flag })
-}
-
-fn native_authority(held: Authority) -> native::Authority {
-    native::Authority {
-        generation: held.generation,
-        period: held.period,
-        restoration_id: held.restoration,
-    }
 }
 
 fn authority(record: &native::Record, period: u64, restoration: u64) -> Authority {
@@ -491,80 +255,20 @@ fn diagnostic(id: &SessionId, record: &native::Record) -> Vec<ClientEvent> {
     Vec::new()
 }
 
-/// A call's success, or its code and message, copied before any other call.
-pub(super) fn checked(call: Call) -> Result<(), String> {
-    if call.code == native::SUCCESS {
-        return Ok(());
-    }
-    Err(error(&call.error))
-}
-
-/// What terminal evidence proves: its client outcome (failed with its
-/// error), Leave, detachment and closure, each on its own.
-fn evidence(terminal: &native::Terminal) -> shutdown::Terminal {
-    let failed = terminal.client_outcome != native::CLIENT_STOPPED;
-    shutdown::Terminal {
-        failed: failed.then(|| error(&terminal.error)),
-        leave: Leave::of(terminal.leave),
-        detached: terminal.attachment_detached != 0,
-        closed: terminal.connection_closed != 0,
-    }
-}
-
-/// A native error as the monitor shows it: its code, then its message.
-fn error(error: &native::Error) -> String {
-    format!("{}: {}", text(error.code), text(error.message))
-}
-
-/// What run's report says of its workers: cleaned up after a successful
-/// run, or as the report says after a failed one (#118). Anything but
-/// complete cleanup is unconfirmed.
-pub(super) fn workers(ran: &Result<(), String>, report: &native::RunReport) -> Result<(), String> {
-    match (ran, report.workers_cleanup) {
-        (Ok(()), _) | (Err(_), native::CLEANUP_COMPLETE) => Ok(()),
-        (Err(_), native::CLEANUP_INCOMPLETE) => Err("worker cleanup incomplete".to_owned()),
-        (Err(_), _) => Err("worker cleanup unknown".to_owned()),
-    }
-}
-
-/// Create's refusal and whether it is retried: invalid arguments or
-/// configuration, an unsupported revision or limit and a release mismatch
-/// are permanent; anything else, such as exhausted resources, passive.
-pub(super) fn created(call: Call) -> Result<(), (String, Retry)> {
-    const PERMANENT: [u32; 4] = [
-        native::INVALID_ARGUMENT,
-        native::UNSUPPORTED_REVISION,
-        native::UNSUPPORTED_LIMIT,
-        native::RELEASE_MISMATCH,
-    ];
-    let retry = [Retry::Passive, Retry::Permanent][usize::from(PERMANENT.contains(&call.code))];
-    checked(call).map_err(|why| (why, retry))
-}
-
-/// Logs a failed call that changes nothing for the caller.
-pub(super) fn warn(id: &SessionId, what: &str, result: Result<(), String>) {
-    if let Err(error) = result {
-        tracing::warn!(session = %id, %error, "{what}");
-    }
-}
-
-/// `count` items at `data`; none for a null pointer.
-///
-/// # Safety
-/// `data` is null, or points at `count` initialized items that outlive the
-/// slice.
-unsafe fn slice<'a, T>(data: *const T, count: u64) -> &'a [T] {
-    if data.is_null() {
-        return &[];
-    }
-    // SAFETY: as the caller promises.
-    unsafe { std::slice::from_raw_parts(data, count as usize) }
-}
-
 /// Library text, copied lossily: it is diagnostic or display text.
-pub(super) fn text(bytes: Bytes) -> String {
+fn text(bytes: Bytes) -> String {
     // SAFETY: counted library bytes valid for this call.
-    String::from_utf8_lossy(unsafe { slice(bytes.data, bytes.length) }).into_owned()
+    unsafe { instance::text(bytes) }
+}
+
+/// What the row learns of `retry` after `why`, if it is retried or
+/// rejected.
+pub(super) fn recovery(retry: Retry, why: String) -> Option<Recovery> {
+    match retry {
+        Retry::None => None,
+        Retry::Passive => Some(Recovery::Retrying(why)),
+        Retry::Permanent => Some(Recovery::Rejected(why)),
+    }
 }
 
 #[cfg(test)]
@@ -900,21 +604,6 @@ mod tests {
         );
     }
 
-    /// DEL-01 (pure supplement, the header's `CM1_KILL`; #117): a Kill
-    /// names its request and requires no family, as `c2 kill`'s does.
-    #[test]
-    fn a_kill_requires_no_family() {
-        let request = kill_request(7);
-        assert_eq!(
-            (request.tag, request.request_id, request.reserved),
-            (native::KILL, 7, 0)
-        );
-        // SAFETY: the tag names the active member.
-        let required = unsafe { request.args.required };
-        assert!(required.data.is_null());
-        assert_eq!(required.count, 0);
-    }
-
     /// Monitor Open's successful response, selecting `families`.
     fn open_response(families: &[Bytes]) -> Vec<ClientEvent> {
         let selected = native::Tokens {
@@ -958,213 +647,19 @@ mod tests {
         assert_eq!(open_response(&[]), [opened(false)]);
     }
 
-    /// FOC-01 and STA-08 (pure supplement, the header's `CM1_VIEWING` and
-    /// `CM1_ACKNOWLEDGE`; #114): Set viewing goes as a flag under its
-    /// authority, 1 for viewing and 0 for not, with zero reserved bytes;
-    /// Acknowledge as its authority alone, as Ready does.
+    /// REC-01 (pure supplement): the row learns that a passive retry is
+    /// coming, that a permanent rejection is final, and nothing of an end
+    /// that is not retried.
     #[test]
-    fn viewing_and_acknowledge_become_their_native_requests() {
-        let held = Authority {
-            generation: 4,
-            period: 5,
-            restoration: 6,
-        };
-        let triple = |authority: native::Authority| {
-            (
-                authority.generation,
-                authority.period,
-                authority.restoration_id,
-            )
-        };
-        for (viewing, value) in [(true, 1), (false, 0)] {
-            let request = native_request(9, &Request::Viewing(held, viewing), 1);
-            assert_eq!((request.tag, request.request_id), (native::VIEWING, 9));
-            // SAFETY: the tag names the active member.
-            let flag = unsafe { request.args.flag };
-            assert_eq!(triple(flag.authority), (4, 5, 6));
-            assert_eq!((flag.value, flag.reserved), (value, [0; 7]));
-        }
-        for (request, tag) in [
-            (Request::Acknowledge(held), native::ACKNOWLEDGE),
-            (Request::Ready(held), native::READY),
-        ] {
-            let request = native_request(11, &request, 1);
-            assert_eq!((request.tag, request.request_id), (tag, 11));
-            // SAFETY: the tag names the active member.
-            assert_eq!(triple(unsafe { request.args.authority }), (4, 5, 6));
-        }
-    }
-
-    /// FOC-01 and INP-03 (pure supplement, the header's `CM1_FOCUS` and
-    /// `CM1_INPUT`): Focus goes as a flag under its authority, 1 for in and 0
-    /// for out, with zero reserved bytes; a paste part goes as input of its
-    /// bytes.
-    #[test]
-    fn focus_and_paste_parts_become_their_native_requests() {
-        let held = Authority {
-            generation: 4,
-            period: 5,
-            restoration: 6,
-        };
-        for (focused, value) in [(true, 1), (false, 0)] {
-            let request = native_request(9, &Request::Focus(held, focused), 1);
-            assert_eq!((request.tag, request.request_id), (native::FOCUS, 9));
-            // SAFETY: the tag names the active member.
-            let flag = unsafe { request.args.flag };
-            let authority = flag.authority;
-            assert_eq!(
-                (
-                    authority.generation,
-                    authority.period,
-                    authority.restoration_id
-                ),
-                (4, 5, 6)
-            );
-            assert_eq!((flag.value, flag.reserved), (value, [0; 7]));
-        }
-        let paste = Paste {
-            bracketed: true,
-            starts: true,
-            bytes: b"pasted".to_vec(),
-            ends: true,
-        };
-        let paste = Request::Paste(held, paste);
-        let request = native_request(10, &paste, 1);
-        assert_eq!(request.tag, native::INPUT);
-        // SAFETY: the tag names the active member, whose bytes `paste` holds.
-        let input = unsafe { request.args.input };
-        assert_eq!(input.authority.restoration_id, 6);
-        // SAFETY: as above.
+    fn a_retry_class_tells_the_row_whether_it_is_retried_or_rejected() {
+        assert_eq!(recovery(Retry::None, "why".into()), None);
         assert_eq!(
-            unsafe { slice(input.bytes.data, input.bytes.length) },
-            b"pasted"
+            recovery(Retry::Passive, "why".into()),
+            Some(Recovery::Retrying("why".into()))
         );
-    }
-
-    /// EXT-01 (pure supplement, #118): terminal evidence proves its client
-    /// outcome (failed with its error), Leave, detachment and closure, each
-    /// on its own and as the header defines them.
-    #[test]
-    fn terminal_evidence_proves_each_kind_of_departure_evidence_alone() {
-        let terminal = |outcome, leave, detached, closed| native::Terminal {
-            generation: 1,
-            client_outcome: outcome,
-            retry: native::RETRY_NONE,
-            leave,
-            attachment_detached: detached,
-            connection_closed: closed,
-            reserved: [0; 2],
-            error: native::Error {
-                origin: native::ORIGIN_DAEMON,
-                reserved: 0,
-                code: bytes(b"timeout"),
-                message: bytes(b"no answer"),
-            },
-        };
-        let stopped = terminal(native::CLIENT_STOPPED, native::LEAVE_CONFIRMED, 1, 1);
         assert_eq!(
-            evidence(&stopped),
-            shutdown::Terminal {
-                failed: None,
-                leave: Leave::Confirmed,
-                detached: true,
-                closed: true,
-            }
+            recovery(Retry::Permanent, "why".into()),
+            Some(Recovery::Rejected("why".into()))
         );
-        let failed = terminal(native::CLIENT_FAILED, native::LEAVE_INDETERMINATE, 0, 0);
-        assert_eq!(
-            evidence(&failed),
-            shutdown::Terminal {
-                failed: Some("timeout: no answer".into()),
-                leave: Leave::Indeterminate,
-                detached: false,
-                closed: false,
-            }
-        );
-    }
-
-    /// EXT-02 and LIB-06 (pure supplement, #118): a successful run cleaned
-    /// up its workers; after a failed one only a report of complete
-    /// cleanup confirms it, and incomplete or unknown cleanup never does.
-    #[test]
-    fn only_a_successful_run_or_a_complete_report_confirms_worker_cleanup() {
-        let report = |workers_cleanup| native::RunReport {
-            workers_cleanup,
-            // SAFETY: an all-zero terminal is a valid plain value.
-            ..unsafe { std::mem::zeroed() }
-        };
-        let failed = Err("internal_error: run failed".to_owned());
-        let cases = [
-            (Ok(()), 0, Ok(())),
-            (failed.clone(), native::CLEANUP_COMPLETE, Ok(())),
-            (
-                failed.clone(),
-                native::CLEANUP_INCOMPLETE,
-                Err("worker cleanup incomplete"),
-            ),
-            (
-                failed.clone(),
-                native::CLEANUP_UNKNOWN,
-                Err("worker cleanup unknown"),
-            ),
-            (failed, 0, Err("worker cleanup unknown")),
-        ];
-        for (ran, code, expected) in cases {
-            let expected = expected.map_err(str::to_owned);
-            assert_eq!(workers(&ran, &report(code)), expected, "{code}");
-        }
-    }
-
-    /// REC-01 (pure supplement): create's refusal of invalid arguments or
-    /// configuration, an unsupported revision or limit, or another release
-    /// is permanent; any other, such as exhausted resources, passive; the
-    /// terminal evidence's retry is read as it says, anything else as none.
-    #[test]
-    fn create_refusals_and_terminal_evidence_say_whether_to_retry() {
-        let call = |code| Call {
-            code,
-            reserved: 0,
-            error: native::Error {
-                origin: native::ORIGIN_LIBRARY,
-                reserved: 0,
-                code: Bytes {
-                    data: b"code".as_ptr(),
-                    length: 4,
-                },
-                message: Bytes {
-                    data: b"why".as_ptr(),
-                    length: 3,
-                },
-            },
-        };
-        let permanent = [
-            native::INVALID_ARGUMENT,
-            native::UNSUPPORTED_REVISION,
-            native::UNSUPPORTED_LIMIT,
-            native::RELEASE_MISMATCH,
-        ];
-        for code in permanent {
-            assert_eq!(
-                created(call(code)),
-                Err(("code: why".into(), Retry::Permanent))
-            );
-        }
-        for code in [native::RESOURCE_LIMIT, native::INTERNAL_ERROR] {
-            assert_eq!(
-                created(call(code)),
-                Err(("code: why".into(), Retry::Passive))
-            );
-        }
-        assert_eq!(created(call(native::SUCCESS)), Ok(()));
-        let evidence = [
-            (native::RETRY_NONE, Retry::None),
-            (native::RETRY_PASSIVE, Retry::Passive),
-            (native::RETRY_PERMANENT, Retry::Permanent),
-            (0, Retry::None),
-        ];
-        for (retry, expected) in evidence {
-            assert_eq!(Retry::of(retry), expected);
-        }
-        assert_eq!(Retry::None.recovery("why".into()), None);
     }
 }

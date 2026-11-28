@@ -1,0 +1,22 @@
+[package]
+name = "climon2-embed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+climon2-core = { path = "../climon2-core" }
+climon2-platform = { path = "../climon2-platform" }
+tracing = "0.1.44"
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3.27.0"
+
+# The stand-in is a Unix program.
+[target.'cfg(unix)'.dev-dependencies]
+climon2-fixtures = { path = "../climon2-fixtures" }
+
+[lints]
+workspace = true

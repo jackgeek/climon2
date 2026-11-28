@@ -7,16 +7,16 @@
 //! marker (owner decision on #111), sent after each answer, when the
 //! library may have room again, and before any later input, until the
 //! library accepts it.
-use crate::terminal::{Authority, Paste, Request};
+use crate::request::{Authority, Paste, Request};
 
 const START: &[u8] = b"\x1b[200~";
 const END: &[u8] = b"\x1b[201~";
 
 /// Submits one request to the library: accepted, or why not.
-pub(super) type Submit<'a> = dyn FnMut(Request) -> Result<(), String> + 'a;
+pub type Submit<'a> = dyn FnMut(Request) -> Result<(), String> + 'a;
 
 #[derive(Debug, Default, Eq, PartialEq)]
-pub(super) struct Stream {
+pub struct Stream {
     /// How much of the open bracketed paste's start and end markers the
     /// library accepted.
     started: usize,
@@ -34,7 +34,7 @@ impl Stream {
     /// every byte not submitted; a refused paste part is reported once, as
     /// itself, and later parts of its paste are discarded silently. Input
     /// waits behind anything a truncated paste owes.
-    pub(super) fn submit(
+    pub fn submit(
         &mut self,
         request: Request,
         chunk: usize,
@@ -51,7 +51,7 @@ impl Stream {
 
     /// Submits what a truncated paste owes its application, if anything;
     /// whatever the library refuses stays owed.
-    pub(super) fn settle(&mut self, chunk: usize, submit: &mut Submit<'_>) -> Result<(), String> {
+    pub fn settle(&mut self, chunk: usize, submit: &mut Submit<'_>) -> Result<(), String> {
         let Some((authority, owed)) = self.owed.take() else {
             return Ok(());
         };
