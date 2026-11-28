@@ -249,6 +249,42 @@ filesystem access is `config::ConfigSource::read`, one read of `config.jsonc`.
   non-boolean choice, a known field twice) is `MalformedPreferences`,
   `monitor-preferences.json is malformed: <reason>`. Reading and writing the
   file belong to the monitor.
+- `pairing` (spec #488 Storage, #500): the pairing store each side of a
+  monitor link keeps in the `links/` folder of a climon2 home. It does no
+  I/O: files are read and replaced through the `KeyFiles` trait, which the
+  platform's key storage seam implements. Each file is one line of JSON and a
+  newline, with exactly these fields in this order:
+  - `relay-identity.json` (`RELAY_IDENTITY_FILE`), the relay's identity:
+    `{"version":1,"public_key":<key>,"private_key":<key>}`.
+  - `hub-monitors.json` (`HUB_MONITORS_FILE`), what a relay remembers:
+    `{"version":1,"hold":<bool>,"hub_monitors":[...]}`, each hub monitor
+    `{"public_key":<key>,"name":<string>,"paired_at":<seconds>,"last_linked_at":<seconds or null>}`.
+  - `relays.json` (`RELAYS_FILE`), a hub monitor's record per relay:
+    `{"version":1,"relays":[...]}`, each relay
+    `{"name":<string>,"address":<string>,"relay_public_key":<key>,"public_key":<key>,"private_key":<key>,"paired_at":<seconds>,"last_linked_at":<seconds or null>,"disconnected":<bool>}`.
+    `public_key` and `private_key` are the hub monitor's keypair for that
+    pairing.
+
+  A key is 64 lowercase hexadecimal digits (32 bytes). A time is whole
+  seconds since the Unix epoch, and `last_linked_at` is `null` until the first
+  link. `load_relays` and `load_hub_monitors` read a missing file as no
+  pairings (and no hold). Anything else that is not a whole valid file is an
+  `InvalidData` error, `damaged pairing file <name>: <reason>`, never an empty
+  store: broken JSON, another JSON type, a missing, unknown or mistyped
+  field, a key in another form (`malformed at line <l> column <c>`), a
+  `version` other than 1 (`version <n> is not one this release reads`), more
+  than 64 records, and two records for one peer. No error and no debug text
+  carries a value from a file: `PrivateKey` prints as `PrivateKey(withheld)`
+  and gives its bytes only through `expose`.
+  `Pairings<T>` is one side's records: at most `MAX_PAIRINGS` (64), known by
+  the other side's public key (`Pairing::peer`). `insert` replaces the record
+  for the same peer where it stands and refuses a new peer as `StoreFull`
+  once 64 are kept; `remove` forgets one and returns it. `RelayPairings` adds
+  the relay's `hold`. `save_relays` and `save_hub_monitors` replace their
+  file. `relay_identity_at_start` returns the stored identity, or makes one
+  with the caller's function and stores it when the file is missing. It is
+  the only function that creates an identity, and only a relay's start calls
+  it; a damaged identity is an error and is never replaced.
 - `keys`: `ControlKey` is one C0 control byte named in the `Ctrl+` vocabulary.
   `ClientSettings` holds the escape prefix (default `Ctrl+]`) and take-control
   key (default `Ctrl+T`); either may be disabled, take-control may not be
@@ -328,6 +364,7 @@ Integration tests call only these public boundaries:
 | CFG-01 (Contract, exec and attach cases): exec validates the `monitor` section, attach ignores it, and neither refuses a null escape prefix | `cfg01_exec_validates_the_monitor_section_and_attach_ignores_it` |
 | CFG-01 (Contract, mandatory model and recent page, #167, #166): the total holds the monitor's one parser and one 500x200 session's documented current model and recent page together, beside the client library's share, then a client's budget the model, page and library's share, and the history total, then a session's history budget, the page: each accepted at its limit and refused one byte short, each total named before the budgets it contains | `cfg01_the_total_holds_the_parser_and_the_largest_current_model_and_recent_page`, `cfg01_the_client_budget_holds_the_largest_current_model_and_recent_page`, `cfg01_the_history_total_holds_the_largest_recent_page`, `cfg01_the_history_budget_holds_the_largest_recent_page` |
 | HLP-01 (Contract; derived scenario: the preference file's versioning and malformed files): a saved choice is one line of version 1; a version 1 file holds the choice; later versions, up to the largest, are read ignoring unknown fields, one past it malformed; every malformed shape refused with its reason | `hlp01_a_saved_choice_is_one_line_of_version_1_json`, `hlp01_a_version_1_file_holds_the_dont_show_again_choice`, `hlp01_later_versions_are_read_ignoring_unknown_fields`, `hlp01_malformed_files_are_refused_with_their_reason` |
+| STO-01, STO-02 (Contract, #500) and spec #488 user story 38: the three pairing files hold the specified fields as one line of version 1 JSON and are read back; a side that never paired has none; a missing relay identity is made only at a relay's start and never made again or replaced; every damaged shape, another version and unusable key files are errors naming the file, never an empty store, and no error or debug text carries a private key; at most 64 pairings per side, in memory and in a file; a record for the same peer replaces the old one; a forgotten pairing frees its place | `sto01_the_hub_monitor_keeps_one_record_per_relay_in_relays_json`, `sto01_saved_relays_are_read_back`, `sto01_the_relay_keeps_its_hub_monitors_and_its_hold_in_hub_monitors_json`, `sto01_saved_hub_monitors_are_read_back`, `sto01_a_side_that_never_paired_has_no_pairings`, `sto02_a_missing_relay_identity_is_created_on_the_relays_start`, `sto02_only_a_relays_start_creates_the_identity`, `sto02_an_identity_that_cannot_be_made_is_an_error`, `sto02_a_damaged_file_is_an_error_and_never_an_empty_store`, `sto02_a_file_of_another_version_is_refused`, `sto02_the_error_says_why_the_file_is_damaged`, `sto02_errors_and_debug_text_never_carry_a_private_key`, `sto02_key_files_that_cannot_be_used_are_an_error`, `at_most_64_pairings_are_kept_per_side`, `a_file_holds_at_most_64_pairings`, `a_record_for_the_same_peer_replaces_the_old_one`, `a_forgotten_pairing_is_removed_and_frees_its_place` |
 | INP-01 (Contract): the monitor shares the client bindings and their rules, refuses a null escape prefix and accepts a null take-control key | `inp01_the_monitor_needs_an_escape_prefix_but_not_a_take_control_key` |
 | CFG-01 (Docs): the [configuration guide](../../docs/for-humans/guide/configuration.md) spells out every client and monitor default and keeps the Escape/Alt warning above `escape_prefix` | `cfg01_the_guide_documents_every_default_and_the_escape_warning` |
 | #29 recovered argv/environment/depth/ordinal rules | `issue29_exec_list_attach_and_kill_parse_exact_arguments_and_reject_usage_errors`, `issue29_help_and_version_flags_take_no_arguments`, `issue29_top_level_ignores_stray_depth_and_sets_session_vars_and_terminal_identity`, `projected_environment_replaces_term_and_colorterm_and_drops_startup_envelope`, `issue29_nested_depth_defaults_malformed_enclosing_to_one_and_replaces_empty_term`, `issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow` |

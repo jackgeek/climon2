@@ -82,9 +82,7 @@ impl KeyStore {
     /// A temporary name no other writer of `name` picks, in the same folder
     /// so the rename never crosses a file system.
     fn temporary(&self, name: &str) -> io::Result<PathBuf> {
-        let mut unique = [0; 8];
-        crate::randomness::fill(&mut unique)?;
-        let unique = u64::from_ne_bytes(unique);
+        let unique = crate::randomness::u64()?;
         Ok(self.directory.join(format!(".{name}.{unique:016x}.tmp")))
     }
 
@@ -137,6 +135,18 @@ fn read_sound(path: &Path, mut file: File) -> io::Result<Vec<u8>> {
     file.read_to_end(&mut contents)
         .map_err(|error| damaged(path, &error))?;
     Ok(contents)
+}
+
+/// The pairing store's files are this folder's: the store parses and
+/// applies policy in `climon2-core`, and reads and replaces files here.
+impl climon2_core::pairing::KeyFiles for KeyStore {
+    fn load(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
+        KeyStore::load(self, name)
+    }
+
+    fn store(&self, name: &str, contents: &[u8]) -> io::Result<()> {
+        KeyStore::store(self, name, contents)
+    }
 }
 
 /// Writes `contents` to a new owner-only file and flushes them to disk.

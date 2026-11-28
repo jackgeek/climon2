@@ -14,6 +14,7 @@ pub mod lifetime;
 pub mod metadata;
 mod names;
 pub mod native;
+pub mod pairing;
 pub mod preferences;
 pub mod protocol;
 pub mod relay;
