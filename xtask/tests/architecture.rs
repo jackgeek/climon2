@@ -414,7 +414,11 @@ const LINK: &str = "climon2-link";
 /// dependency. It never holds `climon2-platform`, an operating-system or
 /// socket crate, an async runtime or a source of randomness. A ticket that
 /// needs a crate adds it here, where a reviewer sees it.
-const LINK_ALLOWLIST: &[&str] = &[];
+///
+/// - `snow` (#494): the Noise framework of the pinned-key handshake and the
+///   units. The link crate builds it without default features, so it brings
+///   no source of randomness: the caller's randomness reaches it.
+const LINK_ALLOWLIST: &[&str] = &["snow"];
 
 /// The modules of the standard library the link code never names (ONE-01).
 const PLATFORM_MODULES: &[&str] = &["net", "os", "fs", "process", "env"];

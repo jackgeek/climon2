@@ -9,11 +9,19 @@
 //! monitor-link acceptance criteria).
 
 mod hub;
+mod keys;
+mod link;
+mod noise;
 mod opening;
+mod record;
 mod relay;
+mod unit;
 
 pub use hub::HubEnd;
+pub use keys::{PublicKey, StaticKey};
+pub use link::{Ended, HubLink, Link, Peer, Record, Refused, RelayLink};
 pub use opening::{Opened, Opening, Pairing, Purpose, Revisions, Transcript};
+pub use record::{Hello, HubClose, RelayClose};
 pub use relay::RelayEnd;
 
 use std::time::Duration;

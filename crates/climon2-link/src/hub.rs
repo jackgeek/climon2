@@ -1,9 +1,12 @@
 //! The hub monitor's end of a byte stream: the dialler.
 
+use crate::keys::{PublicKey, StaticKey};
+use crate::link::{HubLink, HubRun, Link, Record, Refused};
 use crate::opening::{
     Answer, Arrival, Awaited, Opened, Opening, Purpose, REPLY_SIZE, REQUEST_SIZE, Reply, Request,
     Revisions, Transcript,
 };
+use crate::record::{Hello, HubClose};
 use crate::{End, Input, Output, Randomness, Time};
 use std::time::Duration;
 
@@ -20,7 +23,15 @@ pub struct HubEnd {
     /// The opening request as sent and the reply awaited, once sent.
     sent: Option<([u8; REQUEST_SIZE], Awaited<REPLY_SIZE>)>,
     opening: Opening,
+    /// The moment this end dialled: its first step.
+    dialled: Option<Time>,
+    /// What follows the opening exchange on a link connection, when this
+    /// end holds the keys of a pairing.
+    link: Option<HubRun>,
 }
+
+/// The link of an end that holds no keys: it never starts.
+static NO_LINK: HubLink = Link::Pending;
 
 impl HubEnd {
     /// An end that connects for `purpose` and supports `revisions`.
@@ -30,7 +41,44 @@ impl HubEnd {
             revisions,
             sent: None,
             opening: Opening::Pending,
+            dialled: None,
+            link: None,
         }
+    }
+
+    /// An end that connects to link with a relay it has paired with. `own`
+    /// is its static key for that relay, `relay` the relay's pinned key and
+    /// `hello` what it states once the handshake is done.
+    pub fn dialling(revisions: Revisions, own: StaticKey, relay: PublicKey, hello: Hello) -> Self {
+        Self {
+            link: Some(HubRun::new(own, relay, hello)),
+            ..Self::new(Purpose::Link, revisions)
+        }
+    }
+
+    /// How far the link has got, and how it ended.
+    pub fn link(&self) -> &HubLink {
+        self.link.as_ref().map_or(&NO_LINK, HubRun::link)
+    }
+
+    /// Queues one record for the relay on `stream`. It is sent at the next
+    /// step.
+    pub fn send(&mut self, stream: u32, tag: u8, body: &[u8]) -> Result<(), Refused> {
+        let link = self.link.as_mut().ok_or(Refused::NotLinked)?;
+        link.send(stream, tag, body)
+    }
+
+    /// Ends the established link with a Close that gives `reason`. The next
+    /// step sends it and closes the byte stream.
+    pub fn close(&mut self, reason: HubClose) -> Result<(), Refused> {
+        let link = self.link.as_mut().ok_or(Refused::NotLinked)?;
+        link.close(reason)
+    }
+
+    /// Takes the records the relay has sent since the last call, in the
+    /// order they ended.
+    pub fn records(&mut self) -> Vec<Record> {
+        self.link.as_mut().map(HubRun::records).unwrap_or_default()
     }
 
     /// How far the opening exchange has got, and how it ended.
@@ -45,6 +93,7 @@ impl HubEnd {
             revisions: self.revisions.clone(),
         }
         .encode();
+        self.dialled = Some(now);
         let reply = Awaited::within(now, REPLY_WAIT);
         let deadline = Some(reply.deadline);
         self.sent = Some((request, reply));
@@ -83,7 +132,22 @@ impl HubEnd {
 }
 
 impl End for HubEnd {
-    fn step(&mut self, now: Time, input: Input<'_>, _: &mut dyn Randomness) -> Output {
+    fn step(&mut self, now: Time, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
+        match self.link.as_mut().filter(|link| link.begun()) {
+            Some(link) => link.step(now, input),
+            None => self.opening_step(now, input, randomness),
+        }
+    }
+}
+
+impl HubEnd {
+    /// One step of the opening exchange, and the start of what follows it.
+    fn opening_step(
+        &mut self,
+        now: Time,
+        input: Input<'_>,
+        randomness: &mut dyn Randomness,
+    ) -> Output {
         if self.opening != Opening::Pending {
             return Output::default();
         }
@@ -101,9 +165,18 @@ impl End for HubEnd {
             Arrival::Whole(bytes) => self.judge(&request, &bytes),
             Arrival::Never => Opening::Failed,
         };
-        Output {
-            close: !matches!(self.opening, Opening::Opened(_)),
-            ..Output::default()
+        self.follow(now, randomness)
+    }
+
+    /// What follows the opening exchange once it has ended.
+    fn follow(&mut self, now: Time, randomness: &mut dyn Randomness) -> Output {
+        let dialled = self.dialled.unwrap_or(now);
+        match &mut self.link {
+            Some(link) => link.follow(&self.opening, dialled, randomness),
+            None => Output {
+                close: !matches!(self.opening, Opening::Opened(_)),
+                ..Output::default()
+            },
         }
     }
 }
