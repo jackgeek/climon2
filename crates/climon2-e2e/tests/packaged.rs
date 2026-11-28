@@ -15,21 +15,38 @@ use support::{LIBRARY, Package, TIMEOUT, quote, type_until};
 /// while another thread forks children that hold what they inherited for a
 /// second before they exit: every executable it installed runs as soon as
 /// it exists.
+///
+/// The forker keeps at most `LIVE` children, reaping the oldest before it
+/// forks another, and stops at `TIMEOUT`. Unbounded, it forked tens of
+/// thousands of children a second and reaped none until the end. An archive
+/// installation runs `tar` and the installer through pipes those children
+/// inherit, so each step waits a second for them to exit, and the process
+/// table filled before the installation finished.
 #[test]
 fn a_fork_during_a_private_installation_leaves_its_executables_runnable() {
+    use std::collections::VecDeque;
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    use std::{thread, time::Duration};
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+    const LIVE: usize = 1000;
     let installing = Arc::new(AtomicBool::new(true));
     let forker = {
         let installing = Arc::clone(&installing);
         thread::spawn(move || {
-            let mut children = Vec::new();
-            while installing.load(Ordering::SeqCst) {
+            let deadline = Instant::now() + TIMEOUT;
+            let mut children = VecDeque::new();
+            while installing.load(Ordering::SeqCst) && Instant::now() < deadline {
+                if children.len() == LIVE {
+                    let oldest = children.pop_front().unwrap();
+                    nix::sys::wait::waitpid(oldest, None).unwrap();
+                }
                 // The child only sleeps and exits, both async-signal-safe,
                 // holding every descriptor it inherited meanwhile, as a
                 // child does until it execs.
@@ -38,7 +55,7 @@ fn a_fork_during_a_private_installation_leaves_its_executables_runnable() {
                         std::thread::sleep(Duration::from_secs(1));
                         unsafe { nix::libc::_exit(0) }
                     }
-                    nix::unistd::ForkResult::Parent { child } => children.push(child),
+                    nix::unistd::ForkResult::Parent { child } => children.push_back(child),
                 }
             }
             children
