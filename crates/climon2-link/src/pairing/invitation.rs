@@ -184,18 +184,27 @@ impl Seat {
         Some(self.invitations.desk()).filter(|desk| desk.minted == self.invitation)
     }
 
+    /// The desk at `now`, when this run's invitation is still live then: not
+    /// revoked by a newer one, cancelled, expired, used up or paired.
+    fn live_desk(&self, now: Time) -> Option<MutexGuard<'_, Desk>> {
+        let mut desk = self.desk()?;
+        desk.settle(now);
+        matches!(desk.invitation, Invitation::Live { .. }).then_some(desk)
+    }
+
+    /// Whether this run's invitation is still live at `now`. A run whose
+    /// invitation has ended has failed.
+    pub(crate) fn live(&self, now: Time) -> bool {
+        self.live_desk(now).is_some()
+    }
+
     /// Ends the run as a success at `now`: `hub` paired, which consumes the
     /// invitation. False when the invitation is no longer live, and then
     /// nothing is paired.
     pub(crate) fn pair(&self, now: Time, hub: &Introduction) -> bool {
-        self.desk().is_some_and(|mut desk| {
-            desk.settle(now);
-            let live = matches!(desk.invitation, Invitation::Live { .. });
-            if live {
-                desk.end(Invitation::Paired(hub.clone()));
-            }
-            live
-        })
+        let desk = self.live_desk(now);
+        desk.map(|mut desk| desk.end(Invitation::Paired(hub.clone())))
+            .is_some()
     }
 
     /// Ends the run as a failure. `now`, when known, first expires an

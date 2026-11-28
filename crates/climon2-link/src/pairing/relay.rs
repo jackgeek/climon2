@@ -46,7 +46,8 @@ impl RelayRun {
         if self.outcome != PairingRun::Pending {
             return Output::default();
         }
-        let sent = match self.arrived.take(now, input) {
+        let going = self.arrived.take(now, input) && self.seat.live(now);
+        let sent = match going {
             true => self.advance(now, randomness),
             false => None,
         };
@@ -82,7 +83,10 @@ impl RelayRun {
         match self.arrived.message(CONFIRMATION_SIZES) {
             Framed::Partial => Some(sent),
             Framed::Malformed => None,
-            Framed::Whole(body) => self.confirm(now, &body),
+            Framed::Whole(body) => {
+                sent.extend(self.confirm(now, &body)?);
+                Some(sent)
+            }
         }
     }
 

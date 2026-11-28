@@ -136,9 +136,19 @@ impl<E: End> Proxied<E> {
 pub fn proxied<H: End, R: End>(
     hub: H,
     relay: R,
+    edit: impl FnMut(Way, usize, &mut Vec<u8>),
+) -> (Proxied<H>, Proxied<R>) {
+    proxied_with_seeds(hub, relay, (1, 2), edit)
+}
+
+/// As `proxied`, with the seed of each end's randomness, hub monitor first.
+pub fn proxied_with_seeds<H: End, R: End>(
+    hub: H,
+    relay: R,
+    seeds: (u64, u64),
     mut edit: impl FnMut(Way, usize, &mut Vec<u8>),
 ) -> (Proxied<H>, Proxied<R>) {
-    let (mut hub, mut relay) = (Proxied::new(hub, 1), Proxied::new(relay, 2));
+    let (mut hub, mut relay) = (Proxied::new(hub, seeds.0), Proxied::new(relay, seeds.1));
     hub.step(Input::Tick);
     relay.step(Input::Tick);
     for _ in 0..16 {
