@@ -10,10 +10,7 @@
 //!
 //! A monitor whose home has no `links/` folder remembers no relay and
 //! creates none.
-use climon2_core::{
-    layout::HomeLayout,
-    pairing::{self, Relay},
-};
+use climon2_core::{layout::HomeLayout, pairing::Relay};
 use climon2_link::{Advertisement, PublicKey};
 use std::{
     io,
@@ -25,8 +22,9 @@ use std::{
     time::Duration,
 };
 
-/// What a relay's link tells the monitor.
+/// What a relay's link tells the monitor. Only macOS and Linux hold links.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) enum Heard {
     /// A link connection to the relay is established: it starts with
     /// nothing held, so whatever the previous one advertised is gone.
@@ -38,6 +36,7 @@ pub(crate) enum Heard {
 /// How the hub monitor links: the ceiling its Hello states, and how long
 /// it waits before dialling a relay again.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct Dialling {
     pub(crate) largest_record: u32,
     pub(crate) redial: Duration,
@@ -102,7 +101,8 @@ fn remembered(home: &HomeLayout) -> io::Result<Vec<Relay>> {
         return Ok(Vec::new());
     }
     let store = climon2_platform::key_storage::KeyStore::open(&home.links())?;
-    Ok(pairing::load_relays(&store)?.records().to_vec())
+    let relays = climon2_core::pairing::load_relays(&store)?;
+    Ok(relays.records().to_vec())
 }
 
 /// Monitor links are for macOS and Linux only (spec #488, Out of scope).
