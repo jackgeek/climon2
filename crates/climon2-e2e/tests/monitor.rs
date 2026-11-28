@@ -7161,6 +7161,10 @@ fn frame_rows(terminal: &Terminal, top: &str, rows: &[(usize, &str)]) {
 /// A wheel notch up (back) or down over the session's canvas.
 const WHEEL_UP: &str = "\x1b[<64;10;10M";
 const WHEEL_DOWN: &str = "\x1b[<65;10;10M";
+/// Wheel notches that one host read holds whole: within 1,000 bytes, which
+/// the terminal's input queue holds before a write to it waits (1,024 bytes
+/// on macOS, 4,095 on Linux).
+const NOTCHES_PER_READ: usize = 1000 / WHEEL_UP.len();
 /// The glossary's truncation notice.
 const NOTICE: &str = "[climon2: older session scrollback was discarded]";
 
@@ -7273,7 +7277,8 @@ fn the_wheel_scrolls_anchored_history_and_typing_returns_live() {
 /// bytes), a 120x29 session that writes 8,000 lines, far fewer than
 /// `history.max_rows`, keeps only the newest of them: its live page ends
 /// at the last line, and scrolled to its oldest row the view shows the
-/// truncation notice above a line written after the first thousand.
+/// truncation notice above a line written after the first thousand. The
+/// session receives none of the wheel's bytes.
 #[test]
 fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
     let package = Package::new();
@@ -7304,27 +7309,18 @@ fn history_past_its_byte_budget_is_discarded_oldest_first_with_its_notice() {
                 .and_then(|number| number.parse::<u32>().ok())
                 .is_some_and(|number| number > 1000)
     };
-    // Eight batches of a thousand notches reach the oldest row. Each batch
-    // follows a whole frame that scrolled or shows the oldest row kept, and
-    // the test then waits while the view still scrolls: a loaded host is
-    // never asked to work through all the notches within one wait.
-    let shown = std::cell::RefCell::new(String::new());
-    let scrolled = |terminal: &Terminal| {
-        whole_frame_shows(terminal, "the oldest row kept", |screen| {
-            let moved = screen != *shown.borrow();
-            if moved {
-                screen.clone_into(&mut shown.borrow_mut());
-            }
-            moved || oldest_kept(screen)
-        });
-    };
-    for _ in 0..8 {
-        terminal.send(WHEEL_UP.repeat(1000)).unwrap();
-        scrolled(&terminal);
+    // 8,000 notches reach the oldest row, each host read holding whole
+    // reports. A read that ended right after a report's Escape would
+    // release that Escape to the session, which returns the view live (a
+    // known limit of the release, monitor README), and a loaded monitor
+    // that falls behind reads as much as its terminal holds, split anywhere.
+    let monitor = monitor_process(&package).0;
+    let notches = WHEEL_UP.repeat(8000);
+    for read in notches.as_bytes().chunks(WHEEL_UP.len() * NOTCHES_PER_READ) {
+        read_alone(&mut terminal, monitor, read);
     }
-    while !oldest_kept(&shown.borrow()) {
-        scrolled(&terminal);
-    }
+    whole_frame_shows(&terminal, "the oldest row kept", oldest_kept);
+    received_by(&package, "Deep", b"");
     terminal.send("\x1dx").unwrap();
     support::assert_released(&package, &mut terminal, 0);
     finish_sessions(&package, "finish");
