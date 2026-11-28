@@ -1,55 +1,13 @@
-//! What each client delivered that the UI thread has not yet processed
-//! (#119, LIM-02). The supervisor copies each delivery into reports and
-//! releases it at once, so ownership of the bytes moves to the UI thread
-//! and so does their accounting: each report is charged here, by the
-//! allocation it holds, until the UI has processed it. A client whose
-//! reports fill its `queues.event_bytes` is not drained again until the UI
-//! catches up; the library holds what it has not delivered, and nothing is
-//! dropped.
+//! What one report to the UI thread holds (#119, LIM-02). The supervisor
+//! copies each delivery into reports and releases it at once, so ownership
+//! of the bytes moves to the UI thread and so does their accounting: each
+//! report is charged to its session's backlog (client embedding's
+//! `Backlog`), by the allocation it holds, until the UI has processed it.
 use crate::{
     registry::{Answer, ClientEvent, Recovery, Report, Termination, Verdict},
     terminal::{Presentation, Request},
 };
 use climon2_core::SessionId;
-use std::{
-    collections::BTreeMap,
-    sync::{Mutex, PoisonError},
-};
-
-/// Each session's reports sent to the UI thread and not yet processed, in
-/// bytes.
-#[derive(Default)]
-pub(crate) struct Backlog(Mutex<BTreeMap<SessionId, usize>>);
-
-impl Backlog {
-    /// `event`, sent for `id`, is charged until it is processed.
-    pub(crate) fn charge(&self, id: &SessionId, event: &ClientEvent) {
-        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = held.entry(id.clone()).or_default();
-        *entry = entry.saturating_add(footprint(id, event));
-    }
-
-    /// The UI processed a report for `id` that held `bytes`
-    /// ([`footprint`]): they are free again.
-    pub(crate) fn release(&self, id: &SessionId, bytes: usize) {
-        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(entry) = held.get_mut(id) {
-            *entry = entry.saturating_sub(bytes);
-        }
-    }
-
-    /// The bytes `id`'s unprocessed reports hold.
-    pub(crate) fn held(&self, id: &SessionId) -> usize {
-        let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        held.get(id).copied().unwrap_or_default()
-    }
-
-    /// The bytes every session's unprocessed reports hold together.
-    pub(crate) fn total(&self) -> usize {
-        let held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        held.values().sum()
-    }
-}
 
 /// The allocation one report for `id` holds: the report itself, its
 /// session ID, and the text, bytes or input it carries.
@@ -197,28 +155,5 @@ mod tests {
         for (event, carried) in cases {
             assert_eq!(footprint(&id(1), &event), record() + carried, "{event:?}");
         }
-    }
-
-    /// LIM-02 (pure supplement): a session's reports are held until each
-    /// is processed, apart from every other session's, and the total is
-    /// theirs together; releasing what was never charged frees nothing.
-    #[test]
-    fn reports_are_held_per_session_until_processed() {
-        let backlog = Backlog::default();
-        let (first, second) = (id(1), id(2));
-        let display = ClientEvent::Presentation(Presentation::Display(Vec::with_capacity(50)));
-        backlog.release(&first, record());
-        assert_eq!(backlog.held(&first), 0);
-        backlog.charge(&first, &display);
-        backlog.charge(&first, &ClientEvent::Ended);
-        backlog.charge(&second, &ClientEvent::Ended);
-        assert_eq!(backlog.held(&first), 2 * record() + 50);
-        assert_eq!(backlog.held(&second), record());
-        assert_eq!(backlog.total(), 3 * record() + 50);
-        backlog.release(&first, footprint(&first, &display));
-        assert_eq!(backlog.held(&first), record());
-        backlog.release(&first, record());
-        assert_eq!(backlog.held(&first), 0);
-        assert_eq!(backlog.total(), record());
     }
 }

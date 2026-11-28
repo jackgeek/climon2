@@ -41,13 +41,10 @@
 //! its handles released and its owner joined. A refused Kill ends the
 //! Delete; a lost or failed one is never sent again, and only a passive
 //! client learns its outcome.
-mod admission;
 mod backlog;
 mod backoff;
 mod client;
-mod owner;
 mod queue;
-mod stream;
 
 use crate::registry::{Answer, Final, Outcome, Report, Termination, Verdict};
 use crate::{
@@ -55,10 +52,8 @@ use crate::{
     shutdown::{self, Evidence},
     terminal::{Presentation, Request},
 };
-use admission::{Capacity, Holder, Ledger};
-use backlog::Backlog;
 pub(crate) use backlog::footprint;
-use client::{Client, Drain, KILL_ID, Retry, Stop};
+use client::recovery;
 use climon2_core::{
     SessionId, VersionName,
     config::{Admission, Backoff, Lanes},
@@ -67,12 +62,23 @@ use climon2_core::{
     metadata::SessionMetadata,
     native,
 };
+use climon2_embed::load::{Load, Loaded, Refusal};
+use climon2_embed::{
+    admission::{self, Capacity, Holder, Ledger},
+    backlog::Backlog,
+    instance::{Drain, Instance as _, KILL_ID, Local, Retry, Stop},
+    owner::{self, Environment, Owner, Role, Signal, Startup},
+    stack,
+    stall::Stalls,
+    stream::Stream,
+};
+#[cfg(test)]
+use climon2_platform::library::Failure;
 use climon2_platform::{
-    library::{Failure, Functions},
+    library::Functions,
     notifier, process,
     waiting::{self, Watch},
 };
-use owner::StartupData;
 use queue::{Condition, Entry, Lane, Queue};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -85,78 +91,13 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use stream::Stream;
 
 /// How long one wait on the notification descriptors lasts before commands
 /// are read again.
 const TICK: Duration = Duration::from_millis(20);
 
-/// Loads a release's validated client library: the one shared load of
-/// `climon2_platform::library::Loader` in the monitor.
-pub(crate) type Load = Box<dyn Fn(&VersionName) -> Result<Loaded, Refusal> + Send + Sync>;
-
-/// A loaded release: its calls and the qualified requirements its
-/// bootstrap describes.
-#[derive(Clone, Copy)]
-pub(crate) struct Loaded {
-    pub(crate) functions: &'static Functions,
-    pub(crate) requirements: native::Requirements,
-}
-
-/// Why a release cannot be used. The loader's [`Failure`] says whether a
-/// later load could succeed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Refusal {
-    /// The validated loader refused the library.
-    Library(Failure, String),
-    /// No worker thread could be started to load it.
-    Thread(String),
-    /// Its qualified requirements are ones the configured limits never
-    /// admit (#120).
-    Unqualified(String),
-}
-
-impl Refusal {
-    fn message(&self) -> &str {
-        match self {
-            Self::Library(_, message) | Self::Thread(message) | Self::Unqualified(message) => {
-                message
-            }
-        }
-    }
-
-    /// Whether the dynamic loader opened the library's handle, which then
-    /// stays, with its release's reservation, until process exit.
-    fn opened(&self) -> bool {
-        !matches!(
-            self,
-            Self::Library(
-                Failure::MissingLibrary
-                    | Failure::MissingDependency
-                    | Failure::IncompatibleArchitecture,
-                _,
-            ) | Self::Thread(_)
-        )
-    }
-
-    /// A library the dynamic loader could not open (missing, missing a
-    /// dependency or of another architecture), a contained bootstrap
-    /// failure and a load that could not start may load later, once the
-    /// installation is repaired; any other refusal is permanent.
-    fn retry(&self) -> Retry {
-        match self {
-            Self::Library(
-                Failure::MissingLibrary
-                | Failure::MissingDependency
-                | Failure::IncompatibleArchitecture
-                | Failure::BootstrapFailure,
-                _,
-            )
-            | Self::Thread(_) => Retry::Passive,
-            Self::Library(..) | Self::Unqualified(_) => Retry::Permanent,
-        }
-    }
-}
+/// A local instance whose deliveries the supervisor reads as reports.
+type Client = Local<ClientEvent>;
 
 /// Where the monitor's own identifiers start (LIM-05): each session's
 /// connection generations at 1, and each instance's request IDs right after
@@ -350,6 +291,20 @@ impl Supervisor {
     }
 }
 
+impl Context {
+    /// What every instance's startup shares.
+    fn environment(&self) -> Environment<'_> {
+        Environment {
+            home: &self.home,
+            runtime: &self.runtime,
+            escape: self.escape,
+            take_control: self.take_control,
+            limits: self.limits,
+            filter: &self.filter,
+        }
+    }
+}
+
 /// What owner and load threads tell the supervisor.
 enum Internal {
     Loaded(VersionName, Result<Loaded, Refusal>),
@@ -360,6 +315,17 @@ enum Internal {
     Stopped(SessionId, Result<(), (String, Retry)>, Result<(), String>),
     /// The owner is done, with whether it destroyed the instance.
     OwnerDone(SessionId, Result<(), String>),
+}
+
+impl Internal {
+    /// What `id`'s owner thread signalled.
+    fn of(id: SessionId, signal: Signal<ClientEvent>) -> Self {
+        match signal {
+            Signal::Published(client, refused) => Self::Published(id, client, refused),
+            Signal::Stopped(ran, workers) => Self::Stopped(id, ran, workers),
+            Signal::Done(destroyed) => Self::OwnerDone(id, destroyed),
+        }
+    }
 }
 
 /// Where a release stands.
@@ -444,17 +410,6 @@ impl Phase {
     }
 }
 
-/// What an instance is for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Role {
-    /// A passive monitoring client: monitor Open, then the session's
-    /// reports.
-    Monitor,
-    /// One Kill and nothing else (#117): it never opens, its row learns
-    /// nothing of it but the Kill's outcome, and it is never retried.
-    KillOnly,
-}
-
 /// An accepted request awaiting its answer.
 enum Pending {
     Request(Request),
@@ -514,9 +469,9 @@ struct Instance {
     /// Its application input: chunks, pastes and what a truncated paste
     /// owes.
     stream: Stream,
-    /// Tells the owner its handles are released, so it may destroy.
-    released: Sender<()>,
-    owner: JoinHandle<()>,
+    /// Its owner thread, told once its handles are released, so it may
+    /// destroy.
+    owner: Owner,
     /// What is known of its end, each kind of evidence on its own (#118).
     evidence: Evidence,
 }
@@ -531,7 +486,7 @@ struct State {
     admitted: Ledger,
     reserved: Arc<AtomicU64>,
     /// Since when each congested client has not been drained.
-    congested: BTreeMap<SessionId, Instant>,
+    congested: Stalls,
     /// Shutdown has begun: the UI processes nothing more, and every client
     /// is drained regardless, so shutdown stays serviceable.
     stopping: bool,
@@ -589,7 +544,7 @@ impl State {
             backlog,
             admitted: Ledger::default(),
             reserved,
-            congested: BTreeMap::new(),
+            congested: Stalls::default(),
             stopping: false,
             // Which instance a first round starts from is not observable.
             turn: usize::default(),
@@ -1370,15 +1325,22 @@ impl State {
         };
         tracing::info!(session = %id, version = %metadata.climon2_version, ?role, "client starting");
         self.generations.insert(id.clone(), generation);
-        let (released, release) = mpsc::channel();
         let internal = self.internal.clone();
         let owned = id.clone();
-        let started = StartupData::new(&self.context, &metadata, generation);
+        let tell = move |signal| {
+            let _ = internal.send(Internal::of(owned.clone(), signal));
+        };
+        let started = Startup::new(&self.context.environment(), &metadata, generation);
         let spawned = started.and_then(|startup| {
-            thread::Builder::new()
-                .name("client".into())
-                .stack_size(self::stack(stack))
-                .spawn(move || owner::owner(functions, &startup, owned, &internal, &release, role))
+            owner::spawn(
+                functions,
+                stack,
+                startup,
+                id.clone(),
+                role,
+                client::read,
+                tell,
+            )
         });
         match spawned {
             Ok(owner) => {
@@ -1391,7 +1353,6 @@ impl State {
                     pending: BTreeMap::new(),
                     next: Some(self.context.first.request),
                     stream: Stream::default(),
-                    released,
                     owner,
                     evidence: Evidence::default(),
                 };
@@ -1439,7 +1400,7 @@ impl State {
 
     /// Tells the row whether its client is retried, if it is or never is.
     fn recover(&self, id: &SessionId, why: String, retry: Retry) {
-        if let Some(recovery) = retry.recovery(why) {
+        if let Some(recovery) = recovery(retry, why) {
             self.tell(id, ClientEvent::Recovery(recovery));
         }
     }
@@ -1544,7 +1505,7 @@ impl State {
             if self.throttled(&id) {
                 self.congestion(&id, now);
             } else {
-                self.congested.remove(&id);
+                self.congested.drained(&id);
                 self.drain_within(&id, bound, deadline.is_none_or(before));
             }
         }
@@ -1562,10 +1523,8 @@ impl State {
     /// `id` is congested at `now`: failed explicitly once that has lasted
     /// `deadlines.delivery_stall_ms`.
     fn congestion(&mut self, id: &SessionId, now: Instant) {
-        let since = *self.congested.entry(id.clone()).or_insert(now);
         let stall = Duration::from_millis(self.context.limits.delivery_stall_ms.into());
-        if now.checked_duration_since(since + stall).is_some() {
-            self.congested.remove(id);
+        if self.congested.congested(id, now, stall) {
             let why = format!("delivery congestion lasted past {} ms", stall.as_millis());
             self.fail(id, why);
         }
@@ -1749,7 +1708,7 @@ impl State {
         self.evidence(id, |evidence| evidence.released = released.is_ok());
         self.set(id, Phase::Done);
         if let Some(instance) = self.instances.get(id) {
-            let _ = instance.released.send(());
+            instance.owner.release();
         }
         if let Some(event) = phase.over(why.clone()).filter(|_| self.follows(id)) {
             self.tell(id, event);
@@ -1766,7 +1725,7 @@ impl State {
         let Some(mut instance) = self.instances.remove(id) else {
             return;
         };
-        let _ = instance.owner.join();
+        instance.owner.join();
         self.admitted.free(&Holder::Instance(id.clone()));
         let cleaned = self.joined(id, &mut instance.evidence, destroyed);
         if let Some(removal) = self.removing.get_mut(id) {
@@ -1853,7 +1812,7 @@ impl State {
 
     /// Reports `event` to the UI, charged to `id` until it is processed.
     fn tell(&self, id: &SessionId, event: ClientEvent) {
-        self.backlog.charge(id, &event);
+        self.backlog.charge(id, footprint(id, &event));
         let _ = self.report.send((id.clone(), event));
     }
 
@@ -1978,11 +1937,6 @@ fn waiting(condition: Option<Condition>) -> ClientEvent {
         Some(Condition::LoadingSlowly) => ClientEvent::LoadingSlowly,
         None => ClientEvent::Starting,
     }
-}
-
-/// A thread stack of `bytes`, saturating.
-fn stack(bytes: u64) -> usize {
-    usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
 /// One wait of a round before `deadline`: a tick, or what is left of it if

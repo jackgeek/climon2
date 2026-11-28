@@ -11,6 +11,7 @@ const PACKAGES: &[&str] = &[
     "climon2-client",
     "climon2-install",
     "climon2-monitor",
+    "climon2-embed",
     "climon2-vt",
     "climon2-test-term",
     "climon2-fixtures",
@@ -86,7 +87,9 @@ fn is_test_only(name: &str) -> bool {
 fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
-        "climon2-client" | "climon2-discovery" => &["climon2-core", "climon2-platform"],
+        "climon2-client" | "climon2-discovery" | "climon2-embed" => {
+            &["climon2-core", "climon2-platform"]
+        }
         "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
         "climon2-monitor" => &[
@@ -94,6 +97,7 @@ fn allowed_internal_dependencies(name: &str) -> &[&str] {
             "climon2-platform",
             "climon2-vt",
             "climon2-discovery",
+            "climon2-embed",
         ],
         _ => &[],
     }
@@ -265,6 +269,12 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-monitor", "climon2-cli", None, Some(".")),
         ("climon2-cli", "climon2-monitor", None, Some(".")),
         ("climon2-cli", "climon2-cli", None, Some(".")),
+        ("climon2-embed", "climon2-monitor", None, Some(".")),
+        ("climon2-embed", "climon2-vt", None, Some(".")),
+        ("climon2-embed", "climon2-discovery", None, Some(".")),
+        ("climon2-embed", "climon2-client", None, Some(".")),
+        ("climon2-cli", "climon2-embed", None, Some(".")),
+        ("climon2-daemon", "climon2-embed", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -294,6 +304,10 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-monitor", "climon2-discovery", None),
         ("climon2-test-term", "climon2-monitor", None),
         ("climon2-cli", "climon2-cli", Some("dev")),
+        ("climon2-monitor", "climon2-embed", None),
+        ("climon2-embed", "climon2-core", None),
+        ("climon2-embed", "climon2-platform", None),
+        ("climon2-embed", "climon2-test-term", Some("dev")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -302,5 +316,167 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
             path: Some(PathBuf::from(".")),
         }];
         assert!(dependency_violations(&package).is_empty(), "{from} -> {to}");
+    }
+}
+
+/// ADR 0011, rule 1: the packages that never depend on a terminal, HTTP or
+/// WebSocket crate and never read or write the process's terminal, each
+/// with the only third-party crates it may link. An allowlist, so a crate
+/// nobody thought to forbid is rejected too. The monitor library joins
+/// when it loses its terminal interface (#490).
+const HEADLESS: &[(&str, &[&str])] = &[("climon2-embed", &["tracing"])];
+
+/// The third-party crates `package` links that ADR 0011 does not allow it:
+/// none for a package that is not headless. Dev-dependencies link only
+/// into its tests.
+fn interface_violations(package: &Package) -> Vec<String> {
+    let Some((_, allowed)) = HEADLESS.iter().find(|(name, _)| *name == package.name) else {
+        return Vec::new();
+    };
+    package
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.path.is_none() && dependency.kind.is_none())
+        .filter(|dependency| !allowed.contains(&dependency.name.as_str()))
+        .map(|dependency| format!("{} -> {}", package.name, dependency.name))
+        .collect()
+}
+
+/// What in `source` reads or writes the process's terminal: the standard
+/// streams, the printing macros, the controlling terminal's device and the
+/// platform crate's terminal seam.
+fn terminal_uses(source: &str) -> Vec<&'static str> {
+    // `print!(` and `println!(` also match `eprint!(` and `eprintln!(`.
+    const USES: [&str; 6] = [
+        "stdin(",
+        "stdout(",
+        "stderr(",
+        "print!(",
+        "println!(",
+        "/dev/tty",
+    ];
+    let seam = uses_terminal_seam(source).then_some("climon2_platform::terminal");
+    let used = USES.into_iter().filter(|used| source.contains(used));
+    used.chain(seam).collect()
+}
+
+/// Whether `source` names the platform crate's `terminal` module: by its
+/// path, or in a `use` of the platform crate, however it is grouped.
+fn uses_terminal_seam(source: &str) -> bool {
+    let imported = |statement: &str| {
+        statement
+            .find("use climon2_platform")
+            .is_some_and(|at| identifiers(&statement[at..]).any(|name| name == "terminal"))
+    };
+    source.contains("climon2_platform::terminal") || source.split(';').any(imported)
+}
+
+fn identifiers(code: &str) -> impl Iterator<Item = &str> {
+    code.split(|character: char| !(character.is_alphanumeric() || character == '_'))
+}
+
+fn terminal_violations(path: &std::path::Path) -> Vec<String> {
+    let mut violations = Vec::new();
+    for entry in std::fs::read_dir(path).expect("read a headless source directory") {
+        let path = entry.expect("a headless source entry").path();
+        if path.is_dir() {
+            violations.extend(terminal_violations(&path));
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            let source = std::fs::read_to_string(&path).expect("read a headless source");
+            let uses = terminal_uses(&source);
+            violations.extend(
+                uses.iter()
+                    .map(|used| format!("{}: {used}", path.display())),
+            );
+        }
+    }
+    violations
+}
+
+/// ADR 0011, rule 1 (#489): client embedding links no terminal, HTTP or
+/// WebSocket crate, and its sources never touch the process's terminal.
+#[test]
+fn headless_packages_have_no_interface_dependency() {
+    let metadata = metadata();
+    for (name, _) in HEADLESS {
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| package.name == *name)
+            .unwrap_or_else(|| panic!("{name} is a workspace package"));
+        assert_eq!(interface_violations(package), [] as [String; 0], "{name}");
+        let sources = package.manifest_path.parent().unwrap().join("src");
+        assert_eq!(terminal_violations(&sources), [] as [String; 0], "{name}");
+    }
+}
+
+#[test]
+fn interface_guard_rejects_terminal_http_and_websocket_dependencies() {
+    let mut package = metadata().packages.remove(0);
+    package.name = "climon2-embed".to_owned();
+    let dependency = |name: &str, kind: Option<&str>, path: Option<&str>| Dependency {
+        name: name.to_owned(),
+        kind: kind.map(str::to_owned),
+        path: path.map(PathBuf::from),
+    };
+    for forbidden in [
+        "ratatui",
+        "ratatui-core",
+        "crossterm",
+        "termion",
+        "http",
+        "hyper",
+        "axum",
+        "tiny_http",
+        "tungstenite",
+        "tokio-tungstenite",
+    ] {
+        package.dependencies = vec![dependency(forbidden, None, None)];
+        assert_eq!(
+            interface_violations(&package),
+            [format!("climon2-embed -> {forbidden}")],
+        );
+    }
+    package.dependencies = vec![
+        dependency("tracing", None, None),
+        dependency("climon2-core", None, Some(".")),
+        dependency("tempfile", Some("dev"), None),
+        dependency("ratatui", Some("dev"), None),
+    ];
+    assert!(interface_violations(&package).is_empty());
+    package.name = "climon2-monitor".to_owned();
+    package.dependencies = vec![dependency("ratatui", None, None)];
+    assert!(interface_violations(&package).is_empty());
+}
+
+#[test]
+fn interface_guard_rejects_reading_or_writing_the_process_terminal() {
+    for (source, used) in [
+        ("let input = std::io::stdin();", "stdin("),
+        ("std::io::stdout().flush()", "stdout("),
+        ("io::stderr().write_all(b\"x\")", "stderr("),
+        ("print!(\"x\")", "print!("),
+        ("println!(\"x\")", "println!("),
+        ("eprint!(\"x\")", "print!("),
+        ("eprintln!(\"x\")", "println!("),
+        ("File::open(\"/dev/tty\")", "/dev/tty"),
+        (
+            "let size = climon2_platform::terminal::size();",
+            "climon2_platform::terminal",
+        ),
+        (
+            "use climon2_platform::{\n    library::Functions,\n    terminal,\n};",
+            "climon2_platform::terminal",
+        ),
+    ] {
+        assert_eq!(terminal_uses(source), [used], "{source}");
+    }
+    for allowed in [
+        "tracing::warn!(%error, \"client stopped\");",
+        "use climon2_platform::{library::Functions, native_path};\nlet terminal = 1;",
+        "use climon2_platform::library::Functions;\nuse crate::terminal;",
+        "let terminal_evidence = drained.terminal;",
+    ] {
+        assert!(terminal_uses(allowed).is_empty(), "{allowed}");
     }
 }

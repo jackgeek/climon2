@@ -4,55 +4,18 @@
 //! final client outcome, worker cleanup, handle release, destroy and the
 //! owner thread's join. None stands in for another.
 
-use climon2_core::{SessionId, native};
+use climon2_core::SessionId;
 
-/// Leave evidence, as a client's terminal evidence reports it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Leave {
-    /// No registration or attachment can remain.
-    NotRequired,
-    /// The daemon accepted the Leave.
-    Confirmed,
-    Rejected,
-    Failed,
-    /// Lost, late or answered against the wire's rules.
-    Indeterminate,
-}
+pub(crate) use climon2_embed::instance::{Leave, Terminal};
 
-impl Leave {
-    /// The native Leave code's meaning; an unknown code proves nothing.
-    pub(crate) fn of(code: u32) -> Self {
-        const CODES: [(u32, Leave); 4] = [
-            (native::LEAVE_NOT_REQUIRED, Leave::NotRequired),
-            (native::LEAVE_CONFIRMED, Leave::Confirmed),
-            (native::LEAVE_REJECTED, Leave::Rejected),
-            (native::LEAVE_FAILED, Leave::Failed),
-        ];
-        let known = CODES.into_iter().find(|(known, _)| *known == code);
-        known.map_or(Self::Indeterminate, |(_, leave)| leave)
+/// What is wrong with `leave`, if anything.
+fn problem(leave: Leave) -> Option<&'static str> {
+    match leave {
+        Leave::NotRequired | Leave::Confirmed => None,
+        Leave::Rejected => Some("Leave rejected"),
+        Leave::Failed => Some("Leave failed"),
+        Leave::Indeterminate => Some("Leave unconfirmed"),
     }
-
-    /// What is wrong with this Leave, if anything.
-    fn problem(self) -> Option<&'static str> {
-        match self {
-            Self::NotRequired | Self::Confirmed => None,
-            Self::Rejected => Some("Leave rejected"),
-            Self::Failed => Some("Leave failed"),
-            Self::Indeterminate => Some("Leave unconfirmed"),
-        }
-    }
-}
-
-/// One instance's terminal evidence.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Terminal {
-    /// The client outcome: failed with this error, or stopped.
-    pub(crate) failed: Option<String>,
-    pub(crate) leave: Leave,
-    /// A confirmed Leave detached an attachment.
-    pub(crate) detached: bool,
-    /// Every connection the instance owned is closed.
-    pub(crate) closed: bool,
 }
 
 /// What is known of one instance, each kind of evidence on its own.
@@ -103,7 +66,7 @@ impl Evidence {
         };
         let failed = terminal.failed.as_ref();
         [
-            terminal.leave.problem().map(str::to_owned),
+            problem(terminal.leave).map(str::to_owned),
             failed.map(|why| format!("client failed: {why}")),
             (!terminal.closed).then(|| "connection closure unconfirmed".to_owned()),
         ]
@@ -353,24 +316,5 @@ mod tests {
                 "monitor shutdown unconfirmed: client supervisor unfinished".to_owned()
             )
         );
-    }
-
-    /// Native contract (pure supplement): each terminal evidence Leave code
-    /// reads as its own Leave, and an unknown one as unconfirmed.
-    #[test]
-    fn leave_codes_read_as_their_leave() {
-        use climon2_core::native;
-        let codes = [
-            (native::LEAVE_NOT_REQUIRED, Leave::NotRequired),
-            (native::LEAVE_CONFIRMED, Leave::Confirmed),
-            (native::LEAVE_REJECTED, Leave::Rejected),
-            (native::LEAVE_FAILED, Leave::Failed),
-            (native::LEAVE_INDETERMINATE, Leave::Indeterminate),
-            (0, Leave::Indeterminate),
-            (6, Leave::Indeterminate),
-        ];
-        for (code, leave) in codes {
-            assert_eq!(Leave::of(code), leave, "{code}");
-        }
     }
 }
