@@ -6518,7 +6518,20 @@ fn failed_clients_retry_with_backoff_until_repaired_or_rejected_for_good() {
     terminal.send(ESCAPE).unwrap();
     selector_closed(&terminal);
     terminal.send("\x1ds").unwrap();
-    enter_on(&mut terminal, REJECTING);
+    // Both rows retry, and each retry moves its row to the top as it enters
+    // its condition again (DSC-01), so the highlight is put on the rejecting
+    // row by searching for it, never by moving it to where the row was.
+    terminal.send(REJECTING).unwrap();
+    whole_frame_shows(&terminal, "the rejecting row alone", |screen| {
+        let listed: Vec<_> = screen
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with(" ║Unavailable"))
+            .collect();
+        matches!(listed[..], [(row, line)] if line.contains(REJECTING)
+            && highlighted_rows(&terminal) == [row])
+    });
+    terminal.send("\r").unwrap();
     let missing = |lines: &[&str]| {
         lines[0].starts_with(&format!("fake {REJECTING} | "))
             && lines.iter().any(|line| line.trim() == NO_CONTENT)

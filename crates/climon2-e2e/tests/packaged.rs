@@ -9,6 +9,94 @@ use serde_json::{Value, json};
 use std::{fs, path::Path};
 use support::{LIBRARY, Package, TIMEOUT, quote, type_until};
 
+/// Linux refuses to execute a file any process holds open for writing
+/// (ETXTBSY), and a child forked by another test thread holds every
+/// descriptor it inherited until it execs. A private package is installed
+/// while another thread forks children that hold what they inherited for a
+/// second before they exit: every executable it installed runs as soon as
+/// it exists.
+///
+/// The forker keeps at most `LIVE` children, reaping the oldest before it
+/// forks another, and stops at `TIMEOUT`. Unbounded, it forked tens of
+/// thousands of children a second and reaped none until the end. An archive
+/// installation runs `tar` and the installer through pipes those children
+/// inherit, so each step waits a second for them to exit, and the process
+/// table filled before the installation finished.
+#[test]
+fn a_fork_during_a_private_installation_leaves_its_executables_runnable() {
+    use std::collections::VecDeque;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+    const LIVE: usize = 1000;
+    let installing = Arc::new(AtomicBool::new(true));
+    let forker = {
+        let installing = Arc::clone(&installing);
+        thread::spawn(move || {
+            let deadline = Instant::now() + TIMEOUT;
+            let mut children = VecDeque::new();
+            while installing.load(Ordering::SeqCst) && Instant::now() < deadline {
+                if children.len() == LIVE {
+                    let oldest = children.pop_front().unwrap();
+                    nix::sys::wait::waitpid(oldest, None).unwrap();
+                }
+                // The child only sleeps and exits, both async-signal-safe,
+                // holding every descriptor it inherited meanwhile, as a
+                // child does until it execs.
+                match unsafe { nix::unistd::fork() }.unwrap() {
+                    nix::unistd::ForkResult::Child => {
+                        std::thread::sleep(Duration::from_secs(1));
+                        unsafe { nix::libc::_exit(0) }
+                    }
+                    nix::unistd::ForkResult::Parent { child } => children.push_back(child),
+                }
+            }
+            children
+        })
+    };
+    // The forker is forking before the installation begins.
+    thread::sleep(Duration::from_millis(20));
+    let package = Package::private();
+    installing.store(false, Ordering::SeqCst);
+    let home = package.executable_home();
+    let version = fs::read_to_string(home.join("current")).unwrap();
+    let executables: Vec<_> = [home.join("c2")]
+        .into_iter()
+        .chain(
+            fs::read_dir(home.join(version.trim()))
+                .unwrap()
+                .map(|entry| entry.unwrap().path()),
+        )
+        .filter(|path| {
+            let metadata = fs::metadata(path).unwrap();
+            metadata.is_file()
+                && metadata.permissions().mode() & 0o111 != 0
+                && path.extension().is_none()
+        })
+        .collect();
+    assert!(executables.len() > 1, "{executables:?}");
+    for path in executables {
+        let mut run = Command::new(&path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        run.kill().unwrap();
+        run.wait().unwrap();
+    }
+    for child in forker.join().unwrap() {
+        nix::sys::wait::waitpid(child, None).unwrap();
+    }
+}
+
 /// #21.6/#38: real installer → PATH launcher → CLI → daemon → client, from
 /// controlled outer bash to controlled inner bash; a second real PTY lists one
 /// session, the command's status reaches the outer shell, then nothing survives.
