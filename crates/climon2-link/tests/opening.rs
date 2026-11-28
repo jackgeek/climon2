@@ -7,10 +7,10 @@
 mod support;
 
 use climon2_link::{
-    End, HubEnd, Input, Opened, Opening, Output, Pairing, Purpose, Randomness, RelayEnd, Revisions,
-    Time,
+    End, HubEnd, Input, Opened, Opening, Output, Purpose, Randomness, RelayEnd, Revisions, Time,
 };
 use std::time::Duration;
+use support::pairing::{invited, uninvited};
 use support::{Harness, Seeded};
 
 /// The opening request page's example: link, revision 1 only.
@@ -31,8 +31,9 @@ fn hub(purpose: Purpose, list: &[u16]) -> HubEnd {
     HubEnd::new(purpose, revisions(list))
 }
 
+/// A relay with a live link invitation, so that a pairing run can start.
 fn relay(list: &[u16]) -> RelayEnd {
-    RelayEnd::new(revisions(list), Pairing::Available)
+    RelayEnd::new(revisions(list), invited().0)
 }
 
 /// The bytes of a transcript an end holds once the opening chose a revision.
@@ -306,7 +307,7 @@ fn no_shared_revision_is_refused_with_both_lists_known() {
         0x02, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
     for purpose in [Purpose::Link, Purpose::Pair] {
-        let listener = RelayEnd::new(revisions(&[2, 3]), Pairing::Unavailable);
+        let listener = RelayEnd::new(revisions(&[2, 3]), uninvited());
         let mut harness = Harness::new(hub(purpose, &[1]), listener);
 
         harness.run();
@@ -326,7 +327,7 @@ fn no_shared_revision_is_refused_with_both_lists_known() {
 /// not refused for it.
 #[test]
 fn pairing_is_refused_when_the_relay_can_start_no_run() {
-    let listener = || RelayEnd::new(revisions(&[1]), Pairing::Unavailable);
+    let listener = || RelayEnd::new(revisions(&[1]), uninvited());
 
     let mut harness = Harness::new(hub(Purpose::Pair, &[1]), listener());
     harness.run();
@@ -478,9 +479,11 @@ fn a_relay_first_stepped_with_the_request_answers_it() {
     assert_eq!(output.bytes, REPLY_CHOSEN_1);
 }
 
-/// Nothing follows the opening exchange yet. Bytes that arrive behind a
-/// whole opening message, in the same arrival or later, are not part of it:
-/// the exchange ends as it would without them and the end drops them.
+/// Nothing follows the opening exchange on a connection opened to link yet.
+/// Bytes that arrive behind a whole opening message, in the same arrival or
+/// later, are not part of it: the exchange ends as it would without them
+/// and the end drops them. On a connection opened to pair they are the
+/// start of the pairing run (`tests/pairing.rs`).
 #[test]
 fn bytes_behind_an_opening_message_are_not_part_of_it() {
     let mut relay = relay(&[1]);

@@ -10,10 +10,12 @@
 
 mod hub;
 mod opening;
+mod pairing;
 mod relay;
 
 pub use hub::HubEnd;
-pub use opening::{Opened, Opening, Pairing, Purpose, Revisions, Transcript};
+pub use opening::{Opened, Opening, Purpose, Revisions, Transcript};
+pub use pairing::{Introduction, Invitation, Invitations, PairingRun, Pin};
 pub use relay::RelayEnd;
 
 use std::time::Duration;

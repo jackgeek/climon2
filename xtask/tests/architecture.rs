@@ -326,7 +326,19 @@ const LINK: &str = "climon2-link";
 /// dependency. It never holds `climon2-platform`, an operating-system or
 /// socket crate, an async runtime or a source of randomness. A ticket that
 /// needs a crate adds it here, where a reviewer sees it.
-const LINK_ALLOWLIST: &[&str] = &[];
+const LINK_ALLOWLIST: &[&str] = &[
+    // Pairing (#495): CPace on ristretto255 with SHA-512, behind `pakery`.
+    "pakery-cpace",
+    "pakery-crypto",
+    // Pairing (#495): the traits `pakery` draws the caller's randomness
+    // through. The crate holds no generator of its own.
+    "rand_core",
+    // Pairing (#495): the key schedule, the confirmation and the box.
+    "chacha20poly1305",
+    "hkdf",
+    "hmac",
+    "sha2",
+];
 
 /// The modules of the standard library the link code never names (ONE-01).
 const PLATFORM_MODULES: &[&str] = &["net", "os", "fs", "process", "env"];
