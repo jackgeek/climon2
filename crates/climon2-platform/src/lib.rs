@@ -12,6 +12,7 @@ pub mod home;
 #[cfg(unix)]
 pub mod key_storage;
 pub mod library;
+pub mod link_socket;
 pub mod logging;
 pub mod native_path;
 pub mod notifier;
