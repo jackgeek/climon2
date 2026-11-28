@@ -49,21 +49,9 @@ impl KeyStore {
     /// owner-only, named `.<name>.<random>.tmp`, and never read.
     pub fn store(&self, name: &str, contents: &[u8]) -> io::Result<()> {
         let path = self.path(name)?;
-        if contents.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("no contents to store in key file {}", path.display()),
-            ));
-        }
+        refuse_empty(&path, contents)?;
         let temporary = self.temporary(name)?;
-        let published =
-            write_new(&temporary, contents).and_then(|()| fs::rename(&temporary, &path));
-        if published.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        published?;
-        // The rename itself reaches the disk with the folder.
-        File::open(&self.directory)?.sync_all()
+        self.publish(&temporary, &path, contents)
     }
 
     /// The contents of the key file `name`, or `None` when no such file
@@ -73,24 +61,9 @@ impl KeyStore {
     /// empty file.
     pub fn load(&self, name: &str) -> io::Result<Option<Vec<u8>>> {
         let path = self.path(name)?;
-        // Never through a link.
-        let opened = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path);
-        let mut file = match opened {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(damaged(&path, &error)),
-        };
-        let metadata = file.metadata().map_err(|error| damaged(&path, &error))?;
-        if let Some(problem) = problem(&metadata) {
-            return Err(damaged(&path, &problem));
-        }
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents)
-            .map_err(|error| damaged(&path, &error))?;
-        Ok(Some(contents))
+        open_existing(&path)?
+            .map(|file| read_sound(&path, file))
+            .transpose()
     }
 
     /// Where the key file `name` lives. A name is one plain file name: no
@@ -114,6 +87,56 @@ impl KeyStore {
         let unique = u64::from_ne_bytes(unique);
         Ok(self.directory.join(format!(".{name}.{unique:016x}.tmp")))
     }
+
+    /// Writes `contents` to `temporary` and renames it over `path`, removing
+    /// `temporary` when either step fails, then flushes the rename to disk
+    /// with the folder.
+    fn publish(&self, temporary: &Path, path: &Path, contents: &[u8]) -> io::Result<()> {
+        let published = write_new(temporary, contents).and_then(|()| fs::rename(temporary, path));
+        if published.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        published?;
+        File::open(&self.directory)?.sync_all()
+    }
+}
+
+/// Refuses empty contents for the key file at `path`.
+fn refuse_empty(path: &Path, contents: &[u8]) -> io::Result<()> {
+    if contents.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("no contents to store in key file {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// The key file at `path`, opened for reading and never through a link, or
+/// `None` when nothing is there. Any other failure to open it is damage.
+fn open_existing(path: &Path) -> io::Result<Option<File>> {
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path);
+    match opened {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(damaged(path, &error)),
+    }
+}
+
+/// The whole contents of the opened key file at `path`, or the damage that
+/// makes them untrustworthy.
+fn read_sound(path: &Path, mut file: File) -> io::Result<Vec<u8>> {
+    let metadata = file.metadata().map_err(|error| damaged(path, &error))?;
+    if let Some(problem) = problem(&metadata, crate::peer::effective_uid()) {
+        return Err(damaged(path, &problem));
+    }
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)
+        .map_err(|error| damaged(path, &error))?;
+    Ok(contents)
 }
 
 /// Writes `contents` to a new owner-only file and flushes them to disk.
@@ -123,11 +146,11 @@ fn write_new(path: &Path, contents: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
-/// What makes an opened key file damaged, if anything.
-fn problem(metadata: &Metadata) -> Option<&'static str> {
+/// What makes an opened key file damaged for the user `owner`, if anything.
+fn problem(metadata: &Metadata, owner: u32) -> Option<&'static str> {
     if !metadata.is_file() {
         Some("not a regular file")
-    } else if metadata.uid() != crate::peer::effective_uid() {
+    } else if metadata.uid() != owner {
         Some("wrong owner")
     } else if metadata.mode() & 0o077 != 0 {
         Some("group or other permissions")
@@ -143,4 +166,27 @@ fn damaged(path: &Path, problem: &dyn std::fmt::Display) -> io::Error {
         io::ErrorKind::InvalidData,
         format!("damaged key file {}: {problem}", path.display()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    /// No test can make a file another user owns without root, so the owner
+    /// check is pinned here against a user other than this one.
+    #[test]
+    fn an_owner_only_file_another_user_owns_is_damaged() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let path = folder.path().join("relay-identity.json");
+        fs::write(&path, b"secret key").expect("a key file");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("owner only");
+        let metadata = fs::metadata(&path).expect("its metadata");
+        let me = crate::peer::effective_uid();
+
+        assert_eq!(
+            super::problem(&metadata, me.wrapping_add(1)),
+            Some("wrong owner")
+        );
+        assert_eq!(super::problem(&metadata, me), None);
+    }
 }
