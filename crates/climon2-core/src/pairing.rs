@@ -352,15 +352,23 @@ fn key_to_hex(bytes: &[u8; KEY_BYTES]) -> String {
 
 fn key_from_hex(text: &str) -> Option<[u8; KEY_BYTES]> {
     let digits = text.as_bytes();
-    let lowercase_hex = |digit: &u8| matches!(digit, b'0'..=b'9' | b'a'..=b'f');
-    if digits.len() != 2 * KEY_BYTES || !digits.iter().all(lowercase_hex) {
+    if digits.len() != 2 * KEY_BYTES {
         return None;
     }
-    let mut bytes = [0; KEY_BYTES];
-    for (byte, pair) in bytes.iter_mut().zip(text.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    let bytes: Option<Vec<u8>> = digits
+        .chunks(2)
+        .map(|pair| Some(digit_value(pair[0])? * 16 + digit_value(pair[1])?))
+        .collect();
+    bytes?.try_into().ok()
+}
+
+/// One lowercase hexadecimal digit's value; anything else is not a key.
+fn digit_value(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit - b'0'),
+        b'a'..=b'f' => Some(digit - b'a' + 10),
+        _ => None,
     }
-    Some(bytes)
 }
 
 fn deserialize_key<'de, D: Deserializer<'de>>(
