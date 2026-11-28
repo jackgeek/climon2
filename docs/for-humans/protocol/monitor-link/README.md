@@ -11,7 +11,9 @@ pairing, the pinned-key handshake and the records of
 pairing, the pinned-key handshake, Hello, Close, the framing of units and the
 records of advertisement and session streams are implemented in the
 `climon2-link` crate. The relay and `c2 monitor pair` run pairing and the
-first link over it; nothing yet carries a session.** No climon2 release
+first link over it. A running hub monitor links to each relay it remembers,
+and the relay advertises its sessions over that link (#502); nothing yet
+opens a session stream.** No climon2 release
 contains a relay or speaks any part of this protocol. The
 [acceptance criteria](../../behaviour/monitor-link/acceptance.md) say what
 automated evidence shows the protocol is met.

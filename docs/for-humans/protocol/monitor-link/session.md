@@ -1,6 +1,6 @@
 # Session — `0x10`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and the 128-session limit; no released program speaks it yet, and no relay yet runs discovery.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and the 128-session limit; the relay advertises its home's sessions with it and the hub monitor lists them (#502); no released program speaks it yet.**
 The [relay](../../../../GLOSSARY.md#monitor-links) advertises one of its
 machine's [sessions](../../../../GLOSSARY.md#sessions) to the
 [hub monitor](../../../../GLOSSARY.md#monitor-links) on stream 0. The same

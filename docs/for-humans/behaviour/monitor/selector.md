@@ -115,7 +115,21 @@ The selector overlays the [host](../../../../GLOSSARY.md#sessions) without resiz
 without captions. Search occupies the first interior line; a single horizontal
 separator joins the edges with U+255F and U+2562. Below it are two borderless
 columns: effective status on the left and literal title/command fallback on the
-right. There is no details pane/view, working-directory display, control-elsewhere
+right.
+
+**Amended for monitor links** ([#199](https://github.com/jackgeek/climon2/issues/199#issuecomment-7225800159),
+item 1; implemented by [#502](https://github.com/jackgeek/climon2/issues/502)).
+A [hub monitor](../../../../GLOSSARY.md#monitor-links) lists its
+[remote sessions](../../../../GLOSSARY.md#monitor-links) and its
+[local sessions](../../../../GLOSSARY.md#monitor-links) in this one list, in
+the same order. While the monitor remembers at least one
+[relay](../../../../GLOSSARY.md#monitor-links), a third column sits between
+status and title: `local` for this machine's sessions, otherwise the name the
+monitor knows the relay by. It is as wide as the widest name and shown
+literally. A monitor that remembers no relay has no machine column. Until a
+remote session's stream opens, its row is `Unavailable`: Enter selects it
+without acquiring, and Delete offers nothing. The labels a down relay's rows
+show, the status strip and the links dialog are not built yet. There is no details pane/view, working-directory display, control-elsewhere
 suffix, current-session marker or buttons. A distinct highlight
 identifies the candidate, not a newly selected session.
 
@@ -145,7 +159,8 @@ Delete opens the termination/removal confirmation below, not search editing.
 
 Search is case-insensitive ordered-subsequence matching against one string:
 displayed status (including failure details), one space, then the displayed
-title/command fallback. Hidden command arguments are not searched separately.
+title/command fallback. With a machine column the string is status, one space,
+machine, one space, then title, so searching a relay's name finds its sessions. Hidden command arguments are not searched separately.
 All query characters must occur in order across that text; nonmatching
 characters are skipped. For example, `bld` matches `Build`, `blr` matches
 `Build Replica`, and `Fo Br` matches `foo bar`. Matches may span the status/title
