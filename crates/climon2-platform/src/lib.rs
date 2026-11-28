@@ -9,6 +9,8 @@ pub mod daemon;
 #[path = "handoff/windows.rs"]
 pub mod handoff;
 pub mod home;
+#[cfg(unix)]
+pub mod key_storage;
 pub mod library;
 pub mod logging;
 pub mod native_path;
