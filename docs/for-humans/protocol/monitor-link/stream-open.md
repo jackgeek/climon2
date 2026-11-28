@@ -1,6 +1,6 @@
 # Open stream — `0x20`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and the numbering rule; no released program speaks it yet, and no relay yet starts a client.**
 The [hub monitor](../../../../GLOSSARY.md#monitor-links) asks the
 [relay](../../../../GLOSSARY.md#monitor-links) to start a client for one
 advertised session. It is the first record of a new

@@ -8,10 +8,11 @@ pairing, the pinned-key handshake and the records of
 
 **Status: developer-agreed specification in
 [#480](https://github.com/jackgeek/climon2/issues/480). The opening exchange,
-pairing, the pinned-key handshake, Hello, Close and the framing of units are
-implemented in the `climon2-link` crate. The relay and `c2 monitor pair`
-run pairing and the first link over it; nothing yet carries a session.** No
-climon2 release contains a relay or speaks any part of this protocol. The
+pairing, the pinned-key handshake, Hello, Close, the framing of units and the
+records of advertisement and session streams are implemented in the
+`climon2-link` crate. The relay and `c2 monitor pair` run pairing and the
+first link over it; nothing yet carries a session.** No climon2 release
+contains a relay or speaks any part of this protocol. The
 [acceptance criteria](../../behaviour/monitor-link/acceptance.md) say what
 automated evidence shows the protocol is met.
 
