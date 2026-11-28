@@ -14,7 +14,9 @@ name: Quality
 #
 # The base job asks tools/quality-scope.sh which gates a run has. A push to one
 # of the monitor links feature's branches has none; a manual run there gates a
-# stack of ticket branches from its top (#488).
+# stack of ticket branches from its top (#488). On a Stack W top that is the
+# Linux gate and then the Windows gate, which the windows-after-linux job runs
+# once the Linux gate has finished, never at once (#544).
 #
 # A job runs only while its platform is listed in the repository variable
 # CLIMON2_OWN_RUNNERS (for example "linux,windows,macos"), so a push never waits
@@ -54,12 +56,14 @@ jobs:
     outputs:
       sha: ${{ steps.base.outputs.sha }}
       gates: ${{ steps.base.outputs.gates }}
+      windows_after_linux: ${{ steps.base.outputs.windows_after_linux }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Which gates this run has, and the commit they mutate against. A push
-      # to one of the monitor links feature's branches has none (#488).
+      # Which gates this run has, the commit they mutate against, and whether
+      # the Windows gate waits for the Linux one. A push to one of the monitor
+      # links feature's branches has none (#488).
       - id: base
         env:
           EVENT: ${{ github.event_name }}
@@ -148,6 +152,7 @@ jobs:
       && contains(needs.base.outputs.gates, 'windows')
       && contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
       && needs.prior.outputs.run == ''
+      && needs.base.outputs.windows_after_linux != 'true'
     runs-on: [self-hosted, Windows, X64, climon2-quality]
     # The longest passing Windows gate took 68 min (2026-11-23) (#401).
     timeout-minutes: 120
@@ -157,7 +162,8 @@ jobs:
     # The runner's .env supplies CLIMON2_QUALITY_PYTHON, CLIMON2_TEST_CONPTY_CACHE
     # and the second account the cross-account test logs on as
     # (CLIMON2_SECOND_ACCOUNT, CLIMON2_SECOND_ACCOUNT_PASSWORD).
-    env:
+    # windows-after-linux runs the same settings and steps.
+    env: &windows-gate-env
       CLIMON2_MUTATION_BASE: ${{ needs.base.outputs.sha }}
       # Shares the owner's PC with the Linux gate. At three, the VM's 16 GB ran
       # critically low on memory and its load made the Linux gate's timing tests
@@ -170,7 +176,7 @@ jobs:
       # miss their deadlines (owner decision, 2026-11-23).
       CARGO_BUILD_JOBS: "4"
       RUST_TEST_THREADS: "4"
-    steps:
+    steps: &windows-gate-steps
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -190,6 +196,27 @@ jobs:
           cargo xtask mutate --native-only || status=$?
           echo "- Windows gate on $(hostname), $(cmd //c ver | tr -d '\r' | grep .): exit $status after $(( (SECONDS - started + 59) / 60 )) min" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+
+  # The Windows gate on a Stack W top (#544; owner decision, 2026-11-28): it
+  # starts once the Linux gate has finished, whatever its result, so the two
+  # never share the PC at once. Otherwise as the windows job.
+  windows-after-linux:
+    name: Windows-only CRAP and mutation after Linux / own hardware
+    needs: [base, prior, linux]
+    if: >-
+      !cancelled()
+      && needs.base.result == 'success'
+      && contains(needs.base.outputs.gates, 'windows')
+      && contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
+      && needs.prior.outputs.run == ''
+      && needs.base.outputs.windows_after_linux == 'true'
+    runs-on: [self-hosted, Windows, X64, climon2-quality]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env: *windows-gate-env
+    steps: *windows-gate-steps
 
   macos:
     name: macOS-only CRAP and mutation / own hardware

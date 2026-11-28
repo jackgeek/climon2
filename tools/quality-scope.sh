@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Which own-hardware gates one run of quality.yml has, and the commit they
-# mutate against (docs/for-humans/quality-runners.md). Prints `sha=` and
-# `gates=` lines for $GITHUB_OUTPUT.
+# mutate against (docs/for-humans/quality-runners.md). Prints `sha=`, `gates=`
+# and `windows_after_linux=` lines for $GITHUB_OUTPUT. With
+# `windows_after_linux=true` the Windows gate starts only once the Linux gate
+# has finished; otherwise the gates run at once.
 #
 #   REF     the run's ref (github.ref)
 #   EVENT   the run's event (github.event_name)
@@ -10,12 +12,20 @@ set -euo pipefail
 
 gates=linux,windows,macos
 against=origin/main
+windows_after_linux=false
 # The monitor links feature (#488) lands on one feature branch through ticket
 # branches named monitor-links/*. A ticket branch is gated on Linux alone,
 # against the feature branch; the feature branch on every platform, against
 # main. Neither is gated on a push: one manual run gates a whole stack of
-# ticket branches from its top (owner decisions, 2026-11-27).
+# ticket branches from its top (owner decisions, 2026-11-27). A Stack W ticket
+# branch, monitor-links/win-*, adds the Windows gate, which runs only once the
+# Linux gate has finished, never at once (owner decision, 2026-11-28).
 case "$REF" in
+  refs/heads/monitor-links/win-*)
+    gates=linux,windows
+    against=origin/feature/monitor-links
+    windows_after_linux=true
+    ;;
   refs/heads/monitor-links/*)
     gates=linux
     against=origin/feature/monitor-links
@@ -39,3 +49,4 @@ else
 fi
 echo "sha=$(git rev-parse "$base")"
 echo "gates=$gates"
+echo "windows_after_linux=$windows_after_linux"

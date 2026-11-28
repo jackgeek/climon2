@@ -177,8 +177,8 @@ fn pull_requests_never_qualify() {
 
 /// #319: the Windows Dist job builds the zip on `windows-2025`. Unlike the
 /// Windows Test and Quality jobs it does not wait for the Windows scope, so
-/// `CLIMON2_WINDOWS_TESTS=off` never skips it. Only a Linux-only pull request
-/// (#488) does.
+/// `CLIMON2_WINDOWS_TESTS=off` never skips it. Only a monitor links pull
+/// request that runs no Windows job (#488, #544) does.
 #[test]
 fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
     let check = workflow("check.yml");
@@ -186,7 +186,7 @@ fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
     assert!(dist.contains(&"    runs-on: windows-2025"), "{dist:#?}");
     assert!(dist.contains(&"    needs: platforms"), "{dist:#?}");
     assert!(
-        dist.contains(&"    if: needs.platforms.outputs.linux_only != 'true'"),
+        dist.contains(&"    if: needs.platforms.outputs.windows != 'off'"),
         "{dist:#?}"
     );
     assert!(dist.contains(&"        run: cargo xtask dist"), "{dist:#?}");
@@ -196,50 +196,49 @@ fn the_windows_dist_job_runs_on_windows_2025_whatever_the_switch_says() {
     );
 }
 
-/// #488 (owner decision, 2026-11-27): a pull request into the monitor links
-/// feature branch, or into a ticket branch stacked on it, runs Linux only.
-/// One job decides that, and every job with a macOS or Windows leg asks it.
-/// Any other run, release qualification included, is never Linux-only.
+/// #488 and #544: one script decides whether a run's macOS and Windows jobs
+/// run (xtask/tests/check_platforms.rs), and every job with a macOS or
+/// Windows leg asks the platforms job for its answer. `off` skips the
+/// platform, whatever the repository variables say.
 #[test]
-fn monitor_links_pull_requests_run_linux_only() {
+fn the_platforms_job_asks_the_platforms_script() {
     let check = workflow("check.yml");
     let platforms = job(&check, "platforms");
-    assert!(platforms.contains(&"      linux_only: ${{ steps.decide.outputs.linux_only }}"));
+    for line in [
+        "      macos: ${{ steps.decide.outputs.macos }}",
+        "      windows: ${{ steps.decide.outputs.windows }}",
+        "          fetch-depth: 0",
+        "          EVENT: ${{ github.event_name }}",
+        "          BASE_REF: ${{ github.base_ref }}",
+        "          HEAD_REF: ${{ github.head_ref }}",
+        "          BASE: ${{ github.event.pull_request.base.sha }}",
+        "        run: bash tools/check-platforms.sh | tee -a \"$GITHUB_OUTPUT\"",
+    ] {
+        assert!(platforms.contains(&line), "{line}: {platforms:#?}");
+    }
     assert!(
-        platforms
-            .contains(&"        run: echo \"linux_only=$LINUX_ONLY\" | tee -a \"$GITHUB_OUTPUT\""),
-        "{platforms:#?}"
-    );
-    assert!(
-        platforms.contains(
-            &"          LINUX_ONLY: ${{ github.event_name == 'pull_request' && (github.base_ref == 'feature/monitor-links' || startsWith(github.base_ref, 'monitor-links/')) }}"
-        ),
-        "{platforms:#?}"
-    );
-    assert_eq!(
-        check.matches("monitor-links").count(),
-        2,
-        "the platforms job alone names the feature's branches"
+        !check.contains("monitor-links"),
+        "the script alone names the feature's branches"
     );
     // The Windows Test, Quality and Archive jobs need the scope, so they skip with it.
     for name in ["windows-scope", "windows-dist"] {
         let lines = job(&check, name);
         assert!(
-            lines.contains(&"    if: needs.platforms.outputs.linux_only != 'true'"),
+            lines.contains(&"    if: needs.platforms.outputs.windows != 'off'"),
             "{name}: {lines:#?}"
         );
     }
     assert!(
         condition(&job(&check, "quality"))
-            .starts_with("needs.platforms.outputs.linux_only != 'true' && "),
+            .starts_with("needs.platforms.outputs.macos != 'off' && "),
     );
     let linux = "'[\"ubuntu-24.04\"]'";
     let linux_dist = "'[{\"runner\": \"ubuntu-24.04\", \"platform\": \"linux-x86_64-gnu\"}]'";
-    for (name, key, only) in [
-        ("macos", "runner", linux),
-        ("neutral", "os", linux),
-        ("dist", "include", linux_dist),
-        ("archive", "include", linux_dist),
+    for (name, key, platform, only) in [
+        ("macos", "runner", "macos", linux),
+        ("neutral", "os", "windows", linux),
+        ("dist", "include", "macos", linux_dist),
+        ("archive", "include", "macos", linux_dist),
     ] {
         let lines = job(&check, name);
         let at = lines
@@ -249,7 +248,7 @@ fn monitor_links_pull_requests_run_linux_only() {
         let matrix = lines[at..at + 2].join(" ");
         assert!(
             matrix.contains(&format!(
-                "fromJSON(needs.platforms.outputs.linux_only == 'true' && {only} || "
+                "fromJSON(needs.platforms.outputs.{platform} == 'off' && {only} || "
             )),
             "{name}: {matrix}"
         );
@@ -260,6 +259,37 @@ fn monitor_links_pull_requests_run_linux_only() {
             "{name}: {lines:#?}"
         );
     }
+}
+
+/// #544 (owner decision, 2026-11-28): when the platforms job says `on`, as
+/// for a Stack W pull request or one that changes Windows-only code, the
+/// Windows scope says test, so the Windows Test and Archive jobs run whatever
+/// `CLIMON2_WINDOWS_TESTS` says. The Windows Quality job does not: such a
+/// pull request is gated on the owner's machines (quality.yml).
+#[test]
+fn a_windows_answer_of_on_runs_the_windows_tests_but_not_the_windows_quality_job() {
+    let check = workflow("check.yml");
+    let scope = job(&check, "windows-scope");
+    assert!(
+        scope.contains(&"      WINDOWS: ${{ needs.platforms.outputs.windows }}"),
+        "{scope:#?}"
+    );
+    assert!(
+        scope.iter().any(|line| line.trim()
+            == "if [[ \"$WINDOWS\" == on || \"$SWITCH\" != off || \"$REF_TYPE\" == tag \\"),
+        "{scope:#?}"
+    );
+    let quality = job(&check, "windows-quality");
+    assert!(
+        quality.contains(&"    needs: [platforms, windows-scope]"),
+        "{quality:#?}"
+    );
+    assert!(
+        condition(&quality).starts_with(
+            "needs.platforms.outputs.windows == 'switch' && needs.windows-scope.outputs.test == 'true'"
+        ),
+        "{quality:#?}"
+    );
 }
 
 /// #321: the Windows Test job runs the smoke test against the zip the Dist
@@ -651,17 +681,63 @@ fn gates_skip_only_when_main_found_a_passed_run_of_its_tree() {
             lines.contains(&"    needs: [base, prior]"),
             "{name}: {lines:#?}"
         );
+        // The Windows gate stands aside when it must wait for the Linux gate.
+        let ordered = if name == "windows" {
+            " && needs.base.outputs.windows_after_linux != 'true'"
+        } else {
+            ""
+        };
         assert_eq!(
             condition(&lines),
             format!(
                 "!cancelled() && needs.base.result == 'success' \
                  && contains(needs.base.outputs.gates, '{name}') \
                  && contains(vars.CLIMON2_OWN_RUNNERS, '{name}') \
-                 && needs.prior.outputs.run == ''"
+                 && needs.prior.outputs.run == ''{ordered}"
             ),
             "{name}"
         );
     }
+}
+
+/// #544 (owner decision, 2026-11-28): a manual run on a Stack W ticket branch
+/// runs the Windows gate strictly after the Linux gate has finished, never at
+/// once, when the scope script says so (xtask/tests/quality_scope.rs). The
+/// Windows job then stands aside for one that needs the Linux job and starts
+/// whatever its result, on the same machine with the same settings and steps.
+#[test]
+fn stack_w_runs_the_windows_gate_after_the_linux_gate() {
+    let quality = workflow("quality.yml");
+    let base = job(&quality, "base");
+    let output = "      windows_after_linux: ${{ steps.base.outputs.windows_after_linux }}";
+    assert!(base.contains(&output), "{base:#?}");
+    let windows = job(&quality, "windows");
+    for line in [
+        "    env: &windows-gate-env",
+        "    steps: &windows-gate-steps",
+    ] {
+        assert!(windows.contains(&line), "{line}: {windows:#?}");
+    }
+    let after = job(&quality, "windows-after-linux");
+    for line in [
+        "    name: Windows-only CRAP and mutation after Linux / own hardware",
+        "    needs: [base, prior, linux]",
+        "    runs-on: [self-hosted, Windows, X64, climon2-quality]",
+        "    timeout-minutes: 120",
+        "        shell: bash",
+        "    env: *windows-gate-env",
+        "    steps: *windows-gate-steps",
+    ] {
+        assert!(after.contains(&line), "{line}: {after:#?}");
+    }
+    assert_eq!(
+        condition(&after),
+        "!cancelled() && needs.base.result == 'success' \
+         && contains(needs.base.outputs.gates, 'windows') \
+         && contains(vars.CLIMON2_OWN_RUNNERS, 'windows') \
+         && needs.prior.outputs.run == '' \
+         && needs.base.outputs.windows_after_linux == 'true'"
+    );
 }
 
 /// #488: one script decides which gates a run has and what they mutate
