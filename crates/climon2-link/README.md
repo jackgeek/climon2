@@ -7,10 +7,10 @@ stream ([ADR 0011](../../docs/adr/0011-monitor-library-and-client-embedding.md))
 Monitor links are planned. So far this crate holds the interface every part
 is driven through, the test harness that drives it, and three parts of the
 [link protocol](../../docs/for-humans/protocol/monitor-link/README.md): the
-opening exchange, pairing, and a link connection between two ends that
-already hold each other's keys. Joining a pairing to its first link, the
-records that follow Hello, sending keepalives, the silence timer and the
-limits are not built, and no executable links the crate.
+opening exchange, pairing, a link connection between two ends that already
+hold each other's keys, and the records that follow Hello. Credit, sending
+keepalives, the silence timer, the stream-0 queue limit and ending one stream
+for a stream violation are not built.
 
 ## One implementation for every platform
 
@@ -237,16 +237,16 @@ that chose a revision for a link connection, to the
     Close (for a hub monitor, a failed dial); `Left(reason)` when this end
     sent Close; `Closed(reason)` when the other end did; `Lost` when an
     established link ended without one.
-- `send(stream, tag, body)` queues one record for the next step. It is
-  `Refused` before the link is established or after it ends (`NotLinked`),
-  for the tags of Hello and Close, which the link code sends itself
-  (`Reserved`), and above the other end's largest record (`TooLong`). A long
-  record crosses as several units on its stream.
+- `send(record)` queues one record, described [next](#records-after-hello).
+  It is `Refused` before the link is established or after it ends
+  (`NotLinked`), above the other end's largest record (`TooLong`), and when
+  it breaks an order rule (`OutOfTurn`). Hello and Close are not records a
+  caller sends: the link code sends them itself.
 - `close(reason)` ends an established link with Close. A relay's reasons are
   `RelayClose` and a hub monitor's `HubClose`, each with its code on the
   wire.
 - `records()` takes the records that have arrived since the last call, in
-  the order they ended. Nothing checks yet which records a stream may carry.
+  the order they ended.
 
 Every framing, Hello or Close rule broken is a protocol violation: the end
 sends Close with "protocol violation" and closes. A unit that does not
@@ -263,6 +263,75 @@ reading:
 - Bytes that arrive with a whole handshake message, behind it, end the
   connection with no reply, as the opening messages do.
 
+## Records after Hello
+
+Once the link is established, the hub monitor sends a `HubRecord` and the
+relay a `RelayRecord`; each end's `records()` gives the other's. The layouts
+are those of the
+[record pages](../../docs/for-humans/protocol/monitor-link/README.md#contents).
+
+- `RelayRecord::Advertisement` is stream 0: `Session`, `Withdrawn` with a
+  `SessionId`, or `SnapshotComplete`.
+- `RelayRecord::Stream { stream, record }` is a `RelayStream` on a session
+  stream: `Opened`, `Refused`, `Ended`, `RequestRefused` or a client
+  interface `Event`.
+- `HubRecord { stream, record }` is a `HubStream`: `Open`, `Close` or a
+  client interface `Request`.
+- The `client` module holds `Request` and `Event` and the groups they are
+  made of. Each mirrors its structure in the
+  [client interface header](../../docs/for-humans/protocol/monitor-client/client-v1.h),
+  with reserved fields left out, and carries every number as the library
+  gave it.
+
+`src/layout.rs` states the one mechanical rule once, as two macros: a
+`layout!` struct crosses as its fields in the order written, and a
+`tagged!` enum as its tag, then its active variant's fields. Every record
+type is declared with them, so a type's field order and its layout cannot
+drift apart. Because the codecs are generated, the CRAP and mutation tools
+score none of them; `tests/encoding.rs` checks every record against bytes
+written by hand from the pages.
+
+Each end judges every record, either way, by one model of the order rules
+(`src/rules.rs`):
+
+- Streams are numbered from 1, each the previous plus one, and never
+  reused. A reconnect is a new end and starts from 1 again.
+- The relay answers Open stream with Stream opened or Stream refused before
+  anything else, and sends nothing after Stream ended or Stream refused.
+- The hub monitor sends requests only after Stream opened and before its
+  own Close stream, and nothing after Close stream.
+- A request or Close stream on a stream that has ended may have crossed the
+  ending on the wire: the relay ignores it. After Close stream, the hub
+  monitor discards what the relay sends on that stream, except the Stream
+  ended or Stream refused that ends it.
+- The relay holds at most 128 advertised sessions, withdraws only one it
+  holds, and sends Snapshot complete once.
+
+An end asked to send a record out of turn refuses it. A record that arrives
+out of turn, with a tag its receiver does not know or with a body that
+breaks its layout is a protocol violation and ends the link.
+
+Units go out stream 0 first, then one unit for each session stream in turn,
+so a control record overtakes a large event. An established end sends at
+most 8 units in one step. When it has more, it names the present moment as
+its deadline: its caller steps it again once those are sent, and a record
+queued meanwhile goes ahead of the rest.
+
+Four points go beyond the letter of the protocol pages, each the stricter
+or simpler reading:
+
+- Every protocol violation ends the link, including one the pages make a
+  stream violation. Ending only that stream comes with credit.
+- Any request or Close stream on a stream that has ended is ignored, even
+  one that could not have crossed the ending, such as a request on a
+  refused stream. Telling them apart would mean remembering every ended
+  stream for the life of the link.
+- An Open stream for a client interface revision other than 1, and a Stream
+  refused cause or Stream ended reason the pages do not list, break the
+  layout. `OpenStream` has no revision field: it is always 1.
+- The relay answers Open stream with Stream opened or Stream refused even
+  after Close stream, so Stream ended always follows Stream opened.
+
 ## The Link-layer harness
 
 `tests/support/mod.rs` is the harness of the Link layer of the
@@ -271,7 +340,8 @@ reading:
 in-memory byte streams, starting at time zero.
 
 - `run()` steps each end once with `Tick`, the hub monitor's first, then
-  carries bytes and closes between them until both are quiet.
+  carries bytes and closes between them until both are quiet. An end that
+  sent bytes and named the present moment as its deadline is stepped again.
 - `advance(duration)` moves the supplied time on and runs the ends. On the
   way it stops at every deadline an end has named and runs the ends there.
 - `hub_deadline()` and `relay_deadline()` show the deadline each end named
@@ -313,5 +383,10 @@ in-memory byte streams, starting at time zero.
 | SEC-03: a replayed initiation or connection links nothing and delivers nothing | `tests/attacks.rs`: the `sec_03_` tests |
 | SEC-04, the opening half: a malformed, partial or late opening request is closed without a byte in reply, at 10 seconds at the latest | `tests/opening.rs`: the `sec_04_` tests |
 | SEC-04, the rest: an unknown key gets only Close with "not paired", and a wrong relay learns nothing that identifies the hub monitor | `tests/attacks.rs`: the `sec_04_` tests |
+| STR-02, the Link-layer parts: stream numbers rise from 1 and are never reused, a reconnect starts again from 1, the relay answers first and Stream ended is last and carries the run report | `tests/streams.rs`: the `str_02_` tests and the tests of crossing and discarding |
+| STR-03: every unit is at most 16,384 bytes and one fragment of one record, control records overtake a large event, records arrive complete and in order, and each client interface record has the layout of its structure | `tests/encoding.rs` and `tests/streams.rs`: the `str_03_` tests. Content fixtures are not recorded yet. |
+| ADV-02, the Link-layer part: a Session carries the ID, command, arguments, working directory, depth, creation time and release, and nothing more | `tests/advertisement.rs`: the `adv_02_` tests |
+| ADV-05, the Link-layer part: a remote session is the relay's pinned key and the session ID | `tests/advertisement.rs`: `adv_05_a_remote_session_is_the_relays_key_and_the_session_id` |
+| REV-04: an unknown record tag ends the link and is never skipped; unknown capability tokens are ignored, and link revision 1 sends none | `tests/encoding.rs`: `rev_04_an_unknown_record_tag_ends_the_link`; `tests/records.rs`: `rev_04_unknown_capability_tokens_are_ignored` |
 | SEC-08: the published Noise vector, and climon2's frozen vector binding the opening exchange into the handshake | `src/noise.rs`: `sec_08_the_published_noise_ik_vector_gives_its_bytes`; `tests/handshake.rs`: `sec_08_a_link_connection_gives_climon2s_frozen_bytes` |
 | SEC-08, for pairing: the published CPace vectors and climon2's frozen key schedule and pairing connection | `src/pairing/cpace.rs` and `src/pairing/keys.rs`: the `sec_08_` tests; `tests/pairing_vectors.rs` |

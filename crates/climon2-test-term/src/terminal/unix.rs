@@ -170,11 +170,14 @@ impl Terminal {
 
     /// Waits until a program's write to this terminal would wait, its
     /// buffer full while [`Terminal::stop_reading`] holds the host's
-    /// reading, as the terminal device itself reports.
+    /// reading, as the terminal device itself reports. A program that waits
+    /// inside its write holds the terminal's write lock until the host
+    /// reads, so this suits programs that write without waiting, as the
+    /// monitor does (#285).
     pub fn wait_for_output_blocked(&self, timeout: Duration) -> io::Result<()> {
         let device = self.opened(std::fs::OpenOptions::new().write(true))?;
         let deadline = Instant::now() + timeout;
-        while writable(&device)? {
+        while !full(&device)? {
             if Instant::now() >= deadline {
                 return Err(self
                     .screen
@@ -320,6 +323,20 @@ fn unread(device: &std::fs::File) -> io::Result<usize> {
         return Err(io::Error::last_os_error());
     }
     usize::try_from(count).map_err(io::Error::other)
+}
+
+/// Whether the terminal's buffer is full: no write to it is under way,
+/// yet a write would take nothing. Linux reports a terminal unwritable
+/// while any write to it is under way, holding its write lock, however much
+/// room is left, and a loaded host can deschedule that write midway for
+/// milliseconds. A write of nothing through the nonblocking `device` is
+/// refused while one is, and writes nothing otherwise.
+fn full(device: &std::fs::File) -> io::Result<bool> {
+    match nix::unistd::write(device, &[]) {
+        Ok(_) => Ok(!writable(device)?),
+        Err(Errno::EAGAIN) => Ok(false),
+        Err(error) => Err(io::Error::from(error)),
+    }
 }
 
 /// Whether a write to `device` would take bytes now.

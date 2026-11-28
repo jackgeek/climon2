@@ -4,7 +4,8 @@
 //! protocol's shared rules.
 
 use crate::noise::{TAG_SIZE, Transport};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::ops::Bound::{Excluded, Unbounded};
 
 /// The size of a unit's length field.
 const LENGTH_SIZE: usize = 2;
@@ -51,6 +52,17 @@ pub(crate) struct Units {
     arrived: Vec<u8>,
     /// The record each stream is part-way through receiving.
     partial: BTreeMap<u32, Vec<u8>>,
+    /// The records each stream has still to send, in order. A stream with
+    /// none has no entry.
+    queued: BTreeMap<u32, VecDeque<Queued>>,
+    /// The session stream that sent the last unit.
+    turn: u32,
+}
+
+/// A record to send, and how much of it has been sent.
+struct Queued {
+    record: Vec<u8>,
+    sent: usize,
 }
 
 impl Units {
@@ -59,27 +71,73 @@ impl Units {
             transport,
             arrived: Vec::new(),
             partial: BTreeMap::new(),
+            queued: BTreeMap::new(),
+            turn: CONTROL,
         }
     }
 
-    /// The units that carry `record` on `stream`, as bytes to send. A
-    /// record is never empty: it starts with its tag.
-    pub(crate) fn send(&mut self, stream: u32, record: &[u8]) -> Vec<u8> {
+    /// Queues `record` to send on `stream`, behind the records that stream
+    /// has queued. A record is never empty: it starts with its tag.
+    pub(crate) fn send(&mut self, stream: u32, record: Vec<u8>) {
+        let queued = Queued { record, sent: 0 };
+        self.queued.entry(stream).or_default().push_back(queued);
+    }
+
+    /// Up to `most` units of what is queued, as bytes to send. Stream 0
+    /// goes first. The session streams then take turns, one unit each, so
+    /// that no record waits behind a long record of another stream.
+    pub(crate) fn flush(&mut self, most: usize) -> Vec<u8> {
         let mut bytes = Vec::new();
-        let mut fragments = record.chunks(FRAGMENT_MOST).peekable();
-        while let Some(fragment) = fragments.next() {
-            let more = fragments.peek().is_some();
-            let mut plaintext = stream.to_be_bytes().to_vec();
-            plaintext.push(if more { MORE } else { 0 });
-            plaintext.extend(fragment);
-            let ciphertext = self
-                .transport
-                .seal(&plaintext)
-                .expect("a unit fits one Noise message");
-            bytes.extend((ciphertext.len() as u16).to_be_bytes());
-            bytes.extend(ciphertext);
+        for _ in 0..most {
+            let Some(stream) = self.next_stream() else {
+                break;
+            };
+            bytes.extend(self.next_unit_of(stream));
         }
         bytes
+    }
+
+    /// Whether anything queued is still to send.
+    pub(crate) fn pending(&self) -> bool {
+        !self.queued.is_empty()
+    }
+
+    /// Drops what the session streams have queued: the connection is
+    /// ending, and only stream 0 sends more.
+    pub(crate) fn drop_streams(&mut self) {
+        self.queued.retain(|stream, _| *stream == CONTROL);
+    }
+
+    /// The stream whose unit goes next: stream 0 when it has one, and
+    /// otherwise the session stream after the last to send, in turn.
+    fn next_stream(&self) -> Option<u32> {
+        if self.queued.contains_key(&CONTROL) {
+            return Some(CONTROL);
+        }
+        let after = self.queued.range((Excluded(self.turn), Unbounded)).next();
+        let next = after.or_else(|| self.queued.first_key_value());
+        next.map(|(stream, _)| *stream)
+    }
+
+    /// The next unit of the record `stream` is sending, which it has.
+    fn next_unit_of(&mut self, stream: u32) -> Vec<u8> {
+        let queue = self.queued.get_mut(&stream).expect("a queued stream");
+        let front = queue.front_mut().expect("a queued record");
+        let fragment = &front.record[front.sent..];
+        let fragment = &fragment[..fragment.len().min(FRAGMENT_MOST)];
+        front.sent += fragment.len();
+        let more = front.sent < front.record.len();
+        let unit = seal(&mut self.transport, stream, more, fragment);
+        if !more {
+            queue.pop_front();
+        }
+        if queue.is_empty() {
+            self.queued.remove(&stream);
+        }
+        if stream != CONTROL {
+            self.turn = stream;
+        }
+        unit
     }
 
     /// Takes the next bytes of the byte stream.
@@ -163,6 +221,19 @@ impl Units {
         }
         Ok(self.partial.remove(&stream).map(|record| (stream, record)))
     }
+}
+
+/// The unit that carries `fragment` on `stream`, as bytes to send.
+fn seal(transport: &mut Transport, stream: u32, more: bool, fragment: &[u8]) -> Vec<u8> {
+    let mut plaintext = stream.to_be_bytes().to_vec();
+    plaintext.push(if more { MORE } else { 0 });
+    plaintext.extend(fragment);
+    let ciphertext = transport
+        .seal(&plaintext)
+        .expect("a unit fits one Noise message");
+    let mut bytes = (ciphertext.len() as u16).to_be_bytes().to_vec();
+    bytes.extend(ciphertext);
+    bytes
 }
 
 /// A unit's plaintext split into its stream, its flags and its fragment,

@@ -391,7 +391,6 @@ need it can run:
 - the test-build clock hook for the relay, and the same for the monitor's
   redial timer;
 - the capture command for content fixtures;
-- the seam contract suites;
 - the extension of the `cargo metadata` workspace test.
 
 The monitor's

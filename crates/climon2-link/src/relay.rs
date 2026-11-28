@@ -1,7 +1,7 @@
 //! The relay's end of a byte stream: the listener.
 
 use crate::keys::{PublicKey, StaticKey};
-use crate::link::{Link, Record, Refused, RelayLink, RelayRun as LinkRun};
+use crate::link::{Link, Refused, RelayLink, RelayRun as LinkRun};
 use crate::opening::{
     Answer, Arrival, Awaited, Opened, Opening, Purpose, REQUEST_SIZE, Reply, Request, Revisions,
     Transcript,
@@ -10,6 +10,7 @@ use crate::pairing::invitation::Seat;
 use crate::pairing::relay::RelayRun as PairingRunAtRelay;
 use crate::pairing::{Invitations, PairingRun, RUN_WAIT};
 use crate::record::{Hello, RelayClose};
+use crate::stream::{HubRecord, RelayRecord};
 use crate::{End, Input, Output, Randomness, Time};
 use std::time::Duration;
 
@@ -81,11 +82,11 @@ impl RelayEnd {
         self.link.as_ref().map_or(&NO_LINK, LinkRun::link)
     }
 
-    /// Queues one record for the hub monitor on `stream`. It is sent at the
-    /// next step.
-    pub fn send(&mut self, stream: u32, tag: u8, body: &[u8]) -> Result<(), Refused> {
+    /// Queues one record for the hub monitor. It is sent from the next step
+    /// on.
+    pub fn send(&mut self, record: &RelayRecord) -> Result<(), Refused> {
         let link = self.link.as_mut().ok_or(Refused::NotLinked)?;
-        link.send(stream, tag, body)
+        link.send(record)
     }
 
     /// Ends the established link with a Close that gives `reason`. The next
@@ -97,7 +98,7 @@ impl RelayEnd {
 
     /// Takes the records the hub monitor has sent since the last call, in
     /// the order they ended.
-    pub fn records(&mut self) -> Vec<Record> {
+    pub fn records(&mut self) -> Vec<HubRecord> {
         self.link.as_mut().map(LinkRun::records).unwrap_or_default()
     }
 

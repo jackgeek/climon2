@@ -7,6 +7,8 @@ use crate::keys::{KEY_SIZE, PublicKey, StaticKey};
 use crate::noise::{self, Initiator, Transport};
 use crate::opening::{Opening, Transcript};
 use crate::record::{CLOSE, HELLO, HELLO_MOST, Hello, HubClose, Reason, RelayClose};
+use crate::rules::{Rules, Verdict};
+use crate::stream::{HubRecord, RelayRecord, Spoken, Voice};
 use crate::unit::{Allowed, CONTROL, Fault, Received, Units};
 use crate::{Input, Output, Randomness, Time};
 use std::time::Duration;
@@ -19,6 +21,11 @@ const REPLY_SIZE: usize = 48;
 /// monitor's Hello, and a hub monitor from dialling to receiving the
 /// relay's Hello or Close.
 const HELLO_WAIT: Duration = Duration::from_secs(30);
+/// The most units an established end sends in one step. An end with more
+/// to send names the present moment as its deadline, so its caller steps
+/// it again as soon as it has sent these; a record queued meanwhile on
+/// stream 0, or on a stream with less to send, goes ahead of the rest.
+const UNITS_PER_STEP: usize = 8;
 
 /// The other end of an established link.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,26 +72,17 @@ pub type HubLink = Link<HubClose, RelayClose>;
 /// A relay's link.
 pub type RelayLink = Link<RelayClose, HubClose>;
 
-/// One record of an established link, as it arrived.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Record {
-    /// The stream that carried it: 0 for control and advertisement.
-    pub stream: u32,
-    /// The record's type.
-    pub tag: u8,
-    /// The rest of the record.
-    pub body: Vec<u8>,
-}
-
 /// Why an end did not take something to send.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
     /// The link is not established, or is over.
     NotLinked,
-    /// The tag is Hello's or Close's, which the link code sends itself.
-    Reserved,
     /// The record is longer than the other end accepts.
     TooLong,
+    /// The record breaks an order rule: a stream number out of sequence, a
+    /// record on a stream that has not begun, has ended or may not carry it
+    /// yet, or an advertisement the relay may not make.
+    OutOfTurn,
 }
 
 /// What an end does when the other end's Hello arrives.
@@ -98,7 +96,7 @@ enum Role<Ours> {
 }
 
 /// A link connection from the end of its handshake on.
-struct Conversation<Ours, Theirs> {
+struct Conversation<Ours: Voice, Theirs> {
     units: Units,
     role: Role<Ours>,
     /// This end's Hello.
@@ -106,13 +104,13 @@ struct Conversation<Ours, Theirs> {
     /// The other end's static public key.
     key: PublicKey,
     link: Link<Ours, Theirs>,
-    /// Bytes to send at the next step.
-    outbox: Vec<u8>,
+    /// The order rules every record after Hello keeps, either way.
+    rules: Rules,
     /// Records received and not yet taken by the caller.
-    inbox: Vec<Record>,
+    inbox: Vec<Ours::Hears>,
 }
 
-impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
+impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
     fn new(transport: Transport, role: Role<Ours>, own: Hello, key: PublicKey) -> Self {
         let mut conversation = Self {
             units: Units::new(transport),
@@ -120,29 +118,30 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
             own,
             key,
             link: Link::Pending,
-            outbox: Vec::new(),
+            rules: Rules::default(),
             inbox: Vec::new(),
         };
         if matches!(conversation.role, Role::Hub) {
-            conversation.say(&conversation.own.encode());
+            conversation.say(conversation.own.encode());
         }
         conversation
     }
 
     /// Queues one stream-0 record.
-    fn say(&mut self, record: &[u8]) {
-        let units = self.units.send(CONTROL, record);
-        self.outbox.extend(units);
+    fn say(&mut self, record: Vec<u8>) {
+        self.units.send(CONTROL, record);
     }
 
-    /// Ends the connection; the next output closes the byte stream.
+    /// Ends the connection; the next output closes the byte stream, and
+    /// what the session streams have still to send is never sent.
     fn end(&mut self, ended: Ended<Ours, Theirs>) {
         self.link = Link::Ended(ended);
+        self.units.drop_streams();
     }
 
     /// Ends the connection with a Close that gives `reason`.
     fn leave(&mut self, reason: Ours) {
-        self.say(&reason.encode());
+        self.say(reason.encode());
         self.end(Ended::Left(reason));
     }
 
@@ -174,9 +173,10 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
         }
     }
 
-    /// Takes one input and gives what to send. The output closes the byte
-    /// stream once the connection is over.
-    fn step(&mut self, input: Input<'_>) -> Output {
+    /// Takes one input at `now` and gives what to send. The output closes
+    /// the byte stream once the connection is over, after everything stream
+    /// 0 has still to send.
+    fn step(&mut self, now: Time, input: Input<'_>) -> Output {
         match input {
             Input::Tick => {}
             Input::Closed => self.cut_off(),
@@ -185,10 +185,15 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
                 self.read();
             }
         }
+        let most = if self.over() {
+            usize::MAX
+        } else {
+            UNITS_PER_STEP
+        };
         Output {
-            bytes: std::mem::take(&mut self.outbox),
+            bytes: self.units.flush(most),
             close: self.over(),
-            deadline: None,
+            deadline: self.units.pending().then_some(now),
         }
     }
 
@@ -221,20 +226,24 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
         match (stream, tag) {
             (CONTROL, HELLO) => self.hello(body),
             (CONTROL, CLOSE) => self.closed(body),
-            _ => self.other(Record {
-                stream,
-                tag,
-                body: body.to_vec(),
-            }),
+            _ => self.other(stream, record),
         }
     }
 
-    /// Any record but Hello and Close: the caller's, once the link is
-    /// established, and a protocol violation before.
-    fn other(&mut self, record: Record) {
-        match self.established() {
-            true => self.inbox.push(record),
-            false => self.leave(Ours::VIOLATION),
+    /// Any record but Hello and Close, tag included: the caller's, once the
+    /// link is established, when it is one the other end sends on `stream`
+    /// and in turn. One that crossed the ending of its stream, or arrived
+    /// on a stream this end closed, is dropped. Anything else is a protocol
+    /// violation.
+    fn other(&mut self, stream: u32, record: &[u8]) {
+        let heard = Ours::Hears::decode(stream, record).filter(|_| self.established());
+        let Some(heard) = heard else {
+            return self.leave(Ours::VIOLATION);
+        };
+        match heard.judge(&mut self.rules) {
+            Verdict::Accept => self.inbox.push(heard),
+            Verdict::Broken => self.leave(Ours::VIOLATION),
+            Verdict::Crossed | Verdict::Discarded => {}
         }
     }
 
@@ -254,7 +263,7 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
             Role::Relay {
                 refusal: Some(reason),
             } => return self.leave(reason),
-            Role::Relay { refusal: None } => self.say(&self.own.encode()),
+            Role::Relay { refusal: None } => self.say(self.own.encode()),
             Role::Hub => {}
         }
         self.link = Link::Established(Peer {
@@ -273,20 +282,20 @@ impl<Ours: Reason, Theirs: Reason> Conversation<Ours, Theirs> {
         }
     }
 
-    fn send(&mut self, stream: u32, tag: u8, body: &[u8]) -> Result<(), Refused> {
+    /// Queues `record`, when the link is established, the other end
+    /// accepts a record that long and the record is in turn.
+    fn send(&mut self, record: &Ours::Says) -> Result<(), Refused> {
         let Link::Established(peer) = &self.link else {
             return Err(Refused::NotLinked);
         };
-        if tag == HELLO || tag == CLOSE {
-            return Err(Refused::Reserved);
-        }
-        if body.len() >= peer.hello.largest_record() as usize {
+        let (stream, bytes) = record.encode();
+        if bytes.len() > peer.hello.largest_record() as usize {
             return Err(Refused::TooLong);
         }
-        let mut record = vec![tag];
-        record.extend(body);
-        let units = self.units.send(stream, &record);
-        self.outbox.extend(units);
+        if !record.judge(&mut self.rules).sendable() {
+            return Err(Refused::OutOfTurn);
+        }
+        self.units.send(stream, bytes);
         Ok(())
     }
 
@@ -400,7 +409,7 @@ fn in_time<R: Run>(
 
 /// An ephemeral private key, drawn from the caller's randomness.
 fn ephemeral(randomness: &mut dyn Randomness) -> [u8; KEY_SIZE] {
-    let mut key = [0; KEY_SIZE];
+    let mut key = <[u8; KEY_SIZE]>::default();
     randomness.fill(&mut key);
     key
 }
@@ -500,14 +509,14 @@ impl HubRun {
     }
 
     pub(crate) fn step(&mut self, now: Time, input: Input<'_>) -> Output {
-        in_time(self, now, self.deadline, |run| run.advance(input))
+        in_time(self, now, self.deadline, |run| run.advance(now, input))
     }
 
-    fn advance(&mut self, input: Input<'_>) -> Output {
+    fn advance(&mut self, now: Time, input: Input<'_>) -> Output {
         match std::mem::replace(&mut self.stage, HubStage::Over) {
-            HubStage::Replying(initiator, message) => self.replying(initiator, message, input),
+            HubStage::Replying(initiator, message) => self.replying(initiator, message, now, input),
             HubStage::Talking(mut conversation) => {
-                let output = conversation.step(input);
+                let output = conversation.step(now, input);
                 self.stage = HubStage::Talking(conversation);
                 output
             }
@@ -523,10 +532,11 @@ impl HubRun {
         &mut self,
         initiator: Box<Initiator>,
         mut message: Message<REPLY_SIZE>,
+        now: Time,
         input: Input<'_>,
     ) -> Output {
         match message.take(input) {
-            Arrived::Whole(reply) => self.finish(*initiator, reply),
+            Arrived::Whole(reply) => self.finish(*initiator, reply, now),
             Arrived::Broken => self.fail(),
             Arrived::Partial => {
                 self.stage = HubStage::Replying(initiator, message);
@@ -536,20 +546,20 @@ impl HubRun {
     }
 
     /// Completes the handshake with the relay's reply and sends Hello.
-    fn finish(&mut self, initiator: Initiator, reply: &[u8]) -> Output {
+    fn finish(&mut self, initiator: Initiator, reply: &[u8], now: Time) -> Output {
         let Some((_, transport)) = initiator.finish(reply) else {
             return self.fail();
         };
         let mut conversation =
             Conversation::new(transport, Role::Hub, self.hello.clone(), self.relay);
-        let output = conversation.step(Input::Tick);
+        let output = conversation.step(now, Input::Tick);
         self.stage = HubStage::Talking(Box::new(conversation));
         output
     }
 
-    pub(crate) fn send(&mut self, stream: u32, tag: u8, body: &[u8]) -> Result<(), Refused> {
+    pub(crate) fn send(&mut self, record: &HubRecord) -> Result<(), Refused> {
         match &mut self.stage {
-            HubStage::Talking(conversation) => conversation.send(stream, tag, body),
+            HubStage::Talking(conversation) => conversation.send(record),
             _ => Err(Refused::NotLinked),
         }
     }
@@ -561,7 +571,7 @@ impl HubRun {
         }
     }
 
-    pub(crate) fn records(&mut self) -> Vec<Record> {
+    pub(crate) fn records(&mut self) -> Vec<RelayRecord> {
         match &mut self.stage {
             HubStage::Talking(conversation) => std::mem::take(&mut conversation.inbox),
             _ => Vec::new(),
@@ -663,17 +673,17 @@ impl RelayRun {
         randomness: &mut dyn Randomness,
     ) -> Output {
         in_time(self, now, self.deadline, |run| {
-            run.advance(input, randomness)
+            run.advance(now, input, randomness)
         })
     }
 
-    fn advance(&mut self, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
+    fn advance(&mut self, now: Time, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
         match std::mem::replace(&mut self.stage, RelayStage::Over) {
             RelayStage::Initiating(transcript, message) => {
                 self.initiating(transcript, message, input, randomness)
             }
             RelayStage::Talking(mut conversation) => {
-                let output = conversation.step(input);
+                let output = conversation.step(now, input);
                 self.stage = RelayStage::Talking(conversation);
                 output
             }
@@ -736,9 +746,9 @@ impl RelayRun {
         }
     }
 
-    pub(crate) fn send(&mut self, stream: u32, tag: u8, body: &[u8]) -> Result<(), Refused> {
+    pub(crate) fn send(&mut self, record: &RelayRecord) -> Result<(), Refused> {
         match &mut self.stage {
-            RelayStage::Talking(conversation) => conversation.send(stream, tag, body),
+            RelayStage::Talking(conversation) => conversation.send(record),
             _ => Err(Refused::NotLinked),
         }
     }
@@ -750,7 +760,7 @@ impl RelayRun {
         }
     }
 
-    pub(crate) fn records(&mut self) -> Vec<Record> {
+    pub(crate) fn records(&mut self) -> Vec<HubRecord> {
         match &mut self.stage {
             RelayStage::Talking(conversation) => std::mem::take(&mut conversation.inbox),
             _ => Vec::new(),
