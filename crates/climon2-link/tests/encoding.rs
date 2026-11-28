@@ -322,7 +322,6 @@ fn rev_04_an_unknown_record_tag_ends_the_link() {
         (1, 0x00),
         (1, 0x21),
         (1, 0x24),
-        (1, 0x25),
         (1, 0x26),
         (1, 0x27),
         (1, 0x40),

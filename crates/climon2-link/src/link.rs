@@ -84,6 +84,10 @@ pub enum Refused {
     /// record on a stream that has not begun, has ended or may not carry it
     /// yet, or an advertisement the relay may not make.
     OutOfTurn,
+    /// The record breaks a credit rule: an Event longer than the credit its
+    /// stream holds, or a Credit of nothing or one that would take the
+    /// stream past 4,294,967,295 bytes.
+    Credit,
 }
 
 /// What an end does when the other end's Hello arrives.
@@ -292,9 +296,11 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
         let Some(heard) = heard else {
             return self.leave(Ours::VIOLATION);
         };
-        match heard.judge(&mut self.rules) {
+        match heard.judge(record.len(), &mut self.rules) {
             Verdict::Accept => self.inbox.push(heard),
-            Verdict::Broken => self.leave(Ours::VIOLATION),
+            Verdict::Broken | Verdict::OutOfOrder | Verdict::Overdrawn => {
+                self.leave(Ours::VIOLATION)
+            }
             Verdict::Crossed | Verdict::Discarded => {}
         }
     }
@@ -344,9 +350,7 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
         if bytes.len() > peer.hello.largest_record() as usize {
             return Err(Refused::TooLong);
         }
-        if !record.judge(&mut self.rules).sendable() {
-            return Err(Refused::OutOfTurn);
-        }
+        record.judge(bytes.len(), &mut self.rules).sent()?;
         self.units.send(stream, bytes);
         Ok(())
     }

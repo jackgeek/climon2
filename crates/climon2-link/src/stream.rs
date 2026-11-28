@@ -219,6 +219,8 @@ tagged! {
         Open(OpenStream) = 0x20,
         /// Stop the stream's client.
         Close = 0x23,
+        /// Grant the stream this many more bytes of events.
+        Credit(u32) = 0x25,
         ;
         /// One client interface request.
         Request(Request) in 0x40..=0x7f,
@@ -267,8 +269,9 @@ pub(crate) trait Spoken: Sized {
     /// breaks its layout or is not one its sender sends there.
     fn decode(stream: u32, record: &[u8]) -> Option<Self>;
 
-    /// What the order rules make of it.
-    fn judge(&self, rules: &mut Rules) -> Verdict;
+    /// What the order rules make of it, when it is `length` bytes long,
+    /// tag included.
+    fn judge(&self, length: usize, rules: &mut Rules) -> Verdict;
 }
 
 impl Spoken for HubRecord {
@@ -282,7 +285,7 @@ impl Spoken for HubRecord {
         Some(Self { stream, record })
     }
 
-    fn judge(&self, rules: &mut Rules) -> Verdict {
+    fn judge(&self, _: usize, rules: &mut Rules) -> Verdict {
         rules.hub(self)
     }
 }
@@ -302,8 +305,8 @@ impl Spoken for RelayRecord {
         }
     }
 
-    fn judge(&self, rules: &mut Rules) -> Verdict {
-        rules.relay(self)
+    fn judge(&self, length: usize, rules: &mut Rules) -> Verdict {
+        rules.relay(self, length)
     }
 }
 

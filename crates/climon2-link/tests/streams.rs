@@ -90,6 +90,7 @@ fn hub_bytes(record: &HubRecord) -> Vec<u8> {
         HubStream::Open(_) => samples::open_stream_record(),
         HubStream::Close => vec![0x23],
         HubStream::Request(_) => samples::requests().remove(1).1,
+        HubStream::Credit(_) => panic!("not used here"),
     }
 }
 
