@@ -57,6 +57,8 @@ pub(crate) struct Units {
     queued: BTreeMap<u32, VecDeque<Queued>>,
     /// The session stream that sent the last unit.
     turn: u32,
+    /// Whether a unit has decrypted since the last call to `heard`.
+    heard: bool,
 }
 
 /// A record to send, and how much of it has been sent.
@@ -73,6 +75,7 @@ impl Units {
             partial: BTreeMap::new(),
             queued: BTreeMap::new(),
             turn: CONTROL,
+            heard: false,
         }
     }
 
@@ -95,6 +98,17 @@ impl Units {
             bytes.extend(self.next_unit_of(stream));
         }
         bytes
+    }
+
+    /// A keepalive, as bytes to send: a unit on stream 0 with no flags and
+    /// an empty fragment.
+    pub(crate) fn keepalive_unit(&mut self) -> Vec<u8> {
+        seal(&mut self.transport, CONTROL, false, &[])
+    }
+
+    /// Whether a unit has decrypted since the last call.
+    pub(crate) fn heard(&mut self) -> bool {
+        std::mem::take(&mut self.heard)
     }
 
     /// Whether anything queued is still to send.
@@ -180,7 +194,12 @@ impl Units {
 
     /// The plaintext of one unit's ciphertext.
     fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, Fault> {
-        self.transport.open(ciphertext).ok_or(Fault::Undecryptable)
+        let plaintext = self
+            .transport
+            .open(ciphertext)
+            .ok_or(Fault::Undecryptable)?;
+        self.heard = true;
+        Ok(plaintext)
     }
 
     /// Adds one unit's fragment to its stream's record. Gives the record

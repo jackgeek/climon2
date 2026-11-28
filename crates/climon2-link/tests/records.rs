@@ -6,10 +6,9 @@ mod samples;
 mod support;
 mod wire;
 
-use climon2_link::Output;
 use climon2_link::{
-    Advertisement, Ended, Hello, HubClose, HubEnd, Input, Link, Refused, RelayClose, RelayEnd,
-    RelayStream,
+    Advertisement, Ended, Hello, HubClose, HubEnd, Input, Link, Output, Refused, RelayClose,
+    RelayEnd, RelayStream, Time,
 };
 use std::time::Duration;
 use wire::{SECOND, StandIn, hub_end, hub_key, relay_end, relay_key, step};
@@ -25,7 +24,11 @@ fn linked_relay() -> (RelayEnd, StandIn) {
     let hello = stand_in.record(&wire::HELLO);
     let output = step(&mut relay, SECOND, Input::Bytes(&hello));
     assert_eq!(stand_in.open(&output.bytes), [on_control(RELAY_HELLO)]);
-    assert_eq!(output.deadline, None, "no deadline once linked");
+    assert_eq!(
+        output.deadline,
+        Some(Time::since_start(6 * SECOND)),
+        "only the keepalive's deadline once linked"
+    );
     assert!(matches!(relay.link(), Link::Established(_)));
     (relay, stand_in)
 }
@@ -38,8 +41,11 @@ fn linked_hub() -> (HubEnd, StandIn) {
     let output = step(&mut hub, SECOND, Input::Bytes(&hello));
     assert_eq!(
         output,
-        climon2_link::Output::default(),
-        "no deadline once linked"
+        Output {
+            deadline: Some(Time::since_start(5 * SECOND)),
+            ..Output::default()
+        },
+        "nothing to send, and only the keepalive's deadline once linked"
     );
     assert!(matches!(hub.link(), Link::Established(_)));
     (hub, stand_in)

@@ -463,7 +463,11 @@ fn an_end_sends_8_units_a_step_and_lets_control_go_ahead() {
         6,
         "and the rest of the event"
     );
-    assert_eq!(second.deadline, None, "nothing more to send");
+    assert_eq!(
+        second.deadline,
+        Some(climon2_link::Time::since_start(LATER + 5 * wire::SECOND)),
+        "nothing more to send before the next keepalive"
+    );
 }
 
 /// A record longer than one unit's fragment of 16,363 bytes crosses as

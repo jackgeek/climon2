@@ -4,6 +4,7 @@
 //! conversation that follows.
 
 use crate::keys::{KEY_SIZE, PublicKey, StaticKey};
+use crate::liveness::Liveness;
 use crate::noise::{self, Initiator, Transport};
 use crate::opening::{Opening, Purpose, Transcript};
 use crate::record::{CLOSE, HELLO, HELLO_MOST, Hello, HubClose, Reason, RelayClose};
@@ -108,6 +109,8 @@ struct Conversation<Ours: Voice, Theirs> {
     rules: Rules,
     /// Records received and not yet taken by the caller.
     inbox: Vec<Ours::Hears>,
+    /// When this end last sent a unit and last heard one.
+    liveness: Liveness,
 }
 
 impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
@@ -120,6 +123,7 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
             link: Link::Pending,
             rules: Rules::default(),
             inbox: Vec::new(),
+            liveness: Liveness::new(),
         };
         if matches!(conversation.role, Role::Hub) {
             conversation.say(conversation.own.encode());
@@ -175,8 +179,26 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
 
     /// Takes one input at `now` and gives what to send. The output closes
     /// the byte stream once the connection is over, after everything stream
-    /// 0 has still to send.
+    /// 0 has still to send, or at once, sending nothing, when the link is
+    /// lost to silence.
     fn step(&mut self, now: Time, input: Input<'_>) -> Output {
+        self.take(input);
+        if self.units.heard() {
+            self.liveness.heard(now);
+        }
+        if self.silent(now) {
+            return silent_close();
+        }
+        let bytes = self.flush(now);
+        Output {
+            bytes,
+            close: self.over(),
+            deadline: self.deadline(now),
+        }
+    }
+
+    /// Takes one step's input.
+    fn take(&mut self, input: Input<'_>) {
         match input {
             Input::Tick => {}
             Input::Closed => self.cut_off(),
@@ -185,16 +207,46 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
                 self.read();
             }
         }
+    }
+
+    /// Whether the established link has heard no unit for too long at
+    /// `now`, which ends it as lost.
+    fn silent(&mut self, now: Time) -> bool {
+        let silent = self.established() && self.liveness.silent(now);
+        if silent {
+            self.end(Ended::Lost);
+        }
+        silent
+    }
+
+    /// The units to send at `now`: up to 8 of what is queued, everything
+    /// stream 0 holds once the connection is over, or a keepalive when an
+    /// established end has nothing to send and has sent nothing for long
+    /// enough.
+    fn flush(&mut self, now: Time) -> Vec<u8> {
         let most = if self.over() {
             usize::MAX
         } else {
             UNITS_PER_STEP
         };
-        Output {
-            bytes: self.units.flush(most),
-            close: self.over(),
-            deadline: self.units.pending().then_some(now),
+        let mut bytes = self.units.flush(most);
+        if bytes.is_empty() && self.established() && self.liveness.keepalive_due(now) {
+            bytes = self.units.keepalive_unit();
         }
+        if !bytes.is_empty() {
+            self.liveness.sent(now);
+        }
+        bytes
+    }
+
+    /// The deadline at `now`: the present moment while units are queued,
+    /// and otherwise the next keepalive or the silence limit of an
+    /// established link.
+    fn deadline(&self, now: Time) -> Option<Time> {
+        if self.units.pending() {
+            return Some(now);
+        }
+        self.established().then(|| self.liveness.deadline())
     }
 
     /// Handles every whole record received, until the connection is over.
@@ -203,12 +255,12 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
             let Some(next) = self.units.next(self.allowed()) else {
                 return;
             };
-            self.take(next);
+            self.handle(next);
         }
     }
 
     /// Handles one whole record, or the fault that came in its place.
-    fn take(&mut self, next: Result<Received, Fault>) {
+    fn handle(&mut self, next: Result<Received, Fault>) {
         match next {
             Ok((stream, record)) => self.record(stream, &record),
             Err(Fault::Undecryptable) => self.cut_off(),

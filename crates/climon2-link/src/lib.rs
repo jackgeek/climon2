@@ -13,6 +13,7 @@ mod hub;
 mod keys;
 mod layout;
 mod link;
+mod liveness;
 mod noise;
 mod opening;
 mod record;
@@ -49,6 +50,11 @@ impl Time {
     /// How long after the caller's start this moment is.
     pub const fn elapsed(self) -> Duration {
         self.0
+    }
+
+    /// The moment `by` after this one.
+    pub(crate) fn after(self, by: Duration) -> Self {
+        Self(self.0.saturating_add(by))
     }
 }
 
