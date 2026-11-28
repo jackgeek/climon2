@@ -9,6 +9,7 @@
 //! crate that is replaced or upgraded cannot change them unnoticed.
 
 mod support;
+mod transcript;
 
 use climon2_link::{Invitation, PairingRun};
 use support::Harness;
@@ -109,4 +110,18 @@ fn sec_08_another_opening_transcript_gives_other_pairing_bytes() {
         assert_eq!(sent.len(), frozen.len());
         assert_ne!(sent[2..34], frozen[2..34]);
     }
+}
+
+/// REV-07: the pairing transcript is this frozen connection, so its bytes
+/// were computed by `vectors/pairing_reference.py`.
+#[test]
+fn rev_07_the_pairing_transcript_is_the_frozen_connection() {
+    let transcript = transcript::load(1, "pairing-correct-pin");
+    let from_hub = [OPENING.0, HUB_SHARE, HUB_CONFIRMATION].concat();
+    let from_relay = [OPENING.1, RELAY_SHARE, RELAY_CONFIRMATION].concat();
+    assert_eq!(transcript.sent_by(transcript::Side::Hub), hex(&from_hub));
+    assert_eq!(
+        transcript.sent_by(transcript::Side::Relay),
+        hex(&from_relay)
+    );
 }

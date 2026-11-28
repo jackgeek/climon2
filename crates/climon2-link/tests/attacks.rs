@@ -310,6 +310,54 @@ fn a_remembered_key_gets_the_relays_hello() {
     assert!(matches!(relay.link(), Link::Established(peer) if peer.key == key(0x55).public()));
 }
 
+/// Dials `relay` as the hub monitor whose static private key is `byte` 32
+/// times, sends its Hello and gives what the relay answered: the plaintext
+/// of each unit, and whether it closed.
+fn answer_to(mut relay: RelayEnd, byte: u8) -> (RelayEnd, Vec<Vec<u8>>, bool) {
+    let mut stand_in = StandIn::dial(&mut relay, [byte; 32], relay_key().public());
+    let hello = stand_in.record(&wire::HELLO);
+    let output = step(&mut relay, SECOND, Input::Bytes(&hello));
+    (relay, stand_in.open(&output.bytes), output.close)
+}
+
+/// AUTH-04, the Link layer: a relay refuses a hub monitor it remembers with
+/// the reason its caller gives, a Close alone in answer to the hub
+/// monitor's Hello, while another remembered hub monitor still links. A key
+/// the relay does not remember still gets "not paired", so it learns
+/// nothing of the refusal.
+#[test]
+fn auth_04_a_remembered_key_is_refused_with_the_callers_reason() {
+    let reasons = [
+        (RelayClose::OnHold, 5),
+        (RelayClose::Busy, 6),
+        (RelayClose::Replaced, 7),
+    ];
+    let remembered = [key(0x55).public(), key(0x66).public()];
+    for (reason, code) in reasons {
+        let refusing = |remembered: &[_]| {
+            relay_end(relay_key(), remembered).refusing(key(0x55).public(), reason)
+        };
+
+        let (relay, units, closed) = answer_to(refusing(&remembered), 0x55);
+        assert_eq!(units, [close_unit(code)], "{reason:?}");
+        assert!(closed, "{reason:?}");
+        assert_eq!(relay.link(), &Link::Ended(Ended::Left(reason)));
+
+        let (relay, units, closed) = answer_to(refusing(&remembered), 0x66);
+        assert!(!closed && units.len() == 1, "{reason:?}");
+        assert!(matches!(relay.link(), Link::Established(peer) if peer.key == key(0x66).public()));
+
+        let (_, units, _) = answer_to(refusing(&remembered[1..]), 0x55);
+        assert_eq!(units, [close_unit(4)], "{reason:?}");
+    }
+
+    let twice = relay_end(relay_key(), &remembered)
+        .refusing(key(0x55).public(), RelayClose::Busy)
+        .refusing(key(0x55).public(), RelayClose::OnHold);
+    let (_, units, _) = answer_to(twice, 0x55);
+    assert_eq!(units, [close_unit(5)], "the later refusal");
+}
+
 /// SEC-04: a stand-in relay that holds the wrong identity key receives the
 /// opening request and the handshake initiation, neither of which holds the
 /// hub monitor's static key in the clear, and cannot decrypt the

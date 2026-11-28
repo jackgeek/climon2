@@ -9,7 +9,8 @@ is driven through, the test harness that drives it, and four parts of the
 [link protocol](../../docs/for-humans/protocol/monitor-link/README.md): the
 opening exchange, pairing, a link connection between two ends that already
 hold each other's keys, and the records that follow Hello, with the credit,
-keepalives and limits that bound them.
+keepalives and limits that bound them. Link revision 1's protocol
+transcripts are recorded and replayed in every test run.
 
 ## One implementation for every platform
 
@@ -240,6 +241,12 @@ that chose a revision for a link connection, to the
   the public keys of the hub monitors it has paired with. A relay answers the
   handshake of any key, then sends Close with "not paired", and no Hello, to
   one it does not remember.
+- `refusing(hub, reason)` on a relay's end that links refuses the remembered
+  hub monitor `hub`: once the handshake is done, it answers that hub
+  monitor's Hello with Close giving `reason`, and no Hello. The relay's
+  caller decides it, for "on hold", "busy" and "replaced"; a later refusal
+  of the same key replaces an earlier one. A key the relay does not remember
+  still gets "not paired", so it learns nothing of the refusal.
 - `Hello::new(release, name, largest_record)` gives nothing unless the
   release is 1 to 64 bytes, the name at most 64 and the largest record at
   least 4,096. A Hello lists no capability token; tokens received are read
@@ -453,6 +460,60 @@ in-memory byte streams, starting at time zero.
   handshake against one real end, as a hub monitor or as a relay, then seals
   and opens whatever units a test asks for.
 
+## Protocol transcripts
+
+`tests/transcripts/revision-1/` holds link revision 1's
+[protocol transcripts](../../GLOSSARY.md#testing), one text file each: an
+opening that chooses revision 1 and one with no shared revision, pairing
+with a correct and with a wrong PIN, the handshake with both Hellos, a
+refusal by Close alone for each of "not paired", "on hold", "busy" and
+"replaced", and a short link. Each file lists, in order, the moments of its
+script, each caller's acts, each batch of bytes one end handed the other, in
+hex, and each close. `tests/transcripts.rs` holds the scenario that made
+each: the two ends, their randomness and the script.
+
+`tests/transcript/mod.rs` replays a transcript to one end alone: the end is
+handed the other end's recorded bytes and closes where they were recorded,
+and must send exactly its own recorded bytes and close when it was recorded
+to. Every test run replays every transcript to both ends. Recording and
+replay step an end by one rule, so it sees the same steps in both: at each
+moment of the script, after its own caller's act, when bytes or a close
+arrive, and again at once while it sends with a deadline of the present
+moment.
+
+Once a link revision ships its transcripts are never refreshed: a changed
+byte is a failure, not a reason to record again. A new link revision adds a
+folder `revision-<n>` with transcripts of its own, and a scenario list in
+`REVISIONS`; `rev_07_every_published_revision_has_its_transcripts` fails
+until every published revision has one. `cargo test -p climon2-link --test
+transcripts -- --ignored` records only the transcripts that have no file,
+and fails if recording again would change one that exists.
+
+The handshake, refusal and link transcripts use the keys and ephemeral keys
+of climon2's frozen Noise vector, and the pairing transcripts the frozen
+pairing seeds, so their handshake and pairing bytes were computed by the
+reference scripts in `tests/vectors/`, which share no code with this crate.
+The opening bytes are the protocol pages' examples.
+
+## Arbitrary bytes
+
+`tests/decoders.rs` feeds arbitrary bytes, from seed `0x0498`, to every
+place where an end decodes what the other end sent, 96 cases each: the
+opening messages, the pairing messages, the handshake messages, units, and,
+in units the link peer stand-in seals, both Hellos, Close and every record
+either way. Half the cases are random bytes behind a prefix that reaches the
+decoder, half a valid message cut short, with a byte changed, with four
+bytes overwritten as a length or count is, or with bytes added. No case may
+panic, and none may make an end hold more than four units beyond what a
+valid message of the same place holds: the test binary's global allocator
+measures it. The box inside a pairing confirmation opens only under the
+run's keys, so `src/pairing/mod.rs` feeds its decoder arbitrary plaintext
+directly.
+
+These tests make about a thousand connections, so the workspace's dev
+profile builds `curve25519-dalek` at `opt-level = 3`. Unoptimised, its
+curve arithmetic made them take half a minute.
+
 ## Specification mapping
 
 | Scenario | Evidence |
@@ -484,3 +545,7 @@ in-memory byte streams, starting at time zero.
 | LOSS-01: a keepalive after 5 seconds of sending nothing, a lost link after 15 seconds of receiving no unit, each unit resetting that time and unauthenticated bytes not, with the time supplied | `tests/liveness.rs`: the `loss_01_` tests |
 | SEC-08: the published Noise vector, and climon2's frozen vector binding the opening exchange into the handshake | `src/noise.rs`: `sec_08_the_published_noise_ik_vector_gives_its_bytes`; `tests/handshake.rs`: `sec_08_a_link_connection_gives_climon2s_frozen_bytes` |
 | SEC-08, for pairing: the published CPace vectors and climon2's frozen key schedule and pairing connection | `src/pairing/cpace.rs` and `src/pairing/keys.rs`: the `sec_08_` tests; `tests/pairing_vectors.rs` |
+| REV-07: every protocol transcript of every published link revision, replayed to each end, which reproduces its recorded bytes exactly | `tests/transcripts.rs`: the `rev_07_` tests; `tests/handshake.rs` and `tests/pairing_vectors.rs`: the `rev_07_` tests, which check the transcripts hold the frozen vectors' bytes |
+| HOS-05: arbitrary bytes from a recorded seed, a bounded number of cases, to every decoder; none panics or holds more than its bound | `tests/decoders.rs`: the `hos_05_` tests; `src/pairing/mod.rs`: `hos_05_a_box_of_arbitrary_bytes_never_panics` |
+| ONE-04: the Link layer and every fixture in every platform's test job, Windows included | the Windows Test job's `cargo test --locked -p climon2-link` step in `.github/workflows/check.yml`, checked by `xtask/tests/workflows.rs`: `the_windows_test_job_runs_the_link_code`. Content fixtures are not recorded yet. |
+| AUTH-04, the Link-layer part of a refusal: Close alone, with the caller's reason and no Hello | `tests/attacks.rs`: `auth_04_a_remembered_key_is_refused_with_the_callers_reason`; the refusal transcripts |

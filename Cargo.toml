@@ -21,3 +21,11 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# The link code's tests run thousands of X25519 and ristretto255 operations
+# (HOS-05 alone makes about a thousand connections); unoptimised, the curve
+# arithmetic makes them take half a minute instead of a second, in every
+# test run and under every mutant. Only this dependency is optimised; the
+# workspace's own crates keep the dev profile.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3

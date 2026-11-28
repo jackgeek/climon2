@@ -1,0 +1,11 @@
+# Link revision 1: opening-chosen
+#
+# The opening exchange of a hub monitor that comes to link, both ends
+# supporting only link revision 1: revision 1 is chosen.
+at 0 ms
+hub sends 26 bytes
+    63 32 6c 69 6e 6b 0d 0a 02 01 00 01 00 00 00 00
+    00 00 00 00 00 00 00 00 00 00
+relay sends 20 bytes
+    01 00 01 01 00 01 00 00 00 00 00 00 00 00 00 00
+    00 00 00 00

@@ -75,6 +75,20 @@ impl RelayEnd {
         }
     }
 
+    /// This end, refusing the remembered hub monitor `hub`: once the
+    /// handshake is done it answers that hub monitor's Hello with a Close
+    /// that gives `reason`, in place of its own Hello. A later refusal of
+    /// the same key replaces an earlier one. The protocol's refusals are
+    /// "not paired", "on hold", "busy" and "replaced". A hub monitor the
+    /// relay does not remember gets "not paired" whatever is refused, and
+    /// an end that cannot link refuses nothing.
+    pub fn refusing(self, hub: PublicKey, reason: RelayClose) -> Self {
+        Self {
+            link: self.link.map(|link| link.refusing(hub, reason)),
+            ..self
+        }
+    }
+
     /// How far the link has got, and how it ended. Nothing is linked until
     /// this is `Established`: a handshake alone, which anyone who recorded
     /// one can replay, leaves it `Pending`.

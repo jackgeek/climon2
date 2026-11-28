@@ -1,0 +1,34 @@
+# Link revision 1: refusal-replaced
+#
+# The link connection of handshake to a relay that refuses it as replaced
+# by a newly paired hub monitor: Close alone, "replaced" (7).
+at 0 ms
+hub sends 26 bytes
+    63 32 6c 69 6e 6b 0d 0a 02 01 00 01 00 00 00 00
+    00 00 00 00 00 00 00 00 00 00
+relay sends 20 bytes
+    01 00 01 01 00 01 00 00 00 00 00 00 00 00 00 00
+    00 00 00 00
+hub sends 98 bytes
+    00 60 79 a6 31 ee de 1b f9 c9 8f 12 03 2c de ad
+    d0 e7 a0 79 39 8f c7 86 b8 8c c8 46 ec 89 af 85
+    a5 1a 75 36 e8 c1 c5 cf 4b 12 69 f1 ab da a6 fe
+    74 55 5b 16 6c 90 b6 04 8f 0d f7 c7 88 d9 f6 d2
+    61 e7 ed 4f 93 dc 50 c8 bd 2e d3 07 a7 8e 1c 3b
+    8c d8 fc 8b 9a 23 d2 68 fc c7 25 ac f0 b6 95 fe
+    7d 29
+relay sends 50 bytes
+    00 30 67 5d d5 74 ed 77 89 31 0b 3d 2e 76 81 f3
+    79 0b 46 6c 77 3b 15 21 fe cf 36 57 79 58 37 1e
+    a5 2f 01 c3 46 d6 4d 43 de 31 bb fd f4 88 4b 7f
+    24 14
+hub sends 50 bytes
+    00 30 4b 99 41 a3 d6 b7 fe a4 e0 b5 74 23 f8 5e
+    c4 c3 68 51 13 37 27 4a 79 03 f4 84 68 19 6c 9b
+    d0 2d 26 a2 e8 65 7f 2e 58 b7 cf 4f ea 26 57 04
+    8b b6
+relay sends 26 bytes
+    00 18 73 2f c7 51 f4 3b 81 2c 0d ef bf 94 31 34
+    08 11 e0 06 63 07 5f bc 6d 7c
+hub closes
+relay closes

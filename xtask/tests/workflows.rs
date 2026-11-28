@@ -302,6 +302,16 @@ fn the_windows_test_job_tests_the_monitor_and_checks_the_native_interface_with_m
     line("monitor-client/check.py NativeDeclarations.test_msvc_declarations_and_examples");
 }
 
+/// ONE-04 (#498): the Windows Test job runs the whole Link layer, which
+/// replays every protocol transcript.
+#[test]
+fn the_windows_test_job_runs_the_link_code() {
+    let check = workflow("check.yml");
+    let test = job(&check, "windows-test");
+    let run = "run: cargo test --locked -p climon2-link";
+    assert!(test.iter().any(|line| line.trim() == run), "{test:#?}");
+}
+
 /// #329: the Windows Archive job tests the exact zip the Windows Dist job
 /// built, when the Windows scope says the Windows jobs run. Its tests may
 /// change the real user PATH, which only that throwaway runner allows.

@@ -1,0 +1,31 @@
+# Link revision 1: pairing-wrong-pin
+#
+# The pairing connection of pairing-correct-pin, but the hub monitor
+# types 1234-5678: the relay checks the hub monitor's confirmation, finds
+# it wrong and closes without its own.
+at 0 ms
+hub sends 26 bytes
+    63 32 6c 69 6e 6b 0d 0a 01 01 00 01 00 00 00 00
+    00 00 00 00 00 00 00 00 00 00
+relay sends 20 bytes
+    01 00 01 01 00 01 00 00 00 00 00 00 00 00 00 00
+    00 00 00 00
+hub sends 34 bytes
+    00 20 a8 b7 75 bc a0 c6 25 72 ac 51 5a f5 1f 41
+    56 bd 43 1d ac eb 24 0b 1d 00 9f 5c 63 09 87 16
+    7d 37
+relay sends 34 bytes
+    00 20 a8 c4 0a de 77 99 8c bb 39 53 e1 99 19 8f
+    38 49 c8 64 63 0c 61 05 dc 4f 80 96 44 3f ba 19
+    4e 52
+hub sends 121 bytes
+    00 77 41 8f 97 cb 66 65 c2 a2 ac 66 c9 fb 67 4f
+    14 69 5b df 26 34 a2 a6 1e cb 7b 9f 57 cc 08 72
+    a5 59 45 64 f1 c0 8d bd d8 f2 d2 8d e0 3f 16 78
+    6d 0e 5a cc 21 b6 7f 0a 0c bf e9 03 06 fa ba 91
+    7a 5e 29 28 d4 fe c4 cb 07 49 3e 7f 4c b3 6d ae
+    d3 67 dc 8b cd f2 4f b7 dc f7 d2 1d 79 4f 95 49
+    c6 85 c6 b5 1b 96 b6 96 e5 b8 f3 d1 5f 3c 8b ff
+    be 54 d0 c9 67 93 e7 f8 ac
+relay closes
+hub closes

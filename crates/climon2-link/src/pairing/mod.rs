@@ -364,4 +364,35 @@ mod tests {
             assert_eq!(Introduction::decode(&broken), None, "{broken:?}");
         }
     }
+
+    /// HOS-05 for the one decoder that arbitrary bytes from outside never
+    /// reach, because a box opens only under the run's keys: from a
+    /// recorded seed, 512 plaintexts of up to 160 bytes, half of them a
+    /// valid box with one byte changed. None panics, and whatever decodes
+    /// keeps the layout's limits.
+    #[test]
+    fn hos_05_a_box_of_arbitrary_bytes_never_panics() {
+        let mut state: u64 = 0x0498;
+        let mut next = move || {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mixed = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            let mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            mixed ^ (mixed >> 31)
+        };
+        let valid = plaintext(6, "büild".as_bytes());
+        for case in 0..512 {
+            let mut bytes: Vec<u8> = match case % 2 {
+                0 => (0..next() % 161).map(|_| next() as u8).collect(),
+                _ => valid.clone(),
+            };
+            if case % 2 == 1 {
+                let at = (next() % valid.len() as u64) as usize;
+                bytes[at] = next() as u8;
+            }
+            if let Some(introduction) = Introduction::decode(&bytes) {
+                assert!(introduction.name().len() <= NAME_MOST, "case {case}");
+                assert_eq!(bytes.len(), KEY_SIZE + 1 + introduction.name().len());
+            }
+        }
+    }
 }
