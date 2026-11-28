@@ -601,7 +601,9 @@ fn a_monitoring_instance_runs_from_create_to_destroy_in_order() {
     assert!(logs.is_dir(), "the session's log directory is created");
     let prefix = native_path::encode(&logs.join("library-"));
     assert!(log.starts_with(&prefix), "{log:?}");
-    assert!(log.ends_with(format!("-{GENERATION}.log").as_bytes()));
+    // In the platform's native encoding, which is UTF-16LE on Windows.
+    let suffix = native_path::encode(Path::new(&format!("-{GENERATION}.log")));
+    assert!(log.ends_with(&suffix), "{log:?}");
 
     assert_eq!(local.notification(), Ok(41));
     let held = Authority {
