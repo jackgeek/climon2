@@ -2,6 +2,8 @@
 //! does: Hello, the first record each way, and Close, the last. The layouts
 //! are those of the protocol's Hello and Close pages.
 
+use crate::layout::{self, Field, layout};
+
 /// The tag of a Hello record.
 pub(crate) const HELLO: u8 = 0x01;
 /// The tag of a Close record.
@@ -13,7 +15,7 @@ const CEILING_LEAST: u32 = 4_096;
 /// The longest release version, name or capability token, in bytes.
 const TEXT_MOST: usize = 64;
 /// The most capability tokens one Hello lists.
-const TOKENS_MOST: u32 = 64;
+const TOKENS_MOST: usize = 64;
 
 /// What each end states in its Hello: its release, its suggested name and
 /// the longest record it accepts. Link revision 1 publishes no capability
@@ -55,69 +57,39 @@ impl Hello {
         self.largest_record
     }
 
-    /// The Hello record: its tag, then its body.
+    /// The Hello record: its tag, then its body. It lists no capability.
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut record = vec![HELLO];
-        for text in [&self.release, &self.name] {
-            record.extend((text.len() as u32).to_be_bytes());
-            record.extend(text.as_bytes());
+        HelloLayout {
+            release: self.release.clone(),
+            name: self.name.clone(),
+            capabilities: Vec::new(),
+            largest_record: self.largest_record,
         }
-        record.extend(0_u32.to_be_bytes());
-        record.extend(self.largest_record.to_be_bytes());
+        .put(&mut record);
         record
     }
 
     /// The Hello whose body is `body`, or nothing when the body breaks the
-    /// layout or a limit in any way.
+    /// layout or a limit in any way. The capabilities it lists are read
+    /// and ignored.
     pub(crate) fn decode(body: &[u8]) -> Option<Self> {
-        let mut body = Body(body);
-        let hello = body.hello()?;
-        body.0.is_empty().then_some(hello)
+        let hello = layout::decode(body, HelloLayout::take)?;
+        let tokens = &hello.capabilities;
+        let listed = tokens.len() <= TOKENS_MOST && tokens.iter().all(|t| t.len() <= TEXT_MOST);
+        listed
+            .then(|| Hello::new(&hello.release, &hello.name, hello.largest_record))
+            .flatten()
     }
 }
 
-/// What is left to read of a record's body.
-struct Body<'a>(&'a [u8]);
-
-impl<'a> Body<'a> {
-    /// The fields of a Hello, up to the end of its layout.
-    fn hello(&mut self) -> Option<Hello> {
-        let (release, name) = self.names()?;
-        let largest_record = self.tokens().and_then(|()| self.u32())?;
-        Hello::new(release, name, largest_record)
-    }
-
-    /// The release and the name.
-    fn names(&mut self) -> Option<(&'a str, &'a str)> {
-        Some((self.text()?, self.text()?))
-    }
-
-    /// The next `tokens`: at most 64, each read and ignored.
-    fn tokens(&mut self) -> Option<()> {
-        let count = self.u32()?;
-        (count <= TOKENS_MOST).then_some(())?;
-        (0..count).try_for_each(|_| self.text().map(drop))
-    }
-
-    /// The next `u32`.
-    fn u32(&mut self) -> Option<u32> {
-        let (value, rest) = self.0.split_first_chunk()?;
-        self.0 = rest;
-        Some(u32::from_be_bytes(*value))
-    }
-
-    /// The next `text` of at most 64 bytes.
-    fn text(&mut self) -> Option<&'a str> {
-        let size = self.size()?;
-        let (text, rest) = self.0.split_at_checked(size)?;
-        self.0 = rest;
-        std::str::from_utf8(text).ok()
-    }
-
-    /// The length of the next `text`, when it is at most 64 bytes.
-    fn size(&mut self) -> Option<usize> {
-        let size = usize::try_from(self.u32()?).ok()?;
-        (size <= TEXT_MOST).then_some(size)
+layout! {
+    /// A Hello body as it crosses the link.
+    struct HelloLayout {
+        release: String,
+        name: String,
+        capabilities: Vec<String>,
+        largest_record: u32,
     }
 }
 
