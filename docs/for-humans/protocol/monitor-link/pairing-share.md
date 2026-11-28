@@ -45,9 +45,12 @@ shows nothing beyond the layout: `00 20` followed by 32 bytes.
   Each end judges a Length as soon as it arrives, before the share behind
   it.
 - The hub monitor sends its share as soon as the
-  [opening reply](opening-reply.md) has chosen a revision. Bytes that arrive
-  behind a whole opening message on a pairing connection are the start of
-  the next pairing message.
+  [opening reply](opening-reply.md) has chosen a revision, and never before:
+  the channel identifier holds the reply. Bytes that arrive with a whole
+  opening message, behind it, break that message's layout, as the
+  [opening request](opening-request.md) and opening reply pages say. Within
+  the run, bytes behind a whole pairing message are the start of the next
+  one.
 - Neither share lets its receiver test a guess at the PIN. The relay reveals
   nothing a guess can be tested against until the hub monitor has sent its
   [pairing confirmation](pairing-confirmation.md).
