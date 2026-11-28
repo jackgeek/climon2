@@ -1,12 +1,13 @@
 //! The hub monitor's end of a byte stream: the dialler.
 
 use crate::keys::{PublicKey, StaticKey};
-use crate::link::{HubLink, HubRun, Link, Record, Refused};
+use crate::link::{HubLink, HubRun, Link, Refused};
 use crate::opening::{
     Answer, Arrival, Awaited, Opened, Opening, Purpose, REPLY_SIZE, REQUEST_SIZE, Reply, Request,
     Revisions, Transcript,
 };
 use crate::record::{Hello, HubClose};
+use crate::stream::{HubRecord, RelayRecord};
 use crate::{End, Input, Output, Randomness, Time};
 use std::time::Duration;
 
@@ -61,11 +62,10 @@ impl HubEnd {
         self.link.as_ref().map_or(&NO_LINK, HubRun::link)
     }
 
-    /// Queues one record for the relay on `stream`. It is sent at the next
-    /// step.
-    pub fn send(&mut self, stream: u32, tag: u8, body: &[u8]) -> Result<(), Refused> {
+    /// Queues one record for the relay. It is sent from the next step on.
+    pub fn send(&mut self, record: &HubRecord) -> Result<(), Refused> {
         let link = self.link.as_mut().ok_or(Refused::NotLinked)?;
-        link.send(stream, tag, body)
+        link.send(record)
     }
 
     /// Ends the established link with a Close that gives `reason`. The next
@@ -77,7 +77,7 @@ impl HubEnd {
 
     /// Takes the records the relay has sent since the last call, in the
     /// order they ended.
-    pub fn records(&mut self) -> Vec<Record> {
+    pub fn records(&mut self) -> Vec<RelayRecord> {
         self.link.as_mut().map(HubRun::records).unwrap_or_default()
     }
 

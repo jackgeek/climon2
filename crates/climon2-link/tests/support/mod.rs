@@ -49,6 +49,8 @@ struct Side {
     close_delivered: bool,
     /// The deadline this end named at its last step.
     deadline: Option<Time>,
+    /// Whether this end sent bytes at its last step.
+    sending: bool,
 }
 
 impl Side {
@@ -60,6 +62,7 @@ impl Side {
             closed: false,
             close_delivered: false,
             deadline: None,
+            sending: false,
         }
     }
 
@@ -72,6 +75,7 @@ impl Side {
             close,
             deadline,
         } = end.step(now, input, &mut self.randomness);
+        self.sending = !bytes.is_empty();
         self.sent.extend(bytes);
         self.closed = close;
         self.deadline = deadline;
@@ -168,7 +172,8 @@ impl<H: End, R: End> Harness<H, R> {
     }
 
     /// Steps each end once with nothing arriving, the hub monitor's first,
-    /// then carries bytes and closes between them until both are quiet.
+    /// then carries bytes and closes between them, and steps again an end
+    /// that is still sending, until both are quiet.
     pub fn run(&mut self) {
         let now = self.now();
         self.hub_side.step(&mut self.hub, now, Input::Tick);
@@ -182,11 +187,31 @@ impl<H: End, R: End> Harness<H, R> {
             if let Some(arrival) = &to_hub {
                 self.hub_side.step(&mut self.hub, now, input(arrival));
             }
-            if to_relay.is_none() && to_hub.is_none() {
+            if to_relay.is_none() && to_hub.is_none() && !self.step_due(now) {
                 return;
             }
         }
         panic!("the two ends never fell quiet");
+    }
+
+    /// Steps with `Tick` each end that is still sending: one that sent
+    /// bytes at its last step and named `now`, or a moment before it, as
+    /// its deadline, as an end with more to send does. Whether it stepped
+    /// either.
+    fn step_due(&mut self, now: Time) -> bool {
+        let due = |side: &Side| {
+            let come = side.deadline.is_some_and(|at| at <= now);
+            !side.closed && side.sending && come
+        };
+        let hub_due = due(&self.hub_side);
+        if hub_due {
+            self.hub_side.step(&mut self.hub, now, Input::Tick);
+        }
+        let relay_due = due(&self.relay_side);
+        if relay_due {
+            self.relay_side.step(&mut self.relay, now, Input::Tick);
+        }
+        hub_due || relay_due
     }
 
     /// Every byte the hub monitor's end has put on its byte stream.
