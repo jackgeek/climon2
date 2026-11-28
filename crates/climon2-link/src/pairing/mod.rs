@@ -8,7 +8,7 @@
 
 mod cpace;
 pub(crate) mod hub;
-mod invitation;
+pub(crate) mod invitation;
 mod keys;
 pub(crate) mod relay;
 
