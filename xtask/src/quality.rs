@@ -137,6 +137,8 @@ pub(crate) const WINDOWS_SUITE: &[&[&str]] = &[
         "-p",
         "climon2-embed",
     ],
+    // ONE-04: the Link layer and its protocol transcripts.
+    &["-p", "climon2-link"],
     &["-p", "climon2-relay"],
     &["-p", "climon2-launcher"],
     // The CLI's tests but the end-to-end scenarios #328 ported

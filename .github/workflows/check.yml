@@ -224,6 +224,11 @@ jobs:
       # Also builds the monitor binary, which the CLI's monitor tests start.
       - name: Test the monitor and client embedding on Windows
         run: cargo test --locked -p climon2-monitor-tui -p climon2-monitor -p climon2-embed
+      # ONE-04: the whole Link layer and every protocol transcript, with no
+      # Windows-specific expectation. Monitor links themselves are macOS and
+      # Linux only.
+      - name: Test the link code
+        run: cargo test --locked -p climon2-link
       # Monitor links are macOS and Linux only: the relay refuses on Windows.
       - name: Test the relay's Windows refusal
         run: cargo test --locked -p climon2-relay
