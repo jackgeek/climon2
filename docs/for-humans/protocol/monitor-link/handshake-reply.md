@@ -1,6 +1,6 @@
 # Handshake reply
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements it; no released program speaks it yet.**
 The [relay](../../../../GLOSSARY.md#monitor-links) completes the pinned-key
 handshake. It is the second and last message of the
 [Noise](../TERMS.md#noise) pattern `IK` begun by the

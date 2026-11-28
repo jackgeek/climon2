@@ -1,6 +1,6 @@
 # Handshake initiation
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements it; no released program speaks it yet.**
 The [hub monitor](../../../../GLOSSARY.md#monitor-links) begins the
 pinned-key handshake on a link connection. It is the first message of the
 [Noise](../TERMS.md#noise) pattern `IK`. See the [overview](../README.md),
