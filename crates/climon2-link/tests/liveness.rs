@@ -139,3 +139,17 @@ fn loss_01_keepalives_keep_an_idle_link() {
     assert!(matches!(harness.relay.link(), Link::Established(_)));
     assert!(!harness.hub_closed() && !harness.relay_closed());
 }
+
+/// Before the link is established neither timing runs: an end waiting for
+/// the other's Hello sends no keepalive and declares no loss, and its only
+/// deadline is the Hello's, 30 seconds after the connection began.
+#[test]
+fn loss_01_neither_timing_runs_before_the_link_is_established() {
+    let mut hub = wire::hub_end(wire::hub_key(), wire::relay_key().public());
+    let stand_in = wire::StandIn::answer(&mut hub, [0x22; 32]);
+    assert!(!stand_in.first.close);
+    let waiting = step(&mut hub, 20 * SECOND, Input::Tick);
+    assert!(waiting.bytes.is_empty() && !waiting.close);
+    assert_eq!(waiting.deadline, at(30 * SECOND));
+    assert_eq!(*hub.link(), Link::Pending);
+}

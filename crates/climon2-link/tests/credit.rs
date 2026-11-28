@@ -163,3 +163,15 @@ fn lim_04_the_hub_monitor_grants_only_credit_a_stream_can_hold() {
     let late = hub.send(&grant(1));
     assert_eq!(late, Err(Refused::OutOfTurn), "after Close stream");
 }
+
+/// Advertisement never waits behind session output: with stream 1 out of
+/// credit and an Event refused, an advertisement goes out at once.
+#[test]
+fn lim_04_advertisement_does_not_wait_for_credit() {
+    let (mut relay, mut stand_in) = relay_with_credit(0);
+    assert_eq!(relay.send(&display(0)), Err(Refused::Credit));
+    let snapshot = samples::advertise(climon2_link::Advertisement::SnapshotComplete);
+    relay.send(&snapshot).expect("Snapshot complete");
+    let output = step(&mut relay, LATER, Input::Tick);
+    assert_eq!(stand_in.open(&output.bytes), [on(0, &[0x12])]);
+}

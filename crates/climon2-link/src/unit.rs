@@ -57,8 +57,6 @@ pub(crate) struct Units {
     queued: BTreeMap<u32, VecDeque<Queued>>,
     /// The session stream that sent the last unit.
     turn: u32,
-    /// Whether a unit has decrypted since the last call to `heard`.
-    heard: bool,
 }
 
 /// A record to send, and how much of it has been sent.
@@ -75,7 +73,6 @@ impl Units {
             partial: BTreeMap::new(),
             queued: BTreeMap::new(),
             turn: CONTROL,
-            heard: false,
         }
     }
 
@@ -104,11 +101,6 @@ impl Units {
     /// an empty fragment.
     pub(crate) fn keepalive_unit(&mut self) -> Vec<u8> {
         seal(&mut self.transport, CONTROL, false, &[])
-    }
-
-    /// Whether a unit has decrypted since the last call.
-    pub(crate) fn heard(&mut self) -> bool {
-        std::mem::take(&mut self.heard)
     }
 
     /// Whether anything queued is still to send.
@@ -159,20 +151,11 @@ impl Units {
         self.arrived.extend(bytes);
     }
 
-    /// The next whole record the bytes received so far hold: its stream and
-    /// the record. Nothing when more bytes are needed. After a fault the
-    /// connection is over and this is not called again.
-    pub(crate) fn next(&mut self, allowed: Allowed) -> Option<Result<Received, Fault>> {
-        loop {
-            if let Some(found) = self.next_unit(allowed)?.transpose() {
-                return Some(found);
-            }
-        }
-    }
-
-    /// Takes the next whole unit: the record it ends, if it ends one.
-    /// Nothing when the unit is not whole yet.
-    fn next_unit(&mut self, allowed: Allowed) -> Option<Result<Option<Received>, Fault>> {
+    /// Takes the next whole unit the bytes received so far hold: the record
+    /// it ends, its stream and the record, if it ends one. Nothing when the
+    /// unit is not whole yet. Every unit that gives no fault decrypted.
+    /// After a fault the connection is over and this is not called again.
+    pub(crate) fn next(&mut self, allowed: Allowed) -> Option<Result<Option<Received>, Fault>> {
         let ciphertext = self.unit()?;
         let plaintext = ciphertext.and_then(|ciphertext| self.open(&ciphertext));
         Some(plaintext.and_then(|plaintext| self.fragment(&plaintext, allowed)))
@@ -194,12 +177,7 @@ impl Units {
 
     /// The plaintext of one unit's ciphertext.
     fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, Fault> {
-        let plaintext = self
-            .transport
-            .open(ciphertext)
-            .ok_or(Fault::Undecryptable)?;
-        self.heard = true;
-        Ok(plaintext)
+        self.transport.open(ciphertext).ok_or(Fault::Undecryptable)
     }
 
     /// Adds one unit's fragment to its stream's record. Gives the record

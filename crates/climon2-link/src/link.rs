@@ -194,10 +194,7 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
     /// 0 has still to send, or at once, sending nothing, when the link is
     /// lost to silence.
     fn step(&mut self, now: Time, input: Input<'_>) -> Output {
-        self.take(input);
-        if self.units.heard() {
-            self.liveness.heard(now);
-        }
+        self.take(now, input);
         if self.silent(now) {
             return silent_close();
         }
@@ -209,14 +206,14 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
         }
     }
 
-    /// Takes one step's input.
-    fn take(&mut self, input: Input<'_>) {
+    /// Takes one step's input, at `now`.
+    fn take(&mut self, now: Time, input: Input<'_>) {
         match input {
             Input::Tick => {}
             Input::Closed => self.cut_off(),
             Input::Bytes(bytes) => {
                 self.units.receive(bytes);
-                self.read();
+                self.read(now);
             }
         }
     }
@@ -242,13 +239,22 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
             UNITS_PER_STEP
         };
         let mut bytes = self.units.flush(most);
-        if bytes.is_empty() && self.established() && self.liveness.keepalive_due(now) {
-            bytes = self.units.keepalive_unit();
+        if bytes.is_empty() {
+            bytes = self.keepalive(now);
         }
         if !bytes.is_empty() {
             self.liveness.sent(now);
         }
         bytes
+    }
+
+    /// A keepalive, when the link is established and this end has sent
+    /// nothing for long enough at `now`; otherwise nothing.
+    fn keepalive(&mut self, now: Time) -> Vec<u8> {
+        match self.established() && self.liveness.keepalive_due(now) {
+            true => self.units.keepalive_unit(),
+            false => Vec::new(),
+        }
     }
 
     /// The deadline at `now`: the present moment while units are queued,
@@ -261,22 +267,33 @@ impl<Ours: Reason + Voice, Theirs: Reason> Conversation<Ours, Theirs> {
         self.established().then(|| self.liveness.deadline())
     }
 
-    /// Handles every whole record received, until the connection is over.
-    fn read(&mut self) {
+    /// Handles every whole unit received at `now`, until the connection
+    /// is over.
+    fn read(&mut self, now: Time) {
         while !self.over() {
             let Some(next) = self.units.next(self.allowed()) else {
                 return;
             };
-            self.handle(next);
+            self.handle(now, next);
         }
     }
 
-    /// Handles one whole record, or the fault that came in its place.
-    fn handle(&mut self, next: Result<Received, Fault>) {
+    /// Handles one whole unit, which arrived at `now`, or the fault that
+    /// came in its place.
+    fn handle(&mut self, now: Time, next: Result<Option<Received>, Fault>) {
         match next {
-            Ok((stream, record)) => self.record(stream, &record),
+            Ok(ended) => self.heard(now, ended),
             Err(Fault::Undecryptable) => self.cut_off(),
             Err(Fault::Violation) => self.leave(Ours::VIOLATION),
+        }
+    }
+
+    /// A unit that decrypted arrived at `now`, ending a whole record if
+    /// `ended` holds one.
+    fn heard(&mut self, now: Time, ended: Option<Received>) {
+        self.liveness.heard(now);
+        if let Some((stream, record)) = ended {
+            self.record(stream, &record);
         }
     }
 
