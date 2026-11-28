@@ -5,8 +5,8 @@
 //! validated loader, one attempt per release and at most `scheduling.loads`
 //! at once, and starts clients newest created first, then ascending session
 //! ID, at most `scheduling.starts` at once. Each instance has a dedicated
-//! owner thread (`owner.rs`) that creates it, submits monitor Open,
-//! publishes its handles and runs it. The supervisor polls the borrowed
+//! owner thread (client embedding's `owner`) that creates it, submits
+//! monitor Open, publishes its handles and runs it. The supervisor polls the borrowed
 //! notification descriptors and drains every live instance each tick,
 //! releasing each delivery at once (`client.rs`), and reports what the
 //! registry needs. An instance that fails (its notification lookup, a drain,
@@ -25,8 +25,8 @@
 //! shutdown retry nothing.
 //!
 //! Admission and fair scheduling (#120): every load and every create first
-//! reserves what it needs (`admission.rs`); a session that cannot be
-//! admitted, or whose release cannot be, waits resource-blocked and is
+//! reserves what it needs (client embedding's `admission`); a session that
+//! cannot be admitted, or whose release cannot be, waits resource-blocked and is
 //! reconsidered at most once per `retry.admission_ms`. Waiting sessions
 //! start fairly (`queue.rs`): first starts newest first with the oldest
 //! getting a turn after each burst of newer ones, retries taking turns with
