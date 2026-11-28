@@ -285,7 +285,7 @@ impl Advertising {
     fn tell(&mut self, end: &mut RelayEnd) -> Next {
         let mut next = Next::Wait;
         for heard in self.discovery.heard() {
-            if let Some(advertisement) = self.advertisement(heard) {
+            for advertisement in self.advertisements(heard) {
                 next = Next::Step;
                 if let Err(refused) = end.send(&RelayRecord::Advertisement(advertisement)) {
                     tracing::warn!(?refused, "relay cannot advertise a session");
@@ -295,10 +295,10 @@ impl Advertising {
         next
     }
 
-    fn advertisement(&mut self, heard: Heard) -> Option<Advertisement> {
+    fn advertisements(&mut self, heard: Heard) -> Vec<Advertisement> {
         match heard {
-            Heard::Found(found) => self.advertiser.found(found),
-            Heard::Passed => self.advertiser.passed(),
+            Heard::Found(found) => self.advertiser.found(found).into_iter().collect(),
+            Heard::Passed { complete } => self.advertiser.passed(complete),
         }
     }
 }
@@ -541,10 +541,10 @@ mod tests {
         let heard = vec![
             Heard::Found(live(1, "vim")),
             Heard::Found(live(0xee, "c2 relay")),
-            Heard::Passed,
+            Heard::Passed { complete: false },
             Heard::Found(live(2, "top")),
-            Heard::Found(Found::Uncertain),
-            Heard::Passed,
+            Heard::Found(Found::Uncertain(id(3))),
+            Heard::Passed { complete: false },
             Heard::Found(Found::Stale(id(1))),
         ];
         let advertised = relay.advertised(own, heard, 4);
@@ -579,7 +579,10 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
-        let heard = vec![Heard::Found(live(1, "vim")), Heard::Passed];
+        let heard = vec![
+            Heard::Found(live(1, "vim")),
+            Heard::Passed { complete: false },
+        ];
         let advertised = relay.advertised(own, heard, 2);
         assert_eq!(session(&advertised[0]), id(1).bytes(), "advertised again");
         assert_eq!(relay.fed.started(), 2);

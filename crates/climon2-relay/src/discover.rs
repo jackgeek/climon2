@@ -8,7 +8,7 @@
 
 use crate::advertise::Found;
 use climon2_core::{config::Limits, layout::HomeLayout};
-use climon2_discovery::{Continuation, MetadataLimits, Outcome, Scan};
+use climon2_discovery::{Continuation, MetadataLimits, Outcome, Progress, Scan};
 use std::{
     num::NonZeroUsize,
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -24,8 +24,10 @@ const CADENCE: Duration = Duration::from_secs(1);
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Heard {
     Found(Found),
-    /// A pass ended.
-    Passed,
+    /// A pass ended, complete when it reached every entry.
+    Passed {
+        complete: bool,
+    },
 }
 
 /// The passes running for one link.
@@ -62,12 +64,13 @@ impl Discovery {
 fn passes(home: &HomeLayout, scan: &Scan, report: &Sender<Heard>, stopped: &Receiver<()>) {
     let mut continuation = Continuation::default();
     loop {
-        continuation.pass(home, scan, |batch| {
+        let progress = continuation.pass(home, scan, |batch| {
             for outcome in batch.sessions {
                 let _ = report.send(Heard::Found(found(outcome)));
             }
         });
-        if report.send(Heard::Passed).is_err() {
+        let complete = matches!(progress, Progress::Complete);
+        if report.send(Heard::Passed { complete }).is_err() {
             return;
         }
         if stopped.recv_timeout(CADENCE) != Err(RecvTimeoutError::Timeout) {
@@ -80,7 +83,7 @@ fn passes(home: &HomeLayout, scan: &Scan, report: &Sender<Heard>, stopped: &Rece
 fn found(outcome: Outcome) -> Found {
     match outcome {
         Outcome::Live(live) => Found::Live(Box::new(live.metadata)),
-        Outcome::Uncertain(..) => Found::Uncertain,
+        Outcome::Uncertain(metadata, _) => Found::Uncertain(metadata.session_id),
         Outcome::Stale(metadata, _) => Found::Stale(metadata.session_id),
     }
 }
@@ -122,7 +125,7 @@ mod tests {
         });
         assert_eq!(found(live), Found::Live(Box::new(metadata(1, "vim"))));
         let uncertain = Outcome::Uncertain(metadata(2, "vim"), Uncertainty::DaemonAlive);
-        assert_eq!(found(uncertain), Found::Uncertain);
+        assert_eq!(found(uncertain), Found::Uncertain(id(2)));
         let stale = Outcome::Stale(metadata(3, "vim"), Cleanup::Retained);
         assert_eq!(found(stale), Found::Stale(id(3)));
     }
@@ -175,11 +178,17 @@ mod tests {
         let discovery = Discovery::start(HomeLayout::at(&root).unwrap());
         assert_eq!(
             hear(&discovery, 2),
-            [Heard::Found(Found::Uncertain), Heard::Passed]
+            [
+                Heard::Found(Found::Uncertain(id(1))),
+                Heard::Passed { complete: true }
+            ]
         );
         assert_eq!(
             hear(&discovery, 2),
-            [Heard::Found(Found::Uncertain), Heard::Passed]
+            [
+                Heard::Found(Found::Uncertain(id(1))),
+                Heard::Passed { complete: true }
+            ]
         );
         assert!(started.elapsed() >= CADENCE);
     }
@@ -193,10 +202,14 @@ mod tests {
         let root = fs::canonicalize(folder.path()).unwrap();
         let home = HomeLayout::at(&root).unwrap();
         let passing = thread::spawn(move || passes(&home, &scan(), &report, &stopped));
-        assert_eq!(heard.recv().unwrap(), Heard::Passed);
+        assert_eq!(heard.recv().unwrap(), Heard::Passed { complete: true });
         drop(stop);
         passing.join().unwrap();
-        assert!(heard.try_iter().all(|heard| heard == Heard::Passed));
+        assert!(
+            heard
+                .try_iter()
+                .all(|heard| heard == Heard::Passed { complete: true })
+        );
     }
 
     /// Passes nobody hears any more stop too.

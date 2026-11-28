@@ -2,12 +2,14 @@
 //! pure, fed what each discovery pass finds. Every live session is
 //! advertised once, then again only when what crosses the link changes,
 //! except the session the relay itself runs in (U3, X14). A session is
-//! withdrawn only once discovery proves it stale; an uncertain one stays.
-//! Snapshot complete follows the first pass.
+//! withdrawn only once discovery proves it stale: a probe proves it, or a
+//! complete pass no longer lists it, because its metadata was removed when
+//! it ended. An uncertain one stays. Snapshot complete follows the first
+//! pass.
 
 use climon2_core::{SessionId, metadata::SessionMetadata};
 use climon2_link::{Advertisement, Session};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The client interface's native path encoding for native Unix bytes: the
 /// relay runs on macOS and Linux only.
@@ -21,8 +23,8 @@ pub(crate) const SESSIONS_MOST: usize = 128;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Found {
     Live(Box<SessionMetadata>),
-    /// Neither proven live nor proven stale.
-    Uncertain,
+    /// Neither proven live nor proven stale: still listed.
+    Uncertain(SessionId),
     /// Proven stale: the session has ended.
     Stale(SessionId),
 }
@@ -32,6 +34,8 @@ pub(crate) struct Advertiser {
     /// The session the relay runs in, never advertised.
     own: Option<SessionId>,
     advertised: BTreeMap<SessionId, Session>,
+    /// The sessions the pass under way has listed so far.
+    listed: BTreeSet<SessionId>,
     complete: bool,
 }
 
@@ -41,6 +45,7 @@ impl Advertiser {
         Self {
             own,
             advertised: BTreeMap::new(),
+            listed: BTreeSet::new(),
             complete: false,
         }
     }
@@ -48,8 +53,14 @@ impl Advertiser {
     /// What `found` changes in the advertisement, if anything.
     pub(crate) fn found(&mut self, found: Found) -> Option<Advertisement> {
         match found {
-            Found::Live(metadata) => self.live(&metadata),
-            Found::Uncertain => None,
+            Found::Live(metadata) => {
+                self.listed.insert(metadata.session_id.clone());
+                self.live(&metadata)
+            }
+            Found::Uncertain(id) => {
+                self.listed.insert(id);
+                None
+            }
             Found::Stale(id) => self.stale(&id),
         }
     }
@@ -74,9 +85,25 @@ impl Advertiser {
             .map(|_| Advertisement::Withdrawn(id.bytes()))
     }
 
-    /// A pass ended: the first one completes the snapshot.
-    pub(crate) fn passed(&mut self) -> Option<Advertisement> {
-        (!std::mem::replace(&mut self.complete, true)).then_some(Advertisement::SnapshotComplete)
+    /// A pass ended, `complete` when it reached every entry: each session
+    /// advertised that a complete pass no longer listed is withdrawn, and
+    /// the first pass completes the snapshot.
+    pub(crate) fn passed(&mut self, complete: bool) -> Vec<Advertisement> {
+        let listed = std::mem::take(&mut self.listed);
+        let mut advertisements = Vec::new();
+        if complete {
+            let gone: Vec<_> = self
+                .advertised
+                .keys()
+                .filter(|id| !listed.contains(*id))
+                .cloned()
+                .collect();
+            advertisements.extend(gone.iter().filter_map(|id| self.stale(id)));
+        }
+        if !std::mem::replace(&mut self.complete, true) {
+            advertisements.push(Advertisement::SnapshotComplete);
+        }
+        advertisements
     }
 }
 
@@ -173,8 +200,9 @@ pub(crate) mod tests {
         let mut advertiser = Advertiser::new(None);
         assert_eq!(advertised(advertiser.found(live(1, "vim"))).command, b"vim");
         assert_eq!(advertiser.found(live(1, "vim")), None, "unchanged");
-        assert_eq!(advertiser.passed(), Some(Advertisement::SnapshotComplete));
-        assert_eq!(advertiser.passed(), None, "the snapshot completes once");
+        assert_eq!(advertiser.passed(true), [Advertisement::SnapshotComplete]);
+        advertiser.found(live(1, "vim"));
+        assert_eq!(advertiser.passed(true), [], "the snapshot completes once");
         assert_eq!(
             advertised(advertiser.found(live(1, "nvim"))).command,
             b"nvim"
@@ -188,7 +216,7 @@ pub(crate) mod tests {
     fn adv_04_only_a_session_proven_stale_is_withdrawn() {
         let mut advertiser = Advertiser::new(None);
         advertiser.found(live(1, "vim"));
-        assert_eq!(advertiser.found(Found::Uncertain), None);
+        assert_eq!(advertiser.found(Found::Uncertain(id(1))), None);
         assert_eq!(
             advertiser.found(Found::Stale(id(2))),
             None,
@@ -204,6 +232,33 @@ pub(crate) mod tests {
             "withdrawn once"
         );
         assert_eq!(advertised(advertiser.found(live(1, "vim"))).command, b"vim");
+    }
+
+    /// ADV-04: a session a complete pass no longer lists has ended and its
+    /// metadata is gone, so it is withdrawn; an incomplete pass proves
+    /// nothing, and an uncertain session is still listed.
+    #[test]
+    fn adv_04_a_session_a_complete_pass_no_longer_lists_is_withdrawn() {
+        let mut advertiser = Advertiser::new(None);
+        for last in 1..=3 {
+            advertiser.found(live(last, "vim"));
+        }
+        assert_eq!(advertiser.passed(false), [Advertisement::SnapshotComplete]);
+        advertiser.found(Found::Uncertain(id(1)));
+        assert_eq!(advertiser.passed(false), [], "an incomplete pass");
+        advertiser.found(Found::Uncertain(id(1)));
+        advertiser.found(live(3, "vim"));
+        assert_eq!(
+            advertiser.passed(true),
+            [Advertisement::Withdrawn(id(2).bytes())]
+        );
+        assert_eq!(
+            advertiser.passed(true),
+            [
+                Advertisement::Withdrawn(id(1).bytes()),
+                Advertisement::Withdrawn(id(3).bytes())
+            ]
+        );
     }
 
     /// ADV-03 (U3, X14): the session the relay runs in is never advertised.
