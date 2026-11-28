@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 /// Who holds a reservation.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum Holder {
+pub enum Holder {
     /// A release's shared resources, held until process exit once its
     /// handle is open.
     Release(VersionName),
@@ -36,29 +36,29 @@ pub(super) enum Holder {
 
 /// What one reservation holds.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct Amount {
-    pub(super) bytes: u64,
-    pub(super) descriptors: u64,
+pub struct Amount {
+    pub bytes: u64,
+    pub descriptors: u64,
 }
 
 /// What all reservations together may hold now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Capacity {
-    pub(super) bytes: u64,
-    pub(super) descriptors: u64,
+pub struct Capacity {
+    pub bytes: u64,
+    pub descriptors: u64,
 }
 
 /// What one instance of a qualified release reserves, and the stack its
 /// owner thread gets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Instance {
-    pub(super) amount: Amount,
-    pub(super) owner_stack: u64,
+pub struct Instance {
+    pub amount: Amount,
+    pub owner_stack: u64,
 }
 
 /// Every reservation admitted and not yet freed.
 #[derive(Default)]
-pub(super) struct Ledger {
+pub struct Ledger {
     held: BTreeMap<Holder, Amount>,
 }
 
@@ -66,7 +66,7 @@ impl Ledger {
     /// Sets each holder's reservation to its amount in `holdings` if
     /// everything held beside them and those amounts fit `capacity`;
     /// otherwise changes nothing and says what is short.
-    pub(super) fn hold(
+    pub fn hold(
         &mut self,
         holdings: &[(Holder, Amount)],
         capacity: Capacity,
@@ -94,12 +94,12 @@ impl Ledger {
     }
 
     /// `holder` holds nothing any more.
-    pub(super) fn free(&mut self, holder: &Holder) {
+    pub fn free(&mut self, holder: &Holder) {
         self.held.remove(holder);
     }
 
     /// Every reservation's bytes together.
-    pub(super) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         sum(self.held.values()).bytes
     }
 }
@@ -123,7 +123,7 @@ fn fits(short: &str, unit: &str, needed: u64, available: u64) -> Result<(), Stri
 }
 
 /// A release's reservation before it is loaded: the configured one.
-pub(super) fn configured(settings: &Admission) -> Amount {
+pub fn configured(settings: &Admission) -> Amount {
     Amount {
         bytes: settings.release_bytes,
         descriptors: settings.descriptors_per_load.into(),
@@ -131,7 +131,7 @@ pub(super) fn configured(settings: &Admission) -> Amount {
 }
 
 /// The load thread's reservation: its stack.
-pub(super) fn loader(settings: &Admission) -> Amount {
+pub fn loader(settings: &Admission) -> Amount {
     Amount {
         bytes: settings.stack_bytes,
         descriptors: 0,
@@ -140,7 +140,7 @@ pub(super) fn loader(settings: &Admission) -> Amount {
 
 /// A loaded release's reservation: the greater of configured and
 /// qualified.
-pub(super) fn qualified(settings: &Admission, requirements: &Requirements) -> Amount {
+pub fn qualified(settings: &Admission, requirements: &Requirements) -> Amount {
     let configured = configured(settings);
     Amount {
         bytes: configured.bytes.max(requirements.release_bytes),
@@ -155,7 +155,7 @@ pub(super) fn qualified(settings: &Admission, requirements: &Requirements) -> Am
 /// worker count above `resources.max_workers_per_client` is rejected, never
 /// made room for, as is a library instance that needs more than its share
 /// of `memory.client_bytes` (`limits.client_bytes`).
-pub(super) fn instance(
+pub fn instance(
     settings: &Admission,
     requirements: &Requirements,
     limits: &Limits,

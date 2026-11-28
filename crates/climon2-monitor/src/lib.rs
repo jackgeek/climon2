@@ -61,7 +61,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime},
 };
-use supervisor::{Context, Load, Refusal, Supervisor};
+use supervisor::{Context, Supervisor};
 use terminal::{Authority, Control, Paste, Presentation, Request, Terminal};
 use toast::Toasts;
 
@@ -1600,7 +1600,7 @@ fn context(startup: &Startup, filter: String) -> io::Result<Context> {
     let runtime = climon2_platform::runtime::RuntimeDirectory::prepare(home)?;
     let lanes = limits.lanes();
     Ok(Context {
-        load: loader(startup.executable.clone()),
+        load: climon2_embed::load::loader(startup.executable.clone()),
         home: startup.home.clone(),
         runtime: runtime.path().to_owned(),
         escape: config.escape_prefix(),
@@ -1658,20 +1658,6 @@ fn work(cadence: climon2_core::config::Cadence) -> cadence::Work<SessionId, Clie
         millis(cadence.client_quantum_ms),
         millis(cadence.background_quantum_ms),
     )
-}
-
-/// The monitor's one validated loader, shared by every release it loads.
-fn loader(executables: climon2_core::layout::ExecutableHome) -> Load {
-    let loader = climon2_platform::library::Loader::new(executables);
-    Box::new(move |version| {
-        loader
-            .load(version)
-            .map(|library| supervisor::Loaded {
-                functions: library.functions(),
-                requirements: *library.requirements(),
-            })
-            .map_err(|error| Refusal::Library(error.failure(), error.to_string()))
-    })
 }
 
 /// Why a pass was incomplete, as the monitor shows it; `None` when complete.
