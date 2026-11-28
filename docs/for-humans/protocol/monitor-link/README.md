@@ -8,8 +8,9 @@ pairing, the pinned-key handshake and the records of
 
 **Status: developer-agreed specification in
 [#480](https://github.com/jackgeek/climon2/issues/480). The opening exchange,
-the pinned-key handshake, Hello, Close, the framing of units and the records
-of advertisement and session streams are implemented, in the `climon2-link`
+the pinned-key handshake, Hello, Close, the framing of units, keepalives,
+the records of advertisement and session streams, credit, the record and
+queue limits and stream violations are implemented, in the `climon2-link`
 crate and in no released program.** No
 climon2 release contains a relay or speaks any part of this protocol. One
 detail is still open and is marked [below](#unresolved-details). The

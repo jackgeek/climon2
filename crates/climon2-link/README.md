@@ -8,10 +8,9 @@ Monitor links are planned. So far this crate holds the interface every part
 is driven through, the test harness that drives it, and three parts of the
 [link protocol](../../docs/for-humans/protocol/monitor-link/README.md): the
 opening exchange, a link connection between two ends that already hold
-each other's keys, and the records that follow Hello. Pairing, credit,
-sending keepalives, the silence timer, the stream-0 queue limit and ending
-one stream for a stream violation are not built, and no executable links
-the crate.
+each other's keys, and the records that follow Hello, with the credit,
+keepalives and limits that bound them. Pairing is not built, and no
+executable links the crate.
 
 ## One implementation for every platform
 
@@ -171,14 +170,17 @@ that chose a revision for a link connection, to the
     established link ended without one.
 - `send(record)` queues one record, described [next](#records-after-hello).
   It is `Refused` before the link is established or after it ends
-  (`NotLinked`), above the other end's largest record (`TooLong`), and when
-  it breaks an order rule (`OutOfTurn`). Hello and Close are not records a
+  (`NotLinked`), above the other end's largest record (`TooLong`), when it
+  breaks an order rule (`OutOfTurn`), and when it breaks a credit rule
+  (`Credit`, described [below](#credit)). Hello and Close are not records a
   caller sends: the link code sends them itself.
 - `close(reason)` ends an established link with Close. A relay's reasons are
   `RelayClose` and a hub monitor's `HubClose`, each with its code on the
   wire.
 - `records()` takes the records that have arrived since the last call, in
   the order they ended.
+- `violations()` takes the session streams the other end has broken a rule
+  of since the last call, described [below](#violations).
 
 Every framing, Hello or Close rule broken is a protocol violation: the end
 sends Close with "protocol violation" and closes. A unit that does not
@@ -240,8 +242,9 @@ Each end judges every record, either way, by one model of the order rules
   holds, and sends Snapshot complete once.
 
 An end asked to send a record out of turn refuses it. A record that arrives
-out of turn, with a tag its receiver does not know or with a body that
-breaks its layout is a protocol violation and ends the link.
+out of turn is a violation, described [below](#violations); one with a tag
+its receiver does not know or with a body that breaks its layout is a
+protocol violation and ends the link.
 
 Units go out stream 0 first, then one unit for each session stream in turn,
 so a control record overtakes a large event. An established end sends at
@@ -249,11 +252,9 @@ most 8 units in one step. When it has more, it names the present moment as
 its deadline: its caller steps it again once those are sent, and a record
 queued meanwhile goes ahead of the rest.
 
-Four points go beyond the letter of the protocol pages, each the stricter
+Three points go beyond the letter of the protocol pages, each the stricter
 or simpler reading:
 
-- Every protocol violation ends the link, including one the pages make a
-  stream violation. Ending only that stream comes with credit.
 - Any request or Close stream on a stream that has ended is ignored, even
   one that could not have crossed the ending, such as a request on a
   refused stream. Telling them apart would mean remembering every ended
@@ -263,6 +264,79 @@ or simpler reading:
   layout. `OpenStream` has no revision field: it is always 1.
 - The relay answers Open stream with Stream opened or Stream refused even
   after Close stream, so Stream ended always follows Stream opened.
+
+## Credit
+
+A session stream's [credit](../../docs/for-humans/protocol/monitor-link/credit.md)
+is the bytes of events the hub monitor is ready to receive on it. Each end's
+order rules keep it for every live stream: the first credit of Open stream,
+plus each `HubStream::Credit`, less the length, tag included, of each Event.
+No other record uses credit, so Stream ended and Request refused are always
+sendable.
+
+- The relay takes an Event into its queue only when its stream's credit
+  covers all of it, and spends the credit then. Otherwise `send` refuses it
+  with `Credit`: the caller keeps the event in the client library, stops
+  draining that client and tries again when a Credit record comes out of
+  `records()`. The relay therefore never holds more for a stream than its
+  credit.
+- The hub monitor refuses to send a Credit of zero, or one that would take
+  the stream past 4,294,967,295 bytes, with `Credit`. It spends the credit
+  as Events arrive, so it never thinks a stream holds less than the relay
+  does.
+
+## Keepalive and a lost link
+
+Once the link is established, an end that has sent no unit for 5 seconds
+sends a [keepalive](../../docs/for-humans/protocol/monitor-link/keepalive.md),
+an empty unit on stream 0. It never sends one while it has units queued, so
+never between the fragments of a record. An end that has received no unit
+that decrypts for 15 seconds declares the link `Lost`: it closes the byte
+stream at once and sends nothing more, not even Close. Every unit that
+decrypts resets that time, so a long record that arrives slowly keeps the
+link; bytes that have not formed a whole unit do not. Each output names the
+earlier of the two moments as its deadline, unless it has units queued.
+
+## Violations
+
+A breach of one live session stream's own rules, its order or its credit,
+ends only that stream as a
+[stream violation](../../docs/for-humans/protocol/monitor-link/README.md#protocol-violations).
+The link carries on, and the end tells its caller once, through
+`violations()`. From then on the stream is treated as if the hub monitor had
+sent Close stream:
+
+- The hub monitor sends Close stream itself, unless it already had. It
+  sends nothing more on the stream and discards what the relay sends there,
+  except the Stream ended or Stream refused that ends it.
+- The relay sends nothing itself and ignores what the hub monitor sends on
+  the stream. Its caller shuts the stream's client down, answers the stream
+  if it has not yet, and sends Stream ended with the reason "stream
+  violation", because the run report it carries is the client's.
+
+Every other breach closes the link with "protocol violation": a tag not
+known, a body that breaks its layout, a unit or record past its limit, a
+stream number skipped or reused, a record on a stream that has not begun or
+has ended, an advertisement out of turn or past 128 sessions, and more than
+1,024 records or 1,048,576 bytes, tags included, of stream-0 records that
+the caller has not yet taken with `records()`. Only a hub monitor receives
+stream-0 records after Hello, so only it can reach that bound.
+
+Four points go beyond the letter of the protocol pages, each the stricter
+or simpler reading:
+
+- Only the order and credit rules of a live stream make a stream
+  violation. Anything the pages do not clearly tie to one stream's own
+  records ends the link, including a record past the receiver's ceiling on a
+  session stream and Open stream on a stream already live, which breaks the
+  numbering rule.
+- A Credit before the relay has answered the stream breaks its order:
+  until then the hub monitor sends nothing but Close stream there.
+- Neither timing runs before the link is established, where the 30-second
+  wait for Hello governs. A unit that arrives at the very moment the 15
+  seconds run out is in time, as a Hello at its deadline is.
+- The relay's link does not check that the caller's Stream ended for a
+  violated stream gives the reason "stream violation".
 
 ## The Link-layer harness
 
@@ -313,4 +387,7 @@ in-memory byte streams, starting at time zero.
 | ADV-02, the Link-layer part: a Session carries the ID, command, arguments, working directory, depth, creation time and release, and nothing more | `tests/advertisement.rs`: the `adv_02_` tests |
 | ADV-05, the Link-layer part: a remote session is the relay's pinned key and the session ID | `tests/advertisement.rs`: `adv_05_a_remote_session_is_the_relays_key_and_the_session_id` |
 | REV-04: an unknown record tag ends the link and is never skipped; unknown capability tokens are ignored, and link revision 1 sends none | `tests/encoding.rs`: `rev_04_an_unknown_record_tag_ends_the_link`; `tests/records.rs`: `rev_04_unknown_capability_tokens_are_ignored` |
+| LIM-04, the Link-layer parts: credit counts the bytes of Event records and nothing else, the relay holds no Event past its credit, and advertisement never waits for it | `tests/credit.rs`: the `lim_04_` tests |
+| LIM-06, the Link-layer parts: a per-stream breach ends only that stream; an oversized unit, a record past the ceiling, an advertisement flood and too many unprocessed stream-0 records close the link with "protocol violation" | `tests/violations.rs`: the `lim_06_` tests |
+| LOSS-01: a keepalive after 5 seconds of sending nothing, a lost link after 15 seconds of receiving no unit, each unit resetting that time and unauthenticated bytes not, with the time supplied | `tests/liveness.rs`: the `loss_01_` tests |
 | SEC-08: the published Noise vector, and climon2's frozen vector binding the opening exchange into the handshake | `src/noise.rs`: `sec_08_the_published_noise_ik_vector_gives_its_bytes`; `tests/handshake.rs`: `sec_08_a_link_connection_gives_climon2s_frozen_bytes` |
