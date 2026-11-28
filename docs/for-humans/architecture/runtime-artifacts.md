@@ -362,6 +362,13 @@ so the monitor is always the current version. That handoff between executables
 of one release is not frozen. Since #106 it discovers sessions and loads their
 libraries.
 
+**Current (#490):** the `climon2-monitor` executable is built from the
+monitor's terminal interface package, `climon2-monitor-tui`, which links the
+[monitor library](../../../GLOSSARY.md#sessions) (`climon2-monitor`) statically
+as an ordinary Rust crate. The executable, its name, its place in the version
+folder and every arrow above are unchanged; no dynamic library is added
+([ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md)).
+
 The agreed [embedding design](../protocol/library-embedding.md) loads
 `<executable home>/<session version>/libclimon2_client.dylib` on macOS, or
 `libclimon2_client.so` on x86-64 GNU/Linux, with no release fallback. It uses a versioned C interface, per-instance client threads,
@@ -401,6 +408,7 @@ terminal interface that serves a web view to browsers over
 [WebSocket](../protocol/TERMS.md#websocket), where xterm.js shows session
 content. The monitor and the web monitor are built on one monitor library, an
 ordinary Rust crate linked into each, so it adds no dynamic library; the
+monitor already is (#490). The
 relay shares only the code that runs client library instances
 ([ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md)). The
 relay's executable and the monitor's are drawn in one version folder for

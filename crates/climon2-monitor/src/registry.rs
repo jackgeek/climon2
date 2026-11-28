@@ -98,7 +98,7 @@ pub(crate) enum Termination {
 /// What Delete offers for a row (selector document, "Delete: terminate and
 /// remove").
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Offer {
+pub enum Offer {
     TerminateAndRemove,
     /// The session is already final, or proven gone (owner decision on
     /// #116): nothing is left to terminate.
@@ -124,7 +124,7 @@ impl Deleting {
 /// Where recovery of a row's lost or failed client stands (spec #73,
 /// Client supervisor, "Recovery").
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Recovery {
+pub enum Recovery {
     /// A passive retry is scheduled or running, after this diagnostic.
     Retrying(String),
     /// Recovery stopped for good: rejected permanently, with why.
@@ -194,7 +194,7 @@ impl Status {
 /// deduplicate it by within its session: an attention episode, or the one
 /// final outcome.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum News {
+pub enum News {
     Attention(u64),
     Final,
 }
@@ -528,13 +528,13 @@ pub(crate) enum Kind {
 /// One row as the selector shows it. The session ID identifies it and is
 /// never displayed.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct View {
-    pub(crate) id: SessionId,
-    pub(crate) status: String,
+pub struct View {
+    pub id: SessionId,
+    pub status: String,
     /// Literal: control characters escaped, never interpreted.
-    pub(crate) label: String,
+    pub label: String,
     /// When the monitor recorded the row's current connection status.
-    pub(crate) since: SystemTime,
+    pub since: SystemTime,
 }
 
 pub(crate) struct Registry {
@@ -788,7 +788,7 @@ fn literal(text: &str) -> String {
 /// statically truncated to end with `…` within them (owner decision on
 /// #112, 2026-11-16: nothing marquees).
 /// Text with no cell at all is empty.
-pub(crate) fn truncate(text: &str, cells: usize) -> Cow<'_, str> {
+pub fn truncate(text: &str, cells: usize) -> Cow<'_, str> {
     if text.width() <= cells {
         Cow::Borrowed(text)
     } else if cells == 0 {

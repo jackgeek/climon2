@@ -102,7 +102,7 @@ fn built(root: &Path) -> PathBuf {
             file.is_file(),
             "missing {}; build the launcher, daemon, client and monitor first \
              (cargo test -p climon2-launcher -p climon2-daemon -p climon2-client \
-             -p climon2-monitor)",
+             -p climon2-monitor-tui)",
             file.display()
         );
     }

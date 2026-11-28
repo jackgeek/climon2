@@ -130,7 +130,8 @@ It comes in two levels:
 chooses as the ticket gate does, and does not measure load.
 
 **Build check.** Like `cargo xtask test`, the gate's tests first run the
-monitor's build test alone. This proves the plain monitor binary has no test
+build test of `climon2-monitor-tui`, the package that builds the monitor
+binary, alone. This proves the plain monitor binary has no test
 hooks. Only then do the workspace tests build it with hooks at the same path.
 
 **How a mutant is tested.** The unchanged workspace must pass inside a real

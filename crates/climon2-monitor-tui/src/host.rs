@@ -5,7 +5,6 @@ use climon2_platform::{
     terminal::{self, Bridged, RawModeGuard, Signals},
     waiting::{self, Watch},
 };
-use climon2_vt::Presentation;
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -57,9 +56,10 @@ pub(crate) struct Host {
     signals: Signals,
     /// Host input, and stdout, neither of which blocks (#285).
     terminal: Bridged,
-    /// A presentation that never entered an alternate screen: its release is
-    /// exactly the documented normal-shell baseline.
-    baseline: Presentation,
+    /// The documented normal-shell baseline for the host's size at entry:
+    /// the release of a presentation that never entered an alternate
+    /// screen.
+    baseline: Vec<u8>,
     buffer: [u8; READ_BYTES],
     /// A termination signal was reported: it stays caught, and later ones
     /// change nothing, so host input is read again (#118).
@@ -83,7 +83,7 @@ impl Host {
             _raw: raw,
             signals,
             terminal: Bridged::new(terminal)?,
-            baseline: Presentation::new(size.cols, size.rows),
+            baseline: climon2_monitor::baseline(size),
             buffer: [0u8; READ_BYTES],
             // No signal yet. Spelled `bool::default()`, false: a line
             // holding only a literal has no coverage region of its own.
@@ -99,8 +99,8 @@ impl Host {
     /// screen restores the shell's cursor.
     pub(crate) fn release(mut self, mut output: Output) -> io::Result<()> {
         #[cfg(feature = "test-hooks")]
-        crate::hooks::stall("release");
-        output.queue(&self.baseline.release());
+        climon2_monitor::hooks::stall("release");
+        output.queue(&self.baseline);
         output.queue(LEAVE);
         self.finish(&mut output)
     }
@@ -158,7 +158,7 @@ impl Host {
     fn readable(&self, output: &Output) -> io::Result<bool> {
         let mut watches = [self.terminal.watch_input(), output.watch(&self.terminal)];
         #[cfg(feature = "test-hooks")]
-        crate::hooks::wait_failure().or_else(interrupted)?;
+        climon2_monitor::hooks::wait_failure().or_else(interrupted)?;
         waiting::wait(&mut watches, TICK).or_else(interrupted)?;
         Ok(watches[0].ready())
     }

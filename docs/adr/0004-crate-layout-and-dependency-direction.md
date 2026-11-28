@@ -10,11 +10,16 @@ package and executable, `climon2-monitor` (spec #73, confirmed 2026-11-08): the
 CLI execs its own version's monitor for `c2 monitor` and `c2 m`, as it execs the version-matched client, and that handoff
 between executables of one release is not frozen. The client library's `cdylib`
 artifact, agreed in spec #73, is recorded below (#75).
-The monitor is the one exception to the daemon-only `climon2-vt` rule: the
-[#63 terminal contract](../for-humans/protocol/terminal-integration.md) has it keep its own
+The monitor library is the one exception to the daemon-only `climon2-vt` rule: the
+[#63 terminal contract](../for-humans/protocol/terminal-integration.md) has the monitor keep its own
 `climon2-vt` models with read-only Rust views, which it does since #108, and it
 shares the documented normal-shell baseline from that crate. This adds no cross-release
-cell schema.
+cell schema. Since #490 the monitor is two packages, as
+[ADR 0011](0011-monitor-library-and-client-embedding.md) decides: the monitor library,
+`climon2-monitor`, which holds those models and re-exports their read-only views, and its
+terminal interface, `climon2-monitor-tui`, which builds the `climon2-monitor` binary and
+reaches the models only through the library. The exception moved with the models, from the
+monitor's one package to the library.
 
 The workspace has one package per shipped binary. The CLI, daemon and client never link each other; they reach each other only by path at runtime (the CLI starts the daemon and execs into the version-matched client). Shared code lives in two libraries: `climon2-core`, which is platform-neutral and has no `cfg(target_os)`, and `climon2-platform`, which holds the shared seam modules (ADR 0003) and the validated client-library loader (#84). Session discovery, shared by the CLI and monitor, is a separate shipped library, `climon2-discovery` (#77). The crate boundary keeps neutral code out of the platform seams, so `core` builds and runs its tests on Linux and Windows without the rest of the workspace.
 
@@ -30,8 +35,10 @@ The workspace has one package per shipped binary. The CLI, daemon and client nev
 | `climon2-daemon` (bin `climon2-daemon`) | shipped lib + thin main | `core`, `platform`, `vt` |
 | `climon2-client` (bin `climon2-client`, cdylib `libclimon2_client.dylib` or `.so`) | shipped lib + thin main + cdylib | `core`, `platform` |
 | `climon2-install` (bin `climon2-install`, shipped as `install`) | shipped lib + thin main | `core`; contains seam 8 |
-| `climon2-monitor` (bin `climon2-monitor`) | shipped lib + thin main | `core`, `platform`, `vt`, `discovery`. Ratatui is a dependency of this package only. It never links the client or daemon packages: client libraries are reached by path at runtime |
-| `climon2-vt` | shipped lib | crates.io only (the pinned `alacritty_terminal`, ADR 0007, and `unicode-width`, the engine's own width table, which monitor-model charges use to measure characters as the engine does); platform-neutral, no `cfg(target_os)`; only the daemon and the monitor may depend on it |
+| `climon2-embed` | shipped lib | `core`, `platform`. Client embedding (ADR 0011, #489): running one client library instance for one session; no third-party crate but `tracing` |
+| `climon2-monitor` | shipped lib | `core`, `platform`, `vt`, `discovery`, `embed`. The monitor library (ADR 0011): no binary, and no terminal, HTTP or WebSocket crate. It never links the client or daemon packages: client libraries are reached by path at runtime |
+| `climon2-monitor-tui` (bin `climon2-monitor`) | shipped lib + thin main | `core`, `platform`, `monitor`; `vt` in its tests only. The monitor's terminal interface. Ratatui is a dependency of this package only (and, once it is built, of `climon2-relay`, ADR 0011) |
+| `climon2-vt` | shipped lib | crates.io only (the pinned `alacritty_terminal`, ADR 0007, and `unicode-width`, the engine's own width table, which monitor-model charges use to measure characters as the engine does); platform-neutral, no `cfg(target_os)`; only the daemon and the monitor library may depend on it |
 | `climon2-link` | shipped lib | only the crates on its allowlist in the workspace test, none so far; never `platform`, an operating-system or socket crate, an async runtime or a source of randomness. No per-platform condition, no `std::net`, `os`, `fs`, `process` or `env`, no standard clock (#492, [ADR 0011](0011-monitor-library-and-client-embedding.md)) |
 | `climon2-test-term`, `climon2-fixtures`, `climon2-e2e`, `xtask` | test-only, `publish = false` | anything |
 | `climon2-second-release` (lib + cdylib `libclimon2_second_release`, bin `climon2-second-release-daemon`) | test-only, `publish = false`, its own version (#97) | anything; it compiles `climon2-client`'s library source and runs the `climon2-daemon` library |
@@ -58,7 +65,7 @@ The [second-release fixture](../../GLOSSARY.md#testing) (#97; accepted by the de
 ## Consequences
 
 - Plain `cargo test` builds a package's real binaries only if that package has an integration test, and `CARGO_BIN_EXE_*` only covers binaries in the same package. Tests therefore find binaries from other packages as siblings of `current_exe().parent()`. Nested `cargo build` is ruled out: it silently overwrote feature-unified binaries.
-- `test-hooks` is turned on only through `climon2-test-term`'s normal dependencies, so the workspace-wide `cargo test` builds hooked binaries. A package without a `climon2-test-term` dev-dependency, such as the monitor, gets its plain binary from `cargo test -p` alone, at the same sibling path; `cargo xtask test` runs the monitor's build test that way before the workspace tests, so every gate finds both. Release builds must use `-p <package>` for each shipped package, never `--workspace`, and a release gate checks that no hook marker is present in the shipped binaries.
+- `test-hooks` is turned on only through `climon2-test-term`'s normal dependencies, so the workspace-wide `cargo test` builds hooked binaries. A package without a `climon2-test-term` dev-dependency, such as the monitor's terminal interface (`climon2-monitor-tui`, which owns the monitor binary), gets its plain binary from `cargo test -p` alone, at the same sibling path; `cargo xtask test` runs the monitor's build test that way before the workspace tests, so every gate finds both. Release builds must use `-p <package>` for each shipped package, never `--workspace`, and a release gate checks that no hook marker is present in the shipped binaries.
 - Cargo builds the client library's cdylib whenever the `climon2-client` library is compiled, but uplifts only binaries and directly requested targets. Under `cargo test` the hooked library therefore stays beside the test executables in `deps/`, where tests and `Payload::from_siblings` find it without nested builds; per-package release builds uplift the unhooked library. Its crate type keeps `lib` so that the package still owns a library target. Unlike the monitor's binary, the library has no plain `cargo test` build: `climon2-client`'s tests enable `test-hooks` through their `climon2-test-term` dev-dependency, and Cargo names a cdylib target's outputs without a hash, so another package's plain test build would replace the hooked library at the same path. The plain library is the per-package release build, which `cargo xtask release-check` builds in a private target directory and checks.
 - On x86-64 GNU/Linux the `climon2-client` library target links the GCC unwinder (`gcc_eh`) statically, so the cdylib needs no shared library beyond glibc's, as library embedding requires; no unwinding crosses its C ABI. Every artifact that links the crate, including the client executable and its tests, therefore also stops needing `libgcc_s.so.1`.
 - The `climon2-client` library target declares the `#[global_allocator]` that measures each instance's allocation (#180). It replaces the allocator of every artifact that links the crate: the client library, the client executable and the package's own test binaries; each block carries a 16-byte prefix (or one alignment's worth), and nothing is charged outside an instance. Packages that only depend on `climon2-client` to build it, such as `climon2-test-term` for `test-hooks`, never reference it, so their test binaries do not link it.

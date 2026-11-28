@@ -11,14 +11,14 @@ use unicode_width::UnicodeWidthChar;
 
 /// What an edit did to the search text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Edit {
+pub enum Edit {
     Changed,
     Unchanged,
     /// Refused: the text would exceed its limit.
     Refused,
 }
 
-pub(crate) struct Search {
+pub struct Search {
     text: String,
     /// The cursor's byte offset in `text`, on a character boundary.
     cursor: usize,
@@ -32,7 +32,7 @@ pub(crate) struct Search {
 }
 
 impl Search {
-    pub(crate) fn new(limit: usize) -> Self {
+    pub fn new(limit: usize) -> Self {
         Self {
             text: String::new(),
             cursor: 0,
@@ -44,14 +44,14 @@ impl Search {
     }
 
     /// `ui.search_bytes`.
-    pub(crate) fn limit(&self) -> usize {
+    pub fn limit(&self) -> usize {
         self.limit
     }
 
     /// One typed byte: a character is inserted once its UTF-8 bytes are
     /// complete, unless it is a control character; invalid bytes are
     /// discarded.
-    pub(crate) fn typed(&mut self, byte: u8) -> Edit {
+    pub fn typed(&mut self, byte: u8) -> Edit {
         match self.typed.push(byte) {
             Some(character) if !character.is_control() => self.insert(&character.to_string()),
             _ => Edit::Unchanged,
@@ -70,7 +70,7 @@ impl Search {
     }
 
     /// Deletes the character before the cursor.
-    pub(crate) fn backspace(&mut self) -> Edit {
+    pub fn backspace(&mut self) -> Edit {
         let Some(previous) = self.previous() else {
             return Edit::Unchanged;
         };
@@ -79,23 +79,23 @@ impl Search {
         Edit::Changed
     }
 
-    pub(crate) fn left(&mut self) -> Edit {
+    pub fn left(&mut self) -> Edit {
         self.cursor = self.previous().unwrap_or(self.cursor);
         Edit::Unchanged
     }
 
-    pub(crate) fn right(&mut self) -> Edit {
+    pub fn right(&mut self) -> Edit {
         let next = self.text[self.cursor..].chars().next();
         self.cursor += next.map_or(0, char::len_utf8);
         Edit::Unchanged
     }
 
-    pub(crate) fn home(&mut self) -> Edit {
+    pub fn home(&mut self) -> Edit {
         self.cursor = 0;
         Edit::Unchanged
     }
 
-    pub(crate) fn end(&mut self) -> Edit {
+    pub fn end(&mut self) -> Edit {
         self.cursor = self.text.len();
         Edit::Unchanged
     }
@@ -109,12 +109,12 @@ impl Search {
     }
 
     /// A bracketed paste begins.
-    pub(crate) fn paste_start(&mut self) {
+    pub fn paste_start(&mut self) {
         self.pasting = Some(Pasting::default());
     }
 
     /// Bytes of the paste under way, if one is.
-    pub(crate) fn paste_data(&mut self, bytes: &[u8]) {
+    pub fn paste_data(&mut self, bytes: &[u8]) {
         let limit = self.limit;
         if let Some(pasting) = &mut self.pasting {
             for &byte in bytes {
@@ -124,14 +124,14 @@ impl Search {
     }
 
     /// The paste ends: its one line is inserted whole, or refused.
-    pub(crate) fn paste_end(&mut self) -> Edit {
+    pub fn paste_end(&mut self) -> Edit {
         let pasted = self.pasting.take().unwrap_or_default();
         self.insert(&pasted.line)
     }
 
     /// Whether `row` matches: every search character in order, ignoring
     /// case, in its displayed status, a space, then its label.
-    pub(crate) fn matches(&self, row: &View) -> bool {
+    pub fn matches(&self, row: &View) -> bool {
         let choice = format!("{} {}", row.status, row.label).to_lowercase();
         let pattern = self.text.to_lowercase();
         self.matcher.fuzzy_match(&choice, &pattern).is_some()
@@ -140,7 +140,7 @@ impl Search {
     /// The part of the text shown in `cells` display cells, and the
     /// cursor's cell in it: the text from its start while the cursor fits,
     /// otherwise from where the cursor is the last cell.
-    pub(crate) fn shown(&self, cells: usize) -> (&str, usize) {
+    pub fn shown(&self, cells: usize) -> (&str, usize) {
         let room = cells.saturating_sub(1);
         let mut start = self.cursor;
         let mut used = 0;

@@ -2,7 +2,7 @@
 
 The web monitor and the relay both need behaviour that today lives inside the monitor's executable, beside its Ratatui terminal interface. We decided to split that code into two layers of ordinary Rust crates, linked statically into each executable. The lower layer, **client embedding** (`climon2-embed`), runs client library instances; the monitor, the web monitor and the relay all use it. The upper layer, the **monitor library** (`climon2-monitor`), is a whole monitor with no interface of its own; the monitor's terminal interface (`climon2-monitor-tui`) and the web monitor (`climon2-web`) are consumers of it, and the relay never depends on it. This lets the terminal interface be replaced and iterated without changing the library, and gives the terminal interface and the web view the same capabilities from one implementation. It is decided in [#237](https://github.com/jackgeek/climon2/issues/237).
 
-This is a plan. Until it is built, [ADR 0004](0004-crate-layout-and-dependency-direction.md) describes the workspace as it is.
+This is a plan, built in parts. Client embedding (#489), and the monitor library with its terminal interface (#490), are built, and [ADR 0004](0004-crate-layout-and-dependency-direction.md) records them; until the rest is, ADR 0004 describes the workspace as it is.
 
 ## The two layers
 

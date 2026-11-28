@@ -79,6 +79,7 @@ pub(crate) const SHIPPED: &[&str] = &[
     "crates/climon2-client/src",
     "crates/climon2-install/src",
     "crates/climon2-monitor/src",
+    "crates/climon2-monitor-tui/src",
     "crates/climon2-embed/src",
     "crates/climon2-vt/src",
     "crates/climon2-link/src",
@@ -125,9 +126,16 @@ pub(crate) const WINDOWS_SUITE: &[&[&str]] = &[
     // Builds the client binary and library, which the CLI's attach, kill and
     // smoke tests start.
     &["-p", "climon2-client", "--test", "library_windows"],
-    // Builds the monitor binary, which the CLI's monitor tests start; client
-    // embedding's own tests run with it.
-    &["-p", "climon2-monitor", "-p", "climon2-embed"],
+    // Builds the monitor binary, which the CLI's monitor tests start; the
+    // monitor library's and client embedding's own tests run with it.
+    &[
+        "-p",
+        "climon2-monitor-tui",
+        "-p",
+        "climon2-monitor",
+        "-p",
+        "climon2-embed",
+    ],
     &["-p", "climon2-launcher"],
     // The CLI's tests but the end-to-end scenarios #328 ported
     // (docs/for-humans/windows/qualification.md), which the Windows Test job

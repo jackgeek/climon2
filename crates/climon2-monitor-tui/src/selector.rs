@@ -15,11 +15,14 @@
 use crate::{
     mouse::{Gesture, Mouse},
     paint::HostCursor,
-    registry::{View, truncate},
     router::{Begin, Key, Pasted, Routed},
-    search::{Edit, Search},
 };
 use climon2_core::{SessionId, keys::ControlKey};
+use climon2_monitor::{
+    View,
+    search::{Edit, Search},
+    truncate,
+};
 use ratatui::{
     buffer::Buffer,
     layout::{Margin, Position, Rect},
@@ -227,7 +230,7 @@ impl Selector {
                     .map(|row| &row.id)
                     .collect::<Vec<_>>()
             };
-            self.highlight = crate::delete::fallback(id, &ids(before), &ids(after));
+            self.highlight = climon2_monitor::fallback(id, &ids(before), &ids(after));
         }
     }
 
