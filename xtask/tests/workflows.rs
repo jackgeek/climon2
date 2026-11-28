@@ -296,7 +296,8 @@ fn the_windows_test_job_tests_the_monitor_and_checks_the_native_interface_with_m
             .unwrap_or_else(|| panic!("no {text:?} in {test:#?}"))
     };
     assert!(
-        line("cargo test --locked -p climon2-monitor") < line("-p climon2-launcher -p climon2-cli")
+        line("cargo test --locked -p climon2-monitor-tui -p climon2-monitor")
+            < line("-p climon2-launcher -p climon2-cli")
     );
     line("monitor-client/check.py NativeDeclarations.test_msvc_declarations_and_examples");
 }

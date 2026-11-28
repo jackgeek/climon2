@@ -38,7 +38,7 @@ const PACKAGES: &[(&str, &str)] = &[
     ("climon2-cli", "climon2-cli"),
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
-    ("climon2-monitor", "climon2-monitor"),
+    ("climon2-monitor-tui", "climon2-monitor"),
 ];
 /// The notice for the ConPTY files, shipped beside them.
 const NOTICE: &str = "pins/THIRD-PARTY-NOTICES.txt";

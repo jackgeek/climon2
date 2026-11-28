@@ -19,7 +19,7 @@ pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-daemon", "climon2-daemon"),
     ("climon2-client", "climon2-client"),
     ("climon2-install", "climon2-install"),
-    ("climon2-monitor", "climon2-monitor"),
+    ("climon2-monitor-tui", "climon2-monitor"),
 ];
 
 /// Where every production build goes: one directory kept between builds, so
@@ -152,11 +152,11 @@ mod tests {
     fn packages(monitor: Option<&str>) -> Vec<Value> {
         let mut packages: Vec<_> = PACKAGES
             .iter()
-            .filter(|(name, _)| *name != "climon2-monitor")
+            .filter(|(name, _)| *name != "climon2-monitor-tui")
             .map(|(name, _)| json!({"name": name, "version": "1.2.3"}))
             .collect();
         if let Some(version) = monitor {
-            packages.push(json!({"name": "climon2-monitor", "version": version}));
+            packages.push(json!({"name": "climon2-monitor-tui", "version": version}));
         }
         packages
     }
@@ -167,11 +167,14 @@ mod tests {
     fn version_check_rejects_a_missing_or_wrong_version_monitor() {
         assert!(shipped_versions(&packages(Some("1.2.3")), PACKAGES, "1.2.3").is_ok());
         let wrong = shipped_versions(&packages(Some("1.2.4")), PACKAGES, "1.2.3").unwrap_err();
-        assert_eq!(wrong.to_string(), "climon2-monitor version is not 1.2.3");
+        assert_eq!(
+            wrong.to_string(),
+            "climon2-monitor-tui version is not 1.2.3"
+        );
         let missing = shipped_versions(&packages(None), PACKAGES, "1.2.3").unwrap_err();
         assert_eq!(
             missing.to_string(),
-            "missing shipped package climon2-monitor"
+            "missing shipped package climon2-monitor-tui"
         );
     }
 }

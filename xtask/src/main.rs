@@ -51,7 +51,8 @@ test runs the Windows source-ownership check, then fmt, clippy and workspace tes
 including packaged acceptance, plus ShellCheck.
 windows-changed prints whether the changes since the merge base of <base> and HEAD must run
 the Windows Test and Quality jobs whatever CLIMON2_WINDOWS_TESTS says.
-Before the workspace tests it runs the monitor's build test alone, against its plain binary.
+Before the workspace tests it runs the monitor terminal interface's build test alone, against
+its plain binary.
 setup-quality installs the pinned Python quality tools and cargo-llvm-cov.
 mutation-probe runs the sentinel, whose one checked mutant must be killed and one unchecked
 mutant survive, then checks real-binary worker isolation.
@@ -250,12 +251,13 @@ fn test() -> io::Result<()> {
             "-D",
             "warnings",
         ],
-        // Alone, the monitor package builds its binary without test hooks; the
-        // workspace tests that follow rebuild the hooked sibling in its place.
+        // Alone, the monitor's terminal interface builds its binary without
+        // test hooks; the workspace tests that follow rebuild the hooked
+        // sibling in its place.
         &[
             "test",
             "-p",
-            "climon2-monitor",
+            "climon2-monitor-tui",
             "--locked",
             "--test",
             "build",
