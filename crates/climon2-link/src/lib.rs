@@ -8,21 +8,29 @@
 //! lets a test supply the time and the randomness (ONE-01, ONE-02 of the
 //! monitor-link acceptance criteria).
 
+pub mod client;
 mod hub;
 mod keys;
+mod layout;
 mod link;
 mod noise;
 mod opening;
 mod record;
 mod relay;
+mod rules;
+mod stream;
 mod unit;
 
 pub use hub::HubEnd;
 pub use keys::{PublicKey, StaticKey};
-pub use link::{Ended, HubLink, Link, Peer, Record, Refused, RelayLink};
+pub use link::{Ended, HubLink, Link, Peer, Refused, RelayLink};
 pub use opening::{Opened, Opening, Pairing, Purpose, Revisions, Transcript};
 pub use record::{Hello, HubClose, RelayClose};
 pub use relay::RelayEnd;
+pub use stream::{
+    Advertisement, Cause, EndReason, HubRecord, HubStream, OpenStream, RelayRecord, RelayStream,
+    RequestRefused, Session, SessionId, StreamEnded, StreamOpened, StreamRefused,
+};
 
 use std::time::Duration;
 

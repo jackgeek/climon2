@@ -1,10 +1,14 @@
 //! The on-path proxy and the link peer stand-in against a link connection
 //! at the Link layer (#494): SEC-02, SEC-03 and the second half of SEC-04.
 
+mod samples;
 mod support;
 mod wire;
 
-use climon2_link::{End, Ended, HubEnd, Input, Link, Record, RelayClose, RelayEnd, Time};
+use climon2_link::{
+    Advertisement, End, Ended, HubEnd, HubRecord, Input, Link, RelayClose, RelayEnd, RelayRecord,
+    Time,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -24,11 +28,34 @@ fn linked() -> Harness<HubEnd, OnPath<RelayEnd>> {
     harness
 }
 
-fn record(stream: u32, tag: u8, body: &[u8]) -> Record {
-    Record {
-        stream,
-        tag,
-        body: body.to_vec(),
+/// Open stream for `stream`: a record of one unit from the hub monitor.
+fn open(stream: u32) -> HubRecord {
+    samples::from_hub(stream, samples::open_stream())
+}
+
+/// An advertisement of the session `id`: a record of one unit from the
+/// relay.
+fn session(id: u8) -> RelayRecord {
+    samples::advertise(Advertisement::Session(samples::session_with([id; 16])))
+}
+
+/// What the relay or the hub monitor took, as text that both can be
+/// compared by.
+fn taken(harness: &mut Harness<HubEnd, OnPath<RelayEnd>>, way: Way) -> Vec<String> {
+    match way {
+        Way::ToRelay => harness
+            .relay
+            .end
+            .records()
+            .iter()
+            .map(|r| format!("{r:?}"))
+            .collect(),
+        Way::ToHub => harness
+            .hub
+            .records()
+            .iter()
+            .map(|r| format!("{r:?}"))
+            .collect(),
     }
 }
 
@@ -96,23 +123,20 @@ fn sec_02_an_altered_unit_ends_the_link_and_delivers_nothing() {
             });
             let expected = match way {
                 Way::ToRelay => {
-                    harness.hub.send(1, 0x41, b"first").expect("sent");
-                    harness.hub.send(1, 0x42, b"second").expect("sent");
-                    [record(1, 0x41, b"first")]
+                    harness.hub.send(&open(1)).expect("sent");
+                    harness.hub.send(&open(2)).expect("sent");
+                    format!("{:?}", open(1))
                 }
                 Way::ToHub => {
-                    harness.relay.end.send(1, 0x81, b"first").expect("sent");
-                    harness.relay.end.send(1, 0x82, b"second").expect("sent");
-                    [record(1, 0x81, b"first")]
+                    harness.relay.end.send(&session(1)).expect("sent");
+                    harness.relay.end.send(&session(2)).expect("sent");
+                    format!("{:?}", session(1))
                 }
             };
             harness.run();
 
-            let received = match way {
-                Way::ToRelay => harness.relay.end.records(),
-                Way::ToHub => harness.hub.records(),
-            };
-            assert_eq!(received, expected[..delivered], "{way:?} {name}");
+            let received = taken(&mut harness, way);
+            assert_eq!(received, [expected][..delivered], "{way:?} {name}");
             assert_eq!(
                 harness.hub.link(),
                 &Link::Ended(Ended::Lost),
@@ -139,7 +163,7 @@ fn sec_02_a_unit_cut_off_by_a_close_delivers_nothing() {
         }
         bytes
     });
-    harness.hub.send(1, 0x41, b"cut").expect("sent");
+    harness.hub.send(&open(1)).expect("sent");
     harness.run();
     let now = harness.now();
     let output = harness.relay.step(now, Input::Closed, &mut Seeded::new(0));
@@ -168,9 +192,9 @@ fn recorded_connection() -> Recorded {
     });
     let mut harness = Harness::new(hub, on_path);
     harness.run();
-    harness.hub.send(1, 0x41, b"recorded").expect("sent");
+    harness.hub.send(&open(1)).expect("sent");
     harness.run();
-    assert_eq!(harness.relay.end.records(), [record(1, 0x41, b"recorded")]);
+    assert_eq!(harness.relay.end.records(), [open(1)]);
     recorded
 }
 
@@ -233,12 +257,9 @@ fn sec_03_a_replayed_connection_delivers_nothing() {
     );
     assert!(relay.records().is_empty());
     assert_eq!(relay.link(), &Link::Ended(Ended::Failed));
-    existing.hub.send(1, 0x41, b"still here").expect("sent");
+    existing.hub.send(&open(1)).expect("sent");
     existing.run();
-    assert_eq!(
-        existing.relay.end.records(),
-        [record(1, 0x41, b"still here")]
-    );
+    assert_eq!(existing.relay.end.records(), [open(1)]);
 }
 
 /// The plaintext of a Close record that gives `code`, as one unit on
