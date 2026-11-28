@@ -19,7 +19,9 @@ Each platform's gate runs on its own machine, so the three run at once.
 
 Every gate mutates only the source a push changes. On `main` that means the
 push itself, and on any other branch it means the branch's difference from
-`main`. A gate with nothing to mutate passes in a minute.
+`main`. A gate with nothing to mutate passes in a minute. One feature's
+branches are gated differently: see
+[The monitor links feature's branches](#the-monitor-links-features-branches).
 
 ## What a gate mutates
 
@@ -90,6 +92,49 @@ was chosen in another file. That only ever tries more mutants, never fewer,
 and the plan shows how many each file gains this way. A new file adds all its
 lines to the list, so it can gain the most. Until the mutator takes a list per
 file, the owner keeps this (2026-11-27).
+
+## The monitor links feature's branches
+
+The monitor links feature
+([#488](https://github.com/jackgeek/climon2/issues/488)) is too large for one
+pull request. It lands on a feature branch, `feature/monitor-links`, which
+merges into `main` once, when the feature is complete. Each ticket of the
+feature has its own branch, a ticket branch, whose pull request targets the
+feature branch or another ticket branch. A chain of ticket branches, each
+based on the one before, is a stack.
+
+A ticket branch must be named `monitor-links/<ticket>-<slug>`, for example
+`monitor-links/489-link-crate`. The name is how the workflow recognises the
+branch on a push, which has no pull request to look at.
+
+These branches are gated as follows (owner decisions, 2026-11-27):
+
+| Branch | On a push | On a manual run |
+| --- | --- | --- |
+| `monitor-links/*` | No gate | The Linux gate alone. It mutates the branch's difference from `feature/monitor-links` |
+| `feature/monitor-links` | No gate | Every gate. Each mutates the branch's difference from `main` |
+
+A push runs no gate because a gate per push would mutate again, on every push,
+all the source the feature has changed so far. Instead, one manual run on the
+top branch of a stack gates every ticket branch beneath it:
+
+```sh
+gh workflow run quality.yml --ref monitor-links/489-link-crate
+```
+
+A manual run on `feature/monitor-links` is the full check before the feature
+merges into `main`. When it merges, the push to `main` runs every gate as for
+any other merge.
+
+The script `tools/quality-scope.sh` holds these rules. The workflow's first
+job runs it, and the gates read its answer.
+
+The feature's pull requests also run fewer hosted checks. In
+`.github/workflows/check.yml`, a pull request whose base is
+`feature/monitor-links` or a `monitor-links/*` branch runs its Linux jobs
+only. Its macOS and Windows jobs are skipped, whatever the repository
+variables say. Every platform runs on the pull request that merges
+`feature/monitor-links` into `main`.
 
 ## Skipping a squash-merge's gates on main
 

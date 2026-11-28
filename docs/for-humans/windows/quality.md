@@ -117,6 +117,13 @@ number.
 | Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip, under Windows PowerShell 5.1 and PowerShell 7 |
 | Neutral (existing) | Its Windows leg stays: `climon2-core`'s tests on Windows |
 
+None of these jobs runs on a pull request into the monitor links feature
+branch, `feature/monitor-links`, or into one of its `monitor-links/*` ticket
+branches, and Neutral drops its Windows leg there. Such a pull request runs
+Linux only; every Windows job runs on the pull request that merges the feature
+branch into `main` (see
+[Quality runners](../quality-runners.md#the-monitor-links-features-branches)).
+
 ### The switch
 
 A repository variable, `CLIMON2_WINDOWS_TESTS`, works like

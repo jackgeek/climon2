@@ -12,6 +12,10 @@ name: Quality
 # here. They run on push instead, which only people with write access can do, and
 # GitHub shows each result on the pull request whose head is that commit.
 #
+# The base job asks tools/quality-scope.sh which gates a run has. A push to one
+# of the monitor links feature's branches has none; a manual run there gates a
+# stack of ticket branches from its top (#488).
+#
 # A job runs only while its platform is listed in the repository variable
 # CLIMON2_OWN_RUNNERS (for example "linux,windows,macos"), so a push never waits
 # for a machine that is not registered yet. Release qualification keeps running
@@ -45,30 +49,23 @@ env:
 
 jobs:
   base:
-    name: Select the changed-source mutation base
+    name: Select the gates and the changed-source mutation base
     runs-on: ubuntu-24.04
     outputs:
       sha: ${{ steps.base.outputs.sha }}
+      gates: ${{ steps.base.outputs.gates }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # main mutates what this push changed; any other branch what it changes
-      # against main, as a pull request's gate did.
+      # Which gates this run has, and the commit they mutate against. A push
+      # to one of the monitor links feature's branches has none (#488).
       - id: base
         env:
-          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
-        run: |
-          if [[ "$REF" == refs/heads/main ]]; then
-            base="$BEFORE"
-            if [[ -z "$base" || "$base" == 0000000000000000000000000000000000000000 ]]; then
-              base=HEAD~1
-            fi
-          else
-            base="$(git merge-base origin/main HEAD)"
-          fi
-          echo "sha=$(git rev-parse "$base")" >> "$GITHUB_OUTPUT"
+          BEFORE: ${{ github.event.before }}
+        run: bash tools/quality-scope.sh >> "$GITHUB_OUTPUT"
 
   # Only a push to main looks, and only a run on another branch whose head had
   # this tree, or differs from it only in ignored paths, and passed every listed
@@ -99,6 +96,7 @@ jobs:
     if: >-
       !cancelled()
       && needs.base.result == 'success'
+      && contains(needs.base.outputs.gates, 'linux')
       && contains(vars.CLIMON2_OWN_RUNNERS, 'linux')
       && needs.prior.outputs.run == ''
     runs-on: [self-hosted, Linux, X64, climon2-quality]
@@ -147,6 +145,7 @@ jobs:
     if: >-
       !cancelled()
       && needs.base.result == 'success'
+      && contains(needs.base.outputs.gates, 'windows')
       && contains(vars.CLIMON2_OWN_RUNNERS, 'windows')
       && needs.prior.outputs.run == ''
     runs-on: [self-hosted, Windows, X64, climon2-quality]
@@ -198,6 +197,7 @@ jobs:
     if: >-
       !cancelled()
       && needs.base.result == 'success'
+      && contains(needs.base.outputs.gates, 'macos')
       && contains(vars.CLIMON2_OWN_RUNNERS, 'macos')
       && needs.prior.outputs.run == ''
     runs-on: [self-hosted, macOS, X64, climon2-quality]
