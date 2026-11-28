@@ -13,6 +13,7 @@ use crate::rules::{Rules, Verdict};
 use crate::stream::{HubRecord, RelayRecord, Spoken, Voice};
 use crate::unit::{Allowed, CONTROL, Fault, Received, Units};
 use crate::{Input, Output, Randomness, Time};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// The size of a handshake initiation behind its length.
@@ -710,10 +711,12 @@ impl Run for HubRun {
 }
 
 /// What a relay needs to link: its identity key, the keys of the hub
-/// monitors it remembers and its own Hello.
+/// monitors it remembers, those of them it refuses and its own Hello.
 pub(crate) struct RelayRun {
     identity: StaticKey,
     remembered: Vec<PublicKey>,
+    /// The reason each refused hub monitor is given in place of a Hello.
+    refusals: BTreeMap<PublicKey, RelayClose>,
     hello: Hello,
     stage: RelayStage,
     /// The last moment at which the hub monitor's Hello is in time.
@@ -736,11 +739,29 @@ impl RelayRun {
         Self {
             identity,
             remembered,
+            refusals: BTreeMap::new(),
             hello,
             stage: RelayStage::Opening,
             deadline: Time::since_start(Duration::ZERO),
             early: Link::Pending,
         }
+    }
+
+    /// This run, answering the Hello of the hub monitor `hub` with a Close
+    /// that gives `reason`.
+    pub(crate) fn refusing(mut self, hub: PublicKey, reason: RelayClose) -> Self {
+        self.refusals.insert(hub, reason);
+        self
+    }
+
+    /// The reason that answers the Hello of the hub monitor `hub` in place
+    /// of the relay's Hello, if any: "not paired" for a key the relay does
+    /// not remember, whatever else it refuses.
+    fn refusal(&self, hub: &PublicKey) -> Option<RelayClose> {
+        if !self.remembered.contains(hub) {
+            return Some(RelayClose::NotPaired);
+        }
+        self.refusals.get(hub).copied()
     }
 
     pub(crate) fn link(&self) -> &RelayLink {
@@ -848,9 +869,8 @@ impl RelayRun {
         let Some((_, answered)) = answered else {
             return self.fail();
         };
-        let remembered = self.remembered.contains(&answered.hub);
         let role = Role::Relay {
-            refusal: (!remembered).then_some(RelayClose::NotPaired),
+            refusal: self.refusal(&answered.hub),
         };
         self.stage = RelayStage::Talking(Box::new(Conversation::new(
             answered.transport,
