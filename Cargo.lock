@@ -263,6 +263,10 @@ name = "climon2-launcher"
 version = "0.1.0-rc.1"
 
 [[package]]
+name = "climon2-link"
+version = "0.1.0-rc.1"
+
+[[package]]
 name = "climon2-measure"
 version = "0.1.0-rc.1"
 dependencies = [

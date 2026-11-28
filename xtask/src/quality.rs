@@ -80,6 +80,7 @@ pub(crate) const SHIPPED: &[&str] = &[
     "crates/climon2-install/src",
     "crates/climon2-monitor/src",
     "crates/climon2-vt/src",
+    "crates/climon2-link/src",
 ];
 /// The test runs that make up the workspace suite on Windows, where only part of the
 /// workspace builds so far: as the Windows Test job runs them.
