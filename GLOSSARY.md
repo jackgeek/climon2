@@ -37,7 +37,7 @@ A program that lets the user interact with one session at a time and switch betw
 _Avoid_: Dashboard, multiplexer, switcher
 
 **Monitor library**:
-The planned reusable form of a monitor, with no interface of its own, on which the monitor's terminal interface and the web monitor are both built.
+The reusable form of a monitor, with no interface of its own, on which the monitor's terminal interface is built and the planned web monitor will be.
 _Avoid_: Monitor core, monitor backend, engine
 
 **Virtual terminal**:
