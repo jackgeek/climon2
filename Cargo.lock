@@ -282,6 +282,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "climon2-embed"
+version = "0.1.0-rc.1"
+dependencies = [
+ "climon2-core",
+ "climon2-fixtures",
+ "climon2-platform",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "climon2-fixtures"
 version = "0.1.0-rc.1"
 dependencies = [
@@ -334,6 +346,7 @@ version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
  "climon2-discovery",
+ "climon2-embed",
  "climon2-platform",
  "climon2-vt",
  "fuzzy-matcher",
@@ -355,6 +368,7 @@ dependencies = [
  "climon2-fixtures",
  "climon2-test-term",
  "filetime",
+ "getrandom",
  "libc",
  "portable-pty",
  "serde_json",

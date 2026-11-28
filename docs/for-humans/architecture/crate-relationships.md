@@ -21,6 +21,7 @@ flowchart TB
     daemon["climon2-daemon"]
     install["climon2-install"]
     monitor["climon2-monitor"]
+    embed["climon2-embed"]
     platform["climon2-platform"]
     core["climon2-core"]
     vt["climon2-vt"]
@@ -37,8 +38,11 @@ flowchart TB
     daemon --> platform
     daemon --> vt
     install --> core
+    embed --> core
+    embed --> platform
     monitor --> core
     monitor --> discovery
+    monitor --> embed
     monitor --> platform
     monitor --> vt
     platform --> core
@@ -56,6 +60,7 @@ flowchart TB
 | `climon2-vt` | The virtual terminal of the session daemon and of the monitor's per-session models: a pure, platform-neutral adapter around upstream Alacritty that keeps every engine type private. |
 | `climon2-discovery` | Session discovery shared by the CLI, which runs whole passes, and the [monitor](../../../GLOSSARY.md#sessions), which runs incremental, bounded passes. |
 | `climon2-monitor` | The monitor: one terminal that tracks every live session, with the `climon2-monitor` binary that `c2 monitor` starts. |
+| `climon2-embed` | [Client embedding](../../../GLOSSARY.md#sessions): loading a release's client library and running one client instance for one session. The monitor uses it; the planned relay will. |
 | `climon2-link` | The link code of planned [monitor links](../../../GLOSSARY.md#monitor-links): what a hub monitor and a relay say to each other over a plain byte stream. It performs no input or output and takes the time and its randomness from its caller. So far it holds only that interface, and no executable links it. |
 
 ## Planned crates
@@ -73,7 +78,7 @@ flowchart TB
     web["climon2-web"]
     relay["climon2-relay"]
     monitor["climon2-monitor<br/>(exists; becomes a library)"]
-    embed["climon2-embed"]
+    embed["climon2-embed (exists)"]
     link["climon2-link (exists)"]
     discovery["climon2-discovery (exists)"]
     platform["climon2-platform (exists)"]
@@ -91,14 +96,11 @@ flowchart TB
     relay -.-> discovery
     relay -.-> platform
     relay -.-> core
-    monitor -.-> embed
     monitor -.-> link
     monitor -.-> discovery
     monitor -.-> platform
     monitor -.-> core
     monitor -.-> vt
-    embed -.-> platform
-    embed -.-> core
     link -.-> core
 ```
 
@@ -108,9 +110,8 @@ flowchart TB
 | `climon2-web` | Planned. The [web monitor](../../../GLOSSARY.md#web-monitor) that `c2 web` runs: it serves the web view to browsers over HTTP and WebSocket and invokes the same actions. |
 | `climon2-relay` | Planned. The [relay](../../../GLOSSARY.md#monitor-links) that `c2 relay` runs, with a terminal interface of its own. It never depends on the monitor library. |
 | `climon2-monitor` | Planned to become the [monitor library](../../../GLOSSARY.md#sessions): a whole monitor with no interface of its own, including the hub monitor's side of monitor links. |
-| `climon2-embed` | Planned. [Client embedding](../../../GLOSSARY.md#sessions): loading a release's client library and running one client instance for one session. |
 | `climon2-link` | Exists today as an interface only; described under the first diagram. Planned to hold the monitor link's pairing, handshake, framing and link revisions over a plain byte stream, with no platform dependency. |
-| `climon2-discovery`, `climon2-platform`, `climon2-core`, `climon2-vt` | Exist today; described under the first diagram. |
+| `climon2-embed`, `climon2-discovery`, `climon2-platform`, `climon2-core`, `climon2-vt` | Exist today; described under the first diagram. |
 
 The plan keeps Ratatui in `climon2-monitor-tui` and `climon2-relay` only, and
 keeps `climon2-vt` to the session daemon and the monitor library, which
@@ -143,6 +144,7 @@ flowchart TB
         daemon["climon2-daemon"]
         install["climon2-install"]
         monitor["climon2-monitor"]
+        embed["climon2-embed"]
         platform["climon2-platform"]
         core["climon2-core"]
     end
@@ -168,6 +170,7 @@ flowchart TB
     platform -.->|"dev, Unix"| fixtures
     platform -.->|"dev, Windows"| test_term
     client -.->|"dev, Unix"| fixtures
+    embed -.->|"dev, Unix"| fixtures
     xtask --> core
     xtask -->|"Unix"| install
     xtask -.->|"dev, Windows"| install
@@ -232,6 +235,18 @@ crates.
 Ratatui (with `ratatui-core`, enabled for underline colours) is a dependency
 of this crate alone; third-party crates are
 deliberately excluded from this workspace-only diagram.
+
+**Current (#489):** [client embedding](../../../GLOSSARY.md#sessions) is its
+own shipped crate, `climon2-embed`, the first of the crates
+[ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md) plans. It
+holds what the monitor used to hold itself to run one client library instance:
+the shared loader's use, the owner thread, requests and deliveries, the input
+stream, backlog and stall accounting and admission's arithmetic. It consumes
+only `core` and `platform`, and the monitor consumes it. Its tests consume
+`climon2-fixtures` on Unix for the client library stand-in. Its only
+third-party dependency is `tracing`: the architecture guard rejects any other,
+so it links no terminal, HTTP or WebSocket crate. The monitor's behaviour is
+unchanged.
 
 **Current (#75):** the [client library](../../../GLOSSARY.md#sessions)'s `cdylib`,
 `libclimon2_client.dylib` on macOS and `libclimon2_client.so` on Linux, is an
