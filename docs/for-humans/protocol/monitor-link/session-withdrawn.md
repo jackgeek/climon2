@@ -1,6 +1,6 @@
 # Session withdrawn — `0x11`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and the rule that it names a session advertised on this connection; no released program speaks it yet.**
 The [relay](../../../../GLOSSARY.md#monitor-links) withdraws a
 [session](../../../../GLOSSARY.md#sessions) it advertised, on stream 0. See
 the [overview](../README.md), [glossary](../../../../GLOSSARY.md),
