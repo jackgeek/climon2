@@ -32,7 +32,7 @@ mod supervisor;
 mod terminal;
 pub mod toast;
 
-pub use action::{Action, Kind, Paste};
+pub use action::{Action, Choice, Drive, Look, Paste};
 pub use attention::NO_ATTENTION;
 /// A one-line diagnostic for a consumer to print with the climon2 error
 /// code.

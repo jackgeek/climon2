@@ -24,7 +24,8 @@ mod toast;
 
 use climon2_core::{SessionId, exit::CLIMON2_ERROR, protocol::TerminalSize};
 use climon2_monitor::{
-    self as library, Consumer, Inputs, Kind, Monitor, Startup, System, TICK, Target, Verdict, View,
+    self as library, Choice, Consumer, Drive, Inputs, Look, Monitor, Startup, System, TICK, Target,
+    Verdict, View,
     toast::Toast,
     view::{self as vt, Modes, MouseReporting},
 };
@@ -201,53 +202,31 @@ impl Consumer for Device {
     }
 }
 
-/// Where the user of the terminal interface takes an action of the monitor
-/// library.
-#[derive(Clone, Copy)]
-enum Reach {
-    /// A key or a selector row.
-    Keys,
-    /// A bracketed paste from the host.
-    Paste,
-    /// A mouse report from the host.
-    Mouse,
-    /// A change of the host itself.
-    Host,
-}
-
 /// How the user of this interface reaches each action of the monitor
-/// library (ADR 0011). The match is exhaustive and evaluated as the
-/// interface builds, so an action the library adds fails this build until
-/// the interface says how its user takes it.
-const fn reached(kind: Kind) -> Reach {
-    match kind {
-        // Enter on a selector row.
-        Kind::Select => Reach::Keys,
-        // The take-control key on the non-controller placeholder.
-        Kind::TakeControl => Reach::Keys,
-        // Keys typed while the selected session takes input.
-        Kind::Input => Reach::Keys,
-        Kind::Paste => Reach::Paste,
-        Kind::Resize => Reach::Host,
-        // A wheel notch over the selected session or its history.
-        Kind::Scroll => Reach::Mouse,
-        // Remove in the Delete confirmation.
-        Kind::Delete => Reach::Keys,
-        // A click on the toast.
-        Kind::Dismiss => Reach::Mouse,
-        // Leaving the selector back to the selected session.
-        Kind::Acknowledge => Reach::Keys,
-        // Prefix+j.
-        Kind::Jump => Reach::Keys,
-    }
-}
-
-const _: () = {
-    let mut index = 0;
-    while index < Kind::ALL.len() {
-        let _ = reached(Kind::ALL[index]);
-        index += 1;
-    }
+/// library (ADR 0011). The match is exhaustive and only compiled, never
+/// run, so an action the library adds fails this build until the
+/// interface says how its user takes it.
+const _: fn(&library::Action) = |action| match action {
+    // Enter on a selector row.
+    library::Action::Choose(Choice::Select(_))
+    // Prefix+j.
+    | library::Action::Choose(Choice::Jump)
+    // Remove in the Delete confirmation.
+    | library::Action::Choose(Choice::Delete(_))
+    // The take-control key on the non-controller placeholder.
+    | library::Action::Drive(Drive::TakeControl)
+    // Keys typed while the selected session takes input.
+    | library::Action::Drive(Drive::Input(_))
+    // A bracketed paste from the host.
+    | library::Action::Drive(Drive::Paste(_))
+    // A host resize.
+    | library::Action::Drive(Drive::Resize)
+    // A wheel notch over the selected session or its read-only history.
+    | library::Action::Look(Look::Scroll(_))
+    // A click on the toast.
+    | library::Action::Look(Look::Dismiss)
+    // Leaving the selector back to the selected session.
+    | library::Action::Look(Look::Acknowledge) => {}
 };
 
 /// The terminal interface: the monitor it steps, what it shows, and the
@@ -421,16 +400,20 @@ impl Interface {
     /// selector's highlight.
     fn deliver(&mut self, events: Vec<library::Event>) {
         for event in events {
-            match event {
-                library::Event::Attention(pending) => self.output.queue(attention::report(pending)),
-                library::Event::Bell => self.output.queue(BEL),
-                library::Event::Selected => {
-                    self.device.introduction.close();
-                    self.device.selector.close();
-                }
-                library::Event::Removed { id, before, after } => {
-                    self.device.selector.dismissed(&id, &before, &after);
-                }
+            self.delivered(event);
+        }
+    }
+
+    fn delivered(&mut self, event: library::Event) {
+        match event {
+            library::Event::Attention(pending) => self.output.queue(attention::report(pending)),
+            library::Event::Bell => self.output.queue(BEL),
+            library::Event::Selected => {
+                self.device.introduction.close();
+                self.device.selector.close();
+            }
+            library::Event::Removed { id, before, after } => {
+                self.device.selector.dismissed(&id, &before, &after);
             }
         }
     }
@@ -463,7 +446,7 @@ impl Interface {
             Event::End(ending) => Ok(Some(ending)),
             Event::Resize(size) => {
                 self.device.screen.resize(size);
-                self.ask(library::Action::Resize);
+                self.ask(library::Action::Drive(Drive::Resize));
                 self.show().map(|()| None)
             }
             Event::Input(bytes) => self.input(bytes),
@@ -623,7 +606,7 @@ impl Interface {
                 bytes: pasted.bytes.clone(),
                 ends: pasted.ends,
             };
-            self.ask(library::Action::Paste(part));
+            self.ask(library::Action::Drive(Drive::Paste(part)));
             return self.modal(&Routed::Paste(pasted));
         }
         if starts {
@@ -635,7 +618,7 @@ impl Interface {
             bytes: pasted.bytes,
             ends: pasted.ends,
         };
-        self.ask(library::Action::Paste(part));
+        self.ask(library::Action::Drive(Drive::Paste(part)));
         Ok(())
     }
 
@@ -648,13 +631,7 @@ impl Interface {
     /// its alternate screen is a cursor key with alternate scroll on (#112).
     fn mouse(&mut self, mouse: Mouse, typed: &mut Vec<u8>) -> io::Result<()> {
         let taking = self.monitor.taking(&self.device);
-        let (idle, area) = (self.gestures.idle(), self.device.screen.overlay());
-        let shown = self.monitor.toasts().shown();
-        let taken = toast::take(shown, mouse, idle, area);
-        if taken == toast::Taken::Dismissing {
-            self.ask(library::Action::Dismiss);
-        }
-        let toasted = taken.taken();
+        let toasted = self.toasted(mouse);
         let target = taking.as_ref().map(|taking| {
             let area = Area {
                 cols: taking.cols,
@@ -667,12 +644,24 @@ impl Interface {
             return self.local(mouse, toasted);
         };
         match mouse::wheel(mouse, &taking.modes, taking.alternate) {
-            Some(Wheel::History(rows)) => self.ask(library::Action::Scroll(rows)),
+            Some(Wheel::History(rows)) => self.ask(library::Action::Look(Look::Scroll(rows))),
             Some(Wheel::Key(key)) => Key::Cursor(key).encode(&taking.modes, typed),
             Some(Wheel::Nothing) => {}
             None => mouse::encode(mouse, cell, &taking.modes, typed),
         }
         Ok(())
+    }
+
+    /// Whether the shown toast takes `mouse`, outside any gesture; a click
+    /// it takes dismisses it.
+    fn toasted(&mut self, mouse: Mouse) -> bool {
+        let (idle, area) = (self.gestures.idle(), self.device.screen.overlay());
+        let shown = self.monitor.toasts().shown();
+        let taken = toast::take(shown, mouse, idle, area);
+        if taken == toast::Taken::Dismissing {
+            self.ask(library::Action::Look(Look::Dismiss));
+        }
+        taken.taken()
     }
 
     /// A mouse report the interface keeps: one the shown toast took is its
@@ -692,7 +681,7 @@ impl Interface {
     fn inspect(&mut self, mouse: Mouse) {
         let history = self.monitor.history(&self.device);
         if let Some(rows) = history.and_then(|view| inspected(mouse, &view)) {
-            self.ask(library::Action::Scroll(rows));
+            self.ask(library::Action::Look(Look::Scroll(rows)));
         }
     }
 
@@ -726,7 +715,7 @@ impl Interface {
         if typed.is_empty() {
             return;
         }
-        self.ask(library::Action::Input(mem::take(typed)));
+        self.ask(library::Action::Drive(Drive::Input(mem::take(typed))));
     }
 
     /// Prefix+x ends the monitor. Prefix+? opens the key introduction, and
@@ -784,7 +773,7 @@ impl Interface {
     /// ([`Interface::deliver`]). With none needing attention the selection
     /// and every overlay stay, under the library's notice.
     fn jump(&mut self) {
-        self.ask(library::Action::Jump);
+        self.ask(library::Action::Choose(Choice::Jump));
     }
 
     /// Input no application takes goes to [`Interface::modal_input`]. When
@@ -816,7 +805,7 @@ impl Interface {
             .take_control
             .is_some_and(|byte| *input == Routed::Key(Key::Bytes(vec![byte])))
         {
-            self.ask(library::Action::TakeControl);
+            self.ask(library::Action::Drive(Drive::TakeControl));
         }
     }
 
@@ -859,7 +848,7 @@ impl Interface {
         if let Some(decision) = decision {
             self.device.deleting = None;
             if let Decision::Confirm(id) = decision {
-                self.ask(library::Action::Delete(id));
+                self.ask(library::Action::Choose(Choice::Delete(id)));
             }
         }
     }
@@ -871,8 +860,10 @@ impl Interface {
         let area = self.device.screen.menu();
         let rows = self.monitor.rows();
         match self.device.selector.input(input, &rows, area) {
-            Some(id) => self.ask(library::Action::Select(id)),
-            None if !self.device.selector.is_open() => self.ask(library::Action::Acknowledge),
+            Some(id) => self.ask(library::Action::Choose(Choice::Select(id))),
+            None if !self.device.selector.is_open() => {
+                self.ask(library::Action::Look(Look::Acknowledge))
+            }
             None => {}
         }
     }

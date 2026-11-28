@@ -6,7 +6,7 @@
 //! passive client per live session, and once its first discovery pass's
 //! clients are ready selects and acquires the first eligible row (#266).
 use crate::{
-    action::{Action, Paste as Part},
+    action::{Action, Choice, Drive, Look, Paste as Part},
     attention::{self, Deferred, HostReport, Next, Notice},
     cadence,
     consumer::Consumer,
@@ -247,18 +247,41 @@ impl Monitor {
     /// brought.
     pub fn act(&mut self, action: Action, now: Instant, consumer: &dyn Consumer) -> Vec<Event> {
         match action {
-            Action::Select(id) => self.enter(id, now, consumer),
-            Action::TakeControl => self.take_control(consumer),
-            Action::Input(bytes) => self.submit(bytes, consumer),
-            Action::Paste(part) => self.paste(part, consumer),
-            Action::Resize => self.resize(consumer),
-            Action::Scroll(rows) => self.scroll(rows),
-            Action::Delete(id) => self.delete(&id),
-            Action::Dismiss => self.toasts.dismiss(now),
-            Action::Acknowledge => self.defer_acknowledgement(),
-            Action::Jump => self.jump(now, consumer),
+            Action::Choose(choice) => self.choose_row(choice, now, consumer),
+            Action::Drive(drive) => self.drive(drive, consumer),
+            Action::Look(look) => self.look(look, now),
         }
         self.events()
+    }
+
+    /// Selects a row, jumps to attention, or deletes a row.
+    fn choose_row(&mut self, choice: Choice, now: Instant, consumer: &dyn Consumer) {
+        match choice {
+            Choice::Select(id) => self.enter(id, now, consumer),
+            Choice::Jump => self.jump(now, consumer),
+            Choice::Delete(id) => self.delete(&id),
+        }
+    }
+
+    /// Takes control of the selected session, sends its application input
+    /// or a paste, or keeps its size.
+    fn drive(&mut self, drive: Drive, consumer: &dyn Consumer) {
+        match drive {
+            Drive::TakeControl => self.take_control(consumer),
+            Drive::Input(bytes) => self.submit(bytes, consumer),
+            Drive::Paste(part) => self.paste(part, consumer),
+            Drive::Resize => self.resize(consumer),
+        }
+    }
+
+    /// Scrolls the selected session's history, dismisses the shown toast at
+    /// `now`, or defers the selected session's acknowledgement.
+    fn look(&mut self, look: Look, now: Instant) {
+        match look {
+            Look::Scroll(rows) => self.scroll(rows),
+            Look::Dismiss => self.toasts.dismiss(now),
+            Look::Acknowledge => self.defer_acknowledgement(),
+        }
     }
 
     /// What its consumer has yet to deliver, taken.

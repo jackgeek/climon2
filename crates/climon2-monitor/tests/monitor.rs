@@ -10,8 +10,8 @@ use climon2_core::{
     protocol::TerminalSize,
 };
 use climon2_monitor::{
-    Action, Canvas, Consumer, Event, Inputs, Monitor, NO_ATTENTION, System, Verdict, load,
-    toast::Toast,
+    Action, Canvas, Choice, Consumer, Drive, Event, Inputs, Look, Monitor, NO_ATTENTION, Paste,
+    System, Verdict, load, toast::Toast,
 };
 use std::{
     fs,
@@ -112,7 +112,7 @@ fn a_monitor_with_no_session_reports_no_attention_and_leaves_cleanly() {
     assert_eq!(monitor.painted(&consumer), [Event::Attention(false)]);
     assert_eq!(monitor.painted(&consumer), []);
     let at = Instant::now() + Duration::from_secs(60);
-    assert_eq!(monitor.act(Action::Jump, at, &consumer), []);
+    assert_eq!(monitor.act(Action::Choose(Choice::Jump), at, &consumer), []);
     assert_eq!(monitor.selected(), None);
     assert_eq!(monitor.notice(at), Some(NO_ATTENTION));
     let later = at + Duration::from_millis(2999);
@@ -159,7 +159,11 @@ fn a_discovered_session_is_listed_and_selected_through_the_library() {
         .collect();
     assert_eq!(shown, [(&id, "Unavailable", "bash")]);
     assert_eq!(monitor.selected(), None);
-    let events = monitor.act(Action::Select(id.clone()), Instant::now(), &consumer);
+    let events = monitor.act(
+        Action::Choose(Choice::Select(id.clone())),
+        Instant::now(),
+        &consumer,
+    );
     assert_eq!(events, [Event::Selected]);
     assert_eq!(monitor.selected(), Some(&id));
     let rows = monitor.rows();
@@ -173,4 +177,55 @@ fn a_discovered_session_is_listed_and_selected_through_the_library() {
     assert!(monitor.taking(&consumer).is_none());
     assert!(monitor.history(&consumer).is_none());
     assert_eq!(leave(&mut monitor), Verdict::Clean);
+}
+
+/// Spec #73 "Paste rules" and "Delete" through the library: a selected
+/// session the monitor does not control takes nothing that would drive it,
+/// and looking at it changes nothing it shows; a confirmed Delete is then
+/// under way, so its row offers no second one.
+#[test]
+fn an_uncontrolled_session_takes_no_input_and_its_delete_goes_under_way() {
+    let (_directory, root) = home();
+    let id: SessionId = "0d5c0000-0000-4000-8000-0000000004a1".parse().unwrap();
+    uncertain(&root, &id);
+    let mut monitor = started(&root);
+    let consumer = Fake::default();
+    until(&mut monitor, &consumer, |monitor| monitor.listed(&id));
+    let now = Instant::now();
+    let select = Action::Choose(Choice::Select(id.clone()));
+    assert_eq!(monitor.act(select, now, &consumer), [Event::Selected]);
+    let paste = Paste {
+        starts: true,
+        bytes: b"pasted".to_vec(),
+        ends: true,
+    };
+    for action in [
+        Action::Drive(Drive::TakeControl),
+        Action::Drive(Drive::Input(b"typed".to_vec())),
+        Action::Drive(Drive::Paste(paste)),
+        Action::Drive(Drive::Resize),
+        Action::Look(Look::Scroll(1)),
+        Action::Look(Look::Dismiss),
+        Action::Look(Look::Acknowledge),
+    ] {
+        assert_eq!(
+            monitor.act(action.clone(), now, &consumer),
+            [],
+            "{action:?}"
+        );
+        let rows = monitor.rows();
+        let session = monitor.session(&rows).unwrap();
+        assert_eq!(session.control, "Not controlling", "{action:?}");
+        assert!(
+            matches!(session.canvas, Canvas::NoContent(..)),
+            "{action:?}"
+        );
+        assert!(monitor.taking(&consumer).is_none(), "{action:?}");
+    }
+    assert!(monitor.offer(&id).is_some());
+    let delete = Action::Choose(Choice::Delete(id.clone()));
+    assert_eq!(monitor.act(delete, now, &consumer), []);
+    assert_eq!(monitor.offer(&id), None);
+    assert_eq!(monitor.selected(), Some(&id));
+    leave(&mut monitor);
 }
