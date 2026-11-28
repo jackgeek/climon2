@@ -87,7 +87,7 @@ dispatch or shell-specific logic.
 
 ## Monitor links
 
-Four seams for monitor links (#491), each with one contract suite that every
+Five seams for monitor links (#491, #499), each with one contract suite that every
 platform's implementation passes by itself (`tests/seam_*.rs`, ONE-03). The
 link code uses none of them: its callers do, and pass time and randomness in.
 
@@ -109,6 +109,12 @@ link code uses none of them: its callers do, and pass time and randomness in.
   through the `getrandom` crate, with no fallback.
 - `clock::monotonic()` is the time since the process first asked, for
   deadlines; `clock::wall()` is the time since the Unix epoch, for dates.
+- `home_lock::take(&Path)` takes a lock one process at a time holds (`flock`),
+  creating its owner-only file when missing and never opening it through a
+  link. It returns `Taken::Held`, or `Taken::Busy` with the note the holder
+  left through `Held::note`. Dropping the `Held` frees the lock, and the
+  operating system frees it for a holder that dies. The relay holds
+  `links/relay.lock` this way. Unix only.
 
 ## Processes and startup
 

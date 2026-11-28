@@ -64,6 +64,12 @@ impl HomeLayout {
     pub fn general_logs(&self) -> PathBuf {
         self.0.join("logs/general")
     }
+
+    /// The owner-only folder that holds this home's monitor link records,
+    /// keys and locks.
+    pub fn links(&self) -> PathBuf {
+        self.0.join("links")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

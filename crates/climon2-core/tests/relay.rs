@@ -290,6 +290,13 @@ fn the_relay_executable_lives_in_the_version_folder() {
     }
 }
 
+/// A home's monitor link files live in its `links` folder.
+#[test]
+fn the_links_folder_is_in_the_climon2_home() {
+    let home = std::env::current_dir().unwrap().join("home");
+    assert_eq!(HomeLayout::at(&home).unwrap().links(), home.join("links"));
+}
+
 /// CM1: the usage line shows the relay command with its one flag.
 #[test]
 fn the_usage_line_shows_relay_and_its_flag() {
