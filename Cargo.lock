@@ -316,6 +316,7 @@ dependencies = [
  "climon2-fixtures",
  "climon2-test-term",
  "filetime",
+ "getrandom",
  "libc",
  "portable-pty",
  "serde_json",
