@@ -462,6 +462,7 @@ name = "climon2-relay"
 version = "0.1.0-rc.1"
 dependencies = [
  "climon2-core",
+ "climon2-discovery",
  "climon2-link",
  "climon2-platform",
  "climon2-test-term",

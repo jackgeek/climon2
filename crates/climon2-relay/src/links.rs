@@ -1,16 +1,25 @@
 //! The relay's side of monitor links (spec #488, ADR 0011), built on the
 //! link code: it accepts every connection on its listener and runs the link
-//! code's relay end over each, on a thread of its own. So far that is
-//! pairing under the relay's link invitation, and links with the hub
-//! monitors it remembers (#501). What a link carries comes later.
+//! code's relay end over each, on a thread of its own: pairing under the
+//! relay's link invitation, and links with the hub monitors it remembers
+//! (#501). While a link is established, discovery runs and the relay
+//! advertises its home's sessions over it (#502). Session streams come
+//! later.
 //!
 //! The remembered hub monitors have one writer at a time: [`Remembered`]
 //! holds them behind one lock, with the store they are written to.
 
-use climon2_core::pairing::{self, HubMonitor, PublicKey as StoredKey, RelayPairings};
+use crate::{
+    advertise::Advertiser,
+    discover::{Discovery, Heard},
+};
+use climon2_core::{
+    SessionId,
+    pairing::{self, HubMonitor, PublicKey as StoredKey, RelayPairings},
+};
 use climon2_link::{
-    Carrier, Hello, Introduction, Invitations, Link, Next, PairingRun, PublicKey, Randomness,
-    RelayEnd, Revisions, StaticKey, Time, display_name, drive,
+    Advertisement, Carrier, Hello, Introduction, Invitations, Link, Next, PairingRun, PublicKey,
+    Randomness, RelayEnd, RelayRecord, Revisions, StaticKey, Time, display_name, drive,
 };
 use climon2_platform::{
     clock,
@@ -33,8 +42,9 @@ use std::{
 const ACCEPT_TICK: Duration = Duration::from_millis(50);
 /// How long the acceptor rests after the listener fails to accept.
 const ACCEPT_REST: Duration = Duration::from_millis(100);
-/// How long one wait for bytes lasts when the link code names no deadline.
-const IDLE_WAIT: Duration = Duration::from_secs(60);
+/// The longest one wait for bytes lasts, so that what discovery found
+/// goes out within it.
+const TICK: Duration = Duration::from_millis(50);
 /// The longest record this relay accepts: `relay.limits` arrives later, and
 /// this is the default receive ceiling of `payload.wire_frame_bytes`.
 const LARGEST_RECORD: u32 = 1_048_576;
@@ -127,6 +137,15 @@ struct Relay {
     hello: Hello,
     invitations: Invitations,
     remembered: Remembered,
+    sessions: Sessions,
+}
+
+/// The sessions an established link is told of: discovery of the relay's
+/// home, started for each link, and the session the relay runs in, which
+/// is never advertised.
+pub(crate) struct Sessions {
+    pub(crate) own: Option<SessionId>,
+    pub(crate) discover: Box<dyn Fn() -> Discovery + Send + Sync>,
 }
 
 /// The relay's links: its listener, accepting on a thread of its own until
@@ -139,12 +158,14 @@ pub(crate) struct Links {
 
 impl Links {
     /// Starts accepting on `listener`. `identity` is the relay's identity
-    /// key, `name` the name it suggests and `remembered` its hub monitors.
+    /// key, `name` the name it suggests, `remembered` its hub monitors and
+    /// `sessions` what each link is told of.
     pub(crate) fn start(
         listener: LinkListener,
         identity: StaticKey,
         name: &str,
         remembered: Remembered,
+        sessions: Sessions,
     ) -> Self {
         let introduction = Introduction::new(*identity.public().as_bytes(), name)
             .expect("a name cut to 64 bytes fits");
@@ -155,6 +176,7 @@ impl Links {
                 .expect("this release's Hello is valid"),
             invitations: invitations.clone(),
             remembered,
+            sessions,
         });
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
@@ -218,7 +240,11 @@ fn connection(stream: LinkStream, relay: &Relay) {
     let end = RelayEnd::new(Revisions::published(), relay.invitations.clone());
     let mut end = end.linking(relay.identity.clone(), remembered, relay.hello.clone());
     let mut kept = Kept::default();
-    let between = |end: &mut RelayEnd| keep(end, &relay.remembered, &mut kept);
+    let mut advertising = None;
+    let between = |end: &mut RelayEnd| {
+        keep(end, &relay.remembered, &mut kept)?;
+        Ok(advertise(end, &relay.sessions, &mut advertising))
+    };
     if let Err(error) = drive(&mut end, &mut Wire(stream), &mut System, between) {
         tracing::error!(%error, "relay cannot remember a hub monitor");
     }
@@ -234,7 +260,7 @@ struct Kept {
 /// Between two steps of a connection: a hub monitor that has just paired
 /// is remembered before the relay's confirmation is sent, and the first
 /// moment a link is established is recorded.
-fn keep(end: &mut RelayEnd, remembered: &Remembered, kept: &mut Kept) -> io::Result<Next> {
+fn keep(end: &RelayEnd, remembered: &Remembered, kept: &mut Kept) -> io::Result<()> {
     let wall = clock::wall().as_secs();
     if let (PairingRun::Paired(hub), false) = (end.pairing(), kept.pinned) {
         remembered.pin(hub, wall)?;
@@ -244,7 +270,57 @@ fn keep(end: &mut RelayEnd, remembered: &Remembered, kept: &mut Kept) -> io::Res
         remembered.linked(&peer.key, peer.hello.name(), wall)?;
         kept.linked = true;
     }
-    Ok(Next::Wait)
+    Ok(())
+}
+
+/// One link's advertisement: its discovery and what it has advertised.
+struct Advertising {
+    discovery: Discovery,
+    advertiser: Advertiser,
+}
+
+impl Advertising {
+    /// Advertises over `end` what discovery found since the last call:
+    /// [`Next::Step`] when that queued a record, so it goes out at once.
+    fn tell(&mut self, end: &mut RelayEnd) -> Next {
+        let mut next = Next::Wait;
+        for heard in self.discovery.heard() {
+            if let Some(advertisement) = self.advertisement(heard) {
+                next = Next::Step;
+                if let Err(refused) = end.send(&RelayRecord::Advertisement(advertisement)) {
+                    tracing::warn!(?refused, "relay cannot advertise a session");
+                }
+            }
+        }
+        next
+    }
+
+    fn advertisement(&mut self, heard: Heard) -> Option<Advertisement> {
+        match heard {
+            Heard::Found(found) => self.advertiser.found(found),
+            Heard::Passed => self.advertiser.passed(),
+        }
+    }
+}
+
+/// Between two steps of a connection: while its link is established, what
+/// discovery found since the last step is advertised. Discovery starts
+/// with the link and stops when it ends, so a connection that never links
+/// touches no session daemon (X12).
+fn advertise(
+    end: &mut RelayEnd,
+    sessions: &Sessions,
+    advertising: &mut Option<Advertising>,
+) -> Next {
+    if !matches!(end.link(), Link::Established(_)) {
+        *advertising = None;
+        return Next::Wait;
+    }
+    let advertising = advertising.get_or_insert_with(|| Advertising {
+        discovery: (sessions.discover)(),
+        advertiser: Advertiser::new(sessions.own.clone()),
+    });
+    advertising.tell(end)
 }
 
 /// One TCP connection and this process's clock, as the link code is
@@ -261,7 +337,8 @@ impl Carrier for Wire {
     }
 
     fn receive(&mut self, buffer: &mut [u8], wait: Option<Duration>) -> io::Result<usize> {
-        self.0.read(buffer, wait.unwrap_or(IDLE_WAIT))
+        self.0
+            .read(buffer, wait.map_or(TICK, |wait| wait.min(TICK)))
     }
 }
 
@@ -277,8 +354,13 @@ impl Randomness for System {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::advertise::{
+        Found,
+        tests::{id, live},
+    };
     use climon2_link::{Ended, HubClose, HubEnd, Invitation, Pin, RelayClose};
     use climon2_platform::link_socket;
+    use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
     const WAIT: Duration = Duration::from_secs(20);
 
@@ -288,14 +370,57 @@ mod tests {
         StaticKey::from_private(private)
     }
 
+    /// The discoveries the relay's links started, each with what feeds it
+    /// and what sees it stop, as the test drives them.
+    #[derive(Clone, Default)]
+    struct Fed(Arc<Mutex<Vec<Feeding>>>);
+
+    /// What feeds one discovery, and what sees it stop.
+    type Feeding = (Sender<Heard>, Receiver<()>);
+
+    impl Fed {
+        /// Sessions whose discovery the test feeds, and whose own session
+        /// is `own`.
+        fn sessions(&self, own: Option<SessionId>) -> Sessions {
+            let fed = self.clone();
+            let discover = move || {
+                let (report, heard) = mpsc::channel();
+                let (stop, stopped) = mpsc::channel();
+                fed.0.lock().unwrap().push((report, stopped));
+                Discovery::new(heard, stop)
+            };
+            Sessions {
+                own,
+                discover: Box::new(discover),
+            }
+        }
+
+        fn started(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+
+        /// The latest discovery hears `heard`.
+        fn feed(&self, heard: Heard) {
+            let fed = self.0.lock().unwrap();
+            fed.last().unwrap().0.send(heard).unwrap();
+        }
+
+        /// Whether the discovery `index` started has been told to stop.
+        fn stopped(&self, index: usize) -> bool {
+            let fed = self.0.lock().unwrap();
+            fed[index].1.try_recv() == Err(TryRecvError::Disconnected)
+        }
+    }
+
     /// A relay's links over a listener on loopback, remembering into a
-    /// folder of its own.
+    /// folder of its own, running in session 0xee and fed its discoveries.
     struct Running {
         _folder: tempfile::TempDir,
         files: KeyStore,
         identity: StaticKey,
         address: std::net::SocketAddr,
         links: Links,
+        fed: Fed,
     }
 
     fn running() -> Running {
@@ -308,13 +433,16 @@ mod tests {
             KeyStore::open(&folder.path().join("links")).unwrap(),
             RelayPairings::default(),
         );
-        let links = Links::start(listener, identity.clone(), "buildbox", remembered);
+        let fed = Fed::default();
+        let sessions = fed.sessions(Some(id(0xee)));
+        let links = Links::start(listener, identity.clone(), "buildbox", remembered, sessions);
         Running {
             _folder: folder,
             files,
             identity,
             address,
             links,
+            fed,
         }
     }
 
@@ -356,6 +484,105 @@ mod tests {
             drive(&mut hub, &mut self.dial(), &mut System, close).unwrap();
             hub.link().clone()
         }
+
+        /// A hub monitor with `own` links and, once the relay's discovery
+        /// has started, feeds it `heard`; it closes the link when the
+        /// relay's advertisement holds `count` records, and gives them.
+        fn advertised(
+            &self,
+            own: StaticKey,
+            heard: Vec<Heard>,
+            count: usize,
+        ) -> Vec<Advertisement> {
+            let hello = Hello::new("9.9.9", "laptop", LARGEST_RECORD).unwrap();
+            let relay = self.identity.public();
+            let mut hub = HubEnd::dialling(Revisions::published(), own, relay, hello);
+            let mut heard = Some(heard);
+            let mut advertised = Vec::new();
+            let before = self.fed.started();
+            let mut between = |hub: &mut HubEnd| {
+                if self.fed.started() > before
+                    && let Some(heard) = heard.take()
+                {
+                    heard.into_iter().for_each(|heard| self.fed.feed(heard));
+                }
+                for record in hub.records() {
+                    let RelayRecord::Advertisement(advertisement) = record else {
+                        panic!("only advertisement: {record:?}");
+                    };
+                    advertised.push(advertisement);
+                }
+                if advertised.len() < count || !matches!(hub.link(), Link::Established(_)) {
+                    return Ok(Next::Wait);
+                }
+                hub.close(HubClose::Disconnected).unwrap();
+                Ok(Next::Step)
+            };
+            drive(&mut hub, &mut self.dial(), &mut System, &mut between).unwrap();
+            advertised
+        }
+    }
+
+    fn session(advertisement: &Advertisement) -> [u8; 16] {
+        match advertisement {
+            Advertisement::Session(session) => session.id,
+            other => panic!("a session: {other:?}"),
+        }
+    }
+
+    /// ADV-01, ADV-03, ADV-04 (X13, U3): an established link is told what
+    /// its discovery finds: each live session but the relay's own, then
+    /// Snapshot complete once its first pass ends, then each change; a
+    /// session proven stale is withdrawn, an uncertain one is not.
+    #[test]
+    fn adv_01_an_established_link_is_told_what_its_discovery_finds() {
+        let relay = running();
+        let (own, _) = relay.pair(relay.mint(), "laptop");
+        let heard = vec![
+            Heard::Found(live(1, "vim")),
+            Heard::Found(live(0xee, "c2 relay")),
+            Heard::Passed,
+            Heard::Found(live(2, "top")),
+            Heard::Found(Found::Uncertain),
+            Heard::Passed,
+            Heard::Found(Found::Stale(id(1))),
+        ];
+        let advertised = relay.advertised(own, heard, 4);
+        assert_eq!(session(&advertised[0]), id(1).bytes());
+        assert_eq!(advertised[1], Advertisement::SnapshotComplete);
+        assert_eq!(session(&advertised[2]), id(2).bytes());
+        assert_eq!(advertised[3], Advertisement::Withdrawn(id(1).bytes()));
+        assert_eq!(relay.fed.started(), 1, "one discovery for the link");
+    }
+
+    /// X12: a connection that never links starts no discovery, so it
+    /// touches no session daemon; a link's discovery stops when the link
+    /// ends, and the next link starts afresh, with nothing held.
+    #[test]
+    fn only_an_established_link_runs_discovery_and_only_while_it_lasts() {
+        let relay = running();
+        let (own, _) = relay.pair(relay.mint(), "laptop");
+        relay.link(key(), "stranger");
+        assert_eq!(
+            relay.fed.started(),
+            0,
+            "pairing and refusals discover nothing"
+        );
+
+        let heard = vec![Heard::Found(live(1, "vim"))];
+        relay.advertised(own.clone(), heard, 1);
+        let deadline = std::time::Instant::now() + WAIT;
+        while !relay.fed.stopped(0) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "discovery never stopped"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let heard = vec![Heard::Found(live(1, "vim")), Heard::Passed];
+        let advertised = relay.advertised(own, heard, 2);
+        assert_eq!(session(&advertised[0]), id(1).bytes(), "advertised again");
+        assert_eq!(relay.fed.started(), 2);
     }
 
     /// P17, P20, PAIR-01: a hub monitor that pairs is remembered, under the

@@ -1,13 +1,19 @@
 //! Everything that can refuse the relay, checked in order before the
-//! terminal changes: a terminal to own, the one configuration snapshot, the
-//! home's lock, the pairing store and the listener. A relay that started
+//! terminal changes: a terminal to own, a session that is not nested, the
+//! one configuration snapshot, the home's lock, the pairing store and the
+//! listener. A relay that started
 //! holds the lock and the bound listener until it ends.
-use crate::links::{Links, Remembered};
+use crate::{
+    discover::Discovery,
+    links::{Links, Remembered, Sessions},
+};
 use climon2_core::{
+    SessionId,
     config::{ConfigSource, RelayConfig},
     layout::HomeLayout,
     pairing::{self, Keypair, PrivateKey, PublicKey as StoredKey},
     relay::RelayArgs,
+    session::enclosing_depth,
 };
 use climon2_link::{StaticKey, display_name};
 use climon2_platform::{
@@ -17,7 +23,7 @@ use climon2_platform::{
     link_socket::{self, LinkListener},
     private, randomness, terminal,
 };
-use std::{io, net::SocketAddr, path::Path};
+use std::{ffi::OsString, io, net::SocketAddr, path::Path};
 
 /// The lock's file in a home's links folder.
 const LOCK: &str = "relay.lock";
@@ -33,6 +39,10 @@ pub(crate) struct Startup {
     identity: StaticKey,
     /// The hub monitors it remembers.
     remembered: Remembered,
+    /// The home whose sessions it serves.
+    home: HomeLayout,
+    /// The session it runs in, never served (U3).
+    own: Option<SessionId>,
 }
 
 /// A relay that has started: it accepts connections, and holds its home's
@@ -47,20 +57,32 @@ impl Startup {
     /// `home` is the canonical climon2 home.
     pub(crate) fn read(arguments: RelayArgs, home: &Path) -> io::Result<Self> {
         terminal::require_ttys().map_err(|_| io::Error::other("c2 relay needs a terminal"))?;
-        Self::in_home(arguments, home)
+        let environment: Vec<_> = std::env::vars_os().collect();
+        Self::in_home(arguments, home, &environment)
     }
 
-    /// The start once a terminal is known to be there.
-    fn in_home(arguments: RelayArgs, home: &Path) -> io::Result<Self> {
+    /// The start once a terminal is known to be there, in `environment`.
+    fn in_home(
+        arguments: RelayArgs,
+        home: &Path,
+        environment: &[(OsString, OsString)],
+    ) -> io::Result<Self> {
+        let own = enclosing(environment)?;
         let home = HomeLayout::at(home).map_err(io::Error::other)?;
         let config = configuration(&home)?;
-        Self::locked(lock(&home)?, &home, arguments.listen(&config))
+        let address = arguments.listen(&config);
+        Self::locked(lock(&home)?, home, address, own)
     }
 
     /// The start once the home is this relay's: it reads the pairing store
     /// and binds `address`.
-    fn locked(lock: Held, home: &HomeLayout, address: SocketAddr) -> io::Result<Self> {
-        let (identity, remembered) = keys(home)?;
+    fn locked(
+        lock: Held,
+        home: HomeLayout,
+        address: SocketAddr,
+        own: Option<SessionId>,
+    ) -> io::Result<Self> {
+        let (identity, remembered) = keys(&home)?;
         let (listener, address) = listen(address)?;
         Self {
             listener,
@@ -68,6 +90,8 @@ impl Startup {
             lock,
             identity,
             remembered,
+            home,
+            own,
         }
         .noted()
     }
@@ -82,8 +106,19 @@ impl Startup {
     /// Starts accepting connections, as the relay serves until it ends.
     pub(crate) fn serve(self) -> Serving {
         let name = display_name(&host_name::get().unwrap_or_default());
+        let home = self.home;
+        let sessions = Sessions {
+            own: self.own,
+            discover: Box::new(move || Discovery::start(home.clone())),
+        };
         Serving {
-            links: Links::start(self.listener, self.identity, &name, self.remembered),
+            links: Links::start(
+                self.listener,
+                self.identity,
+                &name,
+                self.remembered,
+                sessions,
+            ),
             address: self.address,
             _lock: self.lock,
         }
@@ -94,6 +129,29 @@ impl Startup {
     pub(crate) fn address(&self) -> SocketAddr {
         self.address
     }
+}
+
+/// The session the relay runs in, from its `environment` (U3): none
+/// outside a session. A relay refuses to start in a nested session, so a
+/// hub monitor can never reach the relay's own screen through a parent
+/// session's.
+fn enclosing(environment: &[(OsString, OsString)]) -> io::Result<Option<SessionId>> {
+    match enclosing_depth(environment) {
+        None => Ok(None),
+        Some(1) => Ok(own_session(environment)),
+        Some(depth) => Err(io::Error::other(format!(
+            "c2 relay cannot start in a nested session (this one is at depth {depth})"
+        ))),
+    }
+}
+
+/// The ID the environment names as its session's, if it is one.
+fn own_session(environment: &[(OsString, OsString)]) -> Option<SessionId> {
+    let (_, id) = environment
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "CLIMON2_SESSION_ID")?;
+    id.to_str()?.parse().ok()
 }
 
 /// The one configuration snapshot: the `relay` section. Nothing reads the
@@ -192,7 +250,7 @@ mod tests {
     #[test]
     fn a_start_binds_the_listener_and_reports_the_port_it_got() {
         let home = home();
-        let startup = Startup::in_home(any_port(), home.path()).unwrap();
+        let startup = Startup::in_home(any_port(), home.path(), &[]).unwrap();
         let address = startup.address();
         assert_eq!(address.ip(), Ipv4Addr::LOCALHOST);
         assert_ne!(address.port(), 0);
@@ -204,9 +262,9 @@ mod tests {
     #[test]
     fn a_second_start_in_the_home_names_the_running_relay() {
         let home = home();
-        let first = Startup::in_home(any_port(), home.path()).unwrap();
+        let first = Startup::in_home(any_port(), home.path(), &[]).unwrap();
         assert_eq!(
-            refusal(Startup::in_home(any_port(), home.path())),
+            refusal(Startup::in_home(any_port(), home.path(), &[])),
             format!(
                 "a relay is already running in this climon2 home (pid {}, listening on {})",
                 std::process::id(),
@@ -214,15 +272,16 @@ mod tests {
             )
         );
         let elsewhere = self::home();
-        Startup::in_home(any_port(), elsewhere.path()).expect("another home runs its own relay");
+        Startup::in_home(any_port(), elsewhere.path(), &[])
+            .expect("another home runs its own relay");
         drop(first);
-        Startup::in_home(any_port(), home.path()).expect("the home is free again");
+        Startup::in_home(any_port(), home.path(), &[]).expect("the home is free again");
     }
 
     #[test]
     fn the_lock_is_an_owner_only_file_in_an_owner_only_links_folder() {
         let home = home();
-        let _startup = Startup::in_home(any_port(), home.path()).unwrap();
+        let _startup = Startup::in_home(any_port(), home.path(), &[]).unwrap();
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
         assert_eq!(mode(&home.path().join("links")), 0o700);
         assert_eq!(mode(&home.path().join("links/relay.lock")), 0o600);
@@ -234,7 +293,7 @@ mod tests {
         let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = taken.local_addr().unwrap();
         let listen = Some(address);
-        let error = Startup::in_home(RelayArgs { listen }, home.path())
+        let error = Startup::in_home(RelayArgs { listen }, home.path(), &[])
             .err()
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
@@ -243,7 +302,7 @@ mod tests {
             text.starts_with(&format!("cannot listen on {address}: ")),
             "{text}"
         );
-        Startup::in_home(any_port(), home.path()).expect("the failed start left no lock");
+        Startup::in_home(any_port(), home.path(), &[]).expect("the failed start left no lock");
     }
 
     #[test]
@@ -259,12 +318,12 @@ mod tests {
             format!(r#"{{"relay": {{"listen": "{configured}"}}}}"#),
         )
         .unwrap();
-        let startup = Startup::in_home(RelayArgs { listen: None }, home.path()).unwrap();
+        let startup = Startup::in_home(RelayArgs { listen: None }, home.path(), &[]).unwrap();
         assert_eq!(startup.address(), configured);
         drop(startup);
         let flagged = free(());
         let listen = Some(flagged);
-        let startup = Startup::in_home(RelayArgs { listen }, home.path()).unwrap();
+        let startup = Startup::in_home(RelayArgs { listen }, home.path(), &[]).unwrap();
         assert_eq!(startup.address(), flagged);
     }
 
@@ -276,7 +335,7 @@ mod tests {
             r#"{"relay": {"listen": "localhost:7222"}}"#,
         )
         .unwrap();
-        let text = refusal(Startup::in_home(any_port(), home.path()));
+        let text = refusal(Startup::in_home(any_port(), home.path(), &[]));
         assert!(
             text.starts_with("config.jsonc is invalid: relay.listen must be"),
             "{text}"
@@ -310,7 +369,7 @@ mod tests {
     #[test]
     fn the_first_start_makes_the_identity_and_later_starts_keep_it() {
         let home = home();
-        drop(Startup::in_home(any_port(), home.path()).unwrap());
+        drop(Startup::in_home(any_port(), home.path(), &[]).unwrap());
         let first = identity(home.path());
         let public = StaticKey::from_private(*first.private_key.expose()).public();
         assert_eq!(
@@ -318,7 +377,7 @@ mod tests {
             first.public_key.as_bytes(),
             "a whole keypair"
         );
-        let startup = Startup::in_home(any_port(), home.path()).unwrap();
+        let startup = Startup::in_home(any_port(), home.path(), &[]).unwrap();
         assert_eq!(
             startup.identity.public().as_bytes(),
             first.public_key.as_bytes()
@@ -326,7 +385,7 @@ mod tests {
         drop(startup);
         assert_eq!(identity(home.path()).public_key, first.public_key);
         let elsewhere = self::home();
-        drop(Startup::in_home(any_port(), elsewhere.path()).unwrap());
+        drop(Startup::in_home(any_port(), elsewhere.path(), &[]).unwrap());
         assert_ne!(identity(elsewhere.path()).public_key, first.public_key);
     }
 
@@ -336,18 +395,18 @@ mod tests {
     fn a_damaged_store_refuses_the_start() {
         for file in ["relay-identity.json", "hub-monitors.json"] {
             let home = home();
-            drop(Startup::in_home(any_port(), home.path()).unwrap());
+            drop(Startup::in_home(any_port(), home.path(), &[]).unwrap());
             let path = home.path().join("links").join(file);
             fs::write(&path, "{").unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-            let text = refusal(Startup::in_home(any_port(), home.path()));
+            let text = refusal(Startup::in_home(any_port(), home.path(), &[]));
             assert!(
                 text.starts_with(&format!("damaged pairing file {file}")),
                 "{text}"
             );
             assert_eq!(fs::read_to_string(&path).unwrap(), "{");
             fs::remove_file(&path).unwrap();
-            Startup::in_home(any_port(), home.path()).expect("the refused start left no lock");
+            Startup::in_home(any_port(), home.path(), &[]).expect("the refused start left no lock");
         }
     }
 
@@ -363,5 +422,50 @@ mod tests {
             "c2 relay needs a terminal"
         );
         assert!(!home.path().join("links").exists());
+    }
+
+    fn environment(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into()))
+            .collect()
+    }
+
+    const ID: &str = "0d5c0000-0000-4000-8000-000000000001";
+
+    /// ADV-03 (U3): outside a session the relay serves every session; in
+    /// one at depth 1 it knows its own; in a nested one it refuses to
+    /// start, before the home is touched.
+    #[test]
+    fn adv_03_a_relay_knows_its_own_session_and_refuses_a_nested_one() {
+        let home = home();
+        let outside = Startup::in_home(any_port(), home.path(), &[]).unwrap();
+        assert_eq!(outside.own, None);
+        drop(outside);
+        let depth_1 = environment(&[("CLIMON2_SESSION_ID", ID)]);
+        let inside = Startup::in_home(any_port(), home.path(), &depth_1).unwrap();
+        assert_eq!(inside.own, Some(ID.parse().unwrap()));
+        drop(inside);
+        let stated = environment(&[("CLIMON2_SESSION_ID", ID), ("CLIMON2_SESSION_DEPTH", "1")]);
+        let inside = Startup::in_home(any_port(), home.path(), &stated).unwrap();
+        assert_eq!(inside.own, Some(ID.parse().unwrap()));
+        drop(inside);
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let nested = environment(&[("CLIMON2_SESSION_ID", ID), ("CLIMON2_SESSION_DEPTH", "2")]);
+        assert_eq!(
+            refusal(Startup::in_home(any_port(), elsewhere.path(), &nested)),
+            "c2 relay cannot start in a nested session (this one is at depth 2)"
+        );
+        assert!(!elsewhere.path().join("links").exists());
+    }
+
+    /// A session ID that is not one names no session to leave out.
+    #[test]
+    fn an_unreadable_session_id_names_no_own_session() {
+        let home = home();
+        let unreadable = environment(&[("CLIMON2_SESSION_ID", "not-an-id")]);
+        let startup = Startup::in_home(any_port(), home.path(), &unreadable).unwrap();
+        assert_eq!(startup.own, None);
     }
 }

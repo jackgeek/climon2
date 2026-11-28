@@ -8,7 +8,11 @@
 //! start (`windows.rs`).
 
 #[cfg(unix)]
+mod advertise;
+#[cfg(unix)]
 mod desk;
+#[cfg(unix)]
+mod discover;
 #[cfg(unix)]
 mod host;
 #[cfg(unix)]

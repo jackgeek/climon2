@@ -211,7 +211,10 @@ fn lookup<'a>(environment: &'a [(OsString, OsString)], key: &str) -> Option<&'a 
         .map(|(_, value)| value.as_os_str())
 }
 
-fn enclosing_depth(environment: &[(OsString, OsString)]) -> Option<u32> {
+/// The depth of the session that `environment` runs in, or none outside a
+/// session: a nonempty `CLIMON2_SESSION_ID` is a session, at the depth
+/// `CLIMON2_SESSION_DEPTH` gives, otherwise depth 1.
+pub fn enclosing_depth(environment: &[(OsString, OsString)]) -> Option<u32> {
     let id = lookup(environment, "CLIMON2_SESSION_ID")?;
     if id.is_empty() {
         return None;
