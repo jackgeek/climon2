@@ -1,6 +1,7 @@
 //! SEC-08 at the Link layer (#495): climon2's own frozen vectors for the
 //! pairing key schedule and for binding the opening exchange into the PIN
-//! key exchange. The published CPace vectors run in `src/pairing/cpace.rs`.
+//! key exchange. The published CPace vectors run in `src/pairing/cpace.rs`,
+//! and the frozen keys of the schedule in `src/pairing/keys.rs`.
 //!
 //! Every expected byte here was computed by `vectors/pairing_reference.py`,
 //! which shares no code with the link crate, from the layouts of the

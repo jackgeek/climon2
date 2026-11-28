@@ -3,7 +3,8 @@
 
 use super::Seeded;
 use climon2_link::{
-    End, HubEnd, Input, Introduction, Invitations, Output, Pin, RelayEnd, Revisions, Time,
+    End, HubEnd, Input, Introduction, Invitation, Invitations, Output, Pin, RelayEnd, Revisions,
+    Time,
 };
 use std::time::Duration;
 
@@ -159,4 +160,99 @@ pub fn proxied_with_seeds<H: End, R: End>(
         }
     }
     panic!("the two ends never fell quiet");
+}
+
+pub const SECOND: Duration = Duration::from_secs(1);
+pub const MILLISECOND: Duration = Duration::from_millis(1);
+/// The size of an opening request and of an opening reply.
+pub const OPENING: (usize, usize) = (26, 20);
+/// A PIN the relay of these tests never mints.
+pub const WRONG: &str = "1111-2222";
+
+pub fn pin(typed: &str) -> Pin {
+    Pin::parse(typed).expect("8 digits")
+}
+
+/// The pairing messages in `bytes`, each without its length. Whatever
+/// follows the last whole message is returned as a message of its own.
+pub fn messages(mut bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut found = Vec::new();
+    while let Some((length, rest)) = bytes.split_first_chunk::<2>() {
+        let length = usize::from(u16::from_be_bytes(*length)).min(rest.len());
+        found.push(rest[..length].to_vec());
+        bytes = &rest[length..];
+    }
+    if !bytes.is_empty() {
+        found.push(bytes.to_vec());
+    }
+    found
+}
+
+/// The pairing messages an end sent after its opening message.
+pub fn pairing_messages(sent: &[u8], opening: usize) -> Vec<Vec<u8>> {
+    messages(&sent[opening..])
+}
+
+/// How many attempts the relay's invitation has left at time zero.
+pub fn attempts_left(invitations: &Invitations) -> u8 {
+    match invitations.invitation(Time::since_start(Duration::ZERO)) {
+        Invitation::Live { attempts_left, .. } => attempts_left,
+        other => panic!("no live invitation: {other:?}"),
+    }
+}
+
+/// Two ends stepped by hand, each with randomness of its own, at moments
+/// the test names.
+pub struct Wire {
+    pub hub: HubEnd,
+    pub relay: RelayEnd,
+    pub hub_randomness: Seeded,
+    pub relay_randomness: Seeded,
+}
+
+impl Wire {
+    pub fn new(hub: HubEnd, relay: RelayEnd) -> Self {
+        Self {
+            hub,
+            relay,
+            hub_randomness: Seeded::new(1),
+            relay_randomness: Seeded::new(2),
+        }
+    }
+
+    pub fn hub(&mut self, when: Duration, input: Input<'_>) -> Output {
+        self.hub.step(at(when), input, &mut self.hub_randomness)
+    }
+
+    pub fn relay(&mut self, when: Duration, input: Input<'_>) -> Output {
+        self.relay.step(at(when), input, &mut self.relay_randomness)
+    }
+
+    /// Runs the opening exchange at `when`: the relay accepts, the hub
+    /// monitor dials, and the reply reaches the hub monitor. The hub
+    /// monitor's share message, which it sends at once.
+    pub fn open(&mut self, when: Duration) -> Output {
+        let request = self.hub(when, Input::Tick).bytes;
+        self.relay(when, Input::Tick);
+        let reply = self.relay(when, Input::Bytes(&request)).bytes;
+        self.hub(when, Input::Bytes(&reply))
+    }
+
+    /// Runs the opening exchange and both shares at `when`: the relay's
+    /// share message, and the hub monitor's confirmation.
+    pub fn shares(&mut self, when: Duration) -> (Output, Output) {
+        let hub_share = self.open(when).bytes;
+        let relay_share = self.relay(when, Input::Bytes(&hub_share));
+        let confirmation = self.hub(when, Input::Bytes(&relay_share.bytes));
+        (relay_share, confirmation)
+    }
+}
+
+/// An output that closes the byte stream without sending a byte.
+pub fn silent_close() -> Output {
+    Output {
+        bytes: Vec::new(),
+        close: true,
+        deadline: None,
+    }
 }
