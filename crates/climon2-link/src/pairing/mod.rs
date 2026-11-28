@@ -262,6 +262,41 @@ fn closing(bytes: Vec<u8>) -> Output {
     }
 }
 
+/// What one end does with the next pairing message it has framed: `read`
+/// takes it once it is whole, and what `read` gives to send joins `sent`.
+/// Whether the end reads on: false while the message is still partial.
+/// Nothing when the run has failed.
+fn read_message(
+    framed: Framed,
+    sent: &mut Vec<u8>,
+    read: impl FnOnce(Vec<u8>) -> Option<Vec<u8>>,
+) -> Option<bool> {
+    match framed {
+        Framed::Partial => Some(false),
+        Framed::Malformed => None,
+        Framed::Whole(body) => {
+            sent.extend(read(body)?);
+            Some(true)
+        }
+    }
+}
+
+/// The output of a step of a run that has got as far as `outcome` and has
+/// `sent` to send, or nothing when the run has failed: a run that paired
+/// sends and closes, and one still pending waits until its deadline.
+fn concluded(
+    outcome: &PairingRun,
+    arrived: &Arrived,
+    now: Time,
+    sent: Option<Vec<u8>>,
+) -> Option<Output> {
+    let bytes = sent?;
+    if matches!(outcome, PairingRun::Paired(_)) {
+        return Some(closing(bytes));
+    }
+    arrived.waiting(now, bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

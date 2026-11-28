@@ -5,8 +5,8 @@
 use super::invitation::Seat;
 use super::keys::{Confirmed, Sender};
 use super::{
-    Arrived, CONFIRMATION_SIZES, Framed, PairingRun, SHARE_SIZES, closing, cpace, exchange,
-    share_message,
+    Arrived, CONFIRMATION_SIZES, PairingRun, SHARE_SIZES, closing, concluded, cpace, exchange,
+    read_message, share_message,
 };
 use crate::opening::Transcript;
 use crate::{Input, Output, Randomness, Time};
@@ -47,16 +47,9 @@ impl RelayRun {
             return Output::default();
         }
         let going = self.arrived.take(now, input) && self.seat.live(now);
-        let sent = match going {
-            true => self.advance(now, randomness),
-            false => None,
-        };
-        let output = match (&self.outcome, sent) {
-            (PairingRun::Paired(_), Some(bytes)) => Some(closing(bytes)),
-            (_, Some(bytes)) => self.arrived.waiting(now, bytes),
-            (_, None) => None,
-        };
-        output.unwrap_or_else(|| self.fail(now))
+        let sent = going.then(|| self.advance(now, randomness));
+        concluded(&self.outcome, &self.arrived, now, sent.flatten())
+            .unwrap_or_else(|| self.fail(now))
     }
 
     /// Closes without a byte: the run failed, and counts once the relay's
@@ -73,21 +66,22 @@ impl RelayRun {
     /// the run has failed.
     fn advance(&mut self, now: Time, randomness: &mut dyn Randomness) -> Option<Vec<u8>> {
         let mut sent = Vec::new();
-        if self.confirmed.is_none() {
-            match self.arrived.message(SHARE_SIZES) {
-                Framed::Partial => return Some(sent),
-                Framed::Malformed => return None,
-                Framed::Whole(share) => sent = self.answer(&share, randomness)?,
-            }
+        if self.read_share(&mut sent, randomness)? {
+            let confirmation = self.arrived.message(CONFIRMATION_SIZES);
+            read_message(confirmation, &mut sent, |body| self.confirm(now, &body))?;
         }
-        match self.arrived.message(CONFIRMATION_SIZES) {
-            Framed::Partial => Some(sent),
-            Framed::Malformed => None,
-            Framed::Whole(body) => {
-                sent.extend(self.confirm(now, &body)?);
-                Some(sent)
-            }
+        Some(sent)
+    }
+
+    /// Reads the hub monitor's share, unless it has been read, adding the
+    /// relay's own to `sent`. Whether the run reads on, or nothing when it
+    /// has failed.
+    fn read_share(&mut self, sent: &mut Vec<u8>, randomness: &mut dyn Randomness) -> Option<bool> {
+        if self.confirmed.is_some() {
+            return Some(true);
         }
+        let share = self.arrived.message(SHARE_SIZES);
+        read_message(share, sent, |share| self.answer(&share, randomness))
     }
 
     /// Answers the hub monitor's share with the relay's own. From here the

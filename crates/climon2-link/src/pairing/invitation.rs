@@ -70,6 +70,31 @@ impl Desk {
         self.live = None;
     }
 
+    /// Ends the run in flight as a failure, `counted` or not. `now`, when
+    /// known, first expires an invitation whose time has come.
+    fn fail(&mut self, now: Option<Time>, counted: bool) {
+        if let Some(live) = &mut self.live {
+            live.running = false;
+        }
+        if let Some(now) = now {
+            self.settle(now);
+        }
+        if counted {
+            self.spend();
+        }
+    }
+
+    /// Spends one attempt of a live invitation; the last one uses it up.
+    fn spend(&mut self) {
+        let Invitation::Live { attempts_left, .. } = &mut self.invitation else {
+            return;
+        };
+        *attempts_left -= 1;
+        if *attempts_left == 0 {
+            self.end(Invitation::UsedUp);
+        }
+    }
+
     /// Expires a live invitation whose time has come.
     fn settle(&mut self, now: Time) {
         if matches!(self.invitation, Invitation::Live { expires, .. } if now >= expires) {
@@ -214,23 +239,8 @@ impl Seat {
             return;
         }
         let counted = self.counted;
-        let Some(mut desk) = self.desk() else {
-            return;
-        };
-        if let Some(live) = &mut desk.live {
-            live.running = false;
-        }
-        if let Some(now) = now {
-            desk.settle(now);
-        }
-        match &mut desk.invitation {
-            Invitation::Live { attempts_left, .. } if counted => {
-                *attempts_left -= 1;
-                if *attempts_left == 0 {
-                    desk.end(Invitation::UsedUp);
-                }
-            }
-            _ => {}
+        if let Some(mut desk) = self.desk() {
+            desk.fail(now, counted);
         }
     }
 

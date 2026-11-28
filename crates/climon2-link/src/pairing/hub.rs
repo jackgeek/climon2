@@ -4,8 +4,8 @@
 
 use super::keys::{Confirmed, Sender};
 use super::{
-    Arrived, CONFIRMATION_SIZES, Framed, Introduction, PairingRun, Pin, SHARE_SIZES, closing,
-    cpace, exchange, share_message,
+    Arrived, CONFIRMATION_SIZES, Introduction, PairingRun, Pin, SHARE_SIZES, closing, concluded,
+    cpace, exchange, read_message, share_message,
 };
 use crate::opening::Transcript;
 use crate::{Input, Output, Randomness, Time};
@@ -62,16 +62,8 @@ impl HubRun {
         if self.outcome != PairingRun::Pending {
             return Output::default();
         }
-        let sent = match self.arrived.take(now, input) {
-            true => self.advance(),
-            false => None,
-        };
-        let output = match (&self.outcome, sent) {
-            (PairingRun::Paired(_), Some(bytes)) => Some(closing(bytes)),
-            (_, Some(bytes)) => self.arrived.waiting(now, bytes),
-            (_, None) => None,
-        };
-        output.unwrap_or_else(|| self.fail())
+        let sent = self.arrived.take(now, input).then(|| self.advance());
+        concluded(&self.outcome, &self.arrived, now, sent.flatten()).unwrap_or_else(|| self.fail())
     }
 
     /// Closes without another byte: the run failed, and this end keeps
@@ -87,22 +79,30 @@ impl HubRun {
     /// the run has failed.
     fn advance(&mut self) -> Option<Vec<u8>> {
         let mut sent = Vec::new();
-        if self.confirmed.is_none() {
-            match self.arrived.message(SHARE_SIZES) {
-                Framed::Partial => return Some(sent),
-                Framed::Malformed => return None,
-                Framed::Whole(share) => sent = self.confirm(&share)?,
-            }
+        if self.read_share(&mut sent)? {
+            let confirmation = self.arrived.message(CONFIRMATION_SIZES);
+            read_message(confirmation, &mut sent, |body| self.finish(&body))?;
         }
-        match self.arrived.message(CONFIRMATION_SIZES) {
-            Framed::Partial => Some(sent),
-            Framed::Malformed => None,
-            Framed::Whole(body) => {
-                let relay = self.confirmed.as_ref()?.open(Sender::Relay, &body)?;
-                self.outcome = PairingRun::Paired(relay);
-                Some(sent)
-            }
+        Some(sent)
+    }
+
+    /// Reads the relay's share, unless it has been read, adding the hub
+    /// monitor's confirmation to `sent`. Whether the run reads on, or
+    /// nothing when it has failed.
+    fn read_share(&mut self, sent: &mut Vec<u8>) -> Option<bool> {
+        if self.confirmed.is_some() {
+            return Some(true);
         }
+        let share = self.arrived.message(SHARE_SIZES);
+        read_message(share, sent, |share| self.confirm(&share))
+    }
+
+    /// Takes the relay's confirmation: the run has paired with the relay it
+    /// opens to, and sends nothing more.
+    fn finish(&mut self, body: &[u8]) -> Option<Vec<u8>> {
+        let relay = self.confirmed.as_ref()?.open(Sender::Relay, body)?;
+        self.outcome = PairingRun::Paired(relay);
+        Some(Vec::new())
     }
 
     /// Takes the relay's share and answers with the hub monitor's
