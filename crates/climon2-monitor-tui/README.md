@@ -4,8 +4,15 @@ The [monitor](../../GLOSSARY.md#sessions)'s terminal interface. It builds the
 `climon2-monitor` executable that `c2 monitor` and `c2 m` start, and is the
 one consumer of the [monitor library](../climon2-monitor/README.md) today
 ([ADR 0011](../../docs/adr/0011-monitor-library-and-client-embedding.md),
-#490). Its library boundary is `run() -> Result<u32, Error>`; the thin main
-prints `climon2: error: …` for an `Error` and exits 125.
+#490). Its library boundary is `run(arguments) -> Result<u32, Error>`; the
+thin main prints `climon2: error: …` for an `Error` and exits with its code.
+With no arguments it is the monitor. With `pair <host:port>` (#501), which
+`c2 monitor pair` and `c2 m p` hand it, it reads the relay's PIN, prompting
+`PIN: ` on stderr when stdin is a terminal, which echoes the typing, and
+otherwise reading one line of stdin; pairs through the monitor library; and
+prints `paired with <name> (key fingerprint <fingerprint>)`. A PIN that is
+not 8 digits, and every pairing failure, exit 125. On Windows pairing
+refuses (`src/pair/windows.rs`).
 
 It holds what belongs to a terminal and to no other device: checking that
 stdin and stdout are terminals, entering and releasing the host, decoding the

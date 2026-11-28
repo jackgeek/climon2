@@ -38,12 +38,13 @@ flowchart TB
         cli -->|"exec (not --headless) / attach / kill: session version"| client
         cli -->|"hello probes for discovery"| daemon
         daemon -->|"runs on session PTY"| command
-        cli -->|"monitor / m: execs own version"| monitor
+        cli -->|"monitor / m, and monitor pair: execs own version"| monitor
         monitor -->|"hello probes for discovery"| daemon
         monitor -->|"loads session-version library through the shared loader; one owner thread per live session's passive client"| library
         client -->|"attach and kill: loads its own version folder's library through the shared loader; C ABI; current"| library
         library -->|"daemon wire revision 1: passive monitor connections, interactive attachments and Kill; control and display of the selected session"| daemon
-        monitor -.->|"hub monitor: monitor link over TCP/IP; planned"| relay
+        monitor -->|"monitor pair: pairing and the first monitor link over TCP/IP"| relay
+        monitor -.->|"hub monitor: monitor links carrying sessions; planned"| relay
         web -.->|"hub monitor: monitor link over TCP/IP; planned"| relay
         cli -.->|"web: execs own version; planned"| web
         cli -->|"relay / r: execs own version"| relay
@@ -424,10 +425,19 @@ the `climon2-relay` executable. `c2 relay` and `c2 r` reach it through the
 launcher and the current version's CLI, which execs its own version's relay
 with the arguments it was given, as it execs the monitor. The relay binds its
 TCP listener, shows its own screen and stops; it does not yet probe daemons,
-load the client library or accept a monitor link, so those arrows stay
+or load the client library, so those arrows stay
 dashed. The Windows release does not ship it: monitor links are specified for
 macOS and Linux only, and a Windows build of `climon2-relay` refuses to
 start.
+
+**Current (#501):** `c2 monitor pair <host:port>`, or `c2 m p`, reaches the
+current version's monitor executable as bare `c2 monitor` does, with the verb
+and the address. That executable reads the PIN of the relay's
+[link invitation](../../../GLOSSARY.md#monitor-links) and dials the relay over TCP twice: a pairing connection, then
+the first monitor link, which it closes at once. Each machine's own
+`links/` folder records the pairing. The relay accepts both on its
+listener. No monitor link carries a session yet, so that arrow stays
+dashed. On Windows `c2 monitor pair` refuses.
 
 `c2 exec --headless` returns after daemon-confirmed creation without
 starting an interactive client: the CLI starts the daemon, passing the headless

@@ -10,7 +10,6 @@ are shown separately in the [artifact diagram](runtime-artifacts.md).
 ## Shipped crates
 
 Only the crates that ship, and the normal dependencies between them.
-`climon2-link` has none yet, in either direction.
 
 ```mermaid
 flowchart TB
@@ -45,9 +44,11 @@ flowchart TB
     monitor --> core
     monitor --> discovery
     monitor --> embed
+    monitor --> link
     monitor --> platform
     monitor --> vt
     relay --> core
+    relay --> link
     relay --> platform
     tui --> core
     tui --> monitor
@@ -69,8 +70,8 @@ flowchart TB
 | `climon2-monitor-tui` | The monitor's terminal interface, with the `climon2-monitor` binary that `c2 monitor` starts: it owns the host terminal, decodes its input into the monitor library's actions and paints what the library offers with Ratatui. |
 | `climon2-monitor` | The [monitor library](../../../GLOSSARY.md#sessions): a whole monitor with no interface of its own, which tracks every live session and decides what each action does. One consumer thread steps it; the terminal interface is its one consumer today. |
 | `climon2-embed` | [Client embedding](../../../GLOSSARY.md#sessions): loading a release's client library and running one client instance for one session. The monitor uses it; the relay will. |
-| `climon2-relay` | The [relay](../../../GLOSSARY.md#monitor-links) that `c2 relay` runs on macOS and Linux, with a terminal interface of its own. So far it binds its listener, shows its screen and stops. It never depends on the monitor library. |
-| `climon2-link` | The link code of [monitor links](../../../GLOSSARY.md#monitor-links): what a hub monitor and a relay say to each other over a plain byte stream. It performs no input or output and takes the time and its randomness from its caller. So far it holds that interface, the opening exchange, the pinned-key handshake, framing and pairing, and no executable links it. |
+| `climon2-relay` | The [relay](../../../GLOSSARY.md#monitor-links) that `c2 relay` runs on macOS and Linux, with a terminal interface of its own. It binds its listener, mints link invitations, pairs with hub monitors and accepts their links. It never depends on the monitor library. |
+| `climon2-link` | The link code of [monitor links](../../../GLOSSARY.md#monitor-links): what a hub monitor and a relay say to each other over a plain byte stream. It performs no input or output and takes the time and its randomness from its caller. It holds the opening exchange, the pinned-key handshake, framing and pairing, which the monitor library and the relay run over their TCP connections. |
 
 ## Planned crates
 
@@ -78,7 +79,8 @@ Only the crates that [ADR 0011](../../adr/0011-monitor-library-and-client-embedd
 plans, and the normal dependencies planned between them and the shipped
 crates. None of these edges exists yet, so every arrow is dashed. Crates that
 exist today are marked `(exists)`; the edges between them, including the
-relay's edges to `core` and `platform`, are in the diagram above and are not
+relay's edges to `core`, `platform` and `climon2-link` and the monitor
+library's edge to `climon2-link`, are in the diagram above and are not
 repeated here.
 
 ```mermaid
@@ -97,9 +99,7 @@ flowchart TB
     web -.-> platform
     web -.-> core
     relay -.-> embed
-    relay -.-> link
     relay -.-> discovery
-    monitor -.-> link
     link -.-> core
 ```
 
@@ -141,6 +141,7 @@ flowchart TB
         tui["climon2-monitor-tui"]
         embed["climon2-embed"]
         relay["climon2-relay"]
+        link["climon2-link"]
         platform["climon2-platform"]
         core["climon2-core"]
     end
@@ -161,6 +162,7 @@ flowchart TB
     e2e -.->|"dev"| core
     e2e -.->|"dev"| fixtures
     e2e -.->|"dev"| install
+    e2e -.->|"dev"| link
     e2e -.->|"dev"| test_term
     fixtures --> core
     fixtures --> platform
@@ -253,21 +255,29 @@ shipped crate, `climon2-relay`, with a library and the `climon2-relay` binary.
 It consumes only `core` and `platform` so far; the architecture guard rejects
 any other workspace edge, including one to `climon2-monitor`
 ([ADR 0011](../../adr/0011-monitor-library-and-client-embedding.md), rule 2)
-and to `climon2-vt` (rule 4). Its edges to `climon2-embed`, `climon2-link`
-and `climon2-discovery` stay planned until the relay serves sessions. Its
+and to `climon2-vt` (rule 4). Its edges to `climon2-embed` and
+`climon2-discovery` stay planned until the relay serves sessions. Its
 real-terminal tests consume `climon2-test-term` on Unix, and the harness
 consumes it only to unify `test-hooks` into the test build. Ratatui is a
 dependency of this crate as well as of the monitor's terminal interface.
 
-**Current (#492, #495):** `climon2-link` exists, with no workspace crate
-on either side of it. The workspace test that reads `cargo metadata` holds it
+**Current (#492, #495):** `climon2-link` exists, and depends on no
+workspace crate. The workspace test that reads `cargo metadata` holds it
 to an allowlist of dependencies, which holds only the third-party
 cryptography of pairing today, and scans its sources so that it can
 never gain a platform dependency, a per-platform condition, a clock or
 randomness of its own
-([crate README](../../../crates/climon2-link/README.md)). Its planned edges,
-from the monitor library and the relay and to `core`, are under
-[Planned crates](#planned-crates).
+([crate README](../../../crates/climon2-link/README.md)). Its planned edge
+to `core` is under [Planned crates](#planned-crates).
+
+**Current (#501):** the monitor library and the relay each consume
+`climon2-link`, the only two crates the architecture guard lets depend on
+it: the library holds the hub monitor's side of pairing, which
+`c2 monitor pair` runs, and the relay holds its own side. The terminal
+interface and the CLI reach the link code only through them. The test-only
+`climon2-e2e` consumes it as a dev-dependency for the
+[link peer stand-in](../../../GLOSSARY.md#testing), which speaks the link's
+bytes itself.
 
 **Current (#75):** the [client library](../../../GLOSSARY.md#sessions)'s `cdylib`,
 `libclimon2_client.dylib` on macOS and `libclimon2_client.so` on Linux, is an

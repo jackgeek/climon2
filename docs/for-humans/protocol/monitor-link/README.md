@@ -9,7 +9,8 @@ pairing, the pinned-key handshake and the records of
 **Status: developer-agreed specification in
 [#480](https://github.com/jackgeek/climon2/issues/480). The opening exchange,
 pairing, the pinned-key handshake, Hello, Close and the framing of units are
-implemented, in the `climon2-link` crate and in no released program.** No
+implemented in the `climon2-link` crate. The relay and `c2 monitor pair`
+run pairing and the first link over it; nothing yet carries a session.** No
 climon2 release contains a relay or speaks any part of this protocol. The
 [acceptance criteria](../../behaviour/monitor-link/acceptance.md) say what
 automated evidence shows the protocol is met.
@@ -145,6 +146,17 @@ The `climon2-link` crate builds the handshake and the units on the `snow`
 crate, pinned to one exact version. `snow` has had no formal audit; using it
 is an accepted risk, recorded with the known-answer tests that guard it in
 the [crate's README](../../../../crates/climon2-link/README.md#cryptography).
+
+### Key fingerprints
+
+Each end shows its user the other end's static public key as a
+[key fingerprint](../../../../GLOSSARY.md#monitor-links), so that the two
+users can compare their screens. It never crosses the link. A fingerprint is
+the first 16 [bytes](../TERMS.md#byte) of the SHA-256 of the key's 32 bytes,
+written as eight groups of four lowercase hexadecimal digits joined by
+colons. The key whose 32 bytes are `00` to `1f` has the fingerprint
+`630d:cd29:66c4:3366:9112:5448:bbb2:5b4f`. Every release computes it the same
+way, so two releases show the same fingerprint for one key.
 
 ## Integers and byte strings
 

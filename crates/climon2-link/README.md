@@ -82,6 +82,23 @@ reproduces the cacophony vector and computed the frozen one.
   half. `StaticKey::from_private(bytes)` takes the 32 random bytes the caller
   drew once and stores; `public()` gives the half the other end pins.
   `Debug` never shows the private half.
+  `PublicKey::fingerprint()` is the key fingerprint each side shows its
+  user (#501): the first 16 bytes of the key's SHA-256 as eight colon-joined
+  groups of four lowercase hexadecimal digits.
+- `display_name(text)`: a suggested name as either side may show, store or
+  suggest it, without control characters and cut at a character boundary
+  to 64 bytes. A name from the other end is hostile text.
+- `Revisions::published()`: every published link revision, which is what
+  each release supports.
+- `drive(end, carrier, randomness, between)` runs one end over a caller's
+  `Carrier`, its byte stream and clock (#501). It steps the end, lets
+  `between` see the end after each step and before its bytes are sent (the
+  relay remembers a hub monitor there, before its confirmation goes), sends,
+  and waits for bytes no longer than the end's deadline. `between` answers
+  `Next::Wait`, `Next::Step` (step again at once, having given the end
+  something to send) or `Next::Stop`. A byte stream that fails is closed as
+  far as the end is told. `tests/drive.rs` scripts both the end and the
+  carrier.
 
 ## The opening exchange
 
