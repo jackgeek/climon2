@@ -817,3 +817,10 @@ fn rev_03_no_edit_of_one_byte_leaves_an_agreed_opening() {
         }
     }
 }
+
+/// ADR 0010: every release supports every published link revision, and
+/// link revision 1 is the only one published.
+#[test]
+fn this_release_supports_every_published_revision() {
+    assert_eq!(Revisions::published().as_slice(), [1]);
+}

@@ -103,9 +103,12 @@ fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
         // ADR 0011: the relay never depends on the monitor library.
-        "climon2-client" | "climon2-discovery" | "climon2-embed" | "climon2-relay" => {
+        "climon2-client" | "climon2-discovery" | "climon2-embed" => {
             &["climon2-core", "climon2-platform"]
         }
+        // ADR 0011: the relay side of monitor links is built on the link
+        // code (#501), and the relay never depends on the monitor library.
+        "climon2-relay" => &["climon2-core", "climon2-platform", "climon2-link"],
         "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
         "climon2-monitor" => &[
@@ -114,6 +117,8 @@ fn allowed_internal_dependencies(name: &str) -> &[&str] {
             "climon2-vt",
             "climon2-discovery",
             "climon2-embed",
+            // ADR 0011: the hub monitor's side of monitor links (#501).
+            "climon2-link",
         ],
         "climon2-monitor-tui" => &["climon2-core", "climon2-platform", "climon2-monitor"],
         _ => &[],
@@ -367,6 +372,10 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-relay", "climon2-daemon", None, Some(".")),
         ("climon2-monitor", "climon2-relay", None, Some(".")),
         ("climon2-cli", "climon2-relay", None, Some(".")),
+        // ADR 0011: the link code reaches the hub monitor's terminal
+        // interface only through the monitor library.
+        ("climon2-monitor-tui", "climon2-link", None, Some(".")),
+        ("climon2-cli", "climon2-link", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -408,6 +417,8 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-relay", "climon2-core", None),
         ("climon2-relay", "climon2-platform", None),
         ("climon2-relay", "climon2-test-term", Some("dev")),
+        ("climon2-relay", "climon2-link", None),
+        ("climon2-monitor", "climon2-link", None),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {

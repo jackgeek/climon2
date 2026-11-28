@@ -408,6 +408,7 @@ dependencies = [
  "climon2-core",
  "climon2-discovery",
  "climon2-embed",
+ "climon2-link",
  "climon2-platform",
  "climon2-vt",
  "fuzzy-matcher",

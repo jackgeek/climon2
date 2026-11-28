@@ -42,6 +42,12 @@ impl Revisions {
         valid.then(|| Self(revisions.to_vec()))
     }
 
+    /// The link revisions this release supports: every published one, so
+    /// far only link revision 1 (ADR 0010).
+    pub fn published() -> Self {
+        Self(vec![1])
+    }
+
     /// The revisions, ascending.
     pub fn as_slice(&self) -> &[u16] {
         &self.0
