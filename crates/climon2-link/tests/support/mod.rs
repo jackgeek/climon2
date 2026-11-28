@@ -3,6 +3,9 @@
 //! randomness. Nothing here touches a socket, a file, a clock or a process,
 //! so a Link test runs the same on every platform.
 
+// Each test binary compiles this module for itself and uses its own part.
+#![allow(dead_code)]
+
 use climon2_link::{End, Input, Output, Randomness, Time};
 use std::time::Duration;
 
@@ -44,6 +47,8 @@ struct Side {
     closed: bool,
     /// The other end has been told of the close.
     close_delivered: bool,
+    /// The deadline this end named at its last step.
+    deadline: Option<Time>,
 }
 
 impl Side {
@@ -54,6 +59,7 @@ impl Side {
             delivered: 0,
             closed: false,
             close_delivered: false,
+            deadline: None,
         }
     }
 
@@ -61,9 +67,14 @@ impl Side {
         if self.closed {
             return;
         }
-        let Output { bytes, close } = end.step(now, input, &mut self.randomness);
+        let Output {
+            bytes,
+            close,
+            deadline,
+        } = end.step(now, input, &mut self.randomness);
         self.sent.extend(bytes);
         self.closed = close;
+        self.deadline = deadline;
     }
 
     /// The next thing the other end is due from this one, if anything:
@@ -122,10 +133,38 @@ impl<H: End, R: End> Harness<H, R> {
         Time::since_start(self.now)
     }
 
-    /// Moves the time on by `by`, then runs the ends.
+    /// Moves the time on by `by`, then runs the ends. On the way it stops
+    /// at every deadline an end has named and runs the ends there, as a
+    /// caller must.
     pub fn advance(&mut self, by: Duration) {
-        self.now += by;
+        let target = self.now + by;
+        while let Some(deadline) = self.deadline_before(target) {
+            self.now = deadline;
+            self.run();
+        }
+        self.now = target;
         self.run();
+    }
+
+    /// The earliest deadline either end has named that is still to come and
+    /// falls before `target`.
+    fn deadline_before(&self, target: Duration) -> Option<Duration> {
+        [self.hub_side.deadline, self.relay_side.deadline]
+            .into_iter()
+            .flatten()
+            .map(Time::elapsed)
+            .filter(|deadline| self.now < *deadline && *deadline < target)
+            .min()
+    }
+
+    /// The deadline the hub monitor's end named at its last step.
+    pub fn hub_deadline(&self) -> Option<Time> {
+        self.hub_side.deadline
+    }
+
+    /// The deadline the relay's end named at its last step.
+    pub fn relay_deadline(&self) -> Option<Time> {
+        self.relay_side.deadline
     }
 
     /// Steps each end once with nothing arriving, the hub monitor's first,

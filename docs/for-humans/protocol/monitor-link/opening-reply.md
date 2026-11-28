@@ -1,6 +1,6 @@
 # Opening reply
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements it; no released program speaks it yet.**
 The [relay](../../../../GLOSSARY.md#monitor-links) answers a valid
 [opening request](opening-request.md) with the
 [link revision](../../../../GLOSSARY.md#monitor-links) to use, or with a
