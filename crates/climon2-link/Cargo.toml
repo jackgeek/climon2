@@ -8,10 +8,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# The cryptography of pairing (#495). Every crate here is unaudited and is
-# pinned to one exact version; the known-answer tests of SEC-08 fail when an
-# upgrade changes a byte. Each is in LINK_ALLOWLIST of the architecture guard.
+# Every crate here is unaudited and is pinned to one exact version; the
+# known-answer tests of SEC-08 fail when an upgrade changes a byte. Each is in
+# LINK_ALLOWLIST of the architecture guard.
 [dependencies]
+# The cryptography of pairing (#495).
 # CPace on ristretto255 with SHA-512, draft-irtf-cfrg-cpace-21.
 pakery-cpace = { version = "=0.6.2", default-features = false }
 pakery-crypto = { version = "=0.6.2", default-features = false, features = ["cpace", "ristretto255"] }
@@ -22,3 +23,12 @@ hkdf = { version = "=0.13.0", default-features = false }
 hmac = { version = "=0.13.0", default-features = false }
 sha2 = { version = "=0.11.2", default-features = false }
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+# The Noise framework for the pinned-key handshake and the units (#494). An
+# accepted risk (README.md). No default features: only X25519,
+# ChaCha20-Poly1305 and SHA-256 are built, and the crate's own source of
+# randomness is not.
+snow = { version = "=0.10.0", default-features = false, features = [
+    "use-chacha20poly1305",
+    "use-curve25519",
+    "use-sha2",
+] }

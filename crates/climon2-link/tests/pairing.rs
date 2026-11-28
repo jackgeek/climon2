@@ -8,8 +8,8 @@
 mod support;
 
 use climon2_link::{
-    End, HubEnd, Input, Introduction, Invitation, Invitations, Output, PairingRun, Pin, Purpose,
-    Time,
+    End, HubEnd, Input, Introduction, Invitation, Invitations, Opening, Output, PairingRun, Pin,
+    Purpose, Time,
 };
 use std::time::Duration;
 use support::pairing::*;
@@ -431,27 +431,37 @@ fn a_pairing_run_survives_arriving_one_byte_at_a_time() {
     assert_eq!(run(Some(1)), run(None));
 }
 
-/// On a connection opened to pair, bytes that arrive behind a whole opening
-/// message are the start of the pairing run. A relay handed everything the
-/// hub monitor sends in one arrival answers everything at once, and a hub
-/// monitor handed everything the relay sends in one arrival pairs.
+/// No honest end sends anything behind its opening message before it has
+/// the other end's answer: the hub monitor's share is keyed by the opening
+/// transcript, reply included, and the relay's share answers the hub
+/// monitor's. So bytes that arrive with a whole opening message, behind it,
+/// make it malformed on a pairing connection too. The relay closes with no
+/// reply and seats no run, so the invitation keeps all its attempts; the hub
+/// monitor's dial fails before it sends its share.
 #[test]
-fn bytes_behind_an_opening_message_start_the_pairing_run() {
+fn bytes_behind_an_opening_message_fail_a_pairing_connection() {
     let (invitations, pin) = invited();
     let mut harness = Harness::new(pairing_hub(&pin), pairing_relay(&invitations));
     harness.run();
     let (from_hub, from_relay) = (harness.sent_by_hub(), harness.sent_by_relay());
 
-    let (invitations, _) = invited();
+    let (invitations, pin) = invited();
     let mut relay = pairing_relay(&invitations);
     let answer = relay.step(
         at(Duration::ZERO),
         Input::Bytes(from_hub),
         &mut Seeded::new(2),
     );
-    assert_eq!(answer.bytes, from_relay);
-    assert!(answer.close);
-    assert_eq!(relay.pairing(), &PairingRun::Paired(hub_introduction()));
+    assert_eq!(answer, silent_close());
+    assert_eq!(relay.opening(), &Opening::Failed);
+    assert_eq!(relay.pairing(), &PairingRun::Pending);
+    assert_eq!(attempts_left(&invitations), 3);
+    let mut honest = Harness::new(pairing_hub(&pin), pairing_relay(&invitations));
+    honest.run();
+    assert_eq!(
+        honest.relay.pairing(),
+        &PairingRun::Paired(hub_introduction())
+    );
 
     let mut hub = pairing_hub(&pin);
     let mut randomness = Seeded::new(1);
@@ -461,7 +471,48 @@ fn bytes_behind_an_opening_message_start_the_pairing_run() {
         Input::Bytes(from_relay),
         &mut randomness,
     );
-    assert_eq!(answer.bytes, from_hub[OPENING.0..]);
+    assert_eq!(answer, silent_close());
+    assert_eq!(hub.opening(), &Opening::Failed);
+    assert_eq!(hub.pairing(), &PairingRun::Pending);
+}
+
+/// Inside a pairing run a byte stream keeps no message boundaries: an end
+/// handed several pairing messages in one arrival reads them all. A relay
+/// handed the rest of what the hub monitor sends at once answers it all, and
+/// a hub monitor handed the rest of what the relay sends at once pairs.
+#[test]
+fn a_pairing_run_reads_every_message_in_one_arrival() {
+    let (invitations, pin) = invited();
+    let mut harness = Harness::new(pairing_hub(&pin), pairing_relay(&invitations));
+    harness.run();
+    let (from_hub, from_relay) = (harness.sent_by_hub(), harness.sent_by_relay());
+    let (request, run_from_hub) = from_hub.split_at(OPENING.0);
+    let (reply, run_from_relay) = from_relay.split_at(OPENING.1);
+
+    let (invitations, _) = invited();
+    let mut relay = pairing_relay(&invitations);
+    let mut randomness = Seeded::new(2);
+    let answer = relay.step(at(Duration::ZERO), Input::Bytes(request), &mut randomness);
+    assert_eq!(answer.bytes, reply);
+    let answer = relay.step(
+        at(Duration::ZERO),
+        Input::Bytes(run_from_hub),
+        &mut randomness,
+    );
+    assert_eq!(answer.bytes, run_from_relay);
+    assert!(answer.close);
+    assert_eq!(relay.pairing(), &PairingRun::Paired(hub_introduction()));
+
+    let mut hub = pairing_hub(&pin);
+    let mut randomness = Seeded::new(1);
+    hub.step(at(Duration::ZERO), Input::Tick, &mut randomness);
+    let share = hub.step(at(Duration::ZERO), Input::Bytes(reply), &mut randomness);
+    let answer = hub.step(
+        at(Duration::ZERO),
+        Input::Bytes(run_from_relay),
+        &mut randomness,
+    );
+    assert_eq!([share.bytes, answer.bytes].concat(), run_from_hub);
     assert!(answer.close);
     assert_eq!(hub.pairing(), &PairingRun::Paired(relay_introduction()));
 }

@@ -479,18 +479,38 @@ fn a_relay_first_stepped_with_the_request_answers_it() {
     assert_eq!(output.bytes, REPLY_CHOSEN_1);
 }
 
-/// Nothing follows the opening exchange on a connection opened to link yet.
-/// Bytes that arrive behind a whole opening message, in the same arrival or
-/// later, are not part of it: the exchange ends as it would without them
-/// and the end drops them. On a connection opened to pair they are the
-/// start of the pairing run (`tests/pairing.rs`).
+/// Neither end sends anything behind its opening message until the other
+/// end has answered it: the hub monitor's next message needs the reply, and
+/// the relay's needs the hub monitor's. Bytes that arrive with a whole
+/// opening message, behind it, therefore make it malformed: the relay closes
+/// without a byte in reply, and for the hub monitor it is a failed dial.
 #[test]
-fn bytes_behind_an_opening_message_are_not_part_of_it() {
+fn bytes_behind_an_opening_message_make_it_malformed() {
+    for purpose in [Purpose::Link, Purpose::Pair] {
+        let mut request = REQUEST_LINK_1;
+        request[8] = if purpose == Purpose::Pair { 0x01 } else { 0x02 };
+        let mut relay = relay(&[1]);
+        let crowded = [&request[..], b"m"].concat();
+        let output = step(&mut relay, Duration::ZERO, Input::Bytes(&crowded));
+        assert_eq!(output, silent_close(), "{purpose:?}");
+        assert_eq!(relay.opening(), &Opening::Failed, "{purpose:?}");
+
+        let mut hub = hub(purpose, &[1]);
+        step(&mut hub, Duration::ZERO, Input::Tick);
+        let crowded = [&REPLY_CHOSEN_1[..], b"m"].concat();
+        let output = step(&mut hub, Duration::ZERO, Input::Bytes(&crowded));
+        assert_eq!(output, silent_close(), "{purpose:?}");
+        assert_eq!(hub.opening(), &Opening::Failed, "{purpose:?}");
+    }
+}
+
+/// Bytes that arrive after a whole opening message, in a later arrival, are
+/// not part of it: the exchange ends as it would without them.
+#[test]
+fn bytes_after_an_opening_message_are_not_part_of_it() {
     let mut relay = relay(&[1]);
-    let crowded = [&REQUEST_LINK_1[..], b"more"].concat();
-    let output = step(&mut relay, Duration::ZERO, Input::Bytes(&crowded));
+    let output = step(&mut relay, Duration::ZERO, Input::Bytes(&REQUEST_LINK_1));
     assert_eq!(output.bytes, REPLY_CHOSEN_1);
-    assert_eq!(chosen(relay.opening()), 1);
     for input in [Input::Bytes(b"more"), Input::Tick, Input::Closed] {
         assert_eq!(step(&mut relay, 60 * SECOND, input), nothing());
     }
@@ -498,10 +518,8 @@ fn bytes_behind_an_opening_message_are_not_part_of_it() {
 
     let mut hub = hub(Purpose::Link, &[1]);
     step(&mut hub, Duration::ZERO, Input::Tick);
-    let crowded = [&REPLY_CHOSEN_1[..], b"more"].concat();
-    let output = step(&mut hub, Duration::ZERO, Input::Bytes(&crowded));
+    let output = step(&mut hub, Duration::ZERO, Input::Bytes(&REPLY_CHOSEN_1));
     assert_eq!(output, nothing());
-    assert_eq!(chosen(hub.opening()), 1);
     for input in [Input::Bytes(b"more"), Input::Tick, Input::Closed] {
         assert_eq!(step(&mut hub, 60 * SECOND, input), nothing());
     }

@@ -338,6 +338,10 @@ const LINK_ALLOWLIST: &[&str] = &[
     "hkdf",
     "hmac",
     "sha2",
+    // The pinned-key handshake (#494): the Noise framework of the handshake
+    // and the units. The link crate builds it without default features, so
+    // it brings no source of randomness: the caller's randomness reaches it.
+    "snow",
 ];
 
 /// The modules of the standard library the link code never names (ONE-01).

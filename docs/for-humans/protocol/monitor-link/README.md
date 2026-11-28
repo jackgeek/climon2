@@ -7,10 +7,10 @@ pairing, the pinned-key handshake and the records of
 [link revision](../../../../GLOSSARY.md#monitor-links) 1.
 
 **Status: developer-agreed specification in
-[#480](https://github.com/jackgeek/climon2/issues/480). Only the opening
-exchange and pairing are implemented, in the `climon2-link` crate and in no
-released program.** No climon2 release contains a relay or speaks any part of
-this protocol. The
+[#480](https://github.com/jackgeek/climon2/issues/480). The opening exchange,
+pairing, the pinned-key handshake, Hello, Close and the framing of units are
+implemented, in the `climon2-link` crate and in no released program.** No
+climon2 release contains a relay or speaks any part of this protocol. The
 [acceptance criteria](../../behaviour/monitor-link/acceptance.md) say what
 automated evidence shows the protocol is met.
 
@@ -140,6 +140,11 @@ the key exchange fail and cannot force an older revision.
 
 Neither end sends a public key, a name or a release version before the peer
 is authenticated.
+
+The `climon2-link` crate builds the handshake and the units on the `snow`
+crate, pinned to one exact version. `snow` has had no formal audit; using it
+is an accepted risk, recorded with the known-answer tests that guard it in
+the [crate's README](../../../../crates/climon2-link/README.md#cryptography).
 
 ## Integers and byte strings
 

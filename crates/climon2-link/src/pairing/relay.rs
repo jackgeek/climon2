@@ -37,6 +37,11 @@ impl RelayRun {
         }
     }
 
+    /// The deadline of the whole run.
+    pub(crate) fn deadline(&self) -> Time {
+        self.arrived.deadline
+    }
+
     pub(crate) fn step(
         &mut self,
         now: Time,
