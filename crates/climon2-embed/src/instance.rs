@@ -697,4 +697,32 @@ mod tests {
             assert_eq!(text(null), "");
         }
     }
+
+    /// A failed call that changes nothing for the caller is logged with
+    /// its session and why; a call that succeeded is not.
+    #[test]
+    fn a_failed_call_that_changes_nothing_is_logged_with_its_session() {
+        let home = tempfile::tempdir().unwrap();
+        let log = climon2_platform::logging::LogFile::monitor(home.path()).unwrap();
+        let dispatch = log.dispatch(Some("info")).unwrap();
+        let id: SessionId = "109ca11f-0000-4000-8000-000000000001".parse().unwrap();
+        tracing::dispatcher::with_default(&dispatch, || {
+            warn(&id, "delivery release failed", Ok(()));
+            warn(
+                &id,
+                "handle release failed",
+                Err("busy: still in use".into()),
+            );
+        });
+        let written = std::fs::read_to_string(log.path()).unwrap();
+        let warned: Vec<_> = written
+            .lines()
+            .filter(|line| line.contains("WARN"))
+            .collect();
+        assert_eq!(warned.len(), 1, "{written}");
+        for expected in ["handle release failed", "busy: still in use", id.as_str()] {
+            assert!(warned[0].contains(expected), "{written}");
+        }
+        assert!(!written.contains("delivery release failed"), "{written}");
+    }
 }
