@@ -23,9 +23,9 @@ use syn::{
 
 /// Paths outside the registered Windows files whose changes run the Windows
 /// jobs regardless of the switch: the harness's Windows host and its tests,
-/// the installer's Windows tests, the Windows dist and download script whose
-/// zip the Archive job tests, the pinned downloads, the workflows and xtask's
-/// quality code, including what the Windows gate builds xtask from and its
+/// the installer's, the relay's and the monitor's pairing Windows tests, the Windows dist and
+/// download script whose zip the Archive job tests, the pinned downloads, the
+/// workflows and xtask's quality code, including what the Windows gate builds xtask from and its
 /// probes' fixtures.
 const WINDOWS_TRIGGERS: &[&str] = &[
     ".github/",
@@ -36,6 +36,8 @@ const WINDOWS_TRIGGERS: &[&str] = &[
     "crates/climon2-cli/tests/support/",
     "crates/climon2-install/tests/archive_windows.rs",
     "crates/climon2-install/tests/windows.rs",
+    "crates/climon2-relay/tests/windows.rs",
+    "crates/climon2-monitor-tui/tests/pair_windows.rs",
     "crates/climon2-cli/tests/host_models_windows.rs",
     "crates/climon2-cli/tests/sessions_windows.rs",
     "crates/climon2-cli/tests/fullscreen_windows.rs",
@@ -297,6 +299,10 @@ mod tests {
             "crates/climon2-install/src/user_path/windows.rs",
             "crates/climon2-install/tests/windows.rs",
             "crates/climon2-install/tests/archive_windows.rs",
+            "crates/climon2-relay/src/windows.rs",
+            "crates/climon2-relay/tests/windows.rs",
+            "crates/climon2-monitor-tui/src/pair/windows.rs",
+            "crates/climon2-monitor-tui/tests/pair_windows.rs",
             "crates/climon2-cli/tests/host_models_windows.rs",
             "crates/climon2-cli/tests/sessions_windows.rs",
             "crates/climon2-cli/tests/fullscreen_windows.rs",

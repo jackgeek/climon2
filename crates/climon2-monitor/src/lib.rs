@@ -21,6 +21,8 @@ mod discovery;
 #[cfg(feature = "test-hooks")]
 pub mod hooks;
 mod initial;
+#[cfg(unix)]
+pub mod links;
 mod monitor;
 mod pressure;
 mod registry;

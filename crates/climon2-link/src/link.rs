@@ -5,7 +5,7 @@
 
 use crate::keys::{KEY_SIZE, PublicKey, StaticKey};
 use crate::noise::{self, Initiator, Transport};
-use crate::opening::{Opening, Purpose, Transcript};
+use crate::opening::{Opening, Transcript};
 use crate::record::{CLOSE, HELLO, HELLO_MOST, Hello, HubClose, Reason, RelayClose};
 use crate::rules::{Rules, Verdict};
 use crate::stream::{HubRecord, RelayRecord, Spoken, Voice};
@@ -643,15 +643,13 @@ impl RelayRun {
     }
 
     /// What follows the opening exchange `opening` of a connection
-    /// accepted at `accepted`: the wait for the handshake on a link
-    /// connection, nothing on a pairing connection, and no link when no
-    /// revision was chosen. Gives the deadline the wait names.
+    /// accepted at `accepted`: the wait for the handshake, or no link when
+    /// no revision was chosen. Gives the deadline the wait names. A pairing
+    /// connection never comes here: the relay opens one only for a pairing
+    /// run, which follows instead.
     pub(crate) fn follow(&mut self, opening: &Opening, accepted: Time) -> Option<Time> {
         match opening {
-            Opening::Opened(opened) if opened.purpose == Purpose::Link => {
-                Some(self.begin(opened.transcript.clone(), accepted))
-            }
-            Opening::Opened(_) => None,
+            Opening::Opened(opened) => Some(self.begin(opened.transcript.clone(), accepted)),
             _ => {
                 self.fail();
                 None

@@ -17,7 +17,7 @@ use serde::{
     de::{DeserializeOwned, Error as _},
 };
 use serde_json::error::Category;
-use std::{fmt, io};
+use std::{fmt, io, net::SocketAddr};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfigError {
@@ -231,6 +231,22 @@ fn optional_key_name<S: Serializer>(
     key.map(|key| key.to_string()).serialize(serializer)
 }
 
+/// Everything the relay validates before it starts (spec #488): the `relay`
+/// section only. It is read once; nothing reloads it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RelayConfig {
+    /// `relay.listen`: the address to listen on, when the file sets one.
+    pub listen: Option<SocketAddr>,
+}
+
+impl RelayConfig {
+    pub fn parse(text: &[u8]) -> Result<Self, ConfigError> {
+        parse::<RelayFile>(text).map(|file| Self {
+            listen: file.relay.listen,
+        })
+    }
+}
+
 /// The configuration file's bytes, read once per operation; `None` if absent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigSource(Option<Vec<u8>>);
@@ -254,6 +270,10 @@ impl ConfigSource {
 
     pub fn monitor(&self) -> Result<MonitorConfig, ConfigError> {
         self.parse(MonitorConfig::parse)
+    }
+
+    pub fn relay(&self) -> Result<RelayConfig, ConfigError> {
+        self.parse(RelayConfig::parse)
     }
 
     /// A missing file reads as an empty object: every setting its default.
@@ -289,6 +309,29 @@ struct MonitorFile {
     client: ClientSettings,
     #[serde(default, deserialize_with = "object")]
     monitor: MonitorSettings,
+}
+
+/// Every other section is unknown here, so serde ignores it entirely.
+#[derive(Deserialize)]
+struct RelayFile {
+    #[serde(default, deserialize_with = "object")]
+    relay: RelaySettings,
+}
+
+#[derive(Default, Deserialize)]
+struct RelaySettings {
+    #[serde(default, deserialize_with = "listen")]
+    listen: Option<SocketAddr>,
+}
+
+const LISTEN: &str = "relay.listen must be an IP address and a port, such as \"127.0.0.1:7222\"";
+
+/// A listen value in the form `--listen` takes; anything else, `null`
+/// included, is refused by the setting's name.
+fn listen<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<SocketAddr>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let address = value.as_str().and_then(crate::relay::listen_address);
+    address.map(Some).ok_or_else(|| D::Error::custom(LISTEN))
 }
 
 #[derive(Deserialize)]

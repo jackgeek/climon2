@@ -1,11 +1,14 @@
 //! The relay's end of a byte stream: the listener.
 
 use crate::keys::{PublicKey, StaticKey};
-use crate::link::{Link, Refused, RelayLink, RelayRun};
+use crate::link::{Link, Refused, RelayLink, RelayRun as LinkRun};
 use crate::opening::{
-    Answer, Arrival, Awaited, Opened, Opening, Pairing, Purpose, REQUEST_SIZE, Reply, Request,
-    Revisions, Transcript,
+    Answer, Arrival, Awaited, Opened, Opening, Purpose, REQUEST_SIZE, Reply, Request, Revisions,
+    Transcript,
 };
+use crate::pairing::invitation::Seat;
+use crate::pairing::relay::RelayRun as PairingRunAtRelay;
+use crate::pairing::{Invitations, PairingRun, RUN_WAIT};
 use crate::record::{Hello, RelayClose};
 use crate::stream::{HubRecord, RelayRecord};
 use crate::{End, Input, Output, Randomness, Time};
@@ -15,36 +18,50 @@ use std::time::Duration;
 /// connection.
 const REQUEST_WAIT: Duration = Duration::from_secs(10);
 
-/// The relay's end of one connection, accepted at its first step. So far it
-/// runs the opening exchange and nothing after it: what arrives once the
-/// exchange has ended is dropped.
+/// The relay's end of one connection, accepted at its first step. It runs
+/// the opening exchange, and then a pairing run when the hub monitor came
+/// to pair, or the link when it came to link and this end can link.
 pub struct RelayEnd {
     revisions: Revisions,
-    pairing: Pairing,
+    invitations: Invitations,
     /// The opening request awaited, from the first step on.
     request: Option<Awaited<REQUEST_SIZE>>,
     opening: Opening,
     /// The moment this end accepted the connection: its first step.
     accepted: Option<Time>,
+    /// The pairing run, once the opening exchange has opened for one.
+    run: Option<PairingRunAtRelay>,
     /// What follows the opening exchange on a link connection, when this
     /// end holds an identity key.
-    link: Option<RelayRun>,
+    link: Option<LinkRun>,
 }
 
 /// The link of an end that holds no identity key: it never starts.
 static NO_LINK: RelayLink = Link::Pending;
 
 impl RelayEnd {
-    /// An end that supports `revisions`. `pairing` says whether a hub
-    /// monitor that connects to pair can start a pairing run.
-    pub fn new(revisions: Revisions, pairing: Pairing) -> Self {
+    /// An end that supports `revisions`. A hub monitor that connects to
+    /// pair gets a pairing run under the link invitation of `invitations`,
+    /// the relay's own.
+    pub fn new(revisions: Revisions, invitations: Invitations) -> Self {
         Self {
             revisions,
-            pairing,
+            invitations,
             request: None,
             opening: Opening::Pending,
             accepted: None,
+            run: None,
             link: None,
+        }
+    }
+
+    /// How far the pairing run on this connection has got, and how it
+    /// ended. When it is `Paired`, the relay pins that hub monitor's key
+    /// before it sends the bytes of the step that said so.
+    pub fn pairing(&self) -> &PairingRun {
+        match &self.run {
+            Some(run) => &run.outcome,
+            None => &PairingRun::Pending,
         }
     }
 
@@ -53,7 +70,7 @@ impl RelayEnd {
     /// paired with, and `hello` what it states to one of them.
     pub fn linking(self, identity: StaticKey, remembered: Vec<PublicKey>, hello: Hello) -> Self {
         Self {
-            link: Some(RelayRun::new(identity, remembered, hello)),
+            link: Some(LinkRun::new(identity, remembered, hello)),
             ..self
         }
     }
@@ -62,7 +79,7 @@ impl RelayEnd {
     /// this is `Established`: a handshake alone, which anyone who recorded
     /// one can replay, leaves it `Pending`.
     pub fn link(&self) -> &RelayLink {
-        self.link.as_ref().map_or(&NO_LINK, RelayRun::link)
+        self.link.as_ref().map_or(&NO_LINK, LinkRun::link)
     }
 
     /// Queues one record for the hub monitor. It is sent from the next step
@@ -82,10 +99,7 @@ impl RelayEnd {
     /// Takes the records the hub monitor has sent since the last call, in
     /// the order they ended.
     pub fn records(&mut self) -> Vec<HubRecord> {
-        self.link
-            .as_mut()
-            .map(RelayRun::records)
-            .unwrap_or_default()
+        self.link.as_mut().map(LinkRun::records).unwrap_or_default()
     }
 
     /// How far the opening exchange has got, and how it ended.
@@ -93,38 +107,65 @@ impl RelayEnd {
         &self.opening
     }
 
-    /// Answers a whole opening request: the outcome for this end and the
-    /// reply to send. A request that breaks the layout gets no reply. With
-    /// no shared revision the reply says so, whatever the purpose.
-    fn answer(&self, bytes: &[u8; REQUEST_SIZE]) -> (Opening, Vec<u8>) {
+    /// Answers a whole opening request at `now`, on a connection accepted
+    /// at `accepted`: the outcome for this end and the reply to send. A
+    /// request that breaks the layout gets no reply. With no shared
+    /// revision the reply says so, whatever the purpose. A hub monitor that
+    /// came to pair starts a pairing run, or is refused when the invitation
+    /// allows none.
+    fn answer(
+        &mut self,
+        now: Time,
+        accepted: Time,
+        bytes: &[u8; REQUEST_SIZE],
+    ) -> (Opening, Vec<u8>) {
         let Some(request) = Request::decode(bytes) else {
             return (Opening::Failed, Vec::new());
         };
-        let answer = self.choose(&request);
+        let seat = self.seat(now, &request);
+        let answer = self.choose(&request, seat.is_some());
         let reply = Reply {
             answer,
             revisions: self.revisions.clone(),
         }
         .encode();
-        let opening = outcome(request, answer, Transcript::new(bytes, &reply));
+        let transcript = Transcript::new(bytes, &reply);
+        self.run = seat.map(|seat| run_for(seat, &transcript, accepted));
+        let opening = outcome(request, answer, transcript);
         (opening, reply.to_vec())
     }
 
+    /// A seat in a pairing run at `now` for a hub monitor that came to pair
+    /// and shares a revision, if the invitation allows one.
+    fn seat(&self, now: Time, request: &Request) -> Option<Seat> {
+        self.revisions.highest_shared(&request.revisions)?;
+        let pairs = request.purpose == Purpose::Pair;
+        pairs.then(|| self.invitations.seat(now)).flatten()
+    }
+
     /// What the reply to `request` says: the highest shared revision, or
-    /// why there is none to use.
-    fn choose(&self, request: &Request) -> Answer {
+    /// why there is none to use. `seated` says whether a pairing run has a
+    /// seat.
+    fn choose(&self, request: &Request, seated: bool) -> Answer {
         match self.revisions.highest_shared(&request.revisions) {
             None => Answer::NoSharedRevision,
-            Some(_) if self.refuses(request.purpose) => Answer::PairingUnavailable,
+            Some(_) if refuses(request.purpose, seated) => Answer::PairingUnavailable,
             Some(revision) => Answer::Chosen(revision),
         }
     }
+}
 
-    /// Whether a hub monitor that comes for `purpose` is refused a pairing
-    /// run.
-    fn refuses(&self, purpose: Purpose) -> bool {
-        purpose == Purpose::Pair && self.pairing == Pairing::Unavailable
-    }
+/// The pairing run that holds `seat`, over `transcript`. It must end 30
+/// seconds after the connection was `accepted`.
+fn run_for(seat: Seat, transcript: &Transcript, accepted: Time) -> PairingRunAtRelay {
+    let deadline = Time::since_start(accepted.elapsed().saturating_add(RUN_WAIT));
+    PairingRunAtRelay::new(seat, transcript.clone(), deadline)
+}
+
+/// Whether a hub monitor that comes for `purpose` is refused a pairing run,
+/// given whether one has a seat.
+fn refuses(purpose: Purpose, seated: bool) -> bool {
+    purpose == Purpose::Pair && !seated
 }
 
 /// How this end's opening ended once it answered `request` with `answer`;
@@ -145,6 +186,9 @@ fn outcome(request: Request, answer: Answer, transcript: Transcript) -> Opening 
 
 impl End for RelayEnd {
     fn step(&mut self, now: Time, input: Input<'_>, randomness: &mut dyn Randomness) -> Output {
+        if let Some(run) = &mut self.run {
+            return run.step(now, input, randomness);
+        }
         match self.link.as_mut().filter(|link| link.begun()) {
             Some(link) => link.step(now, input, randomness),
             None => self.opening_step(now, input),
@@ -169,19 +213,29 @@ impl RelayEnd {
                     ..Output::default()
                 };
             }
-            Arrival::Whole(bytes) => self.answer(&bytes),
+            Arrival::Whole(bytes) => self.answer(now, accepted, &bytes),
             Arrival::Never => (Opening::Failed, Vec::new()),
         };
         self.opening = opening;
-        let opening = &self.opening;
-        let deadline = self
-            .link
-            .as_mut()
-            .and_then(|link| link.follow(opening, accepted));
+        let deadline = self.follow(accepted);
         Output {
             bytes,
             close: !matches!(self.opening, Opening::Opened(_)),
             deadline,
         }
+    }
+
+    /// Starts what follows the opening exchange of a connection accepted
+    /// at `accepted`: the wait for the hub monitor's share when a pairing
+    /// run has started, or the link's own follow. Gives the deadline the
+    /// wait names.
+    fn follow(&mut self, accepted: Time) -> Option<Time> {
+        if let Some(run) = &self.run {
+            return Some(run.deadline());
+        }
+        let opening = &self.opening;
+        self.link
+            .as_mut()
+            .and_then(|link| link.follow(opening, accepted))
     }
 }

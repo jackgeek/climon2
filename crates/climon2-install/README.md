@@ -5,7 +5,7 @@ The installer. On macOS and GNU/Linux it ships as `install`, on Windows as
 `src/windows.rs` by a `cfg` on that one module declaration.
 
 The macOS and GNU/Linux installer is shipped as `install` beside the launcher `c2` and the release's
-`<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor}` executables
+`<version>/{climon2-cli,climon2-daemon,climon2-client,climon2-monitor,climon2-relay}` executables
 and client library (`libclimon2_client.dylib` on macOS, `libclimon2_client.so`
 on Linux). The client library is published atomically with the rest of its
 version.
@@ -23,7 +23,8 @@ It never changes shell profiles or signing/quarantine attributes. Errors produce
 - `Payload::beside_installer()` resolves the running installer's canonical path
   and uses the compiled package version.
 - `Payload::from_siblings(directory, version)` reads `c2`, `climon2-cli`,
-  `climon2-daemon`, `climon2-client` and `climon2-monitor` directly from one
+  `climon2-daemon`, `climon2-client`, `climon2-monitor` and `climon2-relay`
+  directly from one
   Cargo output directory, and the client library from its `deps/`
   subdirectory. Packaged tests can therefore install the exact instrumented
   sibling artifacts, without nested Cargo invocations or uninstrumented

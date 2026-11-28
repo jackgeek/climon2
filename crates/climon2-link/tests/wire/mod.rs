@@ -6,9 +6,9 @@
 #![allow(dead_code)]
 
 use crate::support::Seeded;
+use crate::support::pairing::uninvited;
 use climon2_link::{
-    End, Hello, HubEnd, Input, Output, Pairing, PublicKey, Randomness, RelayEnd, Revisions,
-    StaticKey, Time,
+    End, Hello, HubEnd, Input, Output, PublicKey, Randomness, RelayEnd, Revisions, StaticKey, Time,
 };
 use snow::params::{CipherChoice, DHChoice, HashChoice};
 use snow::resolvers::{CryptoResolver, DefaultResolver};
@@ -80,11 +80,7 @@ pub fn relay_hello_record() -> Vec<u8> {
 
 /// A relay's end that remembers the hub monitors `remembered`.
 pub fn relay_end(identity: StaticKey, remembered: &[PublicKey]) -> RelayEnd {
-    RelayEnd::new(revision_1(), Pairing::Unavailable).linking(
-        identity,
-        remembered.to_vec(),
-        relay_hello(),
-    )
+    RelayEnd::new(revision_1(), uninvited()).linking(identity, remembered.to_vec(), relay_hello())
 }
 
 /// The two ends of one remembered pairing.

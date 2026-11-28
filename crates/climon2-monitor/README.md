@@ -49,7 +49,7 @@ monitor on a home of their own with no terminal.
 
 | Crate | Modules |
 | --- | --- |
-| `climon2-monitor` (this crate) | `monitor` (the stepped monitor and its shutdown rounds), `action`, `consumer`, `session` (what the top row and canvas show of the selected session), `registry`, `discovery`, `initial`, `supervisor`, `terminal`, `pressure`, `cadence` (the work quanta), `attention` (deferred acknowledgement, the jump's notice, which attention state the host last heard), `toast` (the queue, its ledger and timing), `search`, `delete` (where a Delete leaves the selection), `shutdown`, `startup` (the home, the install layout and the configuration) |
+| `climon2-monitor` (this crate) | `monitor` (the stepped monitor and its shutdown rounds), `action`, `consumer`, `session` (what the top row and canvas show of the selected session), `registry`, `discovery`, `initial`, `supervisor`, `terminal`, `pressure`, `cadence` (the work quanta), `attention` (deferred acknowledgement, the jump's notice, which attention state the host last heard), `toast` (the queue, its ledger and timing), `search`, `delete` (where a Delete leaves the selection), `shutdown`, `startup` (the home, the install layout and the configuration), `links` (the hub monitor's side of monitor links: pairing, #501) |
 | [`climon2-monitor-tui`](../climon2-monitor-tui/README.md) | `lib` (the host loop, which steps the monitor and delivers its events), `host`, `router`, `keys`, `mouse`, `selector` (navigation, its search box and drawing), `introduction`, `preference`, `screen`, `paint`, `frames` (the render cadence), `toast` (placement, hit-testing and drawing), `delete` (the confirmation), `attention` (the host attention reports' bytes), `failstop` |
 
 ## Startup, before the host terminal changes
@@ -1153,6 +1153,29 @@ here as they implement them; `<…>` marks a value filled in at run time.
 | Status column and top row while a confirmed Delete is under way (#117) | `Terminating`, `Removing` | `registry.rs` |
 | Top row's error slot after a Kill fell short (#117) | `Termination refused: <why>`, `Termination not confirmed: <why>`; why may be the library's or daemon's message, `the client ended before the Kill was answered` or `cannot confirm the client's cleanup: <error>` | `registry.rs`, `supervisor.rs` |
 | Key introduction, Delete (#117, owner decision: fn+⌫ on macOS) | `Del  Delete the highlighted session`; on macOS `Del (fn+⌫)  Delete the highlighted session` | `selector.rs` |
+
+## Pairing with a relay (#501)
+
+`links::pair(home, address, pin, largest_record)` is the hub monitor's side
+of pairing, which `c2 monitor pair` runs ([ADR 0011](../../docs/adr/0011-monitor-library-and-client-embedding.md)
+puts the hub monitor's side of monitor links here, on `climon2-link`). Unix
+only, like the seams it uses. In order:
+
+1. It reads `links/relays.json`; a damaged store fails before any dial.
+2. It makes a fresh keypair for this pairing (P15), dials the address as
+   typed (a host name is resolved now, CM9) within 10 seconds, and runs the
+   pairing connection, suggesting the host name as its name.
+3. Once paired, it dials the first pinned-key link, and closes it with
+   "hub monitor disconnected" as soon as it is established (ST15).
+4. Only then does it record the relay, connected, under the name the relay
+   suggested without control characters, replacing an earlier record of the
+   same relay (P14, P16, P20), and report its name and key fingerprint.
+
+Each failure is an `Unpaired` that names the address: unreachable, no link
+invitation open, pairing failed (wrong PIN or interference), no shared link
+revision, or a first link that did not succeed (P25). Nothing is recorded of
+a relay that was not paired with. `tests/pair.rs` drives it against a relay
+built from the link code on loopback.
 
 ## Specification mapping
 

@@ -1,5 +1,8 @@
 //! CLI argument data without terminal, process or environment access.
-use crate::{lifetime::Lifetime, selector::Selector, session::NestedStart};
+use crate::{
+    lifetime::Lifetime, monitor::MonitorArgs, relay::RelayArgs, selector::Selector,
+    session::NestedStart,
+};
 use std::{ffi::OsString, fmt, iter::Peekable, vec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,7 +23,8 @@ pub enum CliArgs {
     },
     Attach(Selector),
     Kill(Selector),
-    Monitor,
+    Monitor(MonitorArgs),
+    Relay(RelayArgs),
     Help,
     Version,
 }
@@ -34,7 +38,7 @@ impl UsageError {
     }
 }
 
-pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m";
+pub const USAGE: &str = "usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m [pair|p <host:port>] | relay|r [--listen <ip>:<port>]";
 
 impl fmt::Display for UsageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -86,8 +90,8 @@ impl Subcommand {
     }
 }
 
-/// Every command, in usage order. `r` is reserved for `relay`.
-const SUBCOMMANDS: [Subcommand; 5] = [
+/// Every command, in usage order.
+const SUBCOMMANDS: [Subcommand; 6] = [
     Subcommand {
         name: "exec",
         shortcut: "x",
@@ -111,7 +115,12 @@ const SUBCOMMANDS: [Subcommand; 5] = [
     Subcommand {
         name: "monitor",
         shortcut: "m",
-        parse: parse_monitor,
+        parse: |arguments| MonitorArgs::parse(arguments).map(CliArgs::Monitor),
+    },
+    Subcommand {
+        name: "relay",
+        shortcut: "r",
+        parse: |arguments| RelayArgs::parse(arguments).map(CliArgs::Relay),
     },
 ];
 
@@ -200,14 +209,6 @@ fn parse_list(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
         [flag] if flag == "--json" => Ok(CliArgs::List { json: true }),
         _ => Err(UsageError),
     }
-}
-
-/// `monitor` takes no arguments.
-fn parse_monitor(arguments: Vec<OsString>) -> Result<CliArgs, UsageError> {
-    arguments
-        .is_empty()
-        .then_some(CliArgs::Monitor)
-        .ok_or(UsageError)
 }
 
 /// `attach` and `kill` take exactly one selector.

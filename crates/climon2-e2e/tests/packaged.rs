@@ -931,7 +931,12 @@ fn controlled_versions_route_their_own_frozen_client_across_current_handoff() {
         &package.executable_home().join("c2"),
         &payload_root.join("c2"),
     );
-    for binary in ["climon2-cli", "climon2-daemon", "climon2-monitor"] {
+    for binary in [
+        "climon2-cli",
+        "climon2-daemon",
+        "climon2-monitor",
+        "climon2-relay",
+    ] {
         copy_executable(&old_folder.join(binary), &fixture_folder.join(binary));
     }
     copy_executable(&fixture_library, &fixture_folder.join(LIBRARY));

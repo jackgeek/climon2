@@ -5,7 +5,8 @@
 //!
 //! - [`listen`] binds a [`LinkListener`], whose `accept` waits no longer
 //!   than its deadline for a connection.
-//! - [`dial`] connects a [`LinkStream`] within its deadline.
+//! - [`dial`] connects a [`LinkStream`] within its deadline, and
+//!   [`dial_named`] does the same for an address its user typed.
 //! - [`LinkStream::read`] waits no longer than its deadline for bytes.
 //!
 //! Every expired deadline is a `TimedOut` error, and a zero deadline is
@@ -17,7 +18,7 @@
 use crate::waiting::{self, Interest, Watch};
 use std::{
     io::{self, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     os::fd::AsFd,
     time::Duration,
 };
@@ -45,6 +46,58 @@ pub fn listen(address: SocketAddr) -> io::Result<LinkListener> {
 /// within `deadline`.
 pub fn dial(address: SocketAddr, deadline: Duration) -> io::Result<LinkStream> {
     TcpStream::connect_timeout(&address, deadline).map(LinkStream)
+}
+
+/// Connects to `address` as its user typed it: a host name or an IP literal,
+/// then a colon and a port, such as `buildbox:7222` or `[::1]:7222`. The
+/// name is resolved now, and each address it resolves to is tried in turn,
+/// each within `deadline`. An address without a host or a port is
+/// `InvalidInput`; otherwise the last attempt's error is returned.
+pub fn dial_named(address: &str, deadline: Duration) -> io::Result<LinkStream> {
+    let (host, port) = host_and_port(address)?;
+    let candidates = (host, port).to_socket_addrs()?;
+    first_dialled(candidates, deadline, host)
+}
+
+/// The first of `candidates`, the addresses `host` resolved to, that
+/// connects within `deadline`; otherwise the last one's error.
+fn first_dialled(
+    candidates: impl Iterator<Item = SocketAddr>,
+    deadline: Duration,
+    host: &str,
+) -> io::Result<LinkStream> {
+    let mut failure = io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("{host} resolves to no address"),
+    );
+    for candidate in candidates {
+        match dial(candidate, deadline) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => failure = error,
+        }
+    }
+    Err(failure)
+}
+
+/// The host and the port of a typed address; an IPv6 literal may be
+/// bracketed.
+fn host_and_port(address: &str) -> io::Result<(&str, u16)> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{address:?} is not a host and a port"),
+        )
+    };
+    let (host, port) = address.rsplit_once(':').ok_or_else(invalid)?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    let port = port.parse().map_err(|_| invalid())?;
+    match host.is_empty() {
+        true => Err(invalid()),
+        false => Ok((host, port)),
+    }
 }
 
 impl LinkListener {

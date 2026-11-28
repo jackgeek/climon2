@@ -18,6 +18,7 @@ const PACKAGES: &[&str] = &[
     "climon2-monitor",
     "climon2-monitor-tui",
     "climon2-embed",
+    "climon2-relay",
     "climon2-vt",
     "climon2-link",
     "climon2-test-term",
@@ -101,9 +102,13 @@ fn is_test_only(name: &str) -> bool {
 fn allowed_internal_dependencies(name: &str) -> &[&str] {
     match name {
         "climon2-platform" | "climon2-install" => &["climon2-core"],
+        // ADR 0011: the relay never depends on the monitor library.
         "climon2-client" | "climon2-discovery" | "climon2-embed" => {
             &["climon2-core", "climon2-platform"]
         }
+        // ADR 0011: the relay side of monitor links is built on the link
+        // code (#501), and the relay never depends on the monitor library.
+        "climon2-relay" => &["climon2-core", "climon2-platform", "climon2-link"],
         "climon2-cli" => &["climon2-core", "climon2-platform", "climon2-discovery"],
         "climon2-daemon" => &["climon2-core", "climon2-platform", "climon2-vt"],
         "climon2-monitor" => &[
@@ -112,6 +117,8 @@ fn allowed_internal_dependencies(name: &str) -> &[&str] {
             "climon2-vt",
             "climon2-discovery",
             "climon2-embed",
+            // ADR 0011: the hub monitor's side of monitor links (#501).
+            "climon2-link",
         ],
         "climon2-monitor-tui" => &["climon2-core", "climon2-platform", "climon2-monitor"],
         _ => &[],
@@ -214,6 +221,7 @@ fn shipped_targets_have_the_agreed_names_and_libraries() {
         ("climon2-client", "climon2-client"),
         ("climon2-install", "climon2-install"),
         ("climon2-monitor-tui", "climon2-monitor"),
+        ("climon2-relay", "climon2-relay"),
     ] {
         let package = metadata.packages.iter().find(|p| p.name == name).unwrap();
         let binaries: Vec<_> = package
@@ -353,6 +361,21 @@ fn dependency_guard_rejects_forbidden_edges() {
         ("climon2-monitor-tui", "climon2-daemon", None, Some(".")),
         ("climon2-monitor-tui", "climon2-cli", None, Some(".")),
         ("climon2-cli", "climon2-monitor-tui", None, Some(".")),
+        // ADR 0011, rule 2: the relay never depends on the monitor library,
+        // and, rule 4, only the daemon and the monitor library on climon2-vt.
+        ("climon2-relay", "climon2-monitor", None, Some(".")),
+        ("climon2-relay", "climon2-monitor", Some("dev"), Some(".")),
+        ("climon2-relay", "climon2-monitor-tui", None, Some(".")),
+        ("climon2-relay", "climon2-vt", None, Some(".")),
+        ("climon2-relay", "climon2-cli", None, Some(".")),
+        ("climon2-relay", "climon2-client", None, Some(".")),
+        ("climon2-relay", "climon2-daemon", None, Some(".")),
+        ("climon2-monitor", "climon2-relay", None, Some(".")),
+        ("climon2-cli", "climon2-relay", None, Some(".")),
+        // ADR 0011: the link code reaches the hub monitor's terminal
+        // interface only through the monitor library.
+        ("climon2-monitor-tui", "climon2-link", None, Some(".")),
+        ("climon2-cli", "climon2-link", None, Some(".")),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -391,6 +414,11 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
         ("climon2-embed", "climon2-core", None),
         ("climon2-embed", "climon2-platform", None),
         ("climon2-embed", "climon2-test-term", Some("dev")),
+        ("climon2-relay", "climon2-core", None),
+        ("climon2-relay", "climon2-platform", None),
+        ("climon2-relay", "climon2-test-term", Some("dev")),
+        ("climon2-relay", "climon2-link", None),
+        ("climon2-monitor", "climon2-link", None),
     ] {
         package.name = from.to_owned();
         package.dependencies = vec![Dependency {
@@ -488,11 +516,23 @@ const LINK: &str = "climon2-link";
 /// dependency. It never holds `climon2-platform`, an operating-system or
 /// socket crate, an async runtime or a source of randomness. A ticket that
 /// needs a crate adds it here, where a reviewer sees it.
-///
-/// - `snow` (#494): the Noise framework of the pinned-key handshake and the
-///   units. The link crate builds it without default features, so it brings
-///   no source of randomness: the caller's randomness reaches it.
-const LINK_ALLOWLIST: &[&str] = &["snow"];
+const LINK_ALLOWLIST: &[&str] = &[
+    // Pairing (#495): CPace on ristretto255 with SHA-512, behind `pakery`.
+    "pakery-cpace",
+    "pakery-crypto",
+    // Pairing (#495): the traits `pakery` draws the caller's randomness
+    // through. The crate holds no generator of its own.
+    "rand_core",
+    // Pairing (#495): the key schedule, the confirmation and the box.
+    "chacha20poly1305",
+    "hkdf",
+    "hmac",
+    "sha2",
+    // The pinned-key handshake (#494): the Noise framework of the handshake
+    // and the units. The link crate builds it without default features, so
+    // it brings no source of randomness: the caller's randomness reaches it.
+    "snow",
+];
 
 /// The modules of the standard library the link code never names (ONE-01).
 const PLATFORM_MODULES: &[&str] = &["net", "os", "fs", "process", "env"];

@@ -2,17 +2,17 @@
 
 CLI orchestration for `exec [--headless] [--nested] COMMAND [ARG...]`, `attach SESSION-ID`,
 `kill SESSION-ID`, `list [--json]` and `monitor`. Each command has a
-single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`; `r` is
-reserved for `relay`), `-h` is the short form of `--headless`, `-n` of
+single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`, `r`), `-h` is the short form of `--headless`, `-n` of
 `--nested` (#139), and help has only `--help` (#287). exec's options come
 before the command, in either order, each at most once. The usage string is
-`usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
+`usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m [pair|p <host:port>] | relay|r [--listen <ip>:<port>]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.
 A successful ordinary exec or attach replaces the CLI process with the metadata
 version's client; a successful headless exec returns 0; a successful monitor
-replaces it with the CLI's own version's `climon2-monitor`. Usage errors
+or relay replaces it with the CLI's own version's `climon2-monitor` or
+`climon2-relay`. Usage errors
 (including a malformed session selector) are 2; climon2 failures are 125; daemon
 startup preserves 126/127.
 
@@ -215,6 +215,15 @@ it, passing no arguments or envelope: the handoff is between executables of one
 release and is not frozen. If that fails it reports
 `cannot start the climon2 <version> monitor: …` with 125. The monitor resolves
 the home and reads its configuration itself.
+
+Relay (#499) takes one flag, `--listen <ip>:<port>`, whose value is an IP
+literal and a port; anything else is a usage error (2). After the common
+general log is opened, it finds `<executable home>/<own version>/climon2-relay`
+the same way and replaces the CLI with it, passing the flag on as it was
+parsed. If that fails it reports `cannot start the climon2 <version> relay: …`
+with 125. The relay reads `relay.listen`, needs a terminal and takes the
+home's relay lock itself ([`climon2-relay`](../climon2-relay/README.md)).
+Tested by `tests/relay.rs`, with a recording relay in a version folder.
 
 Kill never reads configuration. It selects one live session the same way,
 requires the `kill` and `client-startup-v1` capabilities, and spawns that

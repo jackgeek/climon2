@@ -4,9 +4,16 @@ pub mod control;
 /// Only the Library-layer suites use it.
 #[allow(dead_code)]
 pub mod library;
+/// Only the Pair-layer suites use these (#501).
+#[allow(dead_code)]
+pub mod pair;
 /// Only the passive-connection suites use it (#93).
 #[allow(dead_code)]
 pub mod passive;
+#[allow(dead_code)]
+pub mod proxy;
+#[allow(dead_code)]
+pub mod stand_in;
 /// Only the status, viewing and acknowledgement suites use it (#95).
 #[allow(dead_code)]
 pub mod status;
@@ -531,6 +538,7 @@ fn extract_payload(archive: &std::ffi::OsStr, directory: &Path) -> (PathBuf, Str
         format!("{root}/{version}/climon2-daemon"),
         format!("{root}/{version}/climon2-client"),
         format!("{root}/{version}/climon2-monitor"),
+        format!("{root}/{version}/climon2-relay"),
         format!("{root}/{version}/{LIBRARY}"),
         format!("{root}/LICENSE"),
         format!("{root}/README.md"),

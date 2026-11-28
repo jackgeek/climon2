@@ -57,6 +57,12 @@ Refused by a relay that supports only revisions 2 and 3:
   failed.
 - A reply that breaks the layout, or names a revision the hub monitor did not
   offer, is a failed dial.
+- The relay sends nothing after the reply until the hub monitor sends its
+  next message, whatever the purpose: the relay's
+  [pairing share](pairing-share.md) answers the hub monitor's, and the
+  [handshake reply](handshake-reply.md) answers the initiation. Bytes that
+  arrive with the reply, behind its 20th byte, break the layout, and the dial
+  fails before the hub monitor sends anything more.
 - The reply is not authenticated, so someone on the path can forge a refusal.
   That gains them only the denial of service they already have. A forged
   "chosen" makes the following key exchange fail, because both messages are

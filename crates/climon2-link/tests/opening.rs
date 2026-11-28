@@ -7,10 +7,10 @@
 mod support;
 
 use climon2_link::{
-    End, HubEnd, Input, Opened, Opening, Output, Pairing, Purpose, Randomness, RelayEnd, Revisions,
-    Time,
+    End, HubEnd, Input, Opened, Opening, Output, Purpose, Randomness, RelayEnd, Revisions, Time,
 };
 use std::time::Duration;
+use support::pairing::{invited, uninvited};
 use support::{Harness, Seeded};
 
 /// The opening request page's example: link, revision 1 only.
@@ -31,8 +31,9 @@ fn hub(purpose: Purpose, list: &[u16]) -> HubEnd {
     HubEnd::new(purpose, revisions(list))
 }
 
+/// A relay with a live link invitation, so that a pairing run can start.
 fn relay(list: &[u16]) -> RelayEnd {
-    RelayEnd::new(revisions(list), Pairing::Available)
+    RelayEnd::new(revisions(list), invited().0)
 }
 
 /// The bytes of a transcript an end holds once the opening chose a revision.
@@ -306,7 +307,7 @@ fn no_shared_revision_is_refused_with_both_lists_known() {
         0x02, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ];
     for purpose in [Purpose::Link, Purpose::Pair] {
-        let listener = RelayEnd::new(revisions(&[2, 3]), Pairing::Unavailable);
+        let listener = RelayEnd::new(revisions(&[2, 3]), uninvited());
         let mut harness = Harness::new(hub(purpose, &[1]), listener);
 
         harness.run();
@@ -326,7 +327,7 @@ fn no_shared_revision_is_refused_with_both_lists_known() {
 /// not refused for it.
 #[test]
 fn pairing_is_refused_when_the_relay_can_start_no_run() {
-    let listener = || RelayEnd::new(revisions(&[1]), Pairing::Unavailable);
+    let listener = || RelayEnd::new(revisions(&[1]), uninvited());
 
     let mut harness = Harness::new(hub(Purpose::Pair, &[1]), listener());
     harness.run();
@@ -815,4 +816,11 @@ fn rev_03_no_edit_of_one_byte_leaves_an_agreed_opening() {
             }
         }
     }
+}
+
+/// ADR 0010: every release supports every published link revision, and
+/// link revision 1 is the only one published.
+#[test]
+fn this_release_supports_every_published_revision() {
+    assert_eq!(Revisions::published().as_slice(), [1]);
 }

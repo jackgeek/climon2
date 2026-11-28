@@ -2,6 +2,7 @@
 use climon2_core::{
     cli::{self, CliArgs, CommandArgs},
     lifetime::Lifetime,
+    monitor::MonitorArgs,
     selector::Selector,
     session::*,
 };
@@ -175,15 +176,16 @@ fn attach_and_kill_accept_short_selectors_but_not_empty_or_extra_arguments() {
     }
 }
 
-/// #74 (INP-01 derived refusal): `monitor` and its shortcut `m` take no
-/// arguments; anything after either is a usage error (2). #287: the old alias
-/// `mon` is gone and is a usage error too.
+/// #74 (INP-01 derived refusal): bare `monitor`, or its shortcut `m`, starts
+/// the monitor. #501 (CM6): it gains the verb `pair`, or `p`, and every other
+/// argument after it is a usage error (2). #287: the old alias `mon` is gone
+/// and is a usage error too.
 #[test]
-fn issue74_monitor_and_m_take_no_arguments_and_mon_is_gone() {
+fn issue74_monitor_and_m_start_the_monitor_and_mon_is_gone() {
     for monitor in ["monitor", "m"] {
         assert_eq!(
             CliArgs::parse([monitor].map(OsString::from)).unwrap(),
-            CliArgs::Monitor
+            CliArgs::Monitor(MonitorArgs::Start)
         );
     }
     for bad in [
@@ -200,6 +202,57 @@ fn issue74_monitor_and_m_take_no_arguments_and_mon_is_gone() {
             "{bad:?}"
         );
     }
+}
+
+/// #501 (CM6, CM10, PAIR-10): `c2 monitor pair <host:port>`, or `c2 m p`,
+/// takes the address as typed and nothing else: no flag carries a PIN.
+#[test]
+fn issue501_monitor_pair_takes_one_address_and_no_pin() {
+    for (monitor, pair) in [
+        ("monitor", "pair"),
+        ("m", "p"),
+        ("monitor", "p"),
+        ("m", "pair"),
+    ] {
+        let parsed = CliArgs::parse([monitor, pair, "buildbox:7222"].map(OsString::from));
+        assert_eq!(
+            parsed.unwrap(),
+            CliArgs::Monitor(MonitorArgs::Pair {
+                address: "buildbox:7222".to_owned()
+            })
+        );
+    }
+    for bad in [
+        &["monitor", "pair"][..],
+        &["m", "p", "a:1", "b:2"],
+        &["m", "p", "a:1", "--pin", "12345678"],
+        &["m", "p", "--pin", "12345678", "a:1"],
+        &["m", "p", "--pin=12345678"],
+        &["m", "p", ""],
+        &["m", "pear", "a:1"],
+        &["m", "P", "a:1"],
+    ] {
+        assert_eq!(
+            CliArgs::parse(bad.iter().map(OsString::from))
+                .unwrap_err()
+                .exit_code(),
+            2,
+            "{bad:?}"
+        );
+    }
+}
+
+/// #501: the CLI hands the monitor exactly the arguments the monitor's own
+/// parser reads back.
+#[test]
+fn issue501_monitor_arguments_read_back_as_they_were_given() {
+    let pair = MonitorArgs::Pair {
+        address: "[::1]:7222".to_owned(),
+    };
+    assert_eq!(pair.arguments(), ["pair", "[::1]:7222"].map(OsString::from));
+    assert_eq!(MonitorArgs::parse(pair.arguments()).unwrap(), pair);
+    assert!(MonitorArgs::Start.arguments().is_empty());
+    assert_eq!(MonitorArgs::parse(Vec::new()).unwrap(), MonitorArgs::Start);
 }
 
 /// #29: help and version flags parse only when given alone. #287: help has
@@ -359,12 +412,13 @@ fn issue29_nested_ordinals_include_teens_centuries_and_explicit_depth_overflow()
 }
 
 /// #287: each command and its single-letter shortcut, as the spec lists them.
-const SHORTCUTS: [(&str, &str); 5] = [
+const SHORTCUTS: [(&str, &str); 6] = [
     ("exec", "x"),
     ("attach", "a"),
     ("kill", "k"),
     ("list", "l"),
     ("monitor", "m"),
+    ("relay", "r"),
 ];
 
 /// #287: every command's single-letter shortcut is a pure synonym: given any
@@ -372,8 +426,10 @@ const SHORTCUTS: [(&str, &str); 5] = [
 #[test]
 fn shortcuts_parse_exactly_as_their_full_commands() {
     let parse = |args: &[&str]| CliArgs::parse(args.iter().map(OsString::from));
-    let tails: [&[&str]; 18] = [
+    let tails: [&[&str]; 20] = [
         &[],
+        &["--listen", "127.0.0.1:7222"],
+        &["--listen", "localhost:7222"],
         &["cmd", "--flag", ""],
         &["--", "-cmd"],
         &["--headless"],
@@ -448,8 +504,8 @@ fn exec_dash_h_is_headless_only_as_the_first_argument() {
 }
 
 /// #287: every command has exactly one single-letter shortcut, no two
-/// commands share one, no shortcut is another command's name, and `r` stays
-/// reserved for `relay`.
+/// commands share one, and no shortcut is another command's name. #499: `r`,
+/// once reserved, is `relay`'s.
 #[test]
 fn every_command_has_its_own_single_letter_shortcut() {
     let commands: Vec<_> = cli::commands().collect();
@@ -468,7 +524,6 @@ fn every_command_has_its_own_single_letter_shortcut() {
     );
     for (full, shortcut) in &commands {
         assert_eq!(shortcut.chars().count(), 1, "{full}");
-        assert_ne!(*shortcut, "r", "{full} takes relay's reserved shortcut");
     }
     // The usage line names exactly these commands, each beside its shortcut.
     let named: Vec<_> = cli::USAGE
@@ -482,13 +537,6 @@ fn every_command_has_its_own_single_letter_shortcut() {
         .collect();
     assert_eq!(named, expected, "{}", cli::USAGE);
     assert!(cli::USAGE.contains("[--headless|-h]"), "{}", cli::USAGE);
-    assert_eq!(
-        CliArgs::parse(["r"].map(OsString::from))
-            .unwrap_err()
-            .exit_code(),
-        2,
-        "r is reserved, not a command"
-    );
 }
 
 /// #139: `--nested`, or `-n`, starts a nested session deliberately. exec's

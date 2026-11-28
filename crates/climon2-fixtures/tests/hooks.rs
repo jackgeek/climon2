@@ -12,6 +12,7 @@ fn workspace_binaries_contain_test_hooks() {
         "climon2-client",
         "climon2-install",
         "climon2-monitor",
+        "climon2-relay",
     ] {
         let bytes = fs::read(bin_path(name)).unwrap();
         assert!(

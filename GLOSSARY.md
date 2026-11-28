@@ -327,6 +327,10 @@ _Avoid_: Link version, protocol version
 The remembered trust between one hub monitor and one relay, created by a link invitation and ended when either side forgets the other.
 _Avoid_: Trusted device, known host, bond
 
+**Key fingerprint**:
+The short form of a static public key that each side of a pairing shows its user, so the users of both machines can compare their screens.
+_Avoid_: Key hash, thumbprint, key ID
+
 **Remote session**:
 A session that a hub monitor reaches through a monitor link.
 _Avoid_: Relayed session, foreign session
