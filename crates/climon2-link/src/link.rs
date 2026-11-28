@@ -400,7 +400,7 @@ fn in_time<R: Run>(
 
 /// An ephemeral private key, drawn from the caller's randomness.
 fn ephemeral(randomness: &mut dyn Randomness) -> [u8; KEY_SIZE] {
-    let mut key = [0; KEY_SIZE];
+    let mut key = <[u8; KEY_SIZE]>::default();
     randomness.fill(&mut key);
     key
 }
