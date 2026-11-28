@@ -364,6 +364,7 @@ dependencies = [
  "climon2-install",
  "climon2-monitor",
  "climon2-platform",
+ "climon2-relay",
  "nix 0.31.3",
  "portable-pty",
  "sha2",

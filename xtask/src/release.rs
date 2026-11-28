@@ -20,6 +20,7 @@ pub(crate) const PACKAGES: &[(&str, &str)] = &[
     ("climon2-client", "climon2-client"),
     ("climon2-install", "climon2-install"),
     ("climon2-monitor", "climon2-monitor"),
+    ("climon2-relay", "climon2-relay"),
 ];
 
 /// Where every production build goes: one directory kept between builds, so

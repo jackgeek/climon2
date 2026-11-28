@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 pub const LAUNCHER: &str = "c2";
 
 /// The executables a release places in its version folder.
-const COMPANIONS: [&str; 4] = [
+const COMPANIONS: [&str; 5] = [
     "climon2-cli",
     "climon2-daemon",
     "climon2-client",
     "climon2-monitor",
+    "climon2-relay",
 ];
 
 /// Every file a release places in its version folder, in installation order:
