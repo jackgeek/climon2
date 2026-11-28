@@ -105,8 +105,12 @@ simpler reading:
   list that shares none.
 - A relay that shares no revision with a hub monitor that came to pair
   answers "no shared revision", whether or not it could start a pairing run.
-- Bytes that arrive behind a whole opening message are not part of it. The
-  ends drop them today, because nothing follows the opening exchange yet.
+- Bytes that arrive with a whole opening message, behind it, make it
+  malformed. Neither end sends anything after its opening message until the
+  other end has answered it, so only a broken or hostile end sends them. The
+  relay closes without a byte in reply, and for the hub monitor it is a
+  failed dial. Bytes that arrive later belong to whatever follows the
+  opening exchange.
 
 ## The Link-layer harness
 

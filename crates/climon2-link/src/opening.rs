@@ -234,7 +234,8 @@ pub(crate) enum Arrival<const N: usize> {
     Waiting(Time),
     /// All of it is here.
     Whole([u8; N]),
-    /// It will never be whole: the deadline passed or the other end closed.
+    /// It will never be whole: the deadline passed, the other end closed,
+    /// or more than the message arrived.
     Never,
 }
 
@@ -249,13 +250,17 @@ impl<const N: usize> Awaited<N> {
 
     /// Takes one step's input. Bytes that arrive after the deadline are
     /// late, and a message still partial at the deadline never completes.
-    /// Bytes past the message's end are not part of it and are dropped.
+    /// Bytes behind the message's end make it malformed: nothing follows an
+    /// opening message until the other end has answered it.
     pub(crate) fn step(&mut self, now: Time, input: Input<'_>) -> Arrival<N> {
         if now > self.deadline || input == Input::Closed {
             return Arrival::Never;
         }
         if let Input::Bytes(bytes) = input {
             self.arrived.extend(bytes);
+        }
+        if self.arrived.len() > N {
+            return Arrival::Never;
         }
         match self.arrived.first_chunk() {
             Some(whole) => Arrival::Whole(*whole),
