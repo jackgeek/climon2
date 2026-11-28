@@ -222,8 +222,8 @@ jobs:
       - name: Test the client library on Windows
         run: cargo test --locked -p climon2-client --test library_windows
       # Also builds the monitor binary, which the CLI's monitor tests start.
-      - name: Test the monitor on Windows
-        run: cargo test --locked -p climon2-monitor
+      - name: Test the monitor and client embedding on Windows
+        run: cargo test --locked -p climon2-monitor -p climon2-embed
       # Native revision 1 under the Microsoft x64 convention.
       - name: Check native interface declarations and examples with MSVC
         run: python -I docs/for-humans/protocol/monitor-client/check.py NativeDeclarations.test_msvc_declarations_and_examples
