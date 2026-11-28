@@ -1,6 +1,6 @@
 # Stream refused — `0x22`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout, its causes and its order; no released program speaks it yet, and a broken stream rule still ends the whole link rather than the one stream.**
 The [relay](../../../../GLOSSARY.md#monitor-links) reports that the client
 asked for by [Open stream](stream-open.md) could not start. It ends the
 stream. See the [overview](../README.md),

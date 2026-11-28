@@ -1,6 +1,6 @@
 # Hello — `0x01`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout, limits and order; no released program speaks it yet, and nothing yet stores a name it carries or closes a superseded link.**
 The first record each way on stream 0 of a link connection. Each end states
 its release, its name, its link [capabilities](README.md#capabilities) and
 the largest record it accepts. See the [overview](../README.md),

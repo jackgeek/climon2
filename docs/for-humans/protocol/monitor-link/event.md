@@ -1,6 +1,6 @@
 # Event — `0x81` to `0x8e`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements the encoding of every event and its order, but not credit; no released program speaks it yet, and a broken stream rule still ends the whole link rather than the one stream.**
 The [relay](../../../../GLOSSARY.md#monitor-links) sends one client interface
 [event](../TERMS.md#event) on a
 [session stream](../../../../GLOSSARY.md#monitor-links), exactly as the

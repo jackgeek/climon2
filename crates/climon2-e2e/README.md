@@ -223,6 +223,7 @@ sessions in `tests/headless.rs`.
 | ADRs 0001/0002/0005/#26/#39 actual previous/current archive compatibility, no fabricated previous release | `actual_previous_release_remains_live_across_current_archive_install` |
 | #19/#25 client panic after exec, diagnostic/log suffix, actual daemon leave policy | `debug_hook_client_panic_after_exec_logs_and_uses_daemon_leave_policy` |
 | #25/#39 actual release default INFO-or-above | smoke's `assert_archive_default_levels` in archive mode |
+| Test support: a private package installed while another test thread forks still runs at once; only `cp` writes its executable home (ETXTBSY) | `a_fork_during_a_private_installation_leaves_its_executables_runnable` |
 
 ### Library layer (`tests/library.rs`, #75, #84)
 

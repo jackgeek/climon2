@@ -1,6 +1,6 @@
 # Stream ended — `0x24`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout, its reasons and its order; no released program speaks it yet, and a broken stream rule still ends the whole link rather than the one stream.**
 The [relay](../../../../GLOSSARY.md#monitor-links) reports that a stream's
 client has ended. It is always the stream's last record. See the
 [overview](../README.md), [glossary](../../../../GLOSSARY.md),

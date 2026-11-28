@@ -1,5 +1,10 @@
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use serde::Deserialize;
-use std::{collections::BTreeSet, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 const PACKAGES: &[&str] = &[
     "climon2-launcher",
@@ -14,6 +19,7 @@ const PACKAGES: &[&str] = &[
     "climon2-monitor-tui",
     "climon2-embed",
     "climon2-vt",
+    "climon2-link",
     "climon2-test-term",
     "climon2-fixtures",
     "climon2-e2e",
@@ -45,6 +51,8 @@ struct Dependency {
     name: String,
     kind: Option<String>,
     path: Option<PathBuf>,
+    /// The platform a `[target.'...']` table limits the dependency to.
+    target: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -54,6 +62,11 @@ struct Target {
 }
 
 fn metadata() -> Metadata {
+    metadata_in(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")))
+}
+
+/// What `cargo metadata` says of the workspace in `directory`.
+fn metadata_in(directory: &Path) -> Metadata {
     let output = Command::new(env!("CARGO"))
         .args([
             "metadata",
@@ -62,7 +75,7 @@ fn metadata() -> Metadata {
             "--format-version",
             "1",
         ])
-        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+        .current_dir(directory)
         .output()
         .expect("run cargo metadata (no builds)");
     assert!(
@@ -346,6 +359,7 @@ fn dependency_guard_rejects_forbidden_edges() {
             name: to.to_owned(),
             kind: kind.map(str::to_owned),
             path: path.map(PathBuf::from),
+            target: None,
         }];
         assert_eq!(dependency_violations(&package).len(), 1, "{from} -> {to}");
     }
@@ -383,6 +397,7 @@ fn dependency_guard_accepts_shared_and_test_only_edges() {
             name: to.to_owned(),
             kind: kind.map(str::to_owned),
             path: Some(PathBuf::from(".")),
+            target: None,
         }];
         assert!(dependency_violations(&package).is_empty(), "{from} -> {to}");
     }
@@ -467,6 +482,62 @@ fn terminal_violations(path: &std::path::Path) -> Vec<String> {
     violations
 }
 
+/// The package of the link code (ADR 0011, ONE-01).
+const LINK: &str = "climon2-link";
+/// ONE-01: every crate the link code may depend on, whatever the kind of
+/// dependency. It never holds `climon2-platform`, an operating-system or
+/// socket crate, an async runtime or a source of randomness. A ticket that
+/// needs a crate adds it here, where a reviewer sees it.
+///
+/// - `snow` (#494): the Noise framework of the pinned-key handshake and the
+///   units. The link crate builds it without default features, so it brings
+///   no source of randomness: the caller's randomness reaches it.
+const LINK_ALLOWLIST: &[&str] = &["snow"];
+
+/// The modules of the standard library the link code never names (ONE-01).
+const PLATFORM_MODULES: &[&str] = &["net", "os", "fs", "process", "env"];
+/// The standard clocks (ONE-01, ONE-02). The link code never writes these
+/// names, so no import, glob or rename of `std::time` reaches a clock.
+const CLOCKS: &[&str] = &["Instant", "SystemTime", "UNIX_EPOCH"];
+/// The standard library's own randomness: the keys of its hash maps come
+/// from the operating system (ONE-02).
+const RANDOMNESS: &[&str] = &["RandomState", "HashMap", "HashSet"];
+/// What introduces a compile-time condition.
+const CONDITIONS: &[&str] = &["cfg", "cfg_attr", "cfg_select"];
+
+/// ONE-01, ONE-02: each rule of the link code that `package` breaks.
+fn link_violations(package: &Package, allowlist: &[&str]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for dependency in &package.dependencies {
+        if !allowlist.contains(&dependency.name.as_str()) {
+            violations.push(format!(
+                "dependency outside the allowlist: {}",
+                dependency.name
+            ));
+        }
+        if let Some(target) = &dependency.target {
+            violations.push(format!(
+                "dependency for one platform only: {}, {target}",
+                dependency.name
+            ));
+        }
+    }
+    // A build script can read the target and set conditions no scan sees.
+    let is_build_script = |target: &Target| target.kind.iter().any(|kind| kind == "custom-build");
+    if package.targets.iter().any(is_build_script) {
+        violations.push("build script".to_owned());
+    }
+    let root = package.manifest_path.parent().unwrap();
+    for path in rust_sources(&root.join("src")) {
+        let source = std::fs::read_to_string(&path).expect("read link source");
+        let name = path.strip_prefix(root).unwrap().display().to_string();
+        for violation in source_violations(&source) {
+            violations.push(format!("{}: {violation}", name.replace('\\', "/")));
+        }
+    }
+    violations
+}
+
 /// ADR 0011, rule 1 (#489, #490): client embedding and the monitor library
 /// link no terminal, HTTP or WebSocket crate, and their sources never touch
 /// the process's terminal.
@@ -493,6 +564,7 @@ fn interface_guard_rejects_terminal_http_and_websocket_dependencies() {
         name: name.to_owned(),
         kind: kind.map(str::to_owned),
         path: path.map(PathBuf::from),
+        target: None,
     };
     for forbidden in [
         "ratatui",
@@ -566,5 +638,364 @@ fn interface_guard_rejects_reading_or_writing_the_process_terminal() {
         "let terminal_evidence = drained.terminal;",
     ] {
         assert!(terminal_uses(allowed).is_empty(), "{allowed}");
+    }
+}
+
+/// Every Rust source file under `directory`, in a stable order.
+fn rust_sources(directory: &Path) -> Vec<PathBuf> {
+    let mut sources = Vec::new();
+    for entry in std::fs::read_dir(directory).expect("read link source directory") {
+        let path = entry.expect("link source entry").path();
+        if path.is_dir() {
+            sources.extend(rust_sources(&path));
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push(path);
+        }
+    }
+    sources.sort();
+    sources
+}
+
+/// ONE-01, ONE-02: each rule that one source file of the link code breaks.
+/// It reads tokens, not syntax, so it sees inside macros and ignores
+/// comments and strings.
+fn source_violations(source: &str) -> BTreeSet<String> {
+    let tokens: TokenStream = source.parse().expect("link source is Rust");
+    let mut violations = BTreeSet::new();
+    scan(tokens, false, &mut violations);
+    violations
+}
+
+/// Scans one level of tokens and the groups in it. `conditional` says the
+/// tokens are the body of a compile-time condition.
+fn scan(tokens: TokenStream, conditional: bool, violations: &mut BTreeSet<String>) {
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut condition_follows = false;
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Group(group) => {
+                scan(group.stream(), conditional || condition_follows, violations);
+                condition_follows = false;
+            }
+            TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                condition_follows = CONDITIONS.contains(&name.as_str());
+                let platform = name.starts_with("target_") || name == "unix" || name == "windows";
+                if conditional && platform {
+                    violations.insert(format!("cfg names a platform: {name}"));
+                }
+                if CLOCKS.contains(&name.as_str()) {
+                    violations.insert(format!("standard clock: {name}"));
+                }
+                if RANDOMNESS.contains(&name.as_str()) {
+                    violations.insert(format!("randomness the caller did not supply: {name}"));
+                }
+                if name == "std" {
+                    violations.extend(after_std(&trees[index + 1..]));
+                }
+            }
+            // The `!` of `cfg!(...)` sits between the name and its body.
+            TokenTree::Punct(punct) if punct.as_char() == '!' => {}
+            _ => condition_follows = false,
+        }
+    }
+}
+
+/// What the tokens that follow the name `std` break.
+fn after_std(rest: &[TokenTree]) -> Vec<String> {
+    match rest {
+        [TokenTree::Ident(word), ..] if word == "as" => vec!["std renamed".to_owned()],
+        [TokenTree::Punct(first), TokenTree::Punct(second), rest @ ..]
+            if first.as_char() == ':' && second.as_char() == ':' =>
+        {
+            imported_from_std(rest)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// What a path breaks, given the tokens that follow `std::` in it.
+fn imported_from_std(rest: &[TokenTree]) -> Vec<String> {
+    match rest {
+        [TokenTree::Ident(module), ..]
+            if PLATFORM_MODULES.contains(&module.to_string().as_str()) =>
+        {
+            vec![format!("std::{module}")]
+        }
+        // `std::{self as other}` renames the standard library.
+        [TokenTree::Ident(this), rest @ ..] if this == "self" => after_std(rest),
+        // A glob would bring every module into scope under its bare name.
+        [TokenTree::Punct(glob), ..] if glob.as_char() == '*' => vec!["std::*".to_owned()],
+        [TokenTree::Group(group), ..] if group.delimiter() == Delimiter::Brace => {
+            let trees: Vec<TokenTree> = group.stream().into_iter().collect();
+            let is_comma = |tree: &TokenTree| matches!(tree, TokenTree::Punct(punct) if punct.as_char() == ',');
+            trees.split(is_comma).flat_map(imported_from_std).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// ONE-01, ONE-02: the link code depends on nothing outside its allowlist and
+/// reaches no platform facility, clock or randomness of its own.
+#[test]
+fn link_code_keeps_its_rules() {
+    let metadata = metadata();
+    let link = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == LINK)
+        .expect("the link code's package");
+    assert_eq!(link_violations(link, LINK_ALLOWLIST), [""; 0]);
+}
+
+/// A sample crate in a directory of its own: `manifest` follows its
+/// `[package]` table, and `files` are its sources.
+fn sample_crate(manifest: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {
+    let directory = tempfile::tempdir().expect("sample crate directory");
+    let write = |name: &str, text: &str| {
+        let path = directory.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("sample crate folder");
+        std::fs::write(path, text).expect("sample crate file");
+    };
+    write(
+        "Cargo.toml",
+        &format!(
+            "[package]\nname = \"sample\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+             [workspace]\n{manifest}"
+        ),
+    );
+    for (name, text) in files {
+        write(name, text);
+    }
+    let mut packages = metadata_in(directory.path()).packages;
+    packages.retain(|package| package.name == "sample");
+    (directory, packages.remove(0))
+}
+
+const CLEAN: &[(&str, &str)] = &[("src/lib.rs", "pub fn link() {}\n")];
+
+/// A stand-in for `climon2-platform`, for a sample crate to depend on.
+const PLATFORM: &[(&str, &str)] = &[
+    (
+        "platform/Cargo.toml",
+        "[package]\nname = \"climon2-platform\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    ),
+    ("platform/src/lib.rs", ""),
+];
+
+/// ONE-01: a sample crate that breaks one rule is rejected for that rule and
+/// for no other.
+#[test]
+fn link_guard_rejects_each_sample_crate_for_its_own_rule() {
+    let lib = |source: &'static str| [("src/lib.rs", source)];
+    for (manifest, files, allowlist, violation) in [
+        (
+            "[dependencies]\ntokio = \"1\"\n",
+            CLEAN.to_vec(),
+            &[][..],
+            "dependency outside the allowlist: tokio",
+        ),
+        (
+            "[dependencies]\nclimon2-platform = { path = \"platform\" }\n",
+            [CLEAN, PLATFORM].concat(),
+            &["climon2-core"][..],
+            "dependency outside the allowlist: climon2-platform",
+        ),
+        (
+            "[dev-dependencies]\ngetrandom = \"0.3\"\n",
+            CLEAN.to_vec(),
+            &["serde"][..],
+            "dependency outside the allowlist: getrandom",
+        ),
+        (
+            "[target.'cfg(unix)'.dependencies]\nserde = \"1\"\n",
+            CLEAN.to_vec(),
+            &["serde"][..],
+            "dependency for one platform only: serde, cfg(unix)",
+        ),
+        (
+            "",
+            [CLEAN, &[("build.rs", "fn main() {}\n")]].concat(),
+            &[][..],
+            "build script",
+        ),
+        (
+            "",
+            lib("#[cfg(target_os = \"linux\")]\npub fn link() {}\n").to_vec(),
+            &[][..],
+            "src/lib.rs: cfg names a platform: target_os",
+        ),
+        (
+            "",
+            lib("#[cfg(unix)]\npub fn link() {}\n").to_vec(),
+            &[][..],
+            "src/lib.rs: cfg names a platform: unix",
+        ),
+        (
+            "",
+            lib("#[cfg(target_arch = \"x86_64\")]\npub fn link() {}\n").to_vec(),
+            &[][..],
+            "src/lib.rs: cfg names a platform: target_arch",
+        ),
+        (
+            "",
+            lib("pub fn link() { let _ = std::net::Ipv4Addr::LOCALHOST; }\n").to_vec(),
+            &[][..],
+            "src/lib.rs: std::net",
+        ),
+        (
+            "",
+            lib("pub type Link = std::os::raw::c_int;\n").to_vec(),
+            &[][..],
+            "src/lib.rs: std::os",
+        ),
+        (
+            "",
+            lib("pub fn link() { let _ = std::fs::read(\"key\"); }\n").to_vec(),
+            &[][..],
+            "src/lib.rs: std::fs",
+        ),
+        (
+            "",
+            lib("pub fn link() { std::process::abort() }\n").to_vec(),
+            &[][..],
+            "src/lib.rs: std::process",
+        ),
+        (
+            "",
+            lib("pub fn link() { let _ = std::env::var(\"HOME\"); }\n").to_vec(),
+            &[][..],
+            "src/lib.rs: std::env",
+        ),
+        (
+            "",
+            lib("pub fn link() { let _ = std::time::Instant::now(); }\n").to_vec(),
+            &[][..],
+            "src/lib.rs: standard clock: Instant",
+        ),
+        (
+            "",
+            lib("pub fn link() { let _ = std::time::SystemTime::now(); }\n").to_vec(),
+            &[][..],
+            "src/lib.rs: standard clock: SystemTime",
+        ),
+        (
+            "",
+            lib("pub type Link = std::collections::HashMap<u8, u8>;\n").to_vec(),
+            &[][..],
+            "src/lib.rs: randomness the caller did not supply: HashMap",
+        ),
+        (
+            "",
+            vec![
+                ("src/lib.rs", "pub mod pairing;\n"),
+                ("src/pairing/mod.rs", "pub mod store;\n"),
+                ("src/pairing/store.rs", "pub use std::fs::File;\n"),
+            ],
+            &[][..],
+            "src/pairing/store.rs: std::fs",
+        ),
+    ] {
+        let (_directory, package) = sample_crate(manifest, &files);
+        assert_eq!(
+            link_violations(&package, allowlist),
+            [violation],
+            "{manifest}{files:?}"
+        );
+    }
+}
+
+/// ONE-01: the guard accepts what the rules leave open, so that it fails
+/// only for a broken rule.
+#[test]
+fn link_guard_accepts_a_sample_crate_that_keeps_every_rule() {
+    let source = r#"
+        //! Mentions std::fs, Instant and cfg(unix) only in a comment.
+        use std::{collections::BTreeMap, time::Duration};
+        pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+        pub fn process(units: &[u8], fs: Duration) -> BTreeMap<u8, Duration> {
+            let net = "std::net and SystemTime in a string";
+            let _ = (net, units.windows(2).count(), cfg!(debug_assertions));
+            BTreeMap::from([(0, fs)])
+        }
+        #[cfg(test)]
+        mod tests {
+            #[cfg_attr(not(feature = "slow"), ignore)]
+            #[test]
+            fn unix() {}
+        }
+    "#;
+    let (_directory, package) = sample_crate(
+        "[features]\nslow = []\n[dependencies]\nserde = \"1\"\n[dev-dependencies]\nserde_json = \"1\"\n",
+        &[("src/lib.rs", source), ("notes.rs", "use std::fs;\n")],
+    );
+    assert_eq!(link_violations(&package, &["serde", "serde_json"]), [""; 0]);
+}
+
+/// ONE-01, ONE-02: no spelling of a forbidden name gets past the source scan.
+#[test]
+fn link_source_scan_sees_through_every_spelling() {
+    for (source, violation) in [
+        ("use std::{io, fs};", "std::fs"),
+        ("use std::{io::{self, Read}, net::TcpStream};", "std::net"),
+        ("use ::std::env;", "std::env"),
+        ("use std::*;", "std::*"),
+        ("use std as platform;", "std renamed"),
+        ("extern crate std as platform;", "std renamed"),
+        ("use std::{self as platform};", "std renamed"),
+        (
+            "fn f() { let _ = vec![std::process::id()]; }",
+            "std::process",
+        ),
+        (
+            "use std::time::{Duration, Instant};",
+            "standard clock: Instant",
+        ),
+        (
+            "use std::time::*; fn f() { Instant::now(); }",
+            "standard clock: Instant",
+        ),
+        (
+            "use std::time as t; const E: t::SystemTime = t::UNIX_EPOCH;",
+            "standard clock: SystemTime",
+        ),
+        (
+            "use std::time as t; const E: t::SystemTime = t::UNIX_EPOCH;",
+            "standard clock: UNIX_EPOCH",
+        ),
+        (
+            "use std::collections::HashSet;",
+            "randomness the caller did not supply: HashSet",
+        ),
+        (
+            "use std::hash::RandomState;",
+            "randomness the caller did not supply: RandomState",
+        ),
+        (
+            "fn f() -> bool { cfg!(windows) }",
+            "cfg names a platform: windows",
+        ),
+        (
+            "fn f() -> bool { cfg!(any(test, target_family = \"unix\")) }",
+            "cfg names a platform: target_family",
+        ),
+        (
+            "#[cfg_attr(target_pointer_width = \"64\", inline)] fn f() {}",
+            "cfg names a platform: target_pointer_width",
+        ),
+        (
+            "#![cfg(not(target_env = \"musl\"))]",
+            "cfg names a platform: target_env",
+        ),
+        (
+            "cfg_select! { unix => { fn f() {} } _ => {} }",
+            "cfg names a platform: unix",
+        ),
+    ] {
+        assert!(
+            source_violations(source).contains(violation),
+            "{source}: {:?}",
+            source_violations(source)
+        );
     }
 }

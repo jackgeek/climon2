@@ -82,6 +82,7 @@ pub(crate) const SHIPPED: &[&str] = &[
     "crates/climon2-monitor-tui/src",
     "crates/climon2-embed/src",
     "crates/climon2-vt/src",
+    "crates/climon2-link/src",
 ];
 /// The test runs that make up the workspace suite on Windows, where only part of the
 /// workspace builds so far: as the Windows Test job runs them.
@@ -1104,17 +1105,21 @@ pub fn check(root: &Path, selection: Selection, scope: Scope) -> io::Result<()> 
             .args(paths),
     )?;
     if let Some(rounds) = scope.load_rounds() {
-        run(python_script(root, "check-mutation-load.py")
-            .args([
-                "--workers",
-                &workers,
-                "--rounds",
-                rounds,
-                "--timeout-factor",
-                MUTATION_TIMEOUT_FACTOR,
-                "--stage-timeouts",
-            ])
-            .arg(&stage_timeouts))?;
+        // Its stage timeouts cover each stage's build too, so it builds as the workers do.
+        run(suite_environment(own_targets(&mut python_script(
+            root,
+            "check-mutation-load.py",
+        )))
+        .args([
+            "--workers",
+            &workers,
+            "--rounds",
+            rounds,
+            "--timeout-factor",
+            MUTATION_TIMEOUT_FACTOR,
+            "--stage-timeouts",
+        ])
+        .arg(&stage_timeouts))?;
     }
     if targets.is_empty() {
         eprintln!("{}", selection.nothing_to_mutate());
@@ -1777,6 +1782,8 @@ mod tests {
         output: String,
         /// Each quality tool started, in order, with its arguments.
         events: Vec<String>,
+        /// Each test-building tool started, with the build environment it was given.
+        environments: Vec<String>,
     }
 
     #[cfg(unix)]
@@ -1864,8 +1871,16 @@ esac
             &root.join(".metrics/tools/venv/bin/python"),
             r#"#!/bin/sh
 events="$CLIMON2_LOAD_GATE_FIXTURE/events"
+# The build environment each tool starts its Cargo runs in.
+build_environment() {
+    printf '%s debug=%s jobs=%s threads=%s evidence=%s target=%s\n' "$1" \
+        "${CARGO_PROFILE_DEV_DEBUG-unset}" "${CARGO_BUILD_JOBS-unset}" \
+        "${RUST_TEST_THREADS-unset}" "${CLIMON2_TEST_EVIDENCE-unset}" \
+        "${CARGO_TARGET_DIR-unset}" >> "$CLIMON2_LOAD_GATE_FIXTURE/environments"
+}
 case "$*" in
     *check-mutation-load.py*)
+        build_environment load
         shift
         printf 'load %s\n' "$*" >> "$events"
         if [ "$LOAD_GATE_FAIL" = yes ]; then
@@ -1892,12 +1907,14 @@ case "$*" in
         done
         ;;
     *'-m mutator'*)
+        build_environment mutation
         if [ -e .metrics/mutate ]; then echo stale-history >> "$events"; fi
         printf 'mutation-stage-timeouts %s\n' "$CLIMON2_MUTATION_STAGE_TIMEOUTS" >> "$events"
         shift 2
         printf 'mutation %s\n' "$*" >> "$events"
         ;;
     *test-mutation.py*)
+        build_environment stages
         shift 3
         printf 'stages %s\n' "$*" >> "$events"
         ;;
@@ -1930,6 +1947,9 @@ esac
             .env("LOAD_GATE_FAIL", if gate.load_fails { "yes" } else { "no" })
             .env("PATH", env::join_paths(path).unwrap())
             .env_remove("CLIMON2_MUTATION_BASE")
+            .env("CLIMON2_MUTATION_WORKER_JOBS", "3")
+            .env("CLIMON2_TEST_EVIDENCE", root.join("evidence"))
+            .env("CARGO_TARGET_DIR", root.join("shared-target"))
             .stdout(Stdio::from(file.try_clone().unwrap()))
             .stderr(Stdio::from(file))
             .spawn()
@@ -1949,11 +1969,18 @@ esac
             }
             thread::sleep(Duration::from_millis(20));
         };
-        let events = fs::read_to_string(root.join("events")).unwrap_or_default();
+        let lines = |name| {
+            fs::read_to_string(root.join(name))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        };
         GateRun {
             success: status.success(),
             output: fs::read_to_string(output).unwrap(),
-            events: events.lines().map(str::to_owned).collect(),
+            events: lines("events"),
+            environments: lines("environments"),
         }
     }
 
@@ -1977,6 +2004,33 @@ esac
         assert_eq!(
             run.option("load", "--timeout-factor"),
             run.option("mutation", "--timeout-factor")
+        );
+    }
+
+    /// The load rounds time each stage's whole `cargo test`, build included, so they hold
+    /// only when the stages build what the measurement and the workers built. Built with
+    /// debug info, unlike the workers, the warm build's proc-macros shared xtask's debug
+    /// build of syn, so `--lib`, which leaves xtask out, rebuilt the whole graph in each
+    /// load worker within its stage timeout.
+    #[cfg(unix)]
+    #[test]
+    fn the_load_rounds_build_in_the_mutation_workers_environment() {
+        let run = run_gate(Gate {
+            scope: "ticket",
+            changed: true,
+            ..Gate::default()
+        });
+        assert!(run.success, "{}", run.output);
+        let worker = "debug=0 jobs=3 threads=3 evidence=unset target=unset";
+        assert_eq!(
+            run.environments,
+            [
+                format!("stages {worker}"),
+                format!("load {worker}"),
+                format!("mutation {worker}"),
+            ],
+            "{:?}",
+            run.events
         );
     }
 

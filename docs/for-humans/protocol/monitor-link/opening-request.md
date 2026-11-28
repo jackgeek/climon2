@@ -1,6 +1,6 @@
 # Opening request
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements it; no released program speaks it yet.**
 The [hub monitor](../../../../GLOSSARY.md#monitor-links) sends this as the
 first [bytes](../TERMS.md#byte) of every connection to a
 [relay](../../../../GLOSSARY.md#monitor-links). It states why the hub monitor
