@@ -326,12 +326,14 @@ dependencies = [
  "climon2-core",
  "climon2-fixtures",
  "climon2-install",
+ "climon2-link",
  "climon2-second-release",
  "climon2-test-term",
  "libc",
  "nix 0.31.3",
  "portable-pty",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
 ]
 

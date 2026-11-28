@@ -63,7 +63,7 @@ fn installed_relay_and_r_run_the_versions_relay() {
         terminal
             .wait_for_screen(TIMEOUT, |screen| {
                 let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
-                rows.first() == Some(&" Listening") && rows.last() == Some(&" s Stop")
+                rows.first() == Some(&" Listening") && rows.last() == Some(&" p Pair  s Stop")
             })
             .unwrap();
         let address: SocketAddr = terminal.row(1).trim().parse().unwrap();

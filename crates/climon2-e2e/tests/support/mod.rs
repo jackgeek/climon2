@@ -4,9 +4,16 @@ pub mod control;
 /// Only the Library-layer suites use it.
 #[allow(dead_code)]
 pub mod library;
+/// Only the Pair-layer suites use these (#501).
+#[allow(dead_code)]
+pub mod pair;
 /// Only the passive-connection suites use it (#93).
 #[allow(dead_code)]
 pub mod passive;
+#[allow(dead_code)]
+pub mod proxy;
+#[allow(dead_code)]
+pub mod stand_in;
 /// Only the status, viewing and acknowledgement suites use it (#95).
 #[allow(dead_code)]
 pub mod status;
