@@ -102,13 +102,13 @@ impl TryRng for Drawn<'_> {
     type Error = Infallible;
 
     fn try_next_u32(&mut self) -> Result<u32, Infallible> {
-        let mut bytes = [0; 4];
+        let mut bytes = <[u8; 4]>::default();
         self.0.fill(&mut bytes);
         Ok(u32::from_le_bytes(bytes))
     }
 
     fn try_next_u64(&mut self) -> Result<u64, Infallible> {
-        let mut bytes = [0; 8];
+        let mut bytes = <[u8; 8]>::default();
         self.0.fill(&mut bytes);
         Ok(u64::from_le_bytes(bytes))
     }

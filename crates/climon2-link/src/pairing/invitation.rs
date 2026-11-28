@@ -51,9 +51,14 @@ struct Desk {
     /// How many invitations were minted. A pairing run holds the number of
     /// the invitation it started under.
     minted: u64,
-    /// The PIN while the invitation is live.
-    pin: Option<Pin>,
     invitation: Invitation,
+    /// What only a live invitation has.
+    live: Option<Live>,
+}
+
+/// What a relay holds of its invitation while it is live.
+struct Live {
+    pin: Pin,
     /// Whether a pairing run of this invitation is in flight.
     running: bool,
 }
@@ -62,7 +67,7 @@ impl Desk {
     /// Ends the invitation as `ended`: its PIN is forgotten.
     fn end(&mut self, ended: Invitation) {
         self.invitation = ended;
-        self.pin = None;
+        self.live = None;
     }
 
     /// Expires a live invitation whose time has come.
@@ -79,10 +84,9 @@ impl Invitations {
     pub fn new(relay: Introduction) -> Self {
         Self(Arc::new(Mutex::new(Desk {
             relay,
-            minted: 0,
-            pin: None,
+            minted: u64::MIN,
             invitation: Invitation::None,
-            running: false,
+            live: None,
         })))
     }
 
@@ -99,8 +103,10 @@ impl Invitations {
         let pin = Pin::draw(randomness);
         let mut desk = self.desk();
         desk.minted += 1;
-        desk.running = false;
-        desk.pin = Some(pin.clone());
+        desk.live = Some(Live {
+            pin: pin.clone(),
+            running: false,
+        });
         desk.invitation = Invitation::Live {
             expires: Time::since_start(now.elapsed().saturating_add(LIFETIME)),
             attempts_left: ATTEMPTS,
@@ -129,8 +135,9 @@ impl Invitations {
     pub(crate) fn seat(&self, now: Time) -> Option<Seat> {
         let mut desk = self.desk();
         desk.settle(now);
-        let pin = desk.pin.clone().filter(|_| !desk.running)?;
-        desk.running = true;
+        let live = desk.live.as_mut().filter(|live| !live.running)?;
+        live.running = true;
+        let pin = live.pin.clone();
         Some(Seat {
             invitations: self.clone(),
             invitation: desk.minted,
@@ -180,18 +187,15 @@ impl Seat {
     /// Ends the run as a success at `now`: `hub` paired, which consumes the
     /// invitation. False when the invitation is no longer live, and then
     /// nothing is paired.
-    pub(crate) fn pair(&mut self, now: Time, hub: &Introduction) -> bool {
-        let paired = self.desk().is_some_and(|mut desk| {
+    pub(crate) fn pair(&self, now: Time, hub: &Introduction) -> bool {
+        self.desk().is_some_and(|mut desk| {
             desk.settle(now);
             let live = matches!(desk.invitation, Invitation::Live { .. });
             if live {
                 desk.end(Invitation::Paired(hub.clone()));
-                desk.running = false;
             }
             live
-        });
-        self.over |= paired;
-        paired
+        })
     }
 
     /// Ends the run as a failure. `now`, when known, first expires an
@@ -204,7 +208,9 @@ impl Seat {
         let Some(mut desk) = self.desk() else {
             return;
         };
-        desk.running = false;
+        if let Some(live) = &mut desk.live {
+            live.running = false;
+        }
         if let Some(now) = now {
             desk.settle(now);
         }

@@ -70,13 +70,13 @@ impl Pin {
     /// `randomness` as a big-endian number and draws again when that number
     /// would favour the low PINs.
     fn draw(randomness: &mut dyn Randomness) -> Self {
-        let mut bytes = [0; 4];
+        let mut bytes = <[u8; 4]>::default();
         let mut number = PIN_UNBIASED;
         while number >= PIN_UNBIASED {
             randomness.fill(&mut bytes);
             number = u32::from_be_bytes(bytes);
         }
-        let mut digits = [0; PIN_DIGITS];
+        let mut digits = <[u8; PIN_DIGITS]>::default();
         for digit in digits.iter_mut().rev() {
             *digit = b'0' + (number % 10) as u8;
             number /= 10;

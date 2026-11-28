@@ -51,7 +51,7 @@ impl Confirmed {
     /// One 32-byte key of the schedule: HKDF with SHA-512 and an empty salt
     /// over the CPace key.
     fn derive(&self, info: &[u8]) -> [u8; 32] {
-        let mut key = [0; 32];
+        let mut key = <[u8; 32]>::default();
         Hkdf::<Sha512>::new(None, &self.key)
             .expand(info, &mut key)
             .expect("HKDF with SHA-512 gives 32 bytes");
