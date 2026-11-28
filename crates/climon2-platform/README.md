@@ -104,6 +104,15 @@ link code uses none of them: its callers do, and pass time and randomness in.
   missing file; a link, a special file, a file another user owns or can reach,
   an unreadable file and an empty file are each `InvalidData`. A name is one
   plain file name. Unix only: Windows storage is not yet specified.
+  `KeyStore` implements `climon2_core::pairing::KeyFiles`, so the pairing
+  store (#500) reads and replaces its three files through it.
+  `tests/pairing_store.rs` runs that store on a real folder (STO-01, STO-02):
+  the three files are plain `0600` files in a `0700` folder with the
+  specified fields, the next process reads them back, every way of damaging a
+  file is an error naming it, a removed identity is made again only at a
+  relay's start, and a killed writer's `.<name>.<random>.tmp` file is never
+  read as a record, because the store reads its three names and never lists
+  the folder.
 - `randomness::fill(&mut [u8])` fills from the operating system's generator
   through the `getrandom` crate, with no fallback.
 - `clock::monotonic()` is the time since the process first asked, for
