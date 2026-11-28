@@ -120,11 +120,18 @@ number.
 | Archive | Runs the end-to-end tests and an `install.ps1` smoke test on that exact zip, under Windows PowerShell 5.1 and PowerShell 7 |
 | Neutral (existing) | Its Windows leg stays: `climon2-core`'s tests on Windows |
 
-None of these jobs runs on a pull request into the monitor links feature
-branch, `feature/monitor-links`, or into one of its `monitor-links/*` ticket
-branches, and Neutral drops its Windows leg there. Such a pull request runs
-Linux only; every Windows job runs on the pull request that merges the feature
-branch into `main` (see
+A pull request into the monitor links feature branch,
+`feature/monitor-links`, or into one of its `monitor-links/*` ticket branches
+runs Test, Dist, Archive and Neutral's Windows leg only when its head is a
+branch of Stack W, the feature's Windows work, whose branches are named
+`monitor-links/win-*`, or when it touches Windows-only code (see
+[The switch](#the-switch)). Then Test and Archive run whatever the switch
+says. Otherwise it runs Linux only. Quality never runs on such a pull request.
+Instead a manual run of `quality.yml` on the top of a stack of Stack W
+branches runs the Linux gate and then the native-only gate on the owner's
+Windows machine, never both at once, each against `origin/feature/monitor-links`.
+Every Windows job runs on the pull request that merges the feature branch into
+`main` (see
 [Quality runners](../quality-runners.md#the-monitor-links-features-branches)).
 
 ### The switch

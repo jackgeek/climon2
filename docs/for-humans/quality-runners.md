@@ -107,12 +107,25 @@ A ticket branch must be named `monitor-links/<ticket>-<slug>`, for example
 `monitor-links/489-link-crate`. The name is how the workflow recognises the
 branch on a push, which has no pull request to look at.
 
-These branches are gated as follows (owner decisions, 2026-11-27):
+Stack W is the feature's Windows work: the tickets that build monitor links
+on Windows. Its ticket branches are named `monitor-links/win-<ticket>-<slug>`,
+for example `monitor-links/win-544-windows-ci`. The `win-` is how the
+workflows tell a Stack W branch from the rest (owner decision, 2026-11-28).
+
+These branches are gated as follows (owner decisions, 2026-11-27 and
+2026-11-28):
 
 | Branch | On a push | On a manual run |
 | --- | --- | --- |
-| `monitor-links/*` | No gate | The Linux gate alone. It mutates the branch's difference from `feature/monitor-links` |
+| `monitor-links/win-*` | No gate | The Linux gate, then the Windows gate. Each mutates the branch's difference from `feature/monitor-links` |
+| Any other `monitor-links/*` | No gate | The Linux gate alone. It mutates the branch's difference from `feature/monitor-links` |
 | `feature/monitor-links` | No gate | Every gate. Each mutates the branch's difference from `main` |
+
+On a Stack W branch the Windows gate starts only once the Linux gate has
+finished, whether it passed or failed, so the two never share the PC at once
+(see [Sharing the PC](#sharing-the-pc)). The job that runs it,
+`windows-after-linux`, waits for the Linux job and otherwise runs exactly as
+the Windows job does.
 
 A push runs no gate because a gate per push would mutate again, on every push,
 all the source the feature has changed so far. Instead, one manual run on the
@@ -129,12 +142,23 @@ any other merge.
 The script `tools/quality-scope.sh` holds these rules. The workflow's first
 job runs it, and the gates read its answer.
 
-The feature's pull requests also run fewer hosted checks. In
-`.github/workflows/check.yml`, a pull request whose base is
-`feature/monitor-links` or a `monitor-links/*` branch runs its Linux jobs
-only. Its macOS and Windows jobs are skipped, whatever the repository
-variables say. Every platform runs on the pull request that merges
-`feature/monitor-links` into `main`.
+The feature's pull requests also run fewer hosted checks in
+`.github/workflows/check.yml`. A pull request whose base is
+`feature/monitor-links` or a `monitor-links/*` branch runs no macOS job,
+whatever the repository variables say. Its Windows jobs depend on its head:
+
+- From a Stack W branch it runs every Windows job: the neutral job's Windows
+  leg, and the Windows Scope, Test, Dist and Archive jobs, with the scope
+  forced to test.
+- From any other branch it runs the same Windows jobs only when it changes
+  Windows-only code, as `cargo xtask windows-changed` decides against the
+  pull request's base, so that a Windows-only edit never merges untested.
+  Otherwise it runs Linux only.
+
+The Windows Quality job never runs on these pull requests: the manual runs
+above gate them. Every platform runs on the pull request that merges
+`feature/monitor-links` into `main`. The script `tools/check-platforms.sh`
+holds these rules, and the workflow's first job runs it.
 
 ## Skipping a squash-merge's gates on main
 
@@ -536,7 +560,8 @@ that reaches it, ends the job's processes, and the runner takes the next job.
 ## Sharing the PC
 
 The Linux gate and the Windows gate run on the same PC, the Windows one
-inside the VM, and they run at the same time. So the workflow limits their
+inside the VM, and they run at the same time, except on a Stack W branch,
+where the Windows gate waits for the Linux one. So the workflow limits their
 mutation workers, set in `quality.yml`: four on Linux, two on Windows.
 
 How many is a trade-off. With 6 workers each, with 2 build jobs and 2 test

@@ -93,6 +93,7 @@ under [Decisions with no scenario](#decisions-with-no-scenario).
 | CM | [Command and configuration surface for relays and links](https://github.com/jackgeek/climon2/issues/478#issuecomment-7228779376) |
 | R | [What the relay and hub monitor record about links](https://github.com/jackgeek/climon2/issues/479#issuecomment-7228936965) |
 | W | [The link protocol's records for link revision 1](https://github.com/jackgeek/climon2/issues/480#issuecomment-7229751020) |
+| M | [The user stories of the monitor links specification](https://github.com/jackgeek/climon2/issues/488), as amended for Windows on 2026-11-28. Only the [Windows](#windows) scenarios cite it, for the stories that amendment added or changed. |
 
 The messages and records these scenarios name are specified byte for byte in
 the [monitor link protocol](../../protocol/monitor-link/README.md) for link revision 1. Its
@@ -133,6 +134,7 @@ hold the numbers the scenarios quote.
 | SEC-05 | While a hub monitor is linked, open unauthenticated connections up to and past the limit of 8, hold each open, and forge an opening refusal on a new dial. | The established link is never cut or delayed. The ninth connection is refused at once, and each held one is closed at 30 seconds. A forged refusal costs the dialler one dial and nothing else. | T5, V19, LM8 | Link, Relay, Fault |
 | SEC-06 | Move the relay to another address and port and edit the address on the hub monitor. Put a different relay at the remembered address. Link successfully through a second address. | The moved relay links with no PIN. The different relay fails the handshake and the record is unchanged. A link that succeeds on a different address replaces the stored one. An address is never evidence of identity. | T13-14, ST12 | Link, Pair, Fault |
 | SEC-07 | As a second local user on either machine, read `links/`, the logs and the configuration, and connect to the relay's listener. | The files are unreadable. The listener gives that user no more than SEC-04 and SEC-05 give any network attacker. | T6 | Pair, Fault |
+| SEC-07-W | On Windows, as a second account that is not an administrator, open `links/`, each file in it, the relay's log and the links status file, and connect to the relay's listener. | Every open is denied. The listener gives that account no more than SEC-04 and SEC-05 give any network attacker. | T6, M48, M119 | Contract, Pair |
 | SEC-08 | Run the link code against published and frozen known answers: the published CPace vectors for ristretto255 with SHA-512, a published Noise `IK_25519_ChaChaPoly_SHA256` vector, and climon2's own frozen vectors for the pairing key schedule and for binding the opening exchange into both key exchanges. | The link code produces the expected bytes exactly. Replacing or upgrading a cryptographic crate cannot change them unnoticed. | T12, W1 | Link |
 | SEC-09 | Pair with a stolen invitation before its owner does, then let the owner try. Forget a hub monitor on the relay, then dial with its key. | The first pairing consumes the invitation and the relay shows who paired, by name and fingerprint. The owner's attempt fails. A forgotten key gets only "not paired". | T8, T10-11 | Link, Pair |
 | SEC-10 | Run every Relay and Pair scenario. | The [blanket checks](#blanket-checks) pass. | T18, P26, R16-17, ST1, ST4 | Relay, Pair |
@@ -149,6 +151,7 @@ hold the numbers the scenarios quote.
 | REV-06 | On the relay's machine, run sessions from the release under test and from the [second-release fixture](../../../../GLOSSARY.md#testing), then remove one session's version folder. Open each from the hub monitor, which has neither release's libraries for them. | Opening a stream states the client interface revision and passes the library's capability list unchanged. The relay loads each session's own release's client library once. A session with a missing version folder is still advertised; opening it is a failed start that names the cause, as for a local session. The hub monitor needs none of the relay's releases. | V11-13 | Relay, Pair |
 | REV-07 | Replay every [protocol transcript](#protocol-transcripts) of every supported link revision. | Each end reproduces the recorded bytes exactly, in every test run of every release. | V2, V5 | Link |
 | REV-08 | With a hub monitor linked, install the second-release fixture as the current version. Repeat with an invitation live, and with the relay on hold. | The relay closes the link with "restarting for an upgrade", shows the version it restarts into, and runs the new version in the same terminal with its original arguments. With an invitation live it waits, at most 5 minutes. The hub monitor reconnects without a PIN. A hold survives. If the new version fails to start, its error shows and nothing falls back. | X15-19, RT14 | Pair |
+| REV-08-W | REV-08 with the relay on Windows. Dial the relay, and start a second relay in its home, while it restarts. | As REV-08, except that the relay hands its open listening socket and its home lock to the new version's relay, starts it in the same console with its original arguments, and waits for it, passing its status through. The port never closes: the dial is not refused, and the second relay fails to start. | X15-19, RT14, M15 | Pair |
 
 ## Advertisement
 
@@ -228,6 +231,7 @@ hold the numbers the scenarios quote.
 |---|---|---|---|---|
 | RLY-01 | Start the relay with `c2 relay` and `c2 r`, without a terminal, twice in one home, in two homes, and on a port already in use. Run `c2 exec`, the monitor and an install without starting one. Leave it with no sessions, link or pairing. | Both commands run `climon2-relay` from the CLI's own version. It refuses to start without a terminal. A second start in the same home fails and names the running relay; two homes run two relays. The listener is bound once at start and a bind failure is a start failure. Nothing but the command starts a relay, and an idle relay keeps running. | X1-2, X4, X7, X9-11 | Relay |
 | RLY-02 | Stop the relay from its menu, with SIGTERM, and by closing its terminal, each while linked. Start it with an unknown flag and with each start failure. | Each stop is clean: the link closes with its reason and sessions keep running. The statuses are 0, 143 and 129. A usage error is 2. Any other start failure is 125, with the reason and the log file's name on stderr after the terminal is restored. A clean stop names no log. | X8, CM5, R3 | Relay, Pair |
+| RLY-02-W | On Windows, stop the relay from its menu, with a Ctrl+C and a Ctrl+Break console event, and by closing its console, each while linked. Start it with an unknown flag and with each start failure. | Each stop is clean, as in RLY-02, and the relay sends the link's Close before Windows ends a closing console. The statuses are 0, 130, 130 and 129; there is no 143. A usage error is 2 and any other start failure 125, as in RLY-02. | X8, CM5, R3, M10, M12, M118 | Relay, Pair |
 | RLY-03 | Start the relay with no listen value, with `relay.listen`, with `--listen`, and with both. Give an IPv4 literal, an IPv6 literal, port 0, a host name and a missing port. | The default is `127.0.0.1:7222`. The flag overrides the setting, which is read once at start. IP literals with a port are accepted; a host name or a missing port is refused. With port 0 the screen shows the port actually bound. | CM1-4 | Contract, Relay |
 | RLY-04 | Drive the relay through each state: listening, pairing, linked, link lost, on hold, incompatible and restarting. | The top row is a coloured status bar naming the state, with the specified detail on the row under it. Three panes are always visible: sessions served, remembered hub monitors, and events. Unlinked, the sessions pane says the relay is not looking at sessions. The bottom row lists one letter per action. | X3, RT1-9 | Relay |
 | RLY-05 | Open pair, forget and stop, linked and unlinked. | Pair shows the PIN, the listen address as a hint, the time left and the attempts left. Forget lists the remembered hub monitors, asks "are you sure" and says what forgetting does. Stop asks for confirmation, defaulting to Cancel, only while a hub monitor is linked. | RT10, RT12-13 | Relay |
@@ -303,11 +307,49 @@ crates, which is left to the implementation.
 
 ### What Windows runs
 
-Monitor links on Windows are outside the first release. From that release the
-Windows test job still runs the whole Link layer and replays every fixture,
+The Windows test job runs the whole Link layer and replays every fixture,
 which proves the link code is the same there. Seam suites, Relay and Pair
-scenarios on Windows, and content fixtures recorded on Windows, wait until
-monitor links on Windows are specified.
+scenarios on Windows, and content fixtures recorded on Windows, are specified
+under [Windows](#windows) and wait for Stack W to build them.
+
+## Windows
+
+Monitor links were extended to Windows on 2026-11-28, at both ends. **Stack W**
+is the set of tickets that builds them there. The scenario rows in this
+section, and the Windows forms beside the scenarios they replace, were drafted
+from that amendment and await the developer's row-by-row review. None has run
+yet.
+
+A scenario whose Windows behaviour differs has a **Windows form**, with the
+same ID and a `-W` suffix, in the same table as the scenario: RLY-02-W,
+REV-08-W and SEC-07-W. On Windows the form is run instead of the scenario.
+Scenarios that exist only on Windows are numbered `WLNK-nn` and listed below.
+On Windows the Relay scenarios run under both
+[host models](../../windows/qualification.md) of the Windows qualification
+document and the Pair scenarios under its Windows Terminal model. LIM-07 is
+not run on Windows. No scenario pairs Windows with macOS or Linux: the
+[content fixtures](#content-fixtures) recorded on each platform are that
+evidence.
+
+Windows has no file modes. There, owner-only means climon2's **private
+descriptor**
+([ADR 0003](../../../adr/0003-platform-and-shell-seams.md), "Private files and
+folders"): the user as owner and one access-control entry granting that user
+full control, with nothing inherited. A **reparse point** is a file or folder
+that redirects to another location, as a junction does.
+On Windows the [blanket permissions check](#blanket-checks) reads each
+descriptor instead of a mode.
+
+| ID | Setup and action | Required observable result | Decisions | Layers |
+|---|---|---|---|---|
+| WLNK-01 | Give `links/` the descriptor it would inherit from climon2 home, add an access-control entry to its private descriptor, make `BUILTIN\Administrators` its owner, and replace it with a junction. Use it each time. | Each `links/` is refused with the "unsafe runtime directory" error, which names the path and the problem. It is left exactly as it was, and nothing in it is read or written. | M48, M119 | Contract |
+| WLNK-02 | Make a key file a reparse point, a folder, a file another account owns, a file with an extra access-control entry, and an empty file, and read each. Replace a key file while another climon2 process reads it, and while another program holds it open without delete sharing. | Each listed key file is damaged, and the error names it. The replace during climon2's read succeeds. The replace during the other program's hold fails after a bounded retry, names the file, and leaves the old file and no temporary file. | M48, M119 | Contract |
+| WLNK-03 | While a relay listens, bind its address and port from another socket, with and without `SO_REUSEADDR`, from the same account and from a second one, on the relay's address and on the wildcard address. Start a relay on a port another program has bound. | Every bind fails while the relay runs, and the hub monitor's dials still reach the relay. A port already bound is a start failure, status 125. | M120 | Contract, Relay |
+| WLNK-04 | While a hub monitor is linked, deliver the sign-out and the shutdown console events to the relay. | Each is handled as a closed console: the relay sends the link's Close with its reason before Windows ends it, and its status is 129. Every session keeps running. | M10, M12, M118 | Relay |
+| WLNK-05 | Start the relay on a loopback address, then on an address that is not loopback. | While it listens on the address that is not loopback, and only then, the relay's screen warns that Windows Defender Firewall may block it. No firewall rule changes. | M121 | Relay |
+| WLNK-06 | In every platform's test job, replay on the hub monitor's side the content fixtures recorded on Windows. | The terminal oracle matches the expectations written by hand for each script, including Windows native paths and titles with unpaired UTF-16 surrogates, and an ending with a Windows status such as `0xC000013A`. | M114, M116 | Contract |
+| WLNK-07 | Hold the relay's home lock, start a second relay in the same home and a child process of the holder, then end the holder with `TerminateProcess` and start a relay again. | The second relay fails to start and names the running one. The child does not hold the lock. Once the holder ends, however it ends, the next relay starts at once. | M4, M116 | Contract |
+| WLNK-08 | Install the Windows release zip and run `c2 relay` and `c2 r` from it. | The zip holds `<version>\climon2-relay.exe` and its exact-contents check names it. Both commands run that file from the CLI's own version. | M1, M116 | Relay |
 
 ## Fixtures
 
