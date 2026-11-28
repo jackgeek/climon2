@@ -1041,3 +1041,45 @@ fn an_ended_run_does_nothing_more() {
         &PairingRun::Paired(hub_introduction())
     );
 }
+
+/// PAIR-02: an invitation that expired before a counted run failed stays
+/// expired; the failure does not turn it into one used up.
+#[test]
+fn pair_02_a_failure_after_expiry_leaves_the_invitation_expired() {
+    let (invitations, pin) = invited();
+    for _ in 0..2 {
+        Harness::new(pairing_hub(&self::pin(WRONG)), pairing_relay(&invitations)).run();
+    }
+    assert_eq!(attempts_left(&invitations), 1);
+    let mut wire = Wire::new(pairing_hub(&pin), pairing_relay(&invitations));
+    wire.shares(290 * SECOND);
+
+    assert_eq!(wire.relay(301 * SECOND, Input::Closed), silent_close());
+
+    assert_eq!(wire.relay.pairing(), &PairingRun::Failed { counted: true });
+    assert_eq!(
+        invitations.invitation(at(301 * SECOND)),
+        Invitation::Expired
+    );
+}
+
+/// PAIR-03: a connection opened to link takes no pairing run, so a pairing
+/// run can start while it is open.
+#[test]
+fn pair_03_a_connection_opened_to_link_holds_no_pairing_run() {
+    let (invitations, pin) = invited();
+    let mut link = Harness::new(
+        HubEnd::new(Purpose::Link, revisions(&[1])),
+        pairing_relay(&invitations),
+    );
+    link.run();
+
+    let mut harness = Harness::new(pairing_hub(&pin), pairing_relay(&invitations));
+    harness.run();
+
+    assert_eq!(
+        harness.relay.pairing(),
+        &PairingRun::Paired(hub_introduction())
+    );
+    assert_eq!(link.relay.pairing(), &PairingRun::Pending);
+}

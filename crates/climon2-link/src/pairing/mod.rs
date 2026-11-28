@@ -261,3 +261,72 @@ fn closing(bytes: Vec<u8>) -> Output {
         deadline: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Randomness that hands out the bytes a test wrote, in order.
+    struct Scripted(Vec<u8>);
+
+    impl Randomness for Scripted {
+        fn fill(&mut self, bytes: &mut [u8]) {
+            for byte in bytes {
+                *byte = self.0.remove(0);
+            }
+        }
+    }
+
+    fn drawn(numbers: &[u32]) -> String {
+        let bytes = numbers.iter().flat_map(|number| number.to_be_bytes());
+        Pin::draw(&mut Scripted(bytes.collect())).to_string()
+    }
+
+    #[test]
+    fn a_pin_is_four_random_bytes_as_a_number_below_4_2_billion() {
+        assert_eq!(drawn(&[0]), "0000-0000");
+        assert_eq!(drawn(&[12_345_678]), "1234-5678");
+        assert_eq!(drawn(&[4_199_999_999]), "9999-9999");
+        assert_eq!(drawn(&[100_000_000]), "0000-0000");
+    }
+
+    #[test]
+    fn a_draw_that_would_favour_the_low_pins_is_drawn_again() {
+        assert_eq!(drawn(&[4_200_000_000, 7]), "0000-0007");
+        assert_eq!(drawn(&[u32::MAX, 4_200_000_001, 87_654_321]), "8765-4321");
+    }
+
+    fn plaintext(length: u8, name: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![5; KEY_SIZE];
+        bytes.push(length);
+        bytes.extend(name);
+        bytes
+    }
+
+    #[test]
+    fn a_box_holds_a_key_a_length_and_that_many_bytes_of_utf_8() {
+        let introduction = Introduction::new([5; KEY_SIZE], "büild").unwrap();
+        assert_eq!(introduction.encode(), plaintext(6, "büild".as_bytes()));
+        assert_eq!(
+            Introduction::decode(&plaintext(6, "büild".as_bytes())),
+            Some(introduction)
+        );
+        let empty = Introduction::new([5; KEY_SIZE], "").unwrap();
+        assert_eq!(Introduction::decode(&plaintext(0, b"")), Some(empty));
+    }
+
+    #[test]
+    fn a_box_that_breaks_its_layout_holds_nothing() {
+        let long = [b'x'; 65];
+        for broken in [
+            plaintext(5, b"build-box"),
+            plaintext(9, b"build"),
+            plaintext(2, &[0xc3, 0x28]),
+            plaintext(65, &long),
+            vec![5; KEY_SIZE],
+            vec![5; KEY_SIZE - 1],
+        ] {
+            assert_eq!(Introduction::decode(&broken), None, "{broken:?}");
+        }
+    }
+}
