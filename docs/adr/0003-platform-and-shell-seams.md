@@ -26,6 +26,19 @@ the test harness as shell profiles.
 8. Installer default directory and same-version clobber
 9. Exit-status mapping
 10. Process start time (for the stale-metadata PID-reuse check, ADR 0005)
+11. Monitor link sockets: a TCP listener and dialler that keep connect, accept
+    and read deadlines
+12. Key storage: the owner-only `links/` folder, atomic writes, and a damaged
+    file as an error
+13. Randomness from the operating system's generator
+14. The clock: monotonic time for deadlines and wall time for dates
+
+Seams 11 to 14 serve monitor links
+([#488](https://github.com/jackgeek/climon2/issues/488)). The link code
+reaches none of them: its callers do, and pass time and randomness in. Each
+has one contract suite, `tests/seam_*.rs` in `climon2-platform`, that every
+platform's implementation passes by itself. Key storage is Unix-only until
+monitor links on Windows are specified.
 
 More seams may emerge after the first release. Everything else counts as platform-neutral.
 
