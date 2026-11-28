@@ -6,7 +6,7 @@
 //! for the application is translated to its cells, below the top row, and
 //! encoded as its mouse modes ask; a gesture whose target stops taking input
 //! is discarded through its release, never sent anywhere else.
-use climon2_vt::view::{Modes, MouseEncoding, MouseReporting};
+use climon2_monitor::view::{Modes, MouseEncoding, MouseReporting};
 
 /// One SGR mouse report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

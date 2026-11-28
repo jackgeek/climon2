@@ -1,6 +1,6 @@
 fn main() -> std::process::ExitCode {
     climon2_core::test_hook_marker!();
-    match climon2_monitor::run() {
+    match climon2_monitor_tui::run() {
         Ok(status) => std::process::ExitCode::from(status as u8),
         Err(error) => {
             eprintln!("climon2: error: {error}");

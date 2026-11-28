@@ -299,11 +299,24 @@ dependencies = [
  "climon2-vt",
  "fuzzy-matcher",
  "libc",
- "ratatui",
- "ratatui-core",
  "serde_json",
  "tempfile",
  "time",
+ "tracing",
+ "unicode-width",
+]
+
+[[package]]
+name = "climon2-monitor-tui"
+version = "0.1.0-rc.1"
+dependencies = [
+ "climon2-core",
+ "climon2-monitor",
+ "climon2-platform",
+ "climon2-vt",
+ "ratatui",
+ "ratatui-core",
+ "tempfile",
  "tracing",
  "unicode-width",
 ]
@@ -348,7 +361,7 @@ dependencies = [
  "climon2-core",
  "climon2-daemon",
  "climon2-install",
- "climon2-monitor",
+ "climon2-monitor-tui",
  "climon2-platform",
  "nix 0.31.3",
  "portable-pty",

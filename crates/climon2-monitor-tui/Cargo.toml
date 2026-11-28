@@ -1,0 +1,33 @@
+[package]
+name = "climon2-monitor-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "climon2-monitor"
+path = "src/main.rs"
+
+[features]
+test-hooks = ["climon2-monitor/test-hooks"]
+
+[dependencies]
+climon2-core = { path = "../climon2-core" }
+climon2-monitor = { path = "../climon2-monitor" }
+climon2-platform = { path = "../climon2-platform" }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+# Only to paint SGR 58 underline colours; `ratatui/underline-color` would also
+# lock every optional backend.
+ratatui-core = { version = "0.1.2", default-features = false, features = ["underline-color"] }
+tracing = "0.1.44"
+unicode-width = "0.2.3"
+
+[dev-dependencies]
+# Only to build the terminal models its tests show: shipped code sees the
+# monitor library's read-only views (ADR 0011, rule 4).
+climon2-vt = { path = "../climon2-vt" }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

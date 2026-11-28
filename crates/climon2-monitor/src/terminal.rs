@@ -6,7 +6,8 @@
 //! selected controller) are its outputs. The model never answers queries
 //! and nothing here writes to the host.
 use climon2_core::protocol::TerminalSize;
-pub(crate) use climon2_embed::request::{Authority, Paste, Request};
+pub use climon2_embed::request::Authority;
+pub(crate) use climon2_embed::request::{Paste, Request};
 use climon2_vt::{Geometry, Limits, Model, Parser, Rejected, view::View};
 
 /// Why the daemon revoked this monitor's control.
@@ -64,7 +65,7 @@ const PASTE_TRUNCATED: &str = "Paste truncated";
 
 /// The control the monitor holds, as the top row names it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Control {
+pub enum Control {
     /// Acquire is submitted and not yet answered or granted.
     Acquiring,
     /// Control is held, but its restoration is not yet applied and ready.
@@ -79,7 +80,8 @@ pub(crate) enum Control {
 }
 
 impl Control {
-    pub(crate) fn label(self) -> &'static str {
+    /// What the top row says of it.
+    pub fn label(self) -> &'static str {
         LABELS[self as usize]
     }
 }

@@ -8,7 +8,7 @@ fn selected(point: &str) -> bool {
 }
 
 /// Fails the selected point.
-pub(crate) fn fail(point: &str) -> io::Result<()> {
+pub fn fail(point: &str) -> io::Result<()> {
     if selected(point) {
         return Err(io::Error::other(format!("injected {point} failure")));
     }
@@ -17,7 +17,7 @@ pub(crate) fn fail(point: &str) -> io::Result<()> {
 
 /// The `poll` fault fails the wait for host input as the kernel fails a wait
 /// given no descriptor table: with EFAULT, which is 14 on Linux and macOS.
-pub(crate) fn wait_failure() -> io::Result<()> {
+pub fn wait_failure() -> io::Result<()> {
     const EFAULT: i32 = 14;
     if selected("poll") {
         return Err(io::Error::from_raw_os_error(EFAULT));
@@ -45,7 +45,7 @@ pub(crate) fn identifiers(
 
 /// Stalls the selected point for good: a thread that never finishes, for
 /// the fail-stop (#118).
-pub(crate) fn stall(point: &str) {
+pub fn stall(point: &str) {
     while selected(point) {
         std::thread::park();
     }

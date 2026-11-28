@@ -1,36 +1,31 @@
-//! Everything that can refuse the monitor, checked in order before the host
-//! terminal changes: terminals, the climon2 home and executable home, then the
-//! one configuration snapshot, whose limits must hold one session's terminal
-//! model. The key introduction's preference is read last; it never refuses
-//! the monitor.
-use crate::{Error, preference::Preference};
+//! Everything of a start that can refuse the monitor whatever its
+//! consumer, checked in order: the climon2 home and executable home, then
+//! the one configuration snapshot, whose limits must hold one session's
+//! terminal model. A consumer checks its own device first.
+use crate::Error;
 use climon2_core::{
-    VersionName,
+    SessionId, VersionName,
     config::{ConfigError, ConfigSource, MandatoryAllocation, MonitorConfig},
-    exit::CLIMON2_ERROR,
     layout::{ExecutableHome, ExecutableLayout, HomeLayout, VersionBinary},
     protocol::TerminalSize,
 };
-use climon2_platform::{home, logging::LogFile, terminal};
-use climon2_vt::{Geometry, Mandatory, Model, Parser};
+use climon2_platform::{home, logging::LogFile};
+use climon2_vt::{Geometry, Mandatory, Model, Parser, Presentation};
 use std::{io, path::Path};
 
-/// A validated start: nothing has touched the host terminal yet.
-pub(crate) struct Startup {
-    pub(crate) log: LogFile,
-    pub(crate) version: VersionName,
+/// A validated start: nothing has touched a consumer's device yet.
+pub struct Startup {
+    pub log: LogFile,
+    pub version: VersionName,
     /// The canonical climon2 home, whose sessions the monitor discovers.
-    pub(crate) home: HomeLayout,
+    pub home: HomeLayout,
     /// Where each session's exact-release client library is loaded from.
-    pub(crate) executable: ExecutableHome,
-    pub(crate) config: MonitorConfig,
-    pub(crate) preference: Preference,
+    pub executable: ExecutableHome,
+    pub config: MonitorConfig,
 }
 
 impl Startup {
-    pub(crate) fn read() -> Result<Self, Error> {
-        terminal::require_ttys()
-            .map_err(|_| Error::new(CLIMON2_ERROR, "c2 monitor needs a terminal"))?;
+    pub fn read() -> Result<Self, Error> {
         let home = home::canonical()?;
         let log = LogFile::monitor(&home)?;
         Self::configured(&home, log)
@@ -46,7 +41,6 @@ impl Startup {
         Ok(Self {
             log,
             version: installed.version().clone(),
-            preference: Preference::read(&home),
             home,
             executable: installed.home(),
             config,
@@ -101,4 +95,22 @@ fn largest_mandatory_allocation(history_rows: u32) -> MandatoryAllocation {
         current_model: current_model as u64,
         recent_page: recent_page as u64,
     }
+}
+
+/// The monitor's own enclosing session, if it runs inside one.
+pub fn own_session() -> Option<SessionId> {
+    let value = std::env::var_os("CLIMON2_SESSION_ID")?;
+    let parsed = value.to_str().and_then(|text| text.parse().ok());
+    if parsed.is_none() {
+        tracing::warn!("CLIMON2_SESSION_ID is not a session ID; no row is this monitor");
+    }
+    parsed
+}
+
+/// The documented normal-shell baseline (terminal contract, #63) for a
+/// host of `size`: what a consumer that owns a terminal returns it to. It
+/// is the release of a presentation that never entered an alternate
+/// screen.
+pub fn baseline(size: TerminalSize) -> Vec<u8> {
+    Presentation::new(size.cols, size.rows).release()
 }

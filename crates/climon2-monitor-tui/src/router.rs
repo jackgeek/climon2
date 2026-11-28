@@ -19,7 +19,7 @@ use crate::{
     mouse::{self, Mouse},
 };
 use climon2_core::keys::ControlKey;
-use climon2_vt::view::Modes;
+use climon2_monitor::view::Modes;
 
 /// A key, as the host sent it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -535,7 +535,7 @@ mod tests {
     use super::{Begin, Key, Pasted, Routed, Router};
     use crate::{keys::Action, mouse::Mouse};
     use climon2_core::keys::ControlKey;
-    use climon2_vt::view::{Modes, MouseEncoding, MouseReporting};
+    use climon2_monitor::view::{Modes, MouseEncoding, MouseReporting};
 
     const EXIT: Routed = Routed::Action(Action::Exit);
     const JUMP: Routed = Routed::Action(Action::Jump);
