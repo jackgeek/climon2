@@ -2,16 +2,17 @@
 //! (#494), as the Hello and Close pages and the shared rules publish them.
 //! A link peer stand-in sends the bytes, one deliberate defect at a time.
 
+mod samples;
 mod support;
 mod wire;
 
 use climon2_link::Output;
 use climon2_link::{
-    Ended, Hello, HubClose, HubEnd, Input, Link, Record, Refused, RelayClose, RelayEnd,
+    Advertisement, Ended, Hello, HubClose, HubEnd, Input, Link, Refused, RelayClose, RelayEnd,
+    RelayStream,
 };
 use std::time::Duration;
-use support::Harness;
-use wire::{SECOND, StandIn, hub_end, hub_key, paired, relay_end, relay_key, step};
+use wire::{SECOND, StandIn, hub_end, hub_key, relay_end, relay_key, step};
 
 /// The Hello the relay stand-in of these tests sends: `2.5.1`, `forge`,
 /// 4,096.
@@ -186,7 +187,8 @@ fn a_malformed_close_is_a_protocol_violation() {
 }
 
 /// A Hello that breaks its layout or a limit, a second Hello, and any
-/// record before Hello are protocol violations.
+/// record before Hello are protocol violations. So is the first unit of a
+/// session stream's record before Hello, though the record is not whole.
 #[test]
 fn a_bad_hello_or_a_record_out_of_turn_is_a_protocol_violation() {
     relay_refuses("a second Hello", |stand_in| stand_in.record(&wire::HELLO));
@@ -202,13 +204,14 @@ fn a_bad_hello_or_a_record_out_of_turn_is_a_protocol_violation() {
     );
     assert!(output.close);
 
-    for (what, stream, record) in [
-        ("a Close before Hello", 0, &[0x02, 0x00, 0x20][..]),
-        ("a session stream before Hello", 1, &wire::HELLO[..]),
+    for (what, stream, flags, record) in [
+        ("a Close before Hello", 0, 0, &[0x02, 0x00, 0x20][..]),
+        ("a session stream before Hello", 1, 0, &wire::HELLO[..]),
+        ("a session stream's unit before Hello", 1, 1, &[0x41][..]),
     ] {
         let mut relay = relay_end(relay_key(), &[hub_key().public()]);
         let mut stand_in = StandIn::dial(&mut relay, [0x11; 32], relay_key().public());
-        let early = stand_in.unit(stream, 0, record);
+        let early = stand_in.unit(stream, flags, record);
         let output = step(&mut relay, SECOND, Input::Bytes(&early));
         assert_eq!(stand_in.open(&output.bytes), [close_unit(8)], "{what}");
     }
@@ -351,56 +354,33 @@ fn a_hello_is_made_only_within_the_limits() {
     assert!(Hello::new("2", "", 4_095).is_none());
 }
 
-/// A record longer than one unit's fragment of 16,363 bytes crosses as
-/// several units on its stream, each at most 16,384 bytes of ciphertext,
-/// every one but the last flagged "more follows".
-#[test]
-fn a_long_record_crosses_as_several_units() {
-    let (hub, relay) = paired();
-    let mut harness = Harness::new(hub, relay);
-    harness.run();
-    let before = harness.sent_by_relay().len();
-    let body = vec![0xab; 2 * 16_363];
-    harness.relay.send(7, 0x81, &body).expect("sent");
-    harness.run();
-
-    let sent = wire::units(&harness.sent_by_relay()[before..]);
-    let lengths: Vec<_> = sent.iter().map(|unit| unit.len() - 2).collect();
-    assert_eq!(lengths, [16_384, 16_384, 5 + 1 + 16]);
-    let record = Record {
-        stream: 7,
-        tag: 0x81,
-        body,
-    };
-    assert_eq!(harness.hub.records(), [record]);
-}
-
 /// The units of one record arrive in order and form it; units of other
 /// streams may come between them, and a keepalive may come between the
 /// units of a session stream's record.
 #[test]
 fn fragments_form_records_with_other_streams_between_them() {
-    let (mut hub, mut stand_in) = linked_hub();
+    let (mut hub, mut stand_in) = samples::hub_streaming();
+    let (event, record) = samples::events().remove(1);
+    let session = samples::session_record();
     let bytes = [
-        stand_in.unit(3, 1, b"\x81fir"),
-        stand_in.unit(0, 1, b"\x10con"),
-        stand_in.unit(0, 0, b"trol"),
-        stand_in.unit(3, 1, b"st"),
+        stand_in.unit(1, 1, &record[..10]),
+        stand_in.unit(0, 1, &session[..20]),
+        stand_in.unit(0, 0, &session[20..]),
+        stand_in.unit(1, 1, &record[10..30]),
         stand_in.unit(0, 0, b""),
-        stand_in.unit(3, 0, b"!"),
+        stand_in.unit(1, 0, &record[30..]),
     ]
     .concat();
     let output = step(&mut hub, 2 * SECOND, Input::Bytes(&bytes));
 
     assert!(output.bytes.is_empty() && !output.close);
-    let record = |stream, tag, body: &[u8]| Record {
-        stream,
-        tag,
-        body: body.to_vec(),
-    };
+    let session = Advertisement::Session(samples::session());
     assert_eq!(
         hub.records(),
-        [record(0, 0x10, b"control"), record(3, 0x81, b"first!")]
+        [
+            samples::advertise(session),
+            samples::from_relay(1, RelayStream::Event(event)),
+        ]
     );
 }
 
@@ -414,6 +394,9 @@ fn a_unit_that_breaks_the_framing_is_a_protocol_violation() {
     relay_refuses("a length over 16,384", |_| vec![0x40, 0x01]);
     relay_refuses("a flag other than bit 0", |stand_in| {
         stand_in.unit(0, 0x02, b"\x41")
+    });
+    relay_refuses("a flag other than bit 0 beside it", |stand_in| {
+        stand_in.unit(0, 0x03, b"\x41")
     });
     relay_refuses("an empty fragment that is no keepalive", |stand_in| {
         stand_in.unit(1, 0, b"")
@@ -429,50 +412,70 @@ fn a_unit_that_breaks_the_framing_is_a_protocol_violation() {
     });
 }
 
-/// The control: the framing at its limits is accepted. A unit of exactly
-/// 16,384 bytes of ciphertext, a record exactly at the ceiling and a
-/// keepalive all pass without a reply.
+/// The control: the framing at its limits is accepted. A record exactly
+/// at the receiver's ceiling, a unit of exactly 16,384 bytes of ciphertext
+/// and a keepalive all pass without a reply.
 #[test]
 fn a_unit_at_the_limits_is_accepted() {
-    let (mut relay, sent, closed) = relay_given(|stand_in| {
-        [
-            stand_in.unit(1, 1, &[0x41; 4_000]),
-            stand_in.unit(1, 0, &[0x41; 96]),
-            stand_in.unit(0, 0, b""),
-        ]
-        .concat()
-    });
-    assert!(sent.is_empty() && !closed);
-    let records = relay.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].body.len(), 4_095);
+    let (mut relay, mut stand_in) = samples::relay_streaming();
+    let input = |size| {
+        let display = "00 00 00 00 00 00 00 03 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 01";
+        let head = wire::hex(&format!("42 00 00 00 00 00 00 00 09 {display}"));
+        [&head[..], &(size as u32).to_be_bytes(), &vec![b'x'; size]].concat()
+    };
+    let at_ceiling = input(4_096 - 37);
+    assert_eq!(at_ceiling.len(), 4_096);
+    let bytes = [
+        stand_in.unit(1, 1, &at_ceiling[..4_000]),
+        stand_in.unit(1, 0, &at_ceiling[4_000..]),
+        stand_in.unit(0, 0, b""),
+    ]
+    .concat();
+    let output = step(&mut relay, 2 * SECOND, Input::Bytes(&bytes));
+    assert!(output.bytes.is_empty() && !output.close);
+    assert_eq!(relay.records().len(), 1);
 
-    let (mut hub, sent, closed) = hub_given(|stand_in| stand_in.unit(2, 0, &[0x81; 16_363]));
-    assert!(sent.is_empty() && !closed);
-    assert_eq!(hub.records()[0].body.len(), 16_362);
+    let (mut hub, mut stand_in) = samples::hub_streaming();
+    let event = samples::display(16_363 - 29, 0x61);
+    let record =
+        [
+            &wire::hex(
+                "8a 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 01",
+            )[..],
+            &(16_334_u32).to_be_bytes(),
+            &[0x61; 16_334],
+        ]
+        .concat();
+    let unit = stand_in.unit(1, 0, &record);
+    assert_eq!(unit.len(), 2 + 16_384);
+    let output = step(&mut hub, 2 * SECOND, Input::Bytes(&unit));
+    assert!(output.bytes.is_empty() && !output.close);
+    assert_eq!(
+        hub.records(),
+        [samples::from_relay(1, RelayStream::Event(event))]
+    );
 }
 
-/// What an end refuses to send: anything before the link is established
-/// or after it ends, the tags of Hello and Close, which the link code sends
-/// itself, and a record longer than the other end accepts.
+/// An end refuses to send anything before the link is established or
+/// after it ends.
 #[test]
-fn an_end_refuses_what_it_may_not_send() {
+fn an_end_refuses_to_send_unless_linked() {
+    let open = samples::from_hub(1, samples::open_stream());
     let mut hub = hub_end(hub_key(), relay_key().public());
-    assert_eq!(hub.send(1, 0x41, b""), Err(Refused::NotLinked));
+    assert_eq!(hub.send(&open), Err(Refused::NotLinked));
     assert_eq!(hub.close(HubClose::Stopped), Err(Refused::NotLinked));
+    assert!(hub.records().is_empty());
+    let snapshot = samples::advertise(Advertisement::SnapshotComplete);
+    let mut relay = relay_end(relay_key(), &[hub_key().public()]);
+    assert_eq!(relay.send(&snapshot), Err(Refused::NotLinked));
+    assert_eq!(relay.close(RelayClose::Stopping), Err(Refused::NotLinked));
+    assert!(relay.records().is_empty());
 
     let (mut hub, _) = linked_hub();
-    assert_eq!(hub.send(0, 0x01, b""), Err(Refused::Reserved));
-    assert_eq!(hub.send(0, 0x02, b""), Err(Refused::Reserved));
-    assert_eq!(hub.send(1, 0x41, &[0; 4_095]), Ok(()));
-    assert_eq!(hub.send(1, 0x41, &[0; 4_096]), Err(Refused::TooLong));
+    assert_eq!(hub.send(&open), Ok(()));
     hub.close(HubClose::Stopped).expect("closed");
-    assert_eq!(hub.send(1, 0x41, b""), Err(Refused::NotLinked));
+    assert_eq!(hub.send(&open), Err(Refused::NotLinked));
     assert_eq!(hub.close(HubClose::Stopped), Err(Refused::NotLinked));
-
-    let (mut relay, _) = linked_relay();
-    assert_eq!(relay.send(1, 0x81, &[0; 1_048_575]), Ok(()));
-    assert_eq!(relay.send(1, 0x81, &[0; 1_048_576]), Err(Refused::TooLong));
 }
 
 /// A byte stream that closes before the link is established fails it, and
@@ -509,4 +512,26 @@ fn a_failed_end_does_nothing_more() {
     }
     assert_eq!(hub.link(), &Link::Ended(Ended::Failed));
     assert_eq!(relay.link(), &Link::Ended(Ended::Failed));
+}
+
+/// REV-04: capability tokens travel only in Hello. Link revision 1 sends
+/// none, and each end ignores tokens it does not know: a Hello that lists
+/// them establishes the link as one that lists none.
+#[test]
+fn rev_04_unknown_capability_tokens_are_ignored() {
+    let tokens: [&[u8]; 2] = [b"credit-v9", b"x"];
+    let hub_hello = hello_body(b"2.4.0", b"atlas", &tokens, 1_048_576);
+    assert!(relay_accepts_hello(&hub_hello));
+
+    let mut hub = hub_end(hub_key(), relay_key().public());
+    let mut stand_in = StandIn::answer(&mut hub, [0x22; 32]);
+    let relay_hello = hello_body(b"2.5.1", b"forge", &tokens, 4_096);
+    let bytes = stand_in.record(&relay_hello);
+    let output = step(&mut hub, SECOND, Input::Bytes(&bytes));
+    assert!(output.bytes.is_empty() && !output.close);
+    let Link::Established(peer) = hub.link() else {
+        panic!("linked");
+    };
+    assert_eq!(peer.hello, wire::relay_hello(), "the tokens are not kept");
+    assert_eq!(stand_in.first.bytes.len(), 2 + 5 + 27 + 16, "no token sent");
 }

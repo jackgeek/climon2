@@ -4,6 +4,7 @@
 //! independent implementation of the Noise pattern computed
 //! (`vectors/noise_ik.py`), not the crate under test.
 
+mod samples;
 mod support;
 mod wire;
 
@@ -162,25 +163,17 @@ fn sec_01_each_connection_uses_fresh_ephemeral_keys() {
 fn sec_01_an_established_link_carries_records_both_ways() {
     let mut harness = linked();
 
-    harness.hub.send(1, 0x41, b"to the relay").expect("sent");
-    harness.hub.send(0, 0x7f, b"").expect("sent");
-    harness
-        .relay
-        .end
-        .send(1, 0x81, b"to the hub")
-        .expect("sent");
+    let open = samples::from_hub(1, samples::open_stream());
+    harness.hub.send(&open).expect("sent");
     harness.run();
+    assert_eq!(harness.relay.end.records(), [open]);
 
-    let record = |stream, tag, body: &[u8]| climon2_link::Record {
-        stream,
-        tag,
-        body: body.to_vec(),
-    };
-    assert_eq!(
-        harness.relay.end.records(),
-        [record(1, 0x41, b"to the relay"), record(0, 0x7f, b"")]
-    );
-    assert_eq!(harness.hub.records(), [record(1, 0x81, b"to the hub")]);
+    let snapshot = samples::advertise(climon2_link::Advertisement::SnapshotComplete);
+    let opened = samples::from_relay(1, samples::stream_opened());
+    harness.relay.end.send(&snapshot).expect("sent");
+    harness.relay.end.send(&opened).expect("sent");
+    harness.run();
+    assert_eq!(harness.hub.records(), [snapshot, opened]);
     assert!(harness.relay.end.records().is_empty(), "taken once");
     assert!(harness.hub.records().is_empty(), "taken once");
 }
@@ -283,8 +276,12 @@ fn an_end_without_keys_has_no_link() {
     assert_eq!(hub.link(), &Link::Pending);
     assert_eq!(relay.link(), &Link::Pending);
     let refused = Err(climon2_link::Refused::NotLinked);
-    assert_eq!(hub.send(1, 0x41, b""), refused);
-    assert_eq!(relay.send(1, 0x81, b""), refused);
+    let snapshot = samples::advertise(climon2_link::Advertisement::SnapshotComplete);
+    assert_eq!(
+        hub.send(&samples::from_hub(1, samples::open_stream())),
+        refused
+    );
+    assert_eq!(relay.send(&snapshot), refused);
     assert_eq!(hub.close(climon2_link::HubClose::Stopped), refused);
     assert_eq!(relay.close(climon2_link::RelayClose::Stopping), refused);
     assert!(hub.records().is_empty() && relay.records().is_empty());

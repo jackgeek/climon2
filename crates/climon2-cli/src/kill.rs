@@ -65,3 +65,51 @@ fn confirm(mut child: Child, deadline: Instant, id: &SessionId) -> Result<u32, E
 fn code(status: ExitStatus) -> u32 {
     status.code().map_or(125, |code| code as u32)
 }
+
+// `confirm` reached through `c2 kill` races the helper's own deadline: the helper
+// usually reports first, so its deadline branch ran only in some runs and its
+// coverage, and so its CRAP score, changed from run to run. These drive it directly.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn id() -> SessionId {
+        SessionId::from_bytes([0x11; 16])
+    }
+
+    fn shell(script: &str) -> Child {
+        Command::new("/bin/sh")
+            .args(["-c", script])
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_helper_that_exits_gives_its_status() {
+        let deadline = Instant::now() + DEADLINE;
+        assert_eq!(confirm(shell("exit 3"), deadline, &id()).unwrap(), 3);
+    }
+
+    #[test]
+    fn a_signalled_helper_confirmed_nothing() {
+        let deadline = Instant::now() + DEADLINE;
+        assert_eq!(confirm(shell("kill -9 $$"), deadline, &id()).unwrap(), 125);
+    }
+
+    #[test]
+    fn a_helper_still_running_at_the_deadline_is_stopped_and_reaped() {
+        let child = shell("exec sleep 30");
+        let pid = child.id() as libc::pid_t;
+        let started = Instant::now();
+        let error = confirm(child, started + Duration::from_millis(50), &id()).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(error.code, 125);
+        assert_eq!(
+            error.message,
+            format!("termination of session {} was not confirmed", id())
+        );
+        // Reaped: no process, not even a zombie, has its pid any more.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    }
+}

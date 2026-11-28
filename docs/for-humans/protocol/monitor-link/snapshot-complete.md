@@ -1,6 +1,6 @@
 # Snapshot complete — `0x12`
 
-**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480), not implemented.**
+**Status: agreed in [#480](https://github.com/jackgeek/climon2/issues/480). The `climon2-link` crate implements its layout and the rule that it comes once; no released program speaks it yet.**
 The [relay](../../../../GLOSSARY.md#monitor-links) tells the
 [hub monitor](../../../../GLOSSARY.md#monitor-links) that it has advertised
 every session its first discovery pass found. See the

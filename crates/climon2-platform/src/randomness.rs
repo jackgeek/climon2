@@ -10,3 +10,9 @@ use std::io;
 pub fn fill(bytes: &mut [u8]) -> io::Result<()> {
     getrandom::fill(bytes).map_err(io::Error::from)
 }
+
+/// A number drawn whole from the same generator as [`fill`], with the same
+/// failure and no fallback.
+pub fn u64() -> io::Result<u64> {
+    getrandom::u64().map_err(io::Error::from)
+}
