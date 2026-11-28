@@ -72,6 +72,7 @@ pub enum VersionBinary {
     Daemon,
     Client,
     Monitor,
+    Relay,
 }
 
 impl VersionBinary {
@@ -81,6 +82,7 @@ impl VersionBinary {
             Self::Daemon => "climon2-daemon",
             Self::Client => "climon2-client",
             Self::Monitor => "climon2-monitor",
+            Self::Relay => "climon2-relay",
         }
     }
 

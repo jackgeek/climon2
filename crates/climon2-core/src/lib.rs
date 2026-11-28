@@ -16,6 +16,7 @@ mod names;
 pub mod native;
 pub mod preferences;
 pub mod protocol;
+pub mod relay;
 pub mod selector;
 pub mod session;
 pub mod startup_envelope;

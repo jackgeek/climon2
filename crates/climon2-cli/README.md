@@ -6,7 +6,7 @@ single-letter shortcut that is a pure synonym (`x`, `a`, `k`, `l`, `m`; `r` is
 reserved for `relay`), `-h` is the short form of `--headless`, `-n` of
 `--nested` (#139), and help has only `--help` (#287). exec's options come
 before the command, in either order, each at most once. The usage string is
-`usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m`.
+`usage: c2 exec|x [--headless|-h] [--nested|-n] <command> [args...] | attach|a <session-id> | kill|k <session-id> | list|l [--json] | monitor|m | relay|r [--listen <ip>:<port>]`.
 
 `run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error>`
 excludes argv[0]. `Error` exposes `code`, `message`, and optional absolute `logs`.

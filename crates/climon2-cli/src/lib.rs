@@ -5,18 +5,19 @@ mod client;
 mod exec;
 mod kill;
 pub mod list;
-mod monitor;
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod native;
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod native;
+mod sibling;
 
 use climon2_core::{
     cli::{CliArgs, CommandArgs},
     layout::{ExecutableLayout, VersionBinary},
     lifetime::Lifetime,
+    relay::RelayArgs,
     selector::Selector,
     session::NestedStart,
 };
@@ -31,7 +32,8 @@ pub use climon2_core::failure::Failure as Error;
 
 /// Arguments exclude argv[0]. Success is a final status, except successful
 /// ordinary exec or attach, which replace this process with the metadata
-/// version's client, and monitor, which replaces it with this version's monitor.
+/// version's client, and monitor and relay, which replace it with this
+/// version's monitor and relay.
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
     let arguments =
         CliArgs::parse(arguments).map_err(|error| Error::new(error.exit_code(), error))?;
@@ -52,11 +54,12 @@ enum Work {
 }
 
 /// Subcommands that another executable of a version folder carries out: the
-/// client attaches or kills, and the monitor monitors.
+/// client attaches or kills, the monitor monitors and the relay relays.
 enum Handoff {
     Attach(Selector),
     Kill(Selector),
     Monitor,
+    Relay(RelayArgs),
 }
 
 fn work(arguments: CliArgs) -> Result<Work, String> {
@@ -76,6 +79,7 @@ fn handoff(arguments: CliArgs) -> Result<Handoff, String> {
         CliArgs::Attach(selector) => Ok(Handoff::Attach(selector)),
         CliArgs::Kill(selector) => Ok(Handoff::Kill(selector)),
         CliArgs::Monitor => Ok(Handoff::Monitor),
+        CliArgs::Relay(arguments) => Ok(Handoff::Relay(arguments)),
         other => Err(presentation(&other)),
     }
 }
