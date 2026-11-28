@@ -185,16 +185,22 @@ impl Drop for Links {
 /// Accepts until the relay stops, giving each connection a thread.
 fn accept(listener: &LinkListener, stopping: &AtomicBool, relay: &Arc<Relay>) {
     while !stopping.load(Ordering::Relaxed) {
-        match listener.accept(ACCEPT_TICK) {
-            Ok(stream) => {
-                let relay = Arc::clone(relay);
-                thread::spawn(move || connection(stream, &relay));
-            }
-            Err(error) => {
-                if let Some(rest) = rest(&error) {
-                    tracing::warn!(%error, "relay cannot accept a connection");
-                    thread::sleep(rest);
-                }
+        accepted(listener.accept(ACCEPT_TICK), relay);
+    }
+}
+
+/// Gives an accepted connection its thread, and rests after the listener
+/// failed.
+fn accepted(accepted: io::Result<LinkStream>, relay: &Arc<Relay>) {
+    match accepted {
+        Ok(stream) => {
+            let relay = Arc::clone(relay);
+            thread::spawn(move || connection(stream, &relay));
+        }
+        Err(error) => {
+            if let Some(rest) = rest(&error) {
+                tracing::warn!(%error, "relay cannot accept a connection");
+                thread::sleep(rest);
             }
         }
     }

@@ -7,7 +7,7 @@
 
 use climon2_core::{
     layout::HomeLayout,
-    pairing::{self, PrivateKey, PublicKey as StoredKey, Relay},
+    pairing::{self, Pairings, PrivateKey, PublicKey as StoredKey, Relay},
 };
 use climon2_link::{
     Carrier, Ended, Hello, HubClose, HubEnd, Introduction, Link, Next, Opening, PairingRun,
@@ -38,41 +38,52 @@ pub struct Paired {
     pub fingerprint: String,
 }
 
-/// Why a pairing did not happen. Each names the address as typed. Nothing
-/// is remembered of a relay that was not paired with.
+/// Why a pairing did not happen. Nothing is remembered of a relay that was
+/// not paired with.
 #[derive(Debug)]
 pub enum Unpaired {
     /// The home's pairing store cannot be read or written.
     Store(io::Error),
-    /// Nothing answered at the address.
+    /// Nothing answered at the address, as typed.
     Unreachable(String, io::Error),
-    /// The relay's user has no link invitation open (P25).
-    NoInvitation(String),
+    /// The relay at the address, as typed, did not pair (P25).
+    Refused(String, Refusal),
+}
+
+/// How a relay that answered did not pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Its user has no link invitation open.
+    NoInvitation,
     /// The pairing run failed: a wrong PIN, interference, or no relay.
-    Failed(String),
-    /// The relay shares no link revision with this monitor.
-    Incompatible(String, Vec<u16>),
+    Failed,
+    /// It shares no link revision with this monitor; these are its own.
+    Incompatible(Vec<u16>),
     /// The pairing ran, but the first pinned-key link did not succeed.
-    FirstLink(String),
+    FirstLink,
 }
 
 impl fmt::Display for Unpaired {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let failed =
-            |address: &str, why: &str| format!("pairing with the relay at {address} failed: {why}");
-        let text = match self {
-            Self::Store(error) => error.to_string(),
+        match self {
+            Self::Store(error) => write!(formatter, "{error}"),
             Self::Unreachable(address, error) => {
-                format!("cannot reach the relay at {address}: {error}")
+                write!(formatter, "cannot reach the relay at {address}: {error}")
             }
-            Self::NoInvitation(address) => {
-                format!("the relay at {address} has no link invitation open")
-            }
-            Self::Failed(address) => failed(address, "wrong PIN or interference"),
-            Self::Incompatible(address, theirs) => failed(address, &incompatible(theirs)),
-            Self::FirstLink(address) => failed(address, "its first link did not succeed"),
-        };
-        formatter.write_str(&text)
+            Self::Refused(address, refusal) => formatter.write_str(&refusal.text(address)),
+        }
+    }
+}
+
+impl Refusal {
+    fn text(&self, address: &str) -> String {
+        let failed = |why: &str| format!("pairing with the relay at {address} failed: {why}");
+        match self {
+            Self::NoInvitation => format!("the relay at {address} has no link invitation open"),
+            Self::Failed => failed("wrong PIN or interference"),
+            Self::Incompatible(theirs) => failed(&incompatible(theirs)),
+            Self::FirstLink => failed("its first link did not succeed"),
+        }
     }
 }
 
@@ -98,11 +109,25 @@ pub fn pair(
     largest_record: u32,
 ) -> Result<Paired, Unpaired> {
     let store = KeyStore::open(&home.links()).map_err(Unpaired::Store)?;
-    let mut relays = pairing::load_relays(&store).map_err(Unpaired::Store)?;
+    let relays = pairing::load_relays(&store).map_err(Unpaired::Store)?;
+    let met = meet(address, pin, largest_record)?;
+    remember(&store, relays, address, met).map_err(Unpaired::Store)
+}
+
+/// A relay that paired and then linked: its introduction, and this hub
+/// monitor's keypair for it.
+struct Met {
+    relay: Introduction,
+    own: StaticKey,
+    private: PrivateKey,
+}
+
+/// Pairs with the relay at `address`, then links with it once.
+fn meet(address: &str, pin: Pin, largest_record: u32) -> Result<Met, Unpaired> {
     let (own, private) = fresh_key();
     let name = own_name();
     let introduction =
-        Introduction::new(*own.public().as_bytes(), &name).expect("a name cut to 64 bytes fits");
+        Introduction::new(*own.public().as_bytes(), &name).expect("a display name fits");
     let relay = run_pairing(
         address,
         HubEnd::pair(Revisions::published(), pin, introduction),
@@ -110,17 +135,31 @@ pub fn pair(
     let relay_key = PublicKey::from_bytes(*relay.key());
     let hello = Hello::new(env!("CARGO_PKG_VERSION"), &name, largest_record)
         .expect("this release's Hello is valid");
-    first_link(
-        address,
-        HubEnd::dialling(Revisions::published(), own.clone(), relay_key, hello),
-    )?;
+    let dialling = HubEnd::dialling(Revisions::published(), own.clone(), relay_key, hello);
+    first_link(address, dialling)?;
+    Ok(Met {
+        relay,
+        own,
+        private,
+    })
+}
+
+/// Records the relay `met` at `address`, connected and linked now, in
+/// `relays`, and writes them to `store`.
+fn remember(
+    store: &KeyStore,
+    mut relays: Pairings<Relay>,
+    address: &str,
+    met: Met,
+) -> io::Result<Paired> {
     let now = clock::wall().as_secs();
+    let relay_key = PublicKey::from_bytes(*met.relay.key());
     let record = Relay {
-        name: display_name(relay.name()),
+        name: display_name(met.relay.name()),
         address: address.to_owned(),
         relay_public_key: StoredKey::new(*relay_key.as_bytes()),
-        public_key: StoredKey::new(*own.public().as_bytes()),
-        private_key: private,
+        public_key: StoredKey::new(*met.own.public().as_bytes()),
+        private_key: met.private,
         paired_at: now,
         last_linked_at: Some(now),
         disconnected: false,
@@ -129,8 +168,8 @@ pub fn pair(
         name: record.name.clone(),
         fingerprint: relay_key.fingerprint(),
     };
-    relays.insert(record).map_err(|_| Unpaired::Store(full()))?;
-    pairing::save_relays(&store, &relays).map_err(Unpaired::Store)?;
+    relays.insert(record).map_err(|_| full())?;
+    pairing::save_relays(store, &relays)?;
     Ok(paired)
 }
 
@@ -158,26 +197,32 @@ fn own_name() -> String {
 fn run_pairing(address: &str, mut end: HubEnd) -> Result<Introduction, Unpaired> {
     let mut wire = dial(address)?;
     drive(&mut end, &mut wire, &mut System, |_| Ok(Next::Wait)).expect("nothing refuses a step");
-    match (end.opening(), end.pairing()) {
+    outcome(end.opening(), end.pairing())
+        .map_err(|refusal| Unpaired::Refused(address.to_owned(), refusal))
+}
+
+/// What a pairing connection that ended with `opening` and `pairing` gave.
+fn outcome(opening: &Opening, pairing: &PairingRun) -> Result<Introduction, Refusal> {
+    match (opening, pairing) {
         (_, PairingRun::Paired(relay)) => Ok(relay.clone()),
-        (Opening::PairingUnavailable, _) => Err(Unpaired::NoInvitation(address.to_owned())),
-        (Opening::Incompatible { theirs }, _) => Err(Unpaired::Incompatible(
-            address.to_owned(),
-            theirs.as_slice().to_vec(),
-        )),
-        _ => Err(Unpaired::Failed(address.to_owned())),
+        (Opening::PairingUnavailable, _) => Err(Refusal::NoInvitation),
+        (Opening::Incompatible { theirs }, _) => {
+            Err(Refusal::Incompatible(theirs.as_slice().to_vec()))
+        }
+        _ => Err(Refusal::Failed),
     }
 }
 
 /// Runs the first pinned-key link until it is established, then closes it
 /// as "hub monitor disconnected".
 fn first_link(address: &str, mut end: HubEnd) -> Result<(), Unpaired> {
-    let mut wire = dial(address).map_err(|_| Unpaired::FirstLink(address.to_owned()))?;
+    let first_link = || Unpaired::Refused(address.to_owned(), Refusal::FirstLink);
+    let mut wire = dial(address).map_err(|_| first_link())?;
     drive(&mut end, &mut wire, &mut System, disconnect_once_linked)
         .expect("nothing refuses a step");
     match end.link() {
         Link::Ended(Ended::Left(HubClose::Disconnected)) => Ok(()),
-        _ => Err(Unpaired::FirstLink(address.to_owned())),
+        _ => Err(first_link()),
     }
 }
 

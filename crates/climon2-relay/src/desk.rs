@@ -48,10 +48,17 @@ impl Desk {
                 name: display_name(hub.name()),
                 fingerprint: PublicKey::from_bytes(*hub.key()).fingerprint(),
             },
-            Invitation::Expired => Shown::Ended("The invitation expired"),
-            Invitation::UsedUp => Shown::Ended("The invitation was used up"),
-            Invitation::Cancelled => Shown::Ended("The invitation was cancelled"),
+            ended => Shown::Ended(ending(&ended)),
         }
+    }
+}
+
+/// How an invitation that ended unused ended.
+fn ending(invitation: &Invitation) -> &'static str {
+    match invitation {
+        Invitation::Expired => "The invitation expired",
+        Invitation::UsedUp => "The invitation was used up",
+        _ => "The invitation was cancelled",
     }
 }
 

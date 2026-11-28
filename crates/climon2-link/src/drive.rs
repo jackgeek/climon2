@@ -87,15 +87,34 @@ fn after(
     output: &Output,
     next: Next,
 ) -> Option<Arrived> {
-    let sent = output.bytes.is_empty() || carrier.send(&output.bytes).is_ok();
+    let sent = send(carrier, &output.bytes);
     if output.close || next == Next::Stop {
         return None;
     }
     Some(match (sent, next) {
         (false, _) => Arrived::Closed,
-        (true, Next::Step) => Arrived::Tick,
-        (true, _) => wait(carrier, buffer, now, output.deadline),
+        (true, next) => following(carrier, buffer, now, output.deadline, next),
     })
+}
+
+/// What the next step takes once a step's bytes are sent: nothing at once,
+/// when the caller asked to step again, or what arrives by the deadline.
+fn following(
+    carrier: &mut impl Carrier,
+    buffer: &mut [u8],
+    now: Time,
+    deadline: Option<Time>,
+    next: Next,
+) -> Arrived {
+    match next {
+        Next::Step => Arrived::Tick,
+        _ => wait(carrier, buffer, now, deadline),
+    }
+}
+
+/// Sends `bytes`, if there are any; false when the byte stream failed.
+fn send(carrier: &mut impl Carrier, bytes: &[u8]) -> bool {
+    bytes.is_empty() || carrier.send(bytes).is_ok()
 }
 
 /// Waits for bytes until `deadline`, which the end named at `now`. A

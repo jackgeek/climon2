@@ -18,14 +18,20 @@ const NOT_A_PIN: &str = "a PIN is 8 digits; hyphens and spaces are ignored";
 /// code, with its reason.
 pub(crate) fn run(address: &str) -> Result<u32, Error> {
     let startup = Startup::read()?;
-    let stdin = io::stdin();
-    let typed = read_pin(stdin.is_terminal(), &mut stdin.lock(), &mut io::stderr())?;
-    let pin = Pin::parse(&typed).ok_or_else(|| Error::new(CLIMON2_ERROR, NOT_A_PIN))?;
+    let pin = typed_pin()?;
     let largest_record = startup.config.settings().limits.library().wire_frame_bytes;
     let paired = links::pair(&startup.home, address, pin, largest_record)
         .map_err(|unpaired| Error::new(CLIMON2_ERROR, unpaired))?;
     println!("{}", reported(&paired));
     Ok(0)
+}
+
+/// The PIN the user types: at an echoing prompt on a terminal, or as one
+/// line of a pipe.
+fn typed_pin() -> Result<Pin, Error> {
+    let stdin = io::stdin();
+    let typed = read_pin(stdin.is_terminal(), &mut stdin.lock(), &mut io::stderr())?;
+    Pin::parse(&typed).ok_or_else(|| Error::new(CLIMON2_ERROR, NOT_A_PIN))
 }
 
 /// The PIN as typed: one line of `input`, without its line ending. On a

@@ -54,11 +54,22 @@ pub fn dial(address: SocketAddr, deadline: Duration) -> io::Result<LinkStream> {
 /// `InvalidInput`; otherwise the last attempt's error is returned.
 pub fn dial_named(address: &str, deadline: Duration) -> io::Result<LinkStream> {
     let (host, port) = host_and_port(address)?;
+    let candidates = (host, port).to_socket_addrs()?;
+    first_dialled(candidates, deadline, host)
+}
+
+/// The first of `candidates`, the addresses `host` resolved to, that
+/// connects within `deadline`; otherwise the last one's error.
+fn first_dialled(
+    candidates: impl Iterator<Item = SocketAddr>,
+    deadline: Duration,
+    host: &str,
+) -> io::Result<LinkStream> {
     let mut failure = io::Error::new(
         io::ErrorKind::NotFound,
         format!("{host} resolves to no address"),
     );
-    for candidate in (host, port).to_socket_addrs()? {
+    for candidate in candidates {
         match dial(candidate, deadline) {
             Ok(stream) => return Ok(stream),
             Err(error) => failure = error,

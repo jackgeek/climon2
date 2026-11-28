@@ -10,7 +10,7 @@ use climon2_link::{
     Carrier, Ended, Hello, HubClose, Introduction, Invitation, Invitations, Link, Next, PublicKey,
     Randomness, RelayEnd, RelayLink, Revisions, StaticKey, Time, drive,
 };
-use climon2_monitor::links::{self, Paired, Pin, Unpaired};
+use climon2_monitor::links::{self, Paired, Pin, Refusal, Unpaired};
 use climon2_platform::{
     clock, host_name,
     key_storage::KeyStore,
@@ -273,7 +273,10 @@ fn a_relay_with_no_invitation_open_is_named_as_such() {
     relay.serve(identity);
     let address = relay.address.to_string();
     let refused = pair(&home, &address, &pin("12345678")).unwrap_err();
-    assert!(matches!(refused, Unpaired::NoInvitation(_)), "{refused:?}");
+    assert!(
+        matches!(refused, Unpaired::Refused(_, Refusal::NoInvitation)),
+        "{refused:?}"
+    );
     assert_eq!(
         refused.to_string(),
         format!("the relay at {address} has no link invitation open")
@@ -293,7 +296,10 @@ fn a_wrong_pin_fails_the_pairing() {
     let wrong = String::from_utf8(wrong).unwrap();
     let address = relay.address.to_string();
     let refused = pair(&home, &address, &self::pin(&wrong)).unwrap_err();
-    assert!(matches!(refused, Unpaired::Failed(_)), "{refused:?}");
+    assert!(
+        matches!(refused, Unpaired::Refused(_, Refusal::Failed)),
+        "{refused:?}"
+    );
     assert_eq!(
         refused.to_string(),
         format!("pairing with the relay at {address} failed: wrong PIN or interference")
@@ -316,7 +322,10 @@ fn a_relay_whose_first_link_fails_is_not_paired_with() {
     let pin = relay.invitations.mint(now(), &mut System);
     let address = relay.address.to_string();
     let refused = pair(&home, &address, &pin).unwrap_err();
-    assert!(matches!(refused, Unpaired::FirstLink(_)), "{refused:?}");
+    assert!(
+        matches!(refused, Unpaired::Refused(_, Refusal::FirstLink)),
+        "{refused:?}"
+    );
     assert_eq!(
         refused.to_string(),
         format!("pairing with the relay at {address} failed: its first link did not succeed")

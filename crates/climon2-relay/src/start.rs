@@ -54,9 +54,14 @@ impl Startup {
     fn in_home(arguments: RelayArgs, home: &Path) -> io::Result<Self> {
         let home = HomeLayout::at(home).map_err(io::Error::other)?;
         let config = configuration(&home)?;
-        let lock = lock(&home)?;
-        let (identity, remembered) = keys(&home)?;
-        let (listener, address) = listen(arguments.listen(&config))?;
+        Self::locked(lock(&home)?, &home, arguments.listen(&config))
+    }
+
+    /// The start once the home is this relay's: it reads the pairing store
+    /// and binds `address`.
+    fn locked(lock: Held, home: &HomeLayout, address: SocketAddr) -> io::Result<Self> {
+        let (identity, remembered) = keys(home)?;
+        let (listener, address) = listen(address)?;
         Self {
             listener,
             address,
