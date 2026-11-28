@@ -277,7 +277,7 @@ pub fn requests() -> Vec<(Request, Vec<u8>)> {
 }
 
 /// An absent error.
-fn no_error() -> Error {
+pub fn no_error() -> Error {
     Error {
         origin: 0,
         code: String::new(),

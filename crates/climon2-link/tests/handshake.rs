@@ -6,6 +6,7 @@
 
 mod samples;
 mod support;
+mod transcript;
 mod wire;
 
 use climon2_link::{
@@ -89,6 +90,38 @@ fn sec_08_a_link_connection_gives_climon2s_frozen_bytes() {
             hello: hello(),
         })
     );
+}
+
+/// REV-07: the handshake transcript is this frozen vector, and every
+/// refusal transcript and the short link start with its handshake, so
+/// their handshake bytes were computed by `vectors/noise_ik.py`.
+#[test]
+fn rev_07_the_link_transcripts_hold_the_frozen_handshake() {
+    let from_hub = [
+        &REQUEST[..],
+        &hex(FROZEN_INITIATION),
+        &hex(FROZEN_HUB_HELLO),
+    ]
+    .concat();
+    let from_relay = [&REPLY[..], &hex(FROZEN_REPLY)].concat();
+    let handshake = transcript::load(1, "handshake");
+    assert_eq!(handshake.sent_by(transcript::Side::Hub), from_hub);
+    let relay_hello = [&from_relay[..], &hex(FROZEN_RELAY_HELLO)].concat();
+    assert_eq!(handshake.sent_by(transcript::Side::Relay), relay_hello);
+    let names = [
+        "refusal-not-paired",
+        "refusal-on-hold",
+        "refusal-busy",
+        "refusal-replaced",
+        "link",
+    ];
+    for name in names {
+        let transcript = transcript::load(1, name);
+        let hub = transcript.sent_by(transcript::Side::Hub);
+        let relay = transcript.sent_by(transcript::Side::Relay);
+        assert_eq!(hub[..from_hub.len()], from_hub, "{name}");
+        assert_eq!(relay[..from_relay.len()], from_relay, "{name}");
+    }
 }
 
 /// The two ends of one remembered pairing, joined through an on-path proxy

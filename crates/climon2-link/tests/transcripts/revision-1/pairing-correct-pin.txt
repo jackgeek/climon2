@@ -1,0 +1,40 @@
+# Link revision 1: pairing-correct-pin
+#
+# A pairing connection with the PIN 8517-9087, minted from seed 3: the
+# hub monitor's randomness is seed 1 and the relay's seed 2. The hub
+# monitor introduces itself as `laptop`, the relay as `büild-box`.
+at 0 ms
+hub sends 26 bytes
+    63 32 6c 69 6e 6b 0d 0a 01 01 00 01 00 00 00 00
+    00 00 00 00 00 00 00 00 00 00
+relay sends 20 bytes
+    01 00 01 01 00 01 00 00 00 00 00 00 00 00 00 00
+    00 00 00 00
+hub sends 34 bytes
+    00 20 66 9b 3a 94 7f bf 59 5f 14 76 03 8e 68 f9
+    bf cc ab 0a 3f 20 8a 72 9f 89 61 e9 30 27 08 46
+    33 34
+relay sends 34 bytes
+    00 20 a8 c4 0a de 77 99 8c bb 39 53 e1 99 19 8f
+    38 49 c8 64 63 0c 61 05 dc 4f 80 96 44 3f ba 19
+    4e 52
+hub sends 121 bytes
+    00 77 aa 2d c5 85 a1 44 dc e4 82 fe c7 24 f7 f5
+    9b 3a 86 ca 6a 55 68 23 5b 98 f8 a7 b9 1e fb c5
+    6c 34 ed e6 f6 b6 49 23 a5 5e db d9 98 fc 3f ab
+    48 df 7e 76 6f fd 1f b4 1d ff 09 9c b3 73 7a 63
+    91 42 77 c2 f9 7b cc 36 e3 82 a3 74 36 1d da d8
+    6f cf 39 81 a8 9b 11 a1 1c 9f b8 38 88 18 9f 91
+    28 0e 8b 97 57 57 05 77 a5 dc 53 8a 25 20 a4 53
+    8f 74 fd 8d 41 a1 18 8f c1
+relay sends 125 bytes
+    00 7b 78 3f 0a 2d 6a 78 bd bf a2 c7 6c 81 6e e6
+    a2 cc b5 5a 99 e1 67 7e bc c8 9a 53 78 4f 74 06
+    83 e3 ef 2b c3 36 85 05 ae 21 1a e8 27 38 ec 8a
+    47 fa e0 12 ae cd b4 32 5d 99 74 77 ec cc 2e 95
+    91 ce 99 33 29 b7 af 06 98 55 8f 00 c3 12 ee 24
+    cc 61 5e f4 72 9d 96 e1 74 0c f6 1b b0 7f 57 4c
+    f5 6e 74 f5 8d 3b 95 bb d7 17 40 6a e6 e5 ad 10
+    aa 36 26 c8 04 94 c3 5b 80 eb ec a8 44
+hub closes
+relay closes

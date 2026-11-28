@@ -1,3 +1,6 @@
 # Tests embed Markdown with include_str! and parse LF-delimited fences, so Windows
 # checkouts (core.autocrlf) must keep LF for the neutral CI job to see the examples.
 *.md text eol=lf
+# Protocol transcripts are frozen bytes written as hex text; keep them byte-identical
+# on every checkout.
+crates/climon2-link/tests/transcripts/** text eol=lf

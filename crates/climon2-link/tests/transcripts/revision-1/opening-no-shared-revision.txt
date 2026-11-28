@@ -1,0 +1,14 @@
+# Link revision 1: opening-no-shared-revision
+#
+# The opening exchange of a hub monitor that comes to link supporting
+# only link revision 1, and a relay that supports only revisions 2 and 3:
+# the relay refuses with no shared revision and both ends close.
+at 0 ms
+hub sends 26 bytes
+    63 32 6c 69 6e 6b 0d 0a 02 01 00 01 00 00 00 00
+    00 00 00 00 00 00 00 00 00 00
+relay sends 20 bytes
+    02 00 00 02 00 02 00 03 00 00 00 00 00 00 00 00
+    00 00 00 00
+hub closes
+relay closes
