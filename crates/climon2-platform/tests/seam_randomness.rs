@@ -68,3 +68,26 @@ fn bytes_are_spread_evenly() {
         );
     }
 }
+
+fn number() -> u64 {
+    randomness::u64().expect("the operating system's generator answers")
+}
+
+#[test]
+fn every_number_is_different() {
+    let numbers: HashSet<u64> = (0..64).map(|_| number()).collect();
+
+    assert_eq!(numbers.len(), 64);
+}
+
+#[test]
+fn every_bit_of_a_number_takes_both_values() {
+    // 64 numbers leave any one bit unchanged with a chance of 2^-63.
+    let (mut ones, mut zeros) = (0u64, 0u64);
+    for number in (0..64).map(|_| number()) {
+        ones |= number;
+        zeros |= !number;
+    }
+
+    assert_eq!((ones, zeros), (u64::MAX, u64::MAX));
+}

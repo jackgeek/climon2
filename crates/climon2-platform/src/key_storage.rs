@@ -82,9 +82,7 @@ impl KeyStore {
     /// A temporary name no other writer of `name` picks, in the same folder
     /// so the rename never crosses a file system.
     fn temporary(&self, name: &str) -> io::Result<PathBuf> {
-        let mut unique = [0; 8];
-        crate::randomness::fill(&mut unique)?;
-        let unique = u64::from_ne_bytes(unique);
+        let unique = crate::randomness::u64()?;
         Ok(self.directory.join(format!(".{name}.{unique:016x}.tmp")))
     }
 
