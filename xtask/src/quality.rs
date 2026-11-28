@@ -919,7 +919,8 @@ pub(crate) fn native_source_os(path: &Path) -> Option<&'static str> {
         | Some("crates/climon2-platform/src/handoff/windows.rs")
         | Some("crates/climon2-install/src/windows.rs")
         | Some("crates/climon2-install/src/user_path/windows.rs")
-        | Some("crates/climon2-relay/src/windows.rs") => Some("windows"),
+        | Some("crates/climon2-relay/src/windows.rs")
+        | Some("crates/climon2-monitor-tui/src/pair/windows.rs") => Some("windows"),
         _ => None,
     }
 }

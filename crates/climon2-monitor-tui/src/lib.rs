@@ -16,13 +16,18 @@ mod introduction;
 mod keys;
 mod mouse;
 mod paint;
+#[cfg(unix)]
+mod pair;
+#[cfg(windows)]
+#[path = "pair/windows.rs"]
+mod pair;
 mod preference;
 mod router;
 mod screen;
 mod selector;
 mod toast;
 
-use climon2_core::{SessionId, exit::CLIMON2_ERROR, protocol::TerminalSize};
+use climon2_core::{SessionId, exit::CLIMON2_ERROR, monitor::MonitorArgs, protocol::TerminalSize};
 use climon2_monitor::{
     self as library, Choice, Consumer, Drive, Inputs, Look, Monitor, Startup, System, TICK, Target,
     Verdict, View,
@@ -41,6 +46,7 @@ use router::{Begin, Key, Pasted, Routed, Router};
 use screen::{Scene, Screen};
 use selector::Selector;
 use std::{
+    ffi::OsString,
     io, mem,
     path::Path,
     thread,
@@ -51,7 +57,19 @@ use std::{
 /// restored, with the climon2 error code.
 pub use climon2_monitor::Error;
 
-/// The CLI execs the monitor with no arguments. Returns the exit status of an
+/// The CLI execs the monitor with the arguments `c2 monitor` was given,
+/// argv[0] excluded: none starts the monitor, and `pair <host:port>` pairs
+/// with a relay. Arguments that are neither are a usage error.
+pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<u32, Error> {
+    let arguments =
+        MonitorArgs::parse(arguments).map_err(|usage| Error::new(usage.exit_code(), usage))?;
+    match arguments {
+        MonitorArgs::Start => start(),
+        MonitorArgs::Pair { address } => pair::run(&address),
+    }
+}
+
+/// The monitor itself. Returns the exit status of an
 /// orderly exit: 0 for prefix+x, 128 + signal for a termination signal,
 /// never a session's own status. An exit whose cleanup cannot be confirmed
 /// never returns: it fail-stops the process with the climon2 error code
@@ -59,7 +77,7 @@ pub use climon2_monitor::Error;
 /// terminal changes: terminals first, then what the monitor library
 /// checks. The key introduction's preference is read last; it never
 /// refuses the monitor.
-pub fn run() -> Result<u32, Error> {
+fn start() -> Result<u32, Error> {
     terminal::require_ttys()
         .map_err(|_| Error::new(CLIMON2_ERROR, "c2 monitor needs a terminal"))?;
     let startup = Startup::read()?;
